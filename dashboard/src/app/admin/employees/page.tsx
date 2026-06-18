@@ -563,7 +563,7 @@ export default function AdminEmployeesPage() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
           <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
             <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-slate-800">
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Add Employee</h2>
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Add Employee v2</h2>
               <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" aria-label="Close">✕</button>
             </div>
 
