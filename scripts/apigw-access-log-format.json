@@ -1,0 +1,4 @@
+{
+  "DestinationArn": "arn:aws:logs:ap-south-1:657672949684:log-group:/aws/apigateway/vt-employee-bot-api-gateway",
+  "Format": "{\"requestId\":\"$context.requestId\",\"ip\":\"$context.identity.sourceIp\",\"requestTime\":\"$context.requestTime\",\"httpMethod\":\"$context.httpMethod\",\"routeKey\":\"$context.routeKey\",\"path\":\"$context.path\",\"status\":$context.status,\"protocol\":\"$context.protocol\",\"responseLength\":$context.responseLength,\"integrationStatus\":\"$context.integrationStatus\",\"integrationErrorMessage\":\"$context.integrationErrorMessage\",\"errorMessage\":\"$context.error.message\",\"origin\":\"$context.identity.userAgent\"}"
+}

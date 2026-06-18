@@ -1,0 +1,11 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "apigateway.amazonaws.com" },
+      "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "arn:aws:logs:ap-south-1:657672949684:log-group:/aws/apigateway/vt-employee-bot-api-gateway:*"
+    }
+  ]
+}

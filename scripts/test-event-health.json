@@ -1,0 +1,12 @@
+{
+  "version": "2.0",
+  "routeKey": "GET /health",
+  "rawPath": "/health",
+  "rawQueryString": "",
+  "headers": { "host": "test.execute-api.ap-south-1.amazonaws.com" },
+  "requestContext": {
+    "http": { "method": "GET", "path": "/health", "protocol": "HTTP/1.1", "sourceIp": "127.0.0.1" },
+    "stage": "$default"
+  },
+  "isBase64Encoded": false
+}
