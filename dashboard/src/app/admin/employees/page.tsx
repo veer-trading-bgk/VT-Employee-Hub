@@ -52,10 +52,14 @@ function generatePassword(): string {
 const ROLE_STYLE: Record<string, string> = {
   admin:      'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-900/20 dark:text-violet-300 dark:ring-violet-800',
   manager:    'bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-900/20 dark:text-blue-300 dark:ring-blue-800',
+  team_lead:  'bg-cyan-50 text-cyan-700 ring-1 ring-cyan-200 dark:bg-cyan-900/20 dark:text-cyan-300 dark:ring-cyan-800',
+  agent:      'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:ring-emerald-800',
   telecaller: 'bg-slate-100 text-slate-600 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700',
+  intern:     'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-800',
 };
 const ROLE_LABEL: Record<string, string> = {
-  admin: 'Admin', manager: 'Manager', telecaller: 'Telecaller',
+  admin: 'Admin', manager: 'Manager', team_lead: 'Team Lead',
+  agent: 'Agent', telecaller: 'Telecaller', intern: 'Intern',
 };
 
 // ── Shared input / button styles ──────────────────────────────────────────────
@@ -427,7 +431,10 @@ export default function AdminEmployeesPage() {
               <option value="all">All Roles</option>
               <option value="admin">Admin</option>
               <option value="manager">Manager</option>
+              <option value="team_lead">Team Lead</option>
+              <option value="agent">Agent</option>
               <option value="telecaller">Telecaller</option>
+              <option value="intern">Intern</option>
             </select>
           </div>
 
@@ -588,6 +595,9 @@ export default function AdminEmployeesPage() {
                   className={inputCls}
                 >
                   <option value="telecaller">Telecaller</option>
+                  <option value="agent">Agent</option>
+                  <option value="intern">Intern</option>
+                  <option value="team_lead">Team Lead</option>
                   <option value="manager">Manager</option>
                   <option value="admin">Admin</option>
                 </select>

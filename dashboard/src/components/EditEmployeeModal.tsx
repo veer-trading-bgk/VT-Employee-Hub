@@ -109,6 +109,9 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
               className={inputCls}
             >
               <option value="telecaller">Telecaller</option>
+              <option value="agent">Agent</option>
+              <option value="intern">Intern</option>
+              <option value="team_lead">Team Lead</option>
               <option value="manager">Manager</option>
               <option value="admin">Admin</option>
             </select>
