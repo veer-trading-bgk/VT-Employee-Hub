@@ -74,7 +74,7 @@ export default function TeamLeadDashboardPage() {
         </div>
 
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-          <StatsCard title="Team Members" value={teamEntries.length} icon="👥" accent="cyan" loading={isLoading} />
+          <StatsCard title="Team Members" value={teamEntries.length} icon="👥" accent="indigo" loading={isLoading} />
           <StatsCard title="Avg Performance" value={`${overallPct}%`} icon="📊" accent={overallPct >= 80 ? 'emerald' : 'amber'} loading={isLoading} />
           <StatsCard title="At Risk" value={atRisk.length} icon="⚠️" accent="rose" loading={isLoading} />
           <StatsCard title="Days Left" value={daysLeftInMonth()} icon="📅" accent="blue" loading={isLoading} />
