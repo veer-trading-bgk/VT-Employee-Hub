@@ -1,0 +1,59 @@
+name: Deploy VT Employee Bot
+
+on:
+  push:
+    branches: [main, master]
+
+jobs:
+  deploy-backend:
+    name: Backend → AWS Lambda
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install production dependencies
+        run: npm ci --omit=dev
+
+      - name: Package Lambda zip
+        run: |
+          zip -r deployment.zip src/ package.json node_modules/ \
+            --exclude "*.map" \
+            --exclude "node_modules/.cache/*" \
+            --exclude "node_modules/aws-sdk/dist-tools/*"
+
+      - name: Deploy to Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name vt-employee-bot-api \
+            --zip-file fileb://deployment.zip \
+            --region ap-south-1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ap-south-1
+
+      - name: Wait for Lambda to be ready
+        run: |
+          aws lambda wait function-updated \
+            --function-name vt-employee-bot-api \
+            --region ap-south-1
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ap-south-1
+
+      - name: Smoke test
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://api.viirtrading.com/health)
+          echo "Health check status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check failed!"
+            exit 1
+          fi
+          echo "✅ Lambda is healthy"
