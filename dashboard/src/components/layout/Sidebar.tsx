@@ -16,6 +16,8 @@ interface NavItem {
   roles?: Role[];
 }
 
+const EMPLOYEE_ROLES: Role[] = ['telecaller', 'agent', 'intern'];
+
 const ALL_NAV: NavItem[] = [
   // ── Admin-only ─────────────────────────────────
   { href: '/admin/dashboard',  label: 'Admin Overview', icon: '🔑',  roles: ['admin'] },
@@ -25,11 +27,14 @@ const ALL_NAV: NavItem[] = [
   // ── Manager (admin can see too) ─────────────────
   { href: '/manager/dashboard',      label: 'Team Overview',  icon: '👔', roles: ['admin', 'manager'] },
   { href: '/manager/verify-metrics', label: 'Verify Metrics', icon: '✅', roles: ['admin', 'manager'] },
+  // ── Team Lead ──────────────────────────────────
+  { href: '/team-lead/dashboard',      label: 'Team Overview',  icon: '👥', roles: ['team_lead'] },
+  { href: '/team-lead/verify-metrics', label: 'Verify Metrics', icon: '✅', roles: ['team_lead'] },
   // ── Employee ───────────────────────────────────
-  { href: '/employee/dashboard',    label: 'My Dashboard', icon: '📊', roles: ['telecaller'] },
-  { href: '/employee/daily-entry',  label: 'Daily Entry',  icon: '✏️', roles: ['telecaller'] },
-  { href: '/employee/achievements', label: 'Achievements', icon: '🏅', roles: ['telecaller'] },
-  { href: '/employee/compensation', label: 'My Pay',       icon: '💰', roles: ['telecaller'] },
+  { href: '/employee/dashboard',    label: 'My Dashboard', icon: '📊', roles: EMPLOYEE_ROLES },
+  { href: '/employee/daily-entry',  label: 'Daily Entry',  icon: '✏️', roles: EMPLOYEE_ROLES },
+  { href: '/employee/achievements', label: 'Achievements', icon: '🏅', roles: EMPLOYEE_ROLES },
+  { href: '/employee/compensation', label: 'My Pay',       icon: '💰', roles: EMPLOYEE_ROLES },
   // ── Shared ─────────────────────────────────────
   { href: '/leaderboard', label: 'Leaderboard', icon: '🏆' },
   { href: '/profile',     label: 'Profile',     icon: '👤' },
@@ -76,7 +81,8 @@ export function Sidebar({ forceMobile = false }: { forceMobile?: boolean }) {
 
   const adminItems    = visible.filter(i => i.roles?.includes('admin') && !i.roles?.includes('manager'));
   const managerItems  = visible.filter(i => i.roles?.includes('manager'));
-  const employeeItems = visible.filter(i => i.roles?.includes('telecaller'));
+  const teamLeadItems = visible.filter(i => i.roles?.includes('team_lead'));
+  const employeeItems = visible.filter(i => EMPLOYEE_ROLES.some(r => i.roles?.includes(r)));
   const generalItems  = visible.filter(i => !i.roles);
 
   return (
@@ -106,7 +112,14 @@ export function Sidebar({ forceMobile = false }: { forceMobile?: boolean }) {
           </>
         )}
 
-        {userRole === 'telecaller' && employeeItems.length > 0 && (
+        {userRole === 'team_lead' && teamLeadItems.length > 0 && (
+          <>
+            <SectionLabel label="Team Lead" />
+            {teamLeadItems.map(item => <NavItemLink key={item.href} item={item} pathname={pathname} />)}
+          </>
+        )}
+
+        {EMPLOYEE_ROLES.includes(userRole) && employeeItems.length > 0 && (
           <>
             <SectionLabel label="Employee" />
             {employeeItems.map(item => <NavItemLink key={item.href} item={item} pathname={pathname} />)}

@@ -142,7 +142,7 @@ router.get('/all', adminMiddleware, async (req, res, next) => {
 });
 
 // Get team summary (manager/admin)
-router.get('/team-summary', checkRole(['admin', 'manager']), async (req, res, next) => {
+router.get('/team-summary', checkRole(['admin', 'manager', 'team_lead']), async (req, res, next) => {
   try {
     const today = new Date().toISOString().split('T')[0];
 
@@ -242,7 +242,7 @@ router.post('/bulk-entry', checkRole(['admin', 'manager']), async (req, res, nex
 });
 
 // Get pending (unverified) metrics — GET /api/metrics/pending
-router.get('/pending', checkRole(['admin', 'manager']), async (req, res, next) => {
+router.get('/pending', checkRole(['admin', 'manager', 'team_lead']), async (req, res, next) => {
   try {
     const result = await dynamodb.scan({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
@@ -258,7 +258,7 @@ router.get('/pending', checkRole(['admin', 'manager']), async (req, res, next) =
 });
 
 // Verify metric (body-based) — POST /api/metrics/verify
-router.post('/verify', checkRole(['admin', 'manager']), async (req, res, next) => {
+router.post('/verify', checkRole(['admin', 'manager', 'team_lead']), async (req, res, next) => {
   try {
     const { metricId, approved, notes } = req.body;
     if (!metricId) return res.status(400).json({ error: 'metricId required' });

@@ -20,7 +20,7 @@ const registerSchema = z.object({
     .regex(/[0-9]/, 'Must contain number')
     .regex(/[!@#$%^&*]/, 'Must contain special character'),
   name: z.string().min(2, 'Name must be at least 2 characters'),
-  role: z.enum(['admin', 'manager', 'telecaller']).default('telecaller')
+  role: z.enum(['admin', 'manager', 'team_lead', 'agent', 'telecaller', 'intern']).default('telecaller')
 });
 
 const verifyTotpSchema = z.object({
@@ -37,7 +37,7 @@ const verifyBackupSchema = z.object({
 const updateEmployeeSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   email: z.string().email('Invalid email').optional(),
-  role: z.enum(['admin', 'manager', 'telecaller']).optional(),
+  role: z.enum(['admin', 'manager', 'team_lead', 'agent', 'telecaller', 'intern']).optional(),
   status: z.enum(['active', 'inactive']).optional(),
 }).strict();
 
