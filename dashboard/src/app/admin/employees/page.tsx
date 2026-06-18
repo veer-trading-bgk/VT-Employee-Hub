@@ -600,6 +600,7 @@ export default function AdminEmployeesPage() {
                   <option value="team_lead">Team Lead</option>
                   <option value="manager">Manager</option>
                   <option value="admin">Admin</option>
+                  {/* roles: telecaller, agent, intern, team_lead, manager, admin */}
                 </select>
               </div>
               <div>
