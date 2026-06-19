@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { AppShell } from '@/components/layout/AppShell';
+import { Navbar } from '@/components/layout/Navbar';
 import { useTheme } from '@/context/ThemeContext';
 import { useAuth } from '@/context/AuthContext';
 
@@ -14,6 +15,8 @@ export default function SettingsPage() {
 
   return (
     <AppShell>
+      <Navbar title="Settings" showBack />
+      <div className="p-4 md:p-8">
       <h1 className="mb-6 text-2xl font-bold text-slate-900 dark:text-white">Settings</h1>
 
       <div className="max-w-lg space-y-4">
@@ -62,6 +65,7 @@ export default function SettingsPage() {
             Log out now
           </button>
         </div>
+      </div>
       </div>
     </AppShell>
   );

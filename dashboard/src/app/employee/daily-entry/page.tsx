@@ -59,7 +59,7 @@ export default function DailyEntryPage() {
 
   return (
     <>
-      <Navbar title="Daily Metrics Entry" />
+      <Navbar title="Daily Metrics Entry" showBack />
       <div className="space-y-6 p-4 md:p-8 max-w-2xl">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Daily Entry</h1>

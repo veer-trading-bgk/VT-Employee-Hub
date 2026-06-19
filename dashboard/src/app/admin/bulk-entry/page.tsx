@@ -82,7 +82,7 @@ export default function BulkEntryPage() {
 
   return (
     <>
-      <Navbar title="Bulk Metrics Entry" />
+      <Navbar title="Bulk Metrics Entry" showBack />
       <div className="space-y-6 p-4 md:p-8">
         {/* Header */}
         <div>

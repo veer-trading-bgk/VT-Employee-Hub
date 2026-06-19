@@ -55,7 +55,7 @@ export default function VerifyMetricsPage() {
 
   return (
     <>
-      <Navbar title="Verify Metrics" />
+      <Navbar title="Verify Metrics" showBack />
       <div className="space-y-6 p-4 md:p-8">
         <div className="flex items-center justify-between">
           <div>

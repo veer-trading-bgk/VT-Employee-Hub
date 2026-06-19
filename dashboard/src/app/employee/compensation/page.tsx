@@ -47,7 +47,7 @@ export default function CompensationPage() {
 
   return (
     <>
-      <Navbar title="My Compensation" />
+      <Navbar title="My Compensation" showBack />
       <div className="space-y-6 p-4 md:p-8 max-w-3xl print:p-4">
         <div className="flex flex-wrap items-start justify-between gap-3 print:hidden">
           <div>

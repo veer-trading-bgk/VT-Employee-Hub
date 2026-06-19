@@ -10,6 +10,7 @@ import { ErrorMessage } from '@/components/ui/ErrorMessage';
 import { ChartSkeleton, TableSkeleton } from '@/components/ui/Skeleton';
 import { useMyMetrics, useRoleScopedMetrics } from '@/hooks/useMetrics';
 import { METRICS } from '@/lib/metrics.config';
+import { Navbar } from '@/components/layout/Navbar';
 
 export default function AnalyticsPage() {
   const [days, setDays] = useState(30);
@@ -47,6 +48,8 @@ export default function AnalyticsPage() {
 
   return (
     <AppShell>
+      <Navbar title="Analytics" />
+      <div className="p-4 md:p-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Analytics</h1>
@@ -101,6 +104,7 @@ export default function AnalyticsPage() {
 
       <div className="mt-6">
         {loading ? <TableSkeleton rows={8} /> : <DataTable records={allRecords} filename={`my_metrics_${days}d.csv`} />}
+      </div>
       </div>
     </AppShell>
   );

@@ -9,6 +9,7 @@ import { ProgressBarChart } from '@/components/charts/ProgressBarChart';
 import { TrendLineChart } from '@/components/charts/TrendLineChart';
 import { useMyMetrics } from '@/hooks/useMetrics';
 import { InsightsPanel } from '@/components/ai/InsightsPanel';
+import { Navbar } from '@/components/layout/Navbar';
 import { useState } from 'react';
 
 export default function DashboardPage() {
@@ -23,6 +24,8 @@ export default function DashboardPage() {
 
   return (
     <AppShell>
+      <Navbar title="Dashboard" />
+      <div className="p-4 md:p-8">
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Dashboard</h1>
@@ -91,6 +94,7 @@ export default function DashboardPage() {
             )}
           </div>
         </ErrorBoundary>
+      </div>
       </div>
     </AppShell>
   );

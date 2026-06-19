@@ -43,7 +43,7 @@ export default function AchievementsPage() {
 
   return (
     <>
-      <Navbar title="Achievements" />
+      <Navbar title="Achievements" showBack />
       <div className="space-y-6 p-4 md:p-8">
         <div className="flex items-center justify-between">
           <div>
