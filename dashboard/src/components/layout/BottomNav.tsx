@@ -37,7 +37,6 @@ function getTabsForRole(role: Role): NavTab[] {
     { href: '/employee/dashboard',    label: 'Home',    icon: '📊' },
     { href: '/employee/daily-entry',  label: 'Entry',   icon: '✏️' },
     { href: '/employee/achievements', label: 'Badges',  icon: '🏅' },
-    { href: '/employee/compensation', label: 'Pay',     icon: '💰' },
     { href: '/profile',               label: 'Profile', icon: '👤' },
   ];
 }
