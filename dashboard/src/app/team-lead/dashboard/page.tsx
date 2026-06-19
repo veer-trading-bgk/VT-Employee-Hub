@@ -62,7 +62,7 @@ export default function TeamLeadDashboardPage() {
 
   return (
     <>
-      <Navbar title="Team Lead Dashboard" showBack />
+      <Navbar title="Team Lead Dashboard" />
       <div className="space-y-6 p-4 md:p-8">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
