@@ -47,14 +47,33 @@ export default function DailyEntryPage() {
         )
       );
     },
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: ['my-metrics-entry'] });
+      const previous = qc.getQueryData<MyMetricsResponse>(['my-metrics-entry']);
+      qc.setQueryData<MyMetricsResponse>(['my-metrics-entry'], (old) => {
+        if (!old) return old;
+        const today = { ...(old.data[TODAY] ?? {}) };
+        METRICS.forEach((m) => {
+          const v = parseInt(values[m.key] ?? '0');
+          if (v > 0) today[m.key] = (today[m.key] ?? 0) + v;
+        });
+        return { ...old, data: { ...old.data, [TODAY]: today } };
+      });
+      return { previous };
+    },
+    onError: (err: Error, _vars, ctx) => {
+      if (ctx?.previous) qc.setQueryData(['my-metrics-entry'], ctx.previous);
+      toast.error(err.message);
+    },
     onSuccess: () => {
       toast.success('Metrics saved for today!');
       setValues({});
       setNotes('');
+    },
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: ['my-metrics-entry'] });
       qc.invalidateQueries({ queryKey: ['my-metrics'] });
     },
-    onError: (err: Error) => toast.error(err.message),
   });
 
   return (
@@ -121,7 +140,7 @@ export default function DailyEntryPage() {
                       placeholder={existing > 0 ? `Add more (${existing} already logged)` : 'Enter value…'}
                       value={values[m.key] ?? ''}
                       onChange={(e) => setValues((v) => ({ ...v, [m.key]: e.target.value }))}
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                     />
                   </div>
                 );
@@ -136,7 +155,7 @@ export default function DailyEntryPage() {
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="Any notes about today's activity…"
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 />
               </div>
             </div>

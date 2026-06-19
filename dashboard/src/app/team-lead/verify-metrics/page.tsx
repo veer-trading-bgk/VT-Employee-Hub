@@ -116,7 +116,7 @@ export default function TeamLeadVerifyMetricsPage() {
                       placeholder="Verification notes (optional)…"
                       value={notes[entry.metricId] ?? ''}
                       onChange={(e) => setNotes((n) => ({ ...n, [entry.metricId]: e.target.value }))}
-                      className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-xs focus:border-cyan-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                      className="w-full rounded-lg border border-slate-200 px-3 py-1.5 text-xs focus:border-cyan-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                     />
                     <div className="flex gap-2">
                       <button

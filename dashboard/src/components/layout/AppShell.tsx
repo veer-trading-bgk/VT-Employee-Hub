@@ -4,6 +4,9 @@ import { ReactNode, useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { Sidebar } from './Sidebar';
 import { BottomNav } from './BottomNav';
+import { RouteProgress } from './RouteProgress';
+import { SessionWarning } from './SessionWarning';
+import { ScrollToTop } from './ScrollToTop';
 import { ProtectedRoute } from './ProtectedRoute';
 import { useUIStore } from '@/store/uiStore';
 import type { Role } from '@/types';
@@ -80,6 +83,10 @@ export function AppShell({
         {/* Mobile bottom navigation bar */}
         <BottomNav />
       </div>
+
+      <RouteProgress />
+      <SessionWarning />
+      <ScrollToTop />
     </ProtectedRoute>
   );
 }

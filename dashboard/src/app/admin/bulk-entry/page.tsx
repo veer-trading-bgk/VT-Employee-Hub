@@ -133,7 +133,7 @@ export default function BulkEntryPage() {
                         [key]: type === 'number' ? parseInt(e.target.value) || 0 : e.target.value,
                       }))
                     }
-                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                   />
                 </div>
               ))}
@@ -155,7 +155,7 @@ export default function BulkEntryPage() {
               Header: <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">employeeId,name,kyc,demat,mf,insurance,date,notes</code>
             </p>
             <textarea
-              className="w-full rounded-lg border border-slate-200 bg-white p-3 font-mono text-xs text-slate-900 focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              className="w-full rounded-lg border border-slate-200 bg-white p-3 font-mono text-xs text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
               rows={6}
               placeholder={`employeeId,name,kyc,demat,mf,insurance,date,notes\nEMP001,Priya Sharma,5,3,2,25000,2026-06-17,Strong day`}
               value={csvText}

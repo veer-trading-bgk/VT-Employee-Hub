@@ -21,6 +21,13 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "VT Employee Hub",
   description: "VT Employee Metrics Dashboard",
+  manifest: "/manifest.json",
+  themeColor: "#4f46e5",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "VT Hub",
+  },
 };
 
 export const viewport: Viewport = {
@@ -45,7 +52,7 @@ export default function RootLayout({
           <ThemeProvider>
             <AuthProvider>
               {children}
-              <Toaster richColors position="top-right" />
+              <Toaster richColors position="top-right" offset="4.5rem" />
             </AuthProvider>
           </ThemeProvider>
         </QueryProvider>
