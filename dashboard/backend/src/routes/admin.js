@@ -33,11 +33,30 @@ router.get('/employees', async (req, res, next) => {
   }
 });
 
+// ── GET /api/admin/employees/:id ─────────────────────────────────────────────
+
+router.get('/employees/:id', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const result = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+      Key: { id },
+    }).promise();
+
+    if (!result.Item) return res.status(404).json({ error: 'Employee not found' });
+
+    const { password, totpSecret, backupCodes, ...safe } = result.Item;
+    res.json({ success: true, employee: safe });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ── POST /api/admin/employees ─────────────────────────────────────────────────
 
 router.post('/employees', async (req, res, next) => {
   try {
-    const { email, password, name, role } = registerSchema.parse(req.body);
+    const { email, password, name, role, panNumber, aadhaarNumber, homeAddress } = registerSchema.parse(req.body);
 
     const existing = await dynamodb.query({
       TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
@@ -61,6 +80,9 @@ router.post('/employees', async (req, res, next) => {
         password: hashedPassword,
         name,
         role,
+        ...(panNumber     && { panNumber }),
+        ...(aadhaarNumber && { aadhaarNumber }),
+        ...(homeAddress   && { homeAddress }),
         status: 'active',
         createdAt: new Date().toISOString(),
         createdBy: req.user.id,

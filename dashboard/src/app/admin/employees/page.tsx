@@ -29,6 +29,29 @@ interface RegisterForm {
   email: string;
   password: string;
   role: Role;
+  panNumber: string;
+  aadhaarNumber: string;
+  homeAddress: string;
+}
+
+function validatePAN(v: string) {
+  if (!v) return null;
+  return /^[A-Z]{5}[0-9]{4}[A-Z]$/.test(v) ? null : 'Format: ABCDE1234F (5 letters, 4 digits, 1 letter)';
+}
+function validateAadhaar(v: string) {
+  if (!v) return null;
+  return /^\d{12}$/.test(v) ? null : 'Must be exactly 12 digits';
+}
+function FieldError({ msg }: { msg: string }) {
+  return <p className="mt-1 text-xs text-rose-500">{msg}</p>;
+}
+function ChevronDown({ open }: { open: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+      className={`transition-transform duration-200 ${open ? 'rotate-90' : ''}`} aria-hidden="true">
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
 }
 
 function generatePassword(): string {
@@ -312,8 +335,9 @@ export default function AdminEmployeesPage() {
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
   const [showAddModal, setShowAddModal] = useState(false);
-  const [form, setForm] = useState<RegisterForm>({ name: '', email: '', password: generatePassword(), role: 'telecaller' });
+  const [form, setForm] = useState<RegisterForm>({ name: '', email: '', password: generatePassword(), role: 'telecaller', panNumber: '', aadhaarNumber: '', homeAddress: '' });
   const [showPwd, setShowPwd] = useState(false);
+  const [showAdditional, setShowAdditional] = useState(false);
   const [setup2faEmployee, setSetup2faEmployee] = useState<Employee | null>(null);
   const [reset2faEmployee, setReset2faEmployee] = useState<Employee | null>(null);
   const [editEmployee, setEditEmployee] = useState<Employee | null>(null);
@@ -328,13 +352,24 @@ export default function AdminEmployeesPage() {
   });
 
   const addMutation = useMutation({
-    mutationFn: (payload: RegisterForm) =>
-      apiFetch('/api/auth/register', { method: 'POST', body: JSON.stringify(payload), retries: 0 }),
+    mutationFn: (payload: RegisterForm) => {
+      const body: Record<string, string> = {
+        name: payload.name,
+        email: payload.email,
+        password: payload.password,
+        role: payload.role,
+      };
+      if (payload.panNumber)     body.panNumber     = payload.panNumber;
+      if (payload.aadhaarNumber) body.aadhaarNumber = payload.aadhaarNumber;
+      if (payload.homeAddress)   body.homeAddress   = payload.homeAddress;
+      return apiFetch('/api/auth/register', { method: 'POST', body: JSON.stringify(body), retries: 0 });
+    },
     onSuccess: () => {
       toast.success(`${form.name} added successfully`);
       queryClient.invalidateQueries({ queryKey: ['admin-employees'] });
       setShowAddModal(false);
-      setForm({ name: '', email: '', password: generatePassword(), role: 'telecaller' });
+      setShowAdditional(false);
+      setForm({ name: '', email: '', password: generatePassword(), role: 'telecaller', panNumber: '', aadhaarNumber: '', homeAddress: '' });
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -559,95 +594,159 @@ export default function AdminEmployeesPage() {
       </div>
 
       {/* ── Add Employee Modal ── */}
-      {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
-          <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
-            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-slate-800">
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Add Employee v2</h2>
-              <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" aria-label="Close">✕</button>
-            </div>
+      {showAddModal && (() => {
+        const panError     = validatePAN(form.panNumber.toUpperCase());
+        const aadhaarError = validateAadhaar(form.aadhaarNumber);
+        const hasErrors    = !!panError || !!aadhaarError;
+        const canSubmit    = !!form.name.trim() && !!form.email.trim() && !hasErrors;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+            <div className="flex max-h-[90vh] w-full max-w-md flex-col rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
+              <div className="flex flex-shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-slate-800">
+                <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Add Employee</h2>
+                <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" aria-label="Close">✕</button>
+              </div>
 
-            <div className="space-y-4 px-6 py-5">
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Full Name *</label>
-                <input
-                  value={form.name}
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                  placeholder="Rajesh Kumar"
-                  className={inputCls}
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Email *</label>
-                <input
-                  type="email"
-                  value={form.email}
-                  onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                  placeholder="rajesh@viirtrading.com"
-                  className={inputCls}
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Role *</label>
-                <select
-                  value={form.role}
-                  onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as Role }))}
-                  className={inputCls}
-                >
-                  <option value="telecaller">Telecaller</option>
-                  <option value="agent">Agent</option>
-                  <option value="intern">Intern</option>
-                  <option value="team_lead">Team Lead</option>
-                  <option value="manager">Manager</option>
-                  <option value="admin">Admin</option>
-                  {/* roles: telecaller, agent, intern, team_lead, manager, admin */}
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Auto-generated Password</label>
-                <div className="flex gap-2">
-                  <div className="relative flex-1">
+              <div className="overflow-y-auto px-6 py-5">
+                <div className="space-y-4">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Full Name *</label>
                     <input
-                      type={showPwd ? 'text' : 'password'}
-                      value={form.password}
-                      readOnly
-                      className={inputCls + ' pr-10 font-mono'}
+                      value={form.name}
+                      onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                      placeholder="Rajesh Kumar"
+                      className={inputCls}
                     />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Email *</label>
+                    <input
+                      type="email"
+                      value={form.email}
+                      onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                      placeholder="rajesh@viirtrading.com"
+                      className={inputCls}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Role *</label>
+                    <select
+                      value={form.role}
+                      onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as Role }))}
+                      className={inputCls}
+                    >
+                      <option value="telecaller">Telecaller</option>
+                      <option value="agent">Agent</option>
+                      <option value="intern">Intern</option>
+                      <option value="team_lead">Team Lead</option>
+                      <option value="manager">Manager</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Auto-generated Password</label>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type={showPwd ? 'text' : 'password'}
+                          value={form.password}
+                          readOnly
+                          className={inputCls + ' pr-10 font-mono'}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPwd((v) => !v)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600"
+                          aria-label={showPwd ? 'Hide password' : 'Show password'}
+                        >
+                          {showPwd ? 'Hide' : 'Show'}
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setForm((f) => ({ ...f, password: generatePassword() }))}
+                        className={ghostBtn}
+                        title="Regenerate password"
+                      >
+                        New
+                      </button>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-400">Share with employee after creation.</p>
+                  </div>
+
+                  {/* ── Collapsible additional info ── */}
+                  <div className="rounded-lg border border-slate-200 dark:border-slate-700">
                     <button
                       type="button"
-                      onClick={() => setShowPwd((v) => !v)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600"
-                      aria-label={showPwd ? 'Hide password' : 'Show password'}
+                      onClick={() => setShowAdditional((v) => !v)}
+                      className="flex w-full items-center justify-between px-4 py-3 text-left"
                     >
-                      {showPwd ? 'Hide' : 'Show'}
+                      <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                        Additional Information <span className="font-normal normal-case text-slate-400">(optional)</span>
+                      </span>
+                      <ChevronDown open={showAdditional} />
                     </button>
+
+                    {showAdditional && (
+                      <div className="space-y-4 border-t border-slate-100 px-4 pb-4 pt-3 dark:border-slate-800">
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
+                            PAN Number <span className="text-slate-400">(optional)</span>
+                          </label>
+                          <input
+                            value={form.panNumber}
+                            onChange={(e) => setForm((f) => ({ ...f, panNumber: e.target.value.toUpperCase() }))}
+                            maxLength={10}
+                            placeholder="ABCDE1234F"
+                            className={`${inputCls} font-mono uppercase tracking-widest`}
+                          />
+                          {panError && <FieldError msg={panError} />}
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
+                            Aadhaar Number <span className="text-slate-400">(optional)</span>
+                          </label>
+                          <input
+                            value={form.aadhaarNumber}
+                            onChange={(e) => setForm((f) => ({ ...f, aadhaarNumber: e.target.value.replace(/\D/g, '').slice(0, 12) }))}
+                            placeholder="123456789012"
+                            inputMode="numeric"
+                            className={`${inputCls} font-mono tracking-widest`}
+                          />
+                          {aadhaarError && <FieldError msg={aadhaarError} />}
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
+                            Home Address <span className="text-slate-400">(optional)</span>
+                          </label>
+                          <textarea
+                            value={form.homeAddress}
+                            onChange={(e) => setForm((f) => ({ ...f, homeAddress: e.target.value }))}
+                            rows={3}
+                            placeholder="Street, City, State, PIN"
+                            className={inputCls}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setForm((f) => ({ ...f, password: generatePassword() }))}
-                    className={ghostBtn}
-                    title="Regenerate password"
-                  >
-                    New
-                  </button>
                 </div>
-                <p className="mt-1 text-xs text-slate-400">Share with employee after creation.</p>
+              </div>
+
+              <div className="flex flex-shrink-0 gap-2 border-t border-slate-100 px-6 py-4 dark:border-slate-800">
+                <button
+                  onClick={() => addMutation.mutate(form)}
+                  disabled={addMutation.isPending || !canSubmit}
+                  className={primaryBtn + ' flex-1'}
+                >
+                  {addMutation.isPending ? 'Creating…' : 'Create Employee'}
+                </button>
+                <button onClick={() => setShowAddModal(false)} className={ghostBtn}>Cancel</button>
               </div>
             </div>
-
-            <div className="flex gap-2 border-t border-slate-100 px-6 py-4 dark:border-slate-800">
-              <button
-                onClick={() => addMutation.mutate(form)}
-                disabled={addMutation.isPending || !form.name || !form.email}
-                className={primaryBtn + ' flex-1'}
-              >
-                {addMutation.isPending ? 'Creating…' : 'Create Employee'}
-              </button>
-              <button onClick={() => setShowAddModal(false)} className={ghostBtn}>Cancel</button>
-            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {editEmployee && <EditEmployeeModal employee={editEmployee} onClose={() => setEditEmployee(null)} />}
       {deleteEmployee && <DeleteEmployeeDialog employee={deleteEmployee} onClose={() => setDeleteEmployee(null)} />}

@@ -20,7 +20,10 @@ const registerSchema = z.object({
     .regex(/[0-9]/, 'Must contain number')
     .regex(/[!@#$%^&*]/, 'Must contain special character'),
   name: z.string().min(2, 'Name must be at least 2 characters'),
-  role: z.enum(['admin', 'manager', 'team_lead', 'agent', 'telecaller', 'intern']).default('telecaller')
+  role: z.enum(['admin', 'manager', 'team_lead', 'agent', 'telecaller', 'intern']).default('telecaller'),
+  panNumber: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, 'Invalid PAN (e.g. ABCDE1234F)').optional(),
+  aadhaarNumber: z.string().regex(/^\d{12}$/, 'Aadhaar must be exactly 12 digits').optional(),
+  homeAddress: z.string().max(300, 'Address must be under 300 characters').optional(),
 });
 
 const verifyTotpSchema = z.object({
@@ -39,6 +42,9 @@ const updateEmployeeSchema = z.object({
   email: z.string().email('Invalid email').optional(),
   role: z.enum(['admin', 'manager', 'team_lead', 'agent', 'telecaller', 'intern']).optional(),
   status: z.enum(['active', 'inactive']).optional(),
+  panNumber: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, 'Invalid PAN format').optional(),
+  aadhaarNumber: z.string().regex(/^\d{12}$/, 'Aadhaar must be 12 digits').optional(),
+  homeAddress: z.string().max(300).optional(),
 }).strict();
 
 module.exports = {
