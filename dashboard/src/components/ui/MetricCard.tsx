@@ -61,8 +61,8 @@ export function MetricCard({
           </span>
         </div>
         <div className="flex flex-shrink-0 items-center gap-1">
-          {/* Pencil edit button — visible when there's a value to correct */}
-          {value > 0 && onFixClick && !isCorrection && (
+          {/* Pencil edit button — always visible in entry mode */}
+          {onFixClick && !isCorrection && (
             <button
               onClick={onFixClick}
               title="Fix wrong value"
@@ -111,7 +111,9 @@ export function MetricCard({
       {/* Correction mode — replace today's total */}
       {isCorrection ? (
         <div className="mt-3 space-y-2">
-          <p className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">✏️ Set correct total:</p>
+          <p className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+            {value > 0 ? '✏️ Set correct total:' : '✏️ Set exact value:'}
+          </p>
           <input
             type="number"
             inputMode="numeric"
