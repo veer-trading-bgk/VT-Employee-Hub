@@ -118,6 +118,7 @@ export const api = {
   myMetrics: (days = 30) => apiFetch(`/api/metrics/my?days=${days}`),
   allMetrics: (days = 30) => apiFetch(`/api/metrics/all?days=${days}`),
   teamSummary: () => apiFetch('/api/metrics/team-summary'),
+  leaderboard: () => apiFetch('/api/metrics/leaderboard'),
   addMetric: (metric_type: string, value: number) =>
     apiFetch('/api/metrics/add', {
       method: 'POST',

@@ -382,4 +382,71 @@ router.post('/verify/:metricId', adminMiddleware, async (req, res, next) => {
   }
 });
 
+// Monthly leaderboard — all authenticated users, MTD totals ranked by points
+router.get('/leaderboard', async (req, res, next) => {
+  try {
+    const now = new Date();
+    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    const today = now.toISOString().split('T')[0];
+
+    const METRIC_CONFIG = [
+      { key: 'kyc',         unit: 'count',    weight: 10,    monthlyTarget: 120     },
+      { key: 'demat',       unit: 'count',    weight: 15,    monthlyTarget: 50      },
+      { key: 'mf',          unit: 'count',    weight: 20,    monthlyTarget: 40      },
+      { key: 'insurance',   unit: 'currency', weight: 10000, monthlyTarget: 100000  },
+      { key: 'algo',        unit: 'count',    weight: 12,    monthlyTarget: 10      },
+      { key: 'coaching',    unit: 'currency', weight: 1000,  monthlyTarget: 20000   },
+      { key: 'pms',         unit: 'count',    weight: 30,    monthlyTarget: 10      },
+      { key: 'pro_insight', unit: 'count',    weight: 20,    monthlyTarget: 15      },
+      { key: 'ltpp',        unit: 'count',    weight: 25,    monthlyTarget: 10      },
+    ];
+    const monthlyTargets = Object.fromEntries(METRIC_CONFIG.map(m => [m.key, m.monthlyTarget]));
+
+    function calcPoints(metrics) {
+      return Math.round(METRIC_CONFIG.reduce((sum, m) => {
+        const v = metrics[m.key] ?? 0;
+        return sum + (m.unit === 'currency' ? v / m.weight : v * m.weight);
+      }, 0));
+    }
+
+    const result = await dynamodb.scan({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      FilterExpression: '#date BETWEEN :start AND :end',
+      ExpressionAttributeNames: { '#date': 'date' },
+      ExpressionAttributeValues: { ':start': monthStart, ':end': today },
+    }).promise();
+
+    const byUser = {};
+    (result.Items ?? []).forEach(item => {
+      if (!item.userId || !item.metric_type) return;
+      if (!byUser[item.userId]) {
+        byUser[item.userId] = {
+          userId: item.userId,
+          name: item.name || item.email || item.userId,
+          email: item.email || item.userId,
+          metrics: {},
+        };
+      }
+      byUser[item.userId].metrics[item.metric_type] =
+        (byUser[item.userId].metrics[item.metric_type] || 0) + (item.value || 0);
+    });
+
+    const ranked = Object.values(byUser)
+      .map(user => ({ ...user, points: calcPoints(user.metrics) }))
+      .sort((a, b) => b.points - a.points)
+      .map((user, i) => ({ ...user, rank: i + 1 }));
+
+    await logAudit(req.user.id, 'view_leaderboard', 'monthly', 'success', req.ip);
+
+    res.json({
+      success: true,
+      month: monthStart.slice(0, 7),
+      data: ranked,
+      monthlyTargets,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

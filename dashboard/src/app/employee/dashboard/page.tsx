@@ -8,7 +8,8 @@ import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Loading } from '@/components/common/Loading';
 import { EmptyState } from '@/components/common/EmptyState';
 import { apiFetch } from '@/lib/api';
-import { METRICS, dailyTarget, formatMetricValue } from '@/lib/metrics.config';
+import { METRICS, dailyTarget, monthlyTarget, formatMetricValue } from '@/lib/metrics.config';
+import { ProgressBarChart } from '@/components/charts/ProgressBarChart';
 import { useAuth } from '@/context/AuthContext';
 import { daysLeftInMonth, currentMonthLabel, today } from '@/utils/date-utils';
 import { toast } from 'sonner';
@@ -53,9 +54,10 @@ export default function EmployeeDashboardPage() {
       0
     );
     const target = dailyTarget(metric);
+    const mTarget = monthlyTarget(metric);
     const progress = target > 0 ? Math.min(Math.round((todayValue / target) * 100), 999) : 0;
-    const monthPct = metric.target > 0 ? Math.min(Math.round((monthTotal / metric.target) * 100), 999) : 0;
-    return { metric, value: todayValue, target, progress, monthTotal, monthPct };
+    const monthPct = mTarget > 0 ? Math.min(Math.round((monthTotal / mTarget) * 100), 999) : 0;
+    return { metric, value: todayValue, target, mTarget, progress, monthTotal, monthPct };
   });
 
   const avgProgress = summary.length > 0 ? Math.round(summary.reduce((s, m) => s + m.progress, 0) / summary.length) : 0;
@@ -192,68 +194,22 @@ export default function EmployeeDashboardPage() {
 
         {/* Monthly progress */}
         <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-          <h2 className="mb-4 font-semibold text-slate-900 dark:text-white">Monthly Progress</h2>
+          <h2 className="mb-1 font-semibold text-slate-900 dark:text-white">Monthly Progress</h2>
+          <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">This month&apos;s totals vs monthly targets</p>
           {isLoading ? (
             <Loading size="sm" />
           ) : (
-            <>
-              {/* Mobile: card rows */}
-              <div className="divide-y divide-slate-100 dark:divide-slate-800 sm:hidden">
-                {summary.map(({ metric, monthTotal, monthPct }) => (
-                  <div key={metric.key} className="flex items-center justify-between py-3">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-lg flex-shrink-0">{metric.icon}</span>
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-slate-900 dark:text-white truncate">{metric.label}</p>
-                        <p className="text-xs text-slate-500">{formatMetricValue(metric, monthTotal)} / {formatMetricValue(metric, metric.target)}</p>
-                      </div>
-                    </div>
-                    <div className="flex flex-shrink-0 items-center gap-2 ml-3">
-                      <div className="h-1.5 w-16 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                        <div className={`h-full rounded-full ${monthPct >= 100 ? 'bg-emerald-500' : monthPct >= 60 ? 'bg-amber-500' : 'bg-rose-500'}`} style={{ width: `${Math.min(monthPct, 100)}%` }} />
-                      </div>
-                      <span className={`text-xs font-bold w-9 text-right ${monthPct >= 100 ? 'text-emerald-600' : monthPct >= 60 ? 'text-amber-600' : 'text-rose-600'}`}>{monthPct}%</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              {/* Desktop: full table */}
-              <div className="hidden overflow-x-auto sm:block">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-100 dark:border-slate-800 text-left text-xs font-semibold uppercase text-slate-500">
-                      <th className="pb-3 pr-4">Metric</th>
-                      <th className="pb-3 pr-4">Monthly Target</th>
-                      <th className="pb-3 pr-4">Actual</th>
-                      <th className="pb-3 pr-4">Progress</th>
-                      <th className="pb-3">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {summary.map(({ metric, monthTotal, monthPct }) => (
-                      <tr key={metric.key} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                        <td className="py-2.5 pr-4 font-medium text-slate-900 dark:text-white">{metric.icon} {metric.label}</td>
-                        <td className="py-2.5 pr-4 text-slate-600 dark:text-slate-400">{formatMetricValue(metric, metric.target)}</td>
-                        <td className="py-2.5 pr-4 text-slate-600 dark:text-slate-400">{formatMetricValue(metric, monthTotal)}</td>
-                        <td className="py-2.5 pr-4">
-                          <div className="flex items-center gap-2">
-                            <div className="h-2 w-24 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                              <div className={`h-full rounded-full ${monthPct >= 100 ? 'bg-emerald-500' : monthPct >= 60 ? 'bg-amber-500' : 'bg-rose-500'}`} style={{ width: `${Math.min(monthPct, 100)}%` }} />
-                            </div>
-                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">{monthPct}%</span>
-                          </div>
-                        </td>
-                        <td className="py-2.5">
-                          <span className={`text-xs font-semibold ${monthPct >= 100 ? 'text-emerald-600' : monthPct >= 60 ? 'text-amber-600' : 'text-rose-600'}`}>
-                            {monthPct >= 100 ? '✅ Hit' : monthPct >= 60 ? '⏳ On Track' : '⚠️ Behind'}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
+            <ProgressBarChart
+              data={summary.map(({ metric, monthTotal, monthPct, mTarget }) => ({
+                label:    metric.label,
+                icon:     metric.icon,
+                value:    monthTotal,
+                target:   mTarget,
+                progress: monthPct,
+                color:    metric.color,
+                unit:     metric.unit,
+              }))}
+            />
           )}
         </div>
       </div>
