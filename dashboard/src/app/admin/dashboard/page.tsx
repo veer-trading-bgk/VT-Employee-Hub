@@ -115,37 +115,48 @@ export default function AdminDashboardPage() {
           </h2>
           {loading ? (
             <Loading />
+          ) : teamEntries.length === 0 ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-8 text-center dark:border-slate-800 dark:bg-slate-800/40">
+              <p className="text-sm font-medium text-slate-500 dark:text-slate-400">No entries recorded today yet</p>
+              <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Progress will appear once team members start logging metrics.</p>
+            </div>
           ) : (
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
-              {metricTotals.map((m) => (
-                <div
-                  key={m.key}
-                  className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
-                >
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="text-xl">{m.icon}</span>
-                    <span
-                      className={`text-xs font-bold ${
-                        m.pct >= 100
-                          ? 'text-emerald-600'
-                          : m.pct >= 60
-                          ? 'text-amber-600'
-                          : 'text-rose-600'
-                      }`}
-                    >
-                      {m.pct}%
-                    </span>
+              {metricTotals.map((m) => {
+                const badge =
+                  m.pct >= 100 ? { label: 'Excellent',       cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' }
+                  : m.pct >= 70 ? { label: 'On Track',        cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' }
+                  : m.pct >  0  ? { label: 'Needs Attention', cls: 'bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400' }
+                  :               { label: 'Not Started',      cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' };
+                return (
+                  <div
+                    key={m.key}
+                    className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
+                  >
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-xl">{m.icon}</span>
+                      <span className={`text-xs font-bold tabular-nums ${
+                        m.pct >= 100 ? 'text-emerald-600' : m.pct >= 70 ? 'text-amber-600' : m.pct > 0 ? 'text-rose-600' : 'text-slate-400'
+                      }`}>
+                        {m.pct}%
+                      </span>
+                    </div>
+                    <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{m.label}</p>
+                    <p className="mt-0.5 text-lg font-bold text-slate-900 dark:text-white">{m.total}</p>
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{ width: `${Math.min(m.pct, 100)}%`, backgroundColor: m.color, minWidth: m.pct > 0 ? '3px' : '0' }}
+                      />
+                    </div>
+                    <div className="mt-2">
+                      <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${badge.cls}`}>
+                        {badge.label}
+                      </span>
+                    </div>
                   </div>
-                  <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{m.label}</p>
-                  <p className="mt-0.5 text-lg font-bold text-slate-900 dark:text-white">{m.total}</p>
-                  <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                    <div
-                      className="h-full rounded-full transition-all duration-700"
-                      style={{ width: `${Math.min(m.pct, 100)}%`, backgroundColor: m.color }}
-                    />
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

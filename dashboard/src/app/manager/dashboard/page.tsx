@@ -8,7 +8,6 @@ import { Loading } from '@/components/common/Loading';
 import { EmptyState } from '@/components/common/EmptyState';
 import { apiFetch } from '@/lib/api';
 import { METRICS } from '@/lib/metrics.config';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { daysLeftInMonth, currentMonthLabel } from '@/utils/date-utils';
 import type { TeamSummaryResponse } from '@/types';
 
@@ -81,16 +80,39 @@ export default function ManagerDashboardPage() {
             <h2 className="mb-4 font-semibold text-slate-900 dark:text-white">Team Metric Totals</h2>
             {isLoading ? (
               <Loading size="sm" />
+            ) : teamEntries.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-center">
+                <p className="text-sm font-medium text-slate-500 dark:text-slate-400">No entries recorded today yet</p>
+                <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Charts will populate once team members log metrics.</p>
+              </div>
             ) : (
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={barData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Bar dataKey="total" fill="#6366f1" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
+              <div className="space-y-3">
+                {metricTotals.map((m) => {
+                  const badge =
+                    m.pct >= 100 ? { label: 'Excellent',       cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' }
+                    : m.pct >= 70 ? { label: 'On Track',        cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' }
+                    : m.pct >  0  ? { label: 'Needs Attention', cls: 'bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400' }
+                    :               { label: 'Not Started',      cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' };
+                  return (
+                    <div key={m.key}>
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <span className="flex-shrink-0 text-base leading-none">{m.icon}</span>
+                          <span className="truncate text-xs font-semibold text-slate-700 dark:text-slate-300">{m.label}</span>
+                        </div>
+                        <div className="flex flex-shrink-0 items-center gap-2">
+                          <span className="text-[11px] tabular-nums text-slate-500">total: {m.total}</span>
+                          <span className={`text-xs font-bold tabular-nums ${m.pct >= 100 ? 'text-emerald-600' : m.pct >= 70 ? 'text-amber-600' : m.pct > 0 ? 'text-rose-600' : 'text-slate-400'}`}>{m.pct}%</span>
+                        </div>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${Math.min(m.pct, 100)}%`, backgroundColor: m.color, minWidth: m.pct > 0 ? '3px' : '0' }} />
+                      </div>
+                      <div className="mt-1"><span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${badge.cls}`}>{badge.label}</span></div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
 

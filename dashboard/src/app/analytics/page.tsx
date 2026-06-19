@@ -19,10 +19,9 @@ export default function AnalyticsPage() {
   const { team } = useRoleScopedMetrics();
 
   const selected = summary.find((s) => s.metric.key === metricKey);
-  const trendData = (selected?.history ?? [])
-    .slice()
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .map((r) => ({ date: r.date.slice(5), value: r.value }));
+  // history is already gap-filled and sorted oldest→newest by useMyMetrics
+  const trendData = (selected?.history ?? []).map((r) => ({ date: r.date.slice(5), value: r.value }));
+  const trendEmpty = trendData.every((d) => d.value === 0);
 
   const allRecords = useMemo(() => {
     if (!raw) return [];
@@ -82,8 +81,16 @@ export default function AnalyticsPage() {
           </h3>
           {loading ? (
             <ChartSkeleton />
-          ) : trendData.length === 0 ? (
-            <p className="py-16 text-center text-sm text-slate-400">No history for this range.</p>
+          ) : trendEmpty ? (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <p className="text-2xl">📈</p>
+              <p className="mt-2 text-sm font-medium text-slate-600 dark:text-slate-400">
+                No activity recorded in the last {days} days
+              </p>
+              <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+                Start entering daily metrics to see your trend.
+              </p>
+            </div>
           ) : (
             <TrendLineChart data={trendData} color={selected?.metric.color ?? '#6366f1'} />
           )}

@@ -144,7 +144,12 @@ export default function EmployeeDashboardPage() {
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {summary.map(({ metric, value, target, progress }) => {
-                const barColor = progress >= 100 ? 'bg-emerald-500' : progress >= 60 ? 'bg-amber-500' : 'bg-rose-500';
+                const barColor = progress >= 100 ? 'bg-emerald-500' : progress >= 70 ? 'bg-amber-500' : progress > 0 ? 'bg-rose-500' : 'bg-slate-300 dark:bg-slate-700';
+                const badge =
+                  progress >= 100 ? { label: 'Excellent',        cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' }
+                  : progress >= 70 ? { label: 'On Track',         cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' }
+                  : progress >  0  ? { label: 'Needs Attention',  cls: 'bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400' }
+                  :                  { label: 'Not Started',       cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' };
                 return (
                   <div
                     key={metric.key}
@@ -152,7 +157,12 @@ export default function EmployeeDashboardPage() {
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-2xl">{metric.icon}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${progress >= 100 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'}`}>
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums ${
+                        progress >= 100 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400'
+                        : progress >= 70 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400'
+                        : progress >  0  ? 'bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400'
+                        : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                      }`}>
                         {progress}%
                       </span>
                     </div>
@@ -161,8 +171,17 @@ export default function EmployeeDashboardPage() {
                       {formatMetricValue(metric, value)}
                     </p>
                     <p className="text-xs text-slate-400">of {formatMetricValue(metric, Math.round(target))} target</p>
+                    {/* Bar — track always visible; fill is 0-width for not-started metrics */}
                     <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                      <div className={`h-full rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${Math.min(progress, 100)}%` }} />
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+                        style={{ width: `${Math.min(progress, 100)}%`, minWidth: progress > 0 ? '4px' : '0' }}
+                      />
+                    </div>
+                    <div className="mt-2">
+                      <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${badge.cls}`}>
+                        {badge.label}
+                      </span>
                     </div>
                   </div>
                 );
