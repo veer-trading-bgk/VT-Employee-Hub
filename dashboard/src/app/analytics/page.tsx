@@ -48,7 +48,7 @@ export default function AnalyticsPage() {
 
   return (
     <AppShell>
-      <Navbar title="Analytics" />
+      <Navbar title="Analytics" showBack />
       <div className="p-4 md:p-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>

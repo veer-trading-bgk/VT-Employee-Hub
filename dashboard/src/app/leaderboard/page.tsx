@@ -12,7 +12,7 @@ export default function LeaderboardPage() {
 
   return (
     <AppShell allowedRoles={['admin', 'manager']}>
-      <Navbar title="Leaderboard" />
+      <Navbar title="Leaderboard" showBack />
       <div className="p-4 md:p-8">
       <h1 className="mb-1 text-2xl font-bold text-slate-900 dark:text-white">Leaderboard</h1>
       <p className="mb-6 text-sm text-slate-500 dark:text-slate-400">

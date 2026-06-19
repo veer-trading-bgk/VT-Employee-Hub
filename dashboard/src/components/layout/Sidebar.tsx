@@ -49,12 +49,20 @@ function SectionLabel({ label }: { label: string }) {
   );
 }
 
-function NavItemLink({ item, pathname }: { item: NavItem; pathname: string }) {
+function NavItemLink({
+  item,
+  pathname,
+  onNavigate,
+}: {
+  item: NavItem;
+  pathname: string;
+  onNavigate: () => void;
+}) {
   const active = pathname === item.href || pathname.startsWith(item.href + '/');
   return (
     <Link
-      key={item.href}
       href={item.href}
+      onClick={onNavigate}
       className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
         active
           ? 'bg-indigo-600 text-white'
@@ -71,7 +79,7 @@ export function Sidebar({ forceMobile = false }: { forceMobile?: boolean }) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const { sidebarOpen } = useUIStore();
+  const { sidebarOpen, closeMobileSidebar } = useUIStore();
 
   const userRole = (user?.role ?? 'telecaller') as Role;
 
@@ -88,7 +96,11 @@ export function Sidebar({ forceMobile = false }: { forceMobile?: boolean }) {
   return (
     <aside className="flex h-screen w-full flex-col border-r border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900 md:w-60">
       {/* Logo */}
-      <Link href={getHomePath(userRole)} className="mb-6 flex items-center gap-2 px-2">
+      <Link
+        href={getHomePath(userRole)}
+        onClick={closeMobileSidebar}
+        className="mb-6 flex items-center gap-2 px-2"
+      >
         <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-xl">💼</div>
         <div>
           <p className="text-sm font-bold text-slate-900 dark:text-white">Viir Employee Hub</p>
@@ -101,35 +113,45 @@ export function Sidebar({ forceMobile = false }: { forceMobile?: boolean }) {
         {userRole === 'admin' && adminItems.length > 0 && (
           <>
             <SectionLabel label="Admin" />
-            {adminItems.map(item => <NavItemLink key={item.href} item={item} pathname={pathname} />)}
+            {adminItems.map(item => (
+              <NavItemLink key={item.href} item={item} pathname={pathname} onNavigate={closeMobileSidebar} />
+            ))}
           </>
         )}
 
         {(userRole === 'admin' || userRole === 'manager') && managerItems.length > 0 && (
           <>
             <SectionLabel label="Manager" />
-            {managerItems.map(item => <NavItemLink key={item.href} item={item} pathname={pathname} />)}
+            {managerItems.map(item => (
+              <NavItemLink key={item.href} item={item} pathname={pathname} onNavigate={closeMobileSidebar} />
+            ))}
           </>
         )}
 
         {userRole === 'team_lead' && teamLeadItems.length > 0 && (
           <>
             <SectionLabel label="Team Lead" />
-            {teamLeadItems.map(item => <NavItemLink key={item.href} item={item} pathname={pathname} />)}
+            {teamLeadItems.map(item => (
+              <NavItemLink key={item.href} item={item} pathname={pathname} onNavigate={closeMobileSidebar} />
+            ))}
           </>
         )}
 
         {EMPLOYEE_ROLES.includes(userRole) && employeeItems.length > 0 && (
           <>
             <SectionLabel label="Employee" />
-            {employeeItems.map(item => <NavItemLink key={item.href} item={item} pathname={pathname} />)}
+            {employeeItems.map(item => (
+              <NavItemLink key={item.href} item={item} pathname={pathname} onNavigate={closeMobileSidebar} />
+            ))}
           </>
         )}
 
         {generalItems.length > 0 && (
           <>
             <SectionLabel label="General" />
-            {generalItems.map(item => <NavItemLink key={item.href} item={item} pathname={pathname} />)}
+            {generalItems.map(item => (
+              <NavItemLink key={item.href} item={item} pathname={pathname} onNavigate={closeMobileSidebar} />
+            ))}
           </>
         )}
       </nav>

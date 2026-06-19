@@ -57,7 +57,7 @@ export default function ManagerDashboardPage() {
 
   return (
     <>
-      <Navbar title="Manager Dashboard" />
+      <Navbar title="Manager Dashboard" showBack />
       <div className="space-y-6 p-4 md:p-8">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">

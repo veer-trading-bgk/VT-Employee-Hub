@@ -80,7 +80,7 @@ export default function AdminDashboardPage() {
 
   return (
     <>
-      <Navbar title="Admin Dashboard" />
+      <Navbar title="Admin Dashboard" showBack />
       <div className="space-y-6 p-4 md:p-8">
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-3">

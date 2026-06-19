@@ -24,7 +24,7 @@ export default function DashboardPage() {
 
   return (
     <AppShell>
-      <Navbar title="Dashboard" />
+      <Navbar title="Dashboard" showBack />
       <div className="p-4 md:p-8">
       <div className="mb-6 flex items-center justify-between">
         <div>

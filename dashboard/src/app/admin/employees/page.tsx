@@ -369,7 +369,7 @@ export default function AdminEmployeesPage() {
 
   return (
     <>
-      <Navbar title="Employee Management" />
+      <Navbar title="Employee Management" showBack />
 
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-7xl space-y-6 p-6">

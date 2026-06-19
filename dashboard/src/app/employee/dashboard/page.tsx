@@ -72,7 +72,7 @@ export default function EmployeeDashboardPage() {
 
   return (
     <>
-      <Navbar title="My Dashboard" />
+      <Navbar title="My Dashboard" showBack />
       <div className="space-y-6 p-4 md:p-8">
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-3">

@@ -1,6 +1,7 @@
 'use client';
 
-import { ReactNode } from 'react';
+import { ReactNode, useEffect } from 'react';
+import { usePathname } from 'next/navigation';
 import { Sidebar } from './Sidebar';
 import { ProtectedRoute } from './ProtectedRoute';
 import { useUIStore } from '@/store/uiStore';
@@ -8,12 +9,33 @@ import type { Role } from '@/types';
 
 export function AppShell({
   children,
-  allowedRoles
+  allowedRoles,
 }: {
   children: ReactNode;
   allowedRoles?: Role[];
 }) {
   const { mobileSidebarOpen, closeMobileSidebar } = useUIStore();
+  const pathname = usePathname();
+
+  // Close sidebar whenever route changes (catches all navigation paths)
+  useEffect(() => {
+    closeMobileSidebar();
+  }, [pathname, closeMobileSidebar]);
+
+  // Close on Escape key (accessibility + keyboard nav)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMobileSidebar();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [closeMobileSidebar]);
+
+  // Prevent body scroll when mobile sidebar is open
+  useEffect(() => {
+    document.body.style.overflow = mobileSidebarOpen ? 'hidden' : '';
+    return () => { document.body.style.overflow = ''; };
+  }, [mobileSidebarOpen]);
 
   return (
     <ProtectedRoute allowedRoles={allowedRoles}>
@@ -23,17 +45,32 @@ export function AppShell({
           <Sidebar />
         </div>
 
-        {/* Mobile sidebar overlay — controlled by uiStore.mobileSidebarOpen */}
-        {mobileSidebarOpen && (
-          <div className="fixed inset-0 z-40 flex md:hidden">
-            <div className="w-64">
-              <Sidebar forceMobile />
-            </div>
-            <div className="flex-1 bg-black/50" onClick={closeMobileSidebar} />
-          </div>
-        )}
+        {/* Mobile — backdrop */}
+        <div
+          aria-hidden="true"
+          onClick={closeMobileSidebar}
+          className={[
+            'fixed inset-0 z-40 bg-black/50 md:hidden',
+            'transition-opacity duration-300 ease-in-out',
+            mobileSidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none',
+          ].join(' ')}
+        />
 
-        {/* Main content — Navbar (sticky) + page content */}
+        {/* Mobile — sidebar panel slides in from left */}
+        <aside
+          role="dialog"
+          aria-modal="true"
+          aria-label="Navigation"
+          className={[
+            'fixed inset-y-0 left-0 z-50 w-64 md:hidden',
+            'transform transition-transform duration-300 ease-in-out',
+            mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full',
+          ].join(' ')}
+        >
+          <Sidebar forceMobile />
+        </aside>
+
+        {/* Main content */}
         <div className="flex min-w-0 flex-1 flex-col">
           <main className="flex-1">{children}</main>
         </div>

@@ -98,7 +98,7 @@ export default function AdminAnalyticsPage() {
   if (isError) {
     return (
       <>
-        <Navbar title="Advanced Analytics" />
+        <Navbar title="Advanced Analytics" showBack />
         <div className="p-4 md:p-8">
           <div className="rounded-xl border border-rose-200 bg-rose-50 p-8 text-center dark:border-rose-900 dark:bg-rose-950/20">
             <p className="text-2xl mb-3">⚠️</p>
