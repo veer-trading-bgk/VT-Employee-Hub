@@ -11,7 +11,7 @@ export function MetricCard({ metric, value, target, progress }: MetricCardProps)
   const barColor = progress >= 100 ? 'bg-emerald-500' : progress >= 50 ? 'bg-amber-500' : 'bg-rose-500';
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-slate-900">
+    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm transition-shadow duration-200 hover:shadow-md dark:border-slate-800 dark:bg-slate-900">
       <div className="flex items-center justify-between">
         <span className="text-2xl">{metric.icon}</span>
         <span

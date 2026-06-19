@@ -109,7 +109,7 @@ export function Sidebar({ forceMobile = false }: { forceMobile?: boolean }) {
       </Link>
 
       {/* Nav */}
-      <nav className="flex-1 space-y-0.5 overflow-y-auto">
+      <nav className="scrollbar-thin flex-1 space-y-0.5 overflow-y-auto">
         {userRole === 'admin' && adminItems.length > 0 && (
           <>
             <SectionLabel label="Admin" />

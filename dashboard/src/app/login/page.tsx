@@ -204,7 +204,7 @@ function TotpStep({
         onChange={(e) => handleChange(e.target.value)}
         disabled={submitting || lockedOut}
         placeholder="000000"
-        className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-4 text-center text-3xl font-mono tracking-[0.4em] text-white placeholder-slate-600 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-50"
+        className="w-full rounded-xl border border-slate-700 bg-slate-800 px-4 py-4 text-center text-2xl font-mono tracking-[0.2em] text-white placeholder-slate-600 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-50 sm:text-3xl sm:tracking-[0.4em]"
         autoComplete="one-time-code"
       />
 

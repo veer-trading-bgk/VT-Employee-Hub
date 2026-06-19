@@ -3,6 +3,7 @@
 import { ReactNode, useEffect } from 'react';
 import { usePathname } from 'next/navigation';
 import { Sidebar } from './Sidebar';
+import { BottomNav } from './BottomNav';
 import { ProtectedRoute } from './ProtectedRoute';
 import { useUIStore } from '@/store/uiStore';
 import type { Role } from '@/types';
@@ -17,12 +18,12 @@ export function AppShell({
   const { mobileSidebarOpen, closeMobileSidebar } = useUIStore();
   const pathname = usePathname();
 
-  // Close sidebar whenever route changes (catches all navigation paths)
+  // Close sidebar on every route change
   useEffect(() => {
     closeMobileSidebar();
   }, [pathname, closeMobileSidebar]);
 
-  // Close on Escape key (accessibility + keyboard nav)
+  // Escape key dismisses sidebar
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') closeMobileSidebar();
@@ -31,7 +32,7 @@ export function AppShell({
     return () => document.removeEventListener('keydown', onKey);
   }, [closeMobileSidebar]);
 
-  // Prevent body scroll when mobile sidebar is open
+  // Lock body scroll while mobile sidebar is open
   useEffect(() => {
     document.body.style.overflow = mobileSidebarOpen ? 'hidden' : '';
     return () => { document.body.style.overflow = ''; };
@@ -40,12 +41,13 @@ export function AppShell({
   return (
     <ProtectedRoute allowedRoles={allowedRoles}>
       <div className="flex min-h-screen bg-slate-50 dark:bg-slate-950">
+
         {/* Desktop sidebar — always visible at md+ */}
         <div className="hidden md:block">
           <Sidebar />
         </div>
 
-        {/* Mobile — backdrop */}
+        {/* Mobile — dimmed backdrop */}
         <div
           aria-hidden="true"
           onClick={closeMobileSidebar}
@@ -70,10 +72,13 @@ export function AppShell({
           <Sidebar forceMobile />
         </aside>
 
-        {/* Main content */}
+        {/* Main content — extra bottom padding on mobile for BottomNav clearance */}
         <div className="flex min-w-0 flex-1 flex-col">
-          <main className="flex-1">{children}</main>
+          <main className="flex-1 pb-20 md:pb-0">{children}</main>
         </div>
+
+        {/* Mobile bottom navigation bar */}
+        <BottomNav />
       </div>
     </ProtectedRoute>
   );
