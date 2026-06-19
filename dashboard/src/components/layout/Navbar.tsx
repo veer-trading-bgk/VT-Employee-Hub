@@ -6,34 +6,50 @@ import { getInitials } from '@/utils/formatters';
 import { ROLE_LABELS, ROLE_COLORS } from '@/utils/permissions';
 import type { Role } from '@/types';
 
+import { useRouter } from 'next/navigation';
+
 interface NavbarProps {
   title?: string;
+  showBack?: boolean;
 }
 
-export function Navbar({ title }: NavbarProps) {
+export function Navbar({ title, showBack }: NavbarProps) {
   const { user, logout } = useAuth();
   const { notifications, markAllRead, toggleSidebar, toggleMobileSidebar } = useUIStore();
+  const router = useRouter();
   const unread = notifications.filter((n) => !n.read).length;
 
   return (
     <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
       <div className="flex items-center gap-3">
-        {/* Mobile hamburger — opens overlay drawer */}
-        <button
-          onClick={toggleMobileSidebar}
-          className="rounded-md p-2 text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 md:hidden"
-          aria-label="Open menu"
-        >
-          ☰
-        </button>
-        {/* Desktop hamburger — collapses/expands sidebar */}
-        <button
-          onClick={toggleSidebar}
-          className="hidden rounded-md p-2 text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 md:block"
-          aria-label="Toggle sidebar"
-        >
-          ☰
-        </button>
+        {showBack ? (
+          <button
+            onClick={() => router.back()}
+            className="rounded-md p-2 text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+            aria-label="Go back"
+          >
+            ←
+          </button>
+        ) : (
+          <>
+            {/* Mobile hamburger — opens overlay drawer */}
+            <button
+              onClick={toggleMobileSidebar}
+              className="rounded-md p-2 text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 md:hidden"
+              aria-label="Open menu"
+            >
+              ☰
+            </button>
+            {/* Desktop hamburger — collapses/expands sidebar */}
+            <button
+              onClick={toggleSidebar}
+              className="hidden rounded-md p-2 text-slate-500 transition hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 md:block"
+              aria-label="Toggle sidebar"
+            >
+              ☰
+            </button>
+          </>
+        )}
         {title && <h1 className="text-base font-semibold text-slate-900 dark:text-white">{title}</h1>}
       </div>
 

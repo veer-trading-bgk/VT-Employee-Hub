@@ -11,8 +11,8 @@ export default function ProfilePage() {
   const role = (user?.role ?? 'telecaller') as Role;
 
   return (
-    <>
-      <Navbar title="My Profile" />
+    <AppShell>
+      <Navbar title="My Profile" showBack />
       <div className="space-y-6 p-4 md:p-8 max-w-lg">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">My Profile</h1>
@@ -56,6 +56,6 @@ export default function ProfilePage() {
           </dl>
         </div>
       </div>
-    </>
+    </AppShell>
   );
 }
