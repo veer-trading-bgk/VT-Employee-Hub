@@ -34,7 +34,6 @@ const ALL_NAV: NavItem[] = [
   { href: '/employee/dashboard',    label: 'My Dashboard', icon: '📊', roles: EMPLOYEE_ROLES },
   { href: '/employee/daily-entry',  label: 'Daily Entry',  icon: '✏️', roles: EMPLOYEE_ROLES },
   { href: '/employee/achievements', label: 'Achievements', icon: '🏅', roles: EMPLOYEE_ROLES },
-  { href: '/employee/compensation', label: 'My Pay',       icon: '💰', roles: EMPLOYEE_ROLES },
   // ── Shared ─────────────────────────────────────
   { href: '/leaderboard', label: 'Leaderboard', icon: '🏆' },
   { href: '/profile',     label: 'Profile',     icon: '👤' },
