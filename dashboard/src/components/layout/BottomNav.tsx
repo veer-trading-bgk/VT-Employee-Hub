@@ -34,10 +34,10 @@ function getTabsForRole(role: Role): NavTab[] {
   ];
   // Employee roles (telecaller, agent, intern)
   return [
-    { href: '/employee/dashboard',    label: 'Home',    icon: '📊' },
-    { href: '/employee/daily-entry',  label: 'Entry',   icon: '✏️' },
-    { href: '/employee/achievements', label: 'Badges',  icon: '🏅' },
-    { href: '/profile',               label: 'Profile', icon: '👤' },
+    { href: '/employee/dashboard',   label: 'Home',    icon: '📊' },
+    { href: '/employee/daily-entry', label: 'Entry',   icon: '✏️' },
+    { href: '/leaderboard',          label: 'Board',   icon: '🏆' },
+    { href: '/profile',              label: 'Profile', icon: '👤' },
   ];
 }
 
