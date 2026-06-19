@@ -8,7 +8,7 @@ import { Loading } from '@/components/common/Loading';
 import { apiFetch, api } from '@/lib/api';
 import type { Setup2FAResponse } from '@/lib/api';
 import { toast } from 'sonner';
-import { formatRelativeTime } from '@/utils/formatters';
+import { formatDate } from '@/utils/formatters';
 import { EditEmployeeModal } from '@/components/EditEmployeeModal';
 import { DeleteEmployeeDialog } from '@/components/DeleteEmployeeDialog';
 import { EmployeeActionMenu } from '@/components/EmployeeActionMenu';
@@ -61,7 +61,6 @@ function generatePassword(): string {
   const special = '!@#$';
   const all     = upper + lower + digits + special;
   const rand    = (s: string) => s[Math.floor(Math.random() * s.length)];
-  // Guarantee one of each required type, fill the rest randomly, then shuffle
   const chars = [rand(upper), rand(digits), rand(special),
     ...Array.from({ length: 9 }, () => rand(all))];
   for (let i = chars.length - 1; i > 0; i--) {
@@ -116,7 +115,6 @@ function Setup2FAModal({ employee, onClose }: { employee: Employee; onClose: () 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
       <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
-        {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-slate-800">
           <div>
             <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Enable 2FA</h2>
@@ -154,14 +152,12 @@ function Setup2FAModal({ employee, onClose }: { employee: Employee; onClose: () 
                   <img src={result.qrCode} alt="2FA QR Code" className="h-40 w-40" />
                 </div>
               </div>
-
               <div>
                 <p className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Manual entry key</p>
                 <div className="rounded border border-slate-200 bg-slate-50 px-3 py-3 font-mono text-xs text-slate-700 break-all select-all dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
                   {result.manualEntryKey}
                 </div>
               </div>
-
               <div>
                 <div className="mb-2 flex items-center justify-between">
                   <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Backup codes — shown once</p>
@@ -180,7 +176,6 @@ function Setup2FAModal({ employee, onClose }: { employee: Employee; onClose: () 
                   Save these now — they cannot be retrieved later.
                 </p>
               </div>
-
               <button onClick={onClose} className={primaryBtn + ' w-full'}>
                 Done — codes have been saved
               </button>
@@ -198,17 +193,12 @@ function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose
   const [pwd, setPwd] = useState('');
   const [show, setShow] = useState(false);
 
-  const hasUpper   = /[A-Z]/.test(pwd);
-  const hasNumber  = /[0-9]/.test(pwd);
-  const hasLength  = pwd.length >= 8;
-  const isValid    = hasUpper && hasNumber && hasLength;
-  const strength   = !pwd ? '' : !hasLength ? 'Weak' : hasUpper && hasNumber ? 'Strong' : 'Medium';
-  const strengthColor = {
-    '': '',
-    Weak: 'bg-red-500',
-    Medium: 'bg-amber-500',
-    Strong: 'bg-emerald-500',
-  }[strength];
+  const hasUpper  = /[A-Z]/.test(pwd);
+  const hasNumber = /[0-9]/.test(pwd);
+  const hasLength = pwd.length >= 8;
+  const isValid   = hasUpper && hasNumber && hasLength;
+  const strength  = !pwd ? '' : !hasLength ? 'Weak' : hasUpper && hasNumber ? 'Strong' : 'Medium';
+  const strengthColor = { '': '', Weak: 'bg-red-500', Medium: 'bg-amber-500', Strong: 'bg-emerald-500' }[strength];
 
   const mutation = useMutation({
     mutationFn: () => api.resetPassword(employee.id, pwd),
@@ -230,7 +220,6 @@ function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">✕</button>
         </div>
-
         <div className="space-y-4 px-6 py-5">
           <div>
             <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">New Password</label>
@@ -247,7 +236,6 @@ function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose
               </button>
             </div>
           </div>
-
           {pwd && (
             <div className="space-y-2">
               <div className="flex justify-between text-xs">
@@ -264,23 +252,16 @@ function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose
               </ul>
             </div>
           )}
-
           <div className="rounded border border-amber-200 bg-amber-50 px-3 py-3 text-xs text-amber-700 dark:border-amber-800/40 dark:bg-amber-900/20 dark:text-amber-400">
             Employee must use this new password on next login.
           </div>
         </div>
-
         <div className="flex gap-2 border-t border-slate-100 px-6 py-4 dark:border-slate-800">
-          <button
-            onClick={() => mutation.mutate()}
-            disabled={!isValid || mutation.isPending}
-            className="flex-1 rounded bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40 transition"
-          >
+          <button onClick={() => mutation.mutate()} disabled={!isValid || mutation.isPending}
+            className="flex-1 rounded bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40 transition">
             {mutation.isPending ? 'Saving…' : 'Set Password'}
           </button>
-          <button onClick={onClose} className="rounded border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 transition dark:border-slate-700 dark:bg-transparent dark:text-slate-300 dark:hover:bg-slate-800">
-            Cancel
-          </button>
+          <button onClick={onClose} className={ghostBtn}>Cancel</button>
         </div>
       </div>
     </div>
@@ -290,7 +271,6 @@ function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose
 // ── Reset 2FA Dialog ──────────────────────────────────────────────────────────
 function Reset2FADialog({ employee, onClose }: { employee: Employee; onClose: () => void }) {
   const queryClient = useQueryClient();
-
   const resetMutation = useMutation({
     mutationFn: () => api.reset2fa(employee.id),
     onSuccess: () => {
@@ -313,11 +293,8 @@ function Reset2FADialog({ employee, onClose }: { employee: Employee; onClose: ()
             This disables 2FA for <span className="font-semibold text-slate-900 dark:text-white">{employee.name}</span> and clears all backup codes. They will need to re-enroll.
           </p>
           <div className="flex gap-2">
-            <button
-              onClick={() => resetMutation.mutate()}
-              disabled={resetMutation.isPending}
-              className="flex-1 rounded bg-red-600 px-4 py-3 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-40 transition"
-            >
+            <button onClick={() => resetMutation.mutate()} disabled={resetMutation.isPending}
+              className="flex-1 rounded bg-red-600 px-4 py-3 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-40 transition">
               {resetMutation.isPending ? 'Resetting…' : 'Reset 2FA'}
             </button>
             <button onClick={onClose} className={ghostBtn}>Cancel</button>
@@ -334,6 +311,7 @@ export default function AdminEmployeesPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [showAddModal, setShowAddModal] = useState(false);
   const [form, setForm] = useState<RegisterForm>({ name: '', email: '', password: generatePassword(), role: 'telecaller', panNumber: '', aadhaarNumber: '', homeAddress: '' });
   const [showPwd, setShowPwd] = useState(false);
@@ -354,10 +332,7 @@ export default function AdminEmployeesPage() {
   const addMutation = useMutation({
     mutationFn: (payload: RegisterForm) => {
       const body: Record<string, string> = {
-        name: payload.name,
-        email: payload.email,
-        password: payload.password,
-        role: payload.role,
+        name: payload.name, email: payload.email, password: payload.password, role: payload.role,
       };
       if (payload.panNumber)     body.panNumber     = payload.panNumber;
       if (payload.aadhaarNumber) body.aadhaarNumber = payload.aadhaarNumber;
@@ -387,20 +362,24 @@ export default function AdminEmployeesPage() {
   });
 
   const employees: Employee[] = data?.data ?? [];
+
   const filtered = employees.filter((e) => {
     const matchSearch = !search ||
       e.name?.toLowerCase().includes(search.toLowerCase()) ||
       e.email?.toLowerCase().includes(search.toLowerCase());
     const matchRole = roleFilter === 'all' || e.role === roleFilter;
-    return matchSearch && matchRole;
+    const isActive = e.status === 'active' || !e.status;
+    const matchStatus = statusFilter === 'all' || (statusFilter === 'active' ? isActive : !isActive);
+    return matchSearch && matchRole && matchStatus;
   });
 
   const byRole = employees.reduce<Record<string, number>>((acc, e) => {
     acc[e.role] = (acc[e.role] ?? 0) + 1;
     return acc;
   }, {});
-  const active2fa = employees.filter((e) => e.totpEnabled).length;
-  const activeCount = employees.filter((e) => e.status === 'active' || !e.status).length;
+  const active2fa     = employees.filter((e) => e.totpEnabled).length;
+  const activeCount   = employees.filter((e) => e.status === 'active' || !e.status).length;
+  const frontlineCount = (byRole['agent'] ?? 0) + (byRole['telecaller'] ?? 0) + (byRole['intern'] ?? 0);
 
   return (
     <>
@@ -409,7 +388,7 @@ export default function AdminEmployeesPage() {
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-7xl space-y-6 p-6">
 
-          {/* ── Page header ── */}
+          {/* Page header */}
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <h1 className="text-lg font-semibold text-slate-900 dark:text-white">Employee Directory</h1>
@@ -418,11 +397,7 @@ export default function AdminEmployeesPage() {
               </p>
             </div>
             <div className="flex gap-2">
-              <button
-                onClick={() => queryClient.invalidateQueries({ queryKey: ['admin-employees'] })}
-                className={ghostBtn}
-                aria-label="Refresh"
-              >
+              <button onClick={() => queryClient.invalidateQueries({ queryKey: ['admin-employees'] })} className={ghostBtn} aria-label="Refresh">
                 Refresh
               </button>
               <button onClick={() => setShowAddModal(true)} className={primaryBtn}>
@@ -431,13 +406,13 @@ export default function AdminEmployeesPage() {
             </div>
           </div>
 
-          {/* ── Stats row ── */}
+          {/* Stats row */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
-              { label: 'Total',       value: employees.length,          color: 'text-slate-900 dark:text-white' },
-              { label: 'Admins',      value: byRole['admin'] ?? 0,       color: 'text-violet-700 dark:text-violet-300' },
-              { label: 'Managers',    value: byRole['manager'] ?? 0,     color: 'text-blue-700 dark:text-blue-300' },
-              { label: '2FA Active',  value: active2fa,                  color: 'text-emerald-700 dark:text-emerald-300' },
+              { label: 'Total',      value: employees.length,  color: 'text-slate-900 dark:text-white' },
+              { label: 'Active',     value: activeCount,        color: 'text-emerald-700 dark:text-emerald-300' },
+              { label: 'Frontline',  value: frontlineCount,     color: 'text-blue-700 dark:text-blue-300' },
+              { label: '2FA Active', value: active2fa,          color: 'text-violet-700 dark:text-violet-300' },
             ].map(({ label, value, color }) => (
               <div key={label} className="rounded-lg border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
                 <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">{label}</p>
@@ -448,7 +423,7 @@ export default function AdminEmployeesPage() {
             ))}
           </div>
 
-          {/* ── Filters ── */}
+          {/* Filters */}
           <div className="flex flex-wrap gap-2">
             <input
               placeholder="Search name or email…"
@@ -457,12 +432,9 @@ export default function AdminEmployeesPage() {
               className="min-w-56 flex-1 rounded border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:placeholder-slate-500 dark:focus:ring-blue-900/30"
               aria-label="Search employees"
             />
-            <select
-              value={roleFilter}
-              onChange={(e) => setRoleFilter(e.target.value)}
+            <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}
               className="rounded border border-slate-200 bg-white px-3 py-3 text-sm text-slate-700 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
-              aria-label="Filter by role"
-            >
+              aria-label="Filter by role">
               <option value="all">All Roles</option>
               <option value="admin">Admin</option>
               <option value="manager">Manager</option>
@@ -471,129 +443,170 @@ export default function AdminEmployeesPage() {
               <option value="telecaller">Telecaller</option>
               <option value="intern">Intern</option>
             </select>
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+              className="rounded border border-slate-200 bg-white px-3 py-3 text-sm text-slate-700 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+              aria-label="Filter by status">
+              <option value="all">All Status</option>
+              <option value="active">Active only</option>
+              <option value="inactive">Inactive only</option>
+            </select>
           </div>
 
-          {/* ── Table ── */}
-          <div className="rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-            {isLoading ? (
-              <div className="flex items-center justify-center py-16">
-                <Loading />
+          {/* Content */}
+          {isLoading ? (
+            <div className="flex items-center justify-center py-16"><Loading /></div>
+          ) : filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-200 py-16 text-center dark:border-slate-700">
+              <p className="text-sm font-medium text-slate-500 dark:text-slate-400">
+                {search || roleFilter !== 'all' || statusFilter !== 'all'
+                  ? 'No employees match your filters'
+                  : 'No employees yet'}
+              </p>
+              {!search && roleFilter === 'all' && statusFilter === 'all' && (
+                <button onClick={() => setShowAddModal(true)} className={`mt-3 ${primaryBtn}`}>
+                  Add first employee
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              {/* Mobile cards */}
+              <div className="space-y-3 md:hidden">
+                {filtered.map((emp) => {
+                  const isActive = emp.status === 'active' || !emp.status;
+                  return (
+                    <div key={emp.id} className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-bold text-white">
+                            {(emp.name ?? emp.email)?.[0]?.toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="truncate font-semibold text-slate-900 dark:text-white">{emp.name ?? '—'}</p>
+                            <p className="truncate text-xs text-slate-500 dark:text-slate-400">{emp.email}</p>
+                          </div>
+                        </div>
+                        <EmployeeActionMenu
+                          isActive={isActive}
+                          isToggling={togglingId === emp.id}
+                          totpEnabled={emp.totpEnabled ?? false}
+                          isSelf={emp.id === currentUser?.id}
+                          onEdit={() => setEditEmployee(emp)}
+                          onDelete={() => setDeleteEmployee(emp)}
+                          onResetPwd={() => setResetPwdEmployee(emp)}
+                          onToggleStatus={() => toggleStatusMutation.mutate({ id: emp.id, status: isActive ? 'inactive' : 'active' })}
+                          on2FA={() => emp.totpEnabled ? setReset2faEmployee(emp) : setSetup2faEmployee(emp)}
+                        />
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-1.5">
+                        <span className={`rounded px-2 py-0.5 text-xs font-medium ${ROLE_STYLE[emp.role] ?? ROLE_STYLE.telecaller}`}>
+                          {ROLE_LABEL[emp.role] ?? emp.role}
+                        </span>
+                        <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${
+                          isActive
+                            ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-400 dark:ring-emerald-800'
+                            : 'bg-slate-100 text-slate-500 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700'
+                        }`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${isActive ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                          {isActive ? 'Active' : 'Inactive'}
+                        </span>
+                        {emp.totpEnabled && (
+                          <span className="rounded px-2 py-0.5 text-xs font-medium bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-900/20 dark:text-blue-400 dark:ring-blue-800">
+                            2FA ✓
+                          </span>
+                        )}
+                      </div>
+                      {emp.createdAt && (
+                        <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
+                          Joined {formatDate(emp.createdAt, 'long')}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
-            ) : filtered.length === 0 ? (
-              <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-200 py-16 text-center dark:border-slate-700">
-                <p className="text-sm font-medium text-slate-500 dark:text-slate-400">
-                  {search ? 'No employees match your search' : 'No employees yet'}
-                </p>
-                {!search && (
-                  <button onClick={() => setShowAddModal(true)} className={`mt-3 ${primaryBtn}`}>
-                    Add first employee
-                  </button>
-                )}
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-100 dark:border-slate-800">
-                      {['Employee', 'Email', 'Role', 'Status', '2FA', 'Joined', 'Actions'].map((h) => (
-                        <th
-                          key={h}
-                          className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500"
-                        >
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
-                    {filtered.map((emp) => {
-                      const isActive = emp.status === 'active' || !emp.status;
-                      return (
-                        <tr key={emp.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                          {/* Employee */}
-                          <td className="px-4 py-3">
-                            <div className="flex items-center gap-3">
-                              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white">
-                                {(emp.name ?? emp.email)?.[0]?.toUpperCase()}
+
+              {/* Desktop table */}
+              <div className="hidden rounded-lg border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:block">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-100 dark:border-slate-800">
+                        {['Employee', 'Email', 'Role', 'Status', '2FA', 'Joined', 'Actions'].map((h) => (
+                          <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                      {filtered.map((emp) => {
+                        const isActive = emp.status === 'active' || !emp.status;
+                        return (
+                          <tr key={emp.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-3">
+                                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white">
+                                  {(emp.name ?? emp.email)?.[0]?.toUpperCase()}
+                                </div>
+                                <span className="font-medium text-slate-900 dark:text-white">{emp.name ?? '—'}</span>
                               </div>
-                              <span className="font-medium text-slate-900 dark:text-white">
-                                {emp.name ?? '—'}
+                            </td>
+                            <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{emp.email}</td>
+                            <td className="px-4 py-3">
+                              <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${ROLE_STYLE[emp.role] ?? ROLE_STYLE.telecaller}`}>
+                                {ROLE_LABEL[emp.role] ?? emp.role}
                               </span>
-                            </div>
-                          </td>
-
-                          {/* Email */}
-                          <td className="px-4 py-3 text-slate-500 dark:text-slate-400">
-                            {emp.email}
-                          </td>
-
-                          {/* Role */}
-                          <td className="px-4 py-3">
-                            <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${ROLE_STYLE[emp.role] ?? ROLE_STYLE.telecaller}`}>
-                              {ROLE_LABEL[emp.role] ?? emp.role}
-                            </span>
-                          </td>
-
-                          {/* Status */}
-                          <td className="px-4 py-3">
-                            <span className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium ${
-                              isActive
-                                ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-400 dark:ring-emerald-800'
-                                : 'bg-slate-100 text-slate-500 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700'
-                            }`}>
-                              <span className={`h-1.5 w-1.5 rounded-full ${isActive ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-                              {isActive ? 'Active' : 'Inactive'}
-                            </span>
-                          </td>
-
-                          {/* 2FA */}
-                          <td className="px-4 py-3">
-                            {emp.totpEnabled ? (
-                              <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-900/20 dark:text-blue-400 dark:ring-blue-800">
-                                On
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 text-xs font-medium ${
+                                isActive
+                                  ? 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-400 dark:ring-emerald-800'
+                                  : 'bg-slate-100 text-slate-500 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:ring-slate-700'
+                              }`}>
+                                <span className={`h-1.5 w-1.5 rounded-full ${isActive ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                                {isActive ? 'Active' : 'Inactive'}
                               </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-400 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-500 dark:ring-slate-700">
-                                Off
-                              </span>
-                            )}
-                          </td>
-
-                          {/* Joined */}
-                          <td className="px-4 py-3 text-xs tabular-nums text-slate-400 dark:text-slate-500">
-                            {emp.createdAt ? formatRelativeTime(emp.createdAt) : '—'}
-                          </td>
-
-                          {/* Actions */}
-                          <td className="px-4 py-3">
-                            <EmployeeActionMenu
-                              isActive={isActive}
-                              isToggling={togglingId === emp.id}
-                              totpEnabled={emp.totpEnabled ?? false}
-                              isSelf={emp.id === currentUser?.id}
-                              onEdit={() => setEditEmployee(emp)}
-                              onDelete={() => setDeleteEmployee(emp)}
-                              onResetPwd={() => setResetPwdEmployee(emp)}
-                              onToggleStatus={() => toggleStatusMutation.mutate({ id: emp.id, status: isActive ? 'inactive' : 'active' })}
-                              on2FA={() => emp.totpEnabled ? setReset2faEmployee(emp) : setSetup2faEmployee(emp)}
-                            />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-
-                <div className="border-t border-slate-100 px-4 py-3.5 text-xs text-slate-400 dark:border-slate-800 dark:text-slate-500">
-                  Showing {filtered.length} of {employees.length} employees
+                            </td>
+                            <td className="px-4 py-3">
+                              {emp.totpEnabled ? (
+                                <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-900/20 dark:text-blue-400 dark:ring-blue-800">On</span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium bg-slate-100 text-slate-400 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-500 dark:ring-slate-700">Off</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-xs text-slate-400 dark:text-slate-500">
+                              {emp.createdAt ? formatDate(emp.createdAt, 'long') : '—'}
+                            </td>
+                            <td className="px-4 py-3">
+                              <EmployeeActionMenu
+                                isActive={isActive}
+                                isToggling={togglingId === emp.id}
+                                totpEnabled={emp.totpEnabled ?? false}
+                                isSelf={emp.id === currentUser?.id}
+                                onEdit={() => setEditEmployee(emp)}
+                                onDelete={() => setDeleteEmployee(emp)}
+                                onResetPwd={() => setResetPwdEmployee(emp)}
+                                onToggleStatus={() => toggleStatusMutation.mutate({ id: emp.id, status: isActive ? 'inactive' : 'active' })}
+                                on2FA={() => emp.totpEnabled ? setReset2faEmployee(emp) : setSetup2faEmployee(emp)}
+                              />
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  <div className="border-t border-slate-100 px-4 py-3.5 text-xs text-slate-400 dark:border-slate-800 dark:text-slate-500">
+                    Showing {filtered.length} of {employees.length} employees
+                  </div>
                 </div>
               </div>
-            )}
-          </div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* ── Add Employee Modal ── */}
+      {/* Add Employee Modal */}
       {showAddModal && (() => {
         const panError     = validatePAN(form.panNumber.toUpperCase());
         const aadhaarError = validateAadhaar(form.aadhaarNumber);
@@ -606,35 +619,19 @@ export default function AdminEmployeesPage() {
                 <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Add Employee</h2>
                 <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" aria-label="Close">✕</button>
               </div>
-
               <div className="overflow-y-auto px-6 py-5">
                 <div className="space-y-4">
                   <div>
                     <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Full Name *</label>
-                    <input
-                      value={form.name}
-                      onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                      placeholder="Rajesh Kumar"
-                      className={inputCls}
-                    />
+                    <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Rajesh Kumar" className={inputCls} />
                   </div>
                   <div>
                     <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Email *</label>
-                    <input
-                      type="email"
-                      value={form.email}
-                      onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-                      placeholder="rajesh@viirtrading.com"
-                      className={inputCls}
-                    />
+                    <input type="email" value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} placeholder="rajesh@viirtrading.com" className={inputCls} />
                   </div>
                   <div>
                     <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Role *</label>
-                    <select
-                      value={form.role}
-                      onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as Role }))}
-                      className={inputCls}
-                    >
+                    <select value={form.role} onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as Role }))} className={inputCls}>
                       <option value="telecaller">Telecaller</option>
                       <option value="agent">Agent</option>
                       <option value="intern">Intern</option>
@@ -647,98 +644,47 @@ export default function AdminEmployeesPage() {
                     <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Auto-generated Password</label>
                     <div className="flex gap-2">
                       <div className="relative flex-1">
-                        <input
-                          type={showPwd ? 'text' : 'password'}
-                          value={form.password}
-                          readOnly
-                          className={inputCls + ' pr-10 font-mono'}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setShowPwd((v) => !v)}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600"
-                          aria-label={showPwd ? 'Hide password' : 'Show password'}
-                        >
+                        <input type={showPwd ? 'text' : 'password'} value={form.password} readOnly className={inputCls + ' pr-10 font-mono'} />
+                        <button type="button" onClick={() => setShowPwd((v) => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600" aria-label={showPwd ? 'Hide password' : 'Show password'}>
                           {showPwd ? 'Hide' : 'Show'}
                         </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setForm((f) => ({ ...f, password: generatePassword() }))}
-                        className={ghostBtn}
-                        title="Regenerate password"
-                      >
+                      <button type="button" onClick={() => setForm((f) => ({ ...f, password: generatePassword() }))} className={ghostBtn} title="Regenerate password">
                         New
                       </button>
                     </div>
                     <p className="mt-1 text-xs text-slate-400">Share with employee after creation.</p>
                   </div>
-
-                  {/* ── Collapsible additional info ── */}
                   <div className="rounded-lg border border-slate-200 dark:border-slate-700">
-                    <button
-                      type="button"
-                      onClick={() => setShowAdditional((v) => !v)}
-                      className="flex w-full items-center justify-between px-4 py-3 text-left"
-                    >
+                    <button type="button" onClick={() => setShowAdditional((v) => !v)} className="flex w-full items-center justify-between px-4 py-3 text-left">
                       <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                         Additional Information <span className="font-normal normal-case text-slate-400">(optional)</span>
                       </span>
                       <ChevronDown open={showAdditional} />
                     </button>
-
                     {showAdditional && (
                       <div className="space-y-4 border-t border-slate-100 px-4 pb-4 pt-3 dark:border-slate-800">
                         <div>
-                          <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
-                            PAN Number <span className="text-slate-400">(optional)</span>
-                          </label>
-                          <input
-                            value={form.panNumber}
-                            onChange={(e) => setForm((f) => ({ ...f, panNumber: e.target.value.toUpperCase() }))}
-                            maxLength={10}
-                            placeholder="ABCDE1234F"
-                            className={`${inputCls} font-mono uppercase tracking-widest`}
-                          />
+                          <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">PAN Number <span className="text-slate-400">(optional)</span></label>
+                          <input value={form.panNumber} onChange={(e) => setForm((f) => ({ ...f, panNumber: e.target.value.toUpperCase() }))} maxLength={10} placeholder="ABCDE1234F" className={`${inputCls} font-mono uppercase tracking-widest`} />
                           {panError && <FieldError msg={panError} />}
                         </div>
                         <div>
-                          <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
-                            Aadhaar Number <span className="text-slate-400">(optional)</span>
-                          </label>
-                          <input
-                            value={form.aadhaarNumber}
-                            onChange={(e) => setForm((f) => ({ ...f, aadhaarNumber: e.target.value.replace(/\D/g, '').slice(0, 12) }))}
-                            placeholder="123456789012"
-                            inputMode="numeric"
-                            className={`${inputCls} font-mono tracking-widest`}
-                          />
+                          <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Aadhaar Number <span className="text-slate-400">(optional)</span></label>
+                          <input value={form.aadhaarNumber} onChange={(e) => setForm((f) => ({ ...f, aadhaarNumber: e.target.value.replace(/\D/g, '').slice(0, 12) }))} placeholder="123456789012" inputMode="numeric" className={`${inputCls} font-mono tracking-widest`} />
                           {aadhaarError && <FieldError msg={aadhaarError} />}
                         </div>
                         <div>
-                          <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
-                            Home Address <span className="text-slate-400">(optional)</span>
-                          </label>
-                          <textarea
-                            value={form.homeAddress}
-                            onChange={(e) => setForm((f) => ({ ...f, homeAddress: e.target.value }))}
-                            rows={3}
-                            placeholder="Street, City, State, PIN"
-                            className={inputCls}
-                          />
+                          <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Home Address <span className="text-slate-400">(optional)</span></label>
+                          <textarea value={form.homeAddress} onChange={(e) => setForm((f) => ({ ...f, homeAddress: e.target.value }))} rows={3} placeholder="Street, City, State, PIN" className={inputCls} />
                         </div>
                       </div>
                     )}
                   </div>
                 </div>
               </div>
-
               <div className="flex flex-shrink-0 gap-2 border-t border-slate-100 px-6 py-4 dark:border-slate-800">
-                <button
-                  onClick={() => addMutation.mutate(form)}
-                  disabled={addMutation.isPending || !canSubmit}
-                  className={primaryBtn + ' flex-1'}
-                >
+                <button onClick={() => addMutation.mutate(form)} disabled={addMutation.isPending || !canSubmit} className={primaryBtn + ' flex-1'}>
                   {addMutation.isPending ? 'Creating…' : 'Create Employee'}
                 </button>
                 <button onClick={() => setShowAddModal(false)} className={ghostBtn}>Cancel</button>
@@ -748,8 +694,8 @@ export default function AdminEmployeesPage() {
         );
       })()}
 
-      {editEmployee && <EditEmployeeModal employee={editEmployee} onClose={() => setEditEmployee(null)} />}
-      {deleteEmployee && <DeleteEmployeeDialog employee={deleteEmployee} onClose={() => setDeleteEmployee(null)} />}
+      {editEmployee     && <EditEmployeeModal employee={editEmployee} onClose={() => setEditEmployee(null)} />}
+      {deleteEmployee   && <DeleteEmployeeDialog employee={deleteEmployee} onClose={() => setDeleteEmployee(null)} />}
       {setup2faEmployee && <Setup2FAModal employee={setup2faEmployee} onClose={() => setSetup2faEmployee(null)} />}
       {reset2faEmployee && <Reset2FADialog employee={reset2faEmployee} onClose={() => setReset2faEmployee(null)} />}
       {resetPwdEmployee && <ResetPasswordModal employee={resetPwdEmployee} onClose={() => setResetPwdEmployee(null)} />}

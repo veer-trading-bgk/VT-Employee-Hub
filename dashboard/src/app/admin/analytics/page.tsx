@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   LineChart,
@@ -26,7 +26,7 @@ import { formatCurrency } from '@/utils/formatters';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type TrendRow = { date: string } & Record<string, number>;
-type EmployeeRow = { userId: string; points?: number } & Record<string, number>;
+type EmployeeRow = { userId: string; name?: string; email?: string; points?: number } & Record<string, number>;
 
 interface AnalyticsResponse {
   meta: { daysBack: number; totalRecords: number; generatedAt: string };
@@ -37,8 +37,17 @@ interface AnalyticsResponse {
   topEmployees: EmployeeRow[];
 }
 
+interface Employee {
+  id: string;
+  name: string;
+  email: string;
+}
+
 const DAYS_OPTIONS = [7, 14, 30, 60, 90] as const;
 type DaysOption = (typeof DAYS_OPTIONS)[number];
+
+// Default to first 3 metrics for a readable line chart
+const DEFAULT_SELECTED = METRICS.slice(0, 3).map((m) => m.key);
 
 // ── Custom funnel bar ─────────────────────────────────────────────────────────
 function FunnelBar({ name, value, maxValue, fill }: { name: string; value: number; maxValue: number; fill: string }) {
@@ -62,12 +71,27 @@ function FunnelBar({ name, value, maxValue, fill }: { name: string; value: numbe
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function AdminAnalyticsPage() {
   const [days, setDays] = useState<DaysOption>(30);
+  const [selectedMetrics, setSelectedMetrics] = useState<string[]>(DEFAULT_SELECTED);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['admin-analytics', days],
     queryFn: () => apiFetch<AnalyticsResponse>(`/api/analytics?days=${days}`),
     staleTime: 1000 * 60 * 5,
   });
+
+  // Employee list for name lookup
+  const { data: empData } = useQuery({
+    queryKey: ['admin-employees'],
+    queryFn: () => apiFetch<{ success: boolean; data: Employee[] }>('/api/admin/employees')
+      .catch(() => ({ success: true, data: [] as Employee[] })),
+    staleTime: 1000 * 60 * 10,
+  });
+
+  const empNameMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    (empData?.data ?? []).forEach((e) => { map[e.id] = e.name; });
+    return map;
+  }, [empData]);
 
   const trend = data?.performanceTrend ?? [];
   const metricTotals = data?.metricTotals ?? [];
@@ -77,21 +101,29 @@ export default function AdminAnalyticsPage() {
 
   const funnelMax = funnel[0]?.value ?? 1;
   const totalRecords = data?.meta?.totalRecords ?? 0;
-  const overallPct =
-    metricTotals.length > 0
-      ? Math.round(metricTotals.reduce((s, m) => s + (m.pct ?? 0), 0) / metricTotals.length)
-      : 0;
+  const overallPct = metricTotals.length > 0
+    ? Math.round(metricTotals.reduce((s, m) => s + (m.pct ?? 0), 0) / metricTotals.length)
+    : 0;
 
   const ranked = top
     .map((e) => ({
       ...e,
       userId: e.userId ?? '',
+      name: e.name ?? empNameMap[e.userId ?? ''] ?? e.email ?? e.userId,
       points: e.points ?? calcPoints(e as Record<string, number>),
     }))
     .sort((a, b) => b.points - a.points)
     .slice(0, 10);
 
   const medalEmoji = (rank: number) => ['🥇', '🥈', '🥉'][rank] ?? `#${rank + 1}`;
+
+  const toggleMetric = (key: string) => {
+    setSelectedMetrics((prev) =>
+      prev.includes(key)
+        ? prev.length > 1 ? prev.filter((k) => k !== key) : prev  // keep at least one
+        : [...prev, key]
+    );
+  };
 
   if (isError) {
     return (
@@ -104,10 +136,7 @@ export default function AdminAnalyticsPage() {
             <p className="mt-1 text-sm text-rose-600 dark:text-rose-500">
               {error instanceof Error ? error.message : 'Unable to reach the analytics API.'}
             </p>
-            <button
-              onClick={() => refetch()}
-              className="mt-4 rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700"
-            >
+            <button onClick={() => refetch()} className="mt-4 rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700">
               Retry
             </button>
           </div>
@@ -120,8 +149,9 @@ export default function AdminAnalyticsPage() {
     <>
       <Navbar title="Advanced Analytics" />
       <div className="space-y-6 p-4 md:p-8 print:p-4">
+
         {/* Header */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white">
               Analytics — {currentMonthLabel()}
@@ -130,7 +160,7 @@ export default function AdminAnalyticsPage() {
               {totalRecords.toLocaleString()} metric records · {daysLeftInMonth()} days left
             </p>
           </div>
-          <div className="flex items-center gap-2 print:hidden">
+          <div className="flex flex-wrap items-center gap-2 print:hidden">
             {/* Days filter */}
             <div className="flex rounded-lg border border-slate-200 dark:border-slate-700">
               {DAYS_OPTIONS.map((d) => (
@@ -148,12 +178,10 @@ export default function AdminAnalyticsPage() {
               ))}
             </div>
             <button
-              onClick={() =>
-                exportTableToCsv(
-                  metricTotals.map((m) => ({ metric: m.metric, actual: m.actual, target: m.target, pct: m.pct })),
-                  `vt_analytics_${days}d`
-                )
-              }
+              onClick={() => exportTableToCsv(
+                metricTotals.map((m) => ({ metric: m.metric, actual: m.actual, target: m.target, pct: m.pct })),
+                `vt_analytics_${days}d`
+              )}
               className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
             >
               📥 Export CSV
@@ -183,10 +211,10 @@ export default function AdminAnalyticsPage() {
 
         {/* Metric totals table */}
         <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-          <h2 className="mb-4 font-semibold text-slate-900 dark:text-white">Performance Summary ({days}-Day Period)</h2>
-          {isLoading ? (
-            <Loading size="sm" />
-          ) : metricTotals.length === 0 ? (
+          <h2 className="mb-4 font-semibold text-slate-900 dark:text-white">
+            Performance Summary ({days}-Day Period)
+          </h2>
+          {isLoading ? <Loading size="sm" /> : metricTotals.length === 0 ? (
             <EmptyState icon="📊" title="No data" description="No metrics recorded in this period." />
           ) : (
             <div className="overflow-x-auto">
@@ -201,29 +229,38 @@ export default function AdminAnalyticsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {metricTotals.map((m) => (
-                    <tr key={m.metric} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                      <td className="py-3 pr-6 font-medium text-slate-900 dark:text-white">{m.metric}</td>
-                      <td className="py-3 pr-6 tabular-nums text-slate-700 dark:text-slate-300">{(m.actual ?? 0).toLocaleString()}</td>
-                      <td className="py-3 pr-6 tabular-nums text-slate-500">{(m.target ?? 0).toLocaleString()}</td>
-                      <td className="py-3 pr-6">
-                        <div className="flex items-center gap-2">
-                          <div className="h-2 w-28 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                            <div
-                              className={`h-full rounded-full ${(m.pct ?? 0) >= 100 ? 'bg-emerald-500' : (m.pct ?? 0) >= 60 ? 'bg-amber-500' : 'bg-rose-500'}`}
-                              style={{ width: `${Math.min(m.pct ?? 0, 100)}%` }}
-                            />
+                  {metricTotals.map((m) => {
+                    const cfg = METRICS.find((mx) => mx.label === m.metric || mx.key === m.key);
+                    return (
+                      <tr key={m.metric} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                        <td className="py-3 pr-6 font-medium text-slate-900 dark:text-white">
+                          {cfg ? `${cfg.icon} ${cfg.label}` : m.metric}
+                        </td>
+                        <td className="py-3 pr-6 tabular-nums text-slate-700 dark:text-slate-300">
+                          {cfg ? formatMetricValue(cfg, m.actual ?? 0) : (m.actual ?? 0).toLocaleString()}
+                        </td>
+                        <td className="py-3 pr-6 tabular-nums text-slate-500">
+                          {cfg ? formatMetricValue(cfg, m.target ?? 0) : (m.target ?? 0).toLocaleString()}
+                        </td>
+                        <td className="py-3 pr-6">
+                          <div className="flex items-center gap-2">
+                            <div className="h-2 w-28 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                              <div
+                                className={`h-full rounded-full ${(m.pct ?? 0) >= 100 ? 'bg-emerald-500' : (m.pct ?? 0) >= 60 ? 'bg-amber-500' : 'bg-rose-500'}`}
+                                style={{ width: `${Math.min(m.pct ?? 0, 100)}%` }}
+                              />
+                            </div>
+                            <span className="tabular-nums text-xs font-bold text-slate-700 dark:text-slate-300">{m.pct ?? 0}%</span>
                           </div>
-                          <span className="tabular-nums text-xs font-bold text-slate-700 dark:text-slate-300">{m.pct ?? 0}%</span>
-                        </div>
-                      </td>
-                      <td className="py-3">
-                        <span className={`text-xs font-semibold ${(m.pct ?? 0) >= 100 ? 'text-emerald-600' : (m.pct ?? 0) >= 60 ? 'text-amber-600' : 'text-rose-600'}`}>
-                          {(m.pct ?? 0) >= 100 ? '✅ On Target' : (m.pct ?? 0) >= 60 ? '⏳ In Progress' : '⚠️ Behind'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                        </td>
+                        <td className="py-3">
+                          <span className={`text-xs font-semibold ${(m.pct ?? 0) >= 100 ? 'text-emerald-600' : (m.pct ?? 0) >= 60 ? 'text-amber-600' : 'text-rose-600'}`}>
+                            {(m.pct ?? 0) >= 100 ? '✅ On Target' : (m.pct ?? 0) >= 60 ? '⏳ In Progress' : '⚠️ Behind'}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -232,14 +269,30 @@ export default function AdminAnalyticsPage() {
 
         {/* Charts row */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          {/* Daily trend line */}
+
+          {/* Daily trend line — with metric selector */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-            <h2 className="mb-4 font-semibold text-slate-900 dark:text-white">
-              {days}-Day Trend
-            </h2>
-            {isLoading ? (
-              <Loading size="sm" />
-            ) : trend.length < 2 ? (
+            <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+              <h2 className="font-semibold text-slate-900 dark:text-white">{days}-Day Trend</h2>
+              <div className="flex flex-wrap gap-1">
+                {METRICS.map((m) => (
+                  <button
+                    key={m.key}
+                    onClick={() => toggleMetric(m.key)}
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-medium transition ${
+                      selectedMetrics.includes(m.key)
+                        ? 'text-white'
+                        : 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500'
+                    }`}
+                    style={selectedMetrics.includes(m.key) ? { backgroundColor: m.color } : {}}
+                    title={m.label}
+                  >
+                    {m.icon}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {isLoading ? <Loading size="sm" /> : trend.length < 2 ? (
               <EmptyState icon="📈" title="Not enough data" description="Add metrics over multiple days to see trends." />
             ) : (
               <ResponsiveContainer width="100%" height={240}>
@@ -247,12 +300,9 @@ export default function AdminAnalyticsPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(d) => d.slice(5)} />
                   <YAxis tick={{ fontSize: 10 }} />
-                  <Tooltip
-                    labelFormatter={(l) => `Date: ${l}`}
-                    contentStyle={{ fontSize: 12 }}
-                  />
+                  <Tooltip labelFormatter={(l) => `Date: ${l}`} contentStyle={{ fontSize: 12 }} />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
-                  {METRICS.map((m) => (
+                  {METRICS.filter((m) => selectedMetrics.includes(m.key)).map((m) => (
                     <Line key={m.key} type="monotone" dataKey={m.key} stroke={m.color} strokeWidth={2} dot={false} name={m.label} />
                   ))}
                 </LineChart>
@@ -262,12 +312,8 @@ export default function AdminAnalyticsPage() {
 
           {/* Metric totals bar */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-            <h2 className="mb-4 font-semibold text-slate-900 dark:text-white">
-              Actual vs Target ({days}d)
-            </h2>
-            {isLoading ? (
-              <Loading size="sm" />
-            ) : metricTotals.length === 0 ? (
+            <h2 className="mb-4 font-semibold text-slate-900 dark:text-white">Actual vs Target ({days}d)</h2>
+            {isLoading ? <Loading size="sm" /> : metricTotals.length === 0 ? (
               <EmptyState icon="📊" title="No data" />
             ) : (
               <ResponsiveContainer width="100%" height={240}>
@@ -285,18 +331,16 @@ export default function AdminAnalyticsPage() {
           </div>
         </div>
 
-        {/* Conversion funnel */}
+        {/* Employee participation (formerly "Conversion Funnel") */}
         <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
           <h2 className="mb-1 font-semibold text-slate-900 dark:text-white">
-            Conversion Funnel — Unique Employees per Metric
+            Employee Participation Rate
           </h2>
           <p className="mb-6 text-xs text-slate-500 dark:text-slate-400">
             How many employees have logged each metric type in the period
           </p>
-          {isLoading ? (
-            <Loading size="sm" />
-          ) : funnel.every((f) => f.value === 0) ? (
-            <EmptyState icon="🔽" title="No funnel data" description="Employees haven't logged metrics yet." />
+          {isLoading ? <Loading size="sm" /> : funnel.every((f) => f.value === 0) ? (
+            <EmptyState icon="📊" title="No participation data" description="Employees haven't logged metrics yet." />
           ) : (
             <div className="flex items-end justify-around gap-4 px-4 pb-2">
               {funnel.map((f) => (
@@ -348,9 +392,7 @@ export default function AdminAnalyticsPage() {
                       <td className="py-2.5 pr-6 font-medium text-slate-900 dark:text-white">{row.month}</td>
                       <td className="py-2.5 pr-6 tabular-nums text-slate-700 dark:text-slate-300">{row.employees ?? 0}</td>
                       <td className="py-2.5 pr-6 tabular-nums text-slate-700 dark:text-slate-300">{row.avgPerformance ?? 0}</td>
-                      <td className="py-2.5 pr-6 tabular-nums text-slate-700 dark:text-slate-300">
-                        {formatCurrency(row.revenue ?? 0)}
-                      </td>
+                      <td className="py-2.5 pr-6 tabular-nums text-slate-700 dark:text-slate-300">{formatCurrency(row.revenue ?? 0)}</td>
                       <td className="py-2.5">
                         <span className={`text-sm font-bold ${(row.growth ?? 0) >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                           {(row.growth ?? 0) >= 0 ? '+' : ''}{row.growth ?? 0}%
@@ -364,7 +406,7 @@ export default function AdminAnalyticsPage() {
           </div>
         )}
 
-        {/* Top performers leaderboard */}
+        {/* Top performers — shows employee names, no bonus column */}
         <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="font-semibold text-slate-900 dark:text-white">
@@ -377,9 +419,7 @@ export default function AdminAnalyticsPage() {
               📥 Export
             </button>
           </div>
-          {isLoading ? (
-            <Loading size="sm" />
-          ) : ranked.length === 0 ? (
+          {isLoading ? <Loading size="sm" /> : ranked.length === 0 ? (
             <EmptyState icon="🏆" title="No data yet" />
           ) : (
             <div className="overflow-x-auto">
@@ -387,48 +427,40 @@ export default function AdminAnalyticsPage() {
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-slate-800 text-left text-xs font-semibold uppercase text-slate-500">
                     <th className="pb-3 pr-4">Rank</th>
-                    <th className="pb-3 pr-4">Employee ID</th>
+                    <th className="pb-3 pr-4">Employee</th>
                     {METRICS.map((m) => (
                       <th key={m.key} className="pb-3 pr-4">{m.icon} {m.label}</th>
                     ))}
-                    <th className="pb-3 pr-4">Points</th>
-                    <th className="pb-3">Est. Bonus</th>
+                    <th className="pb-3">Points</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {ranked.map((row, i) => {
-                    const bonus = Math.round(row.points * 4);
-                    return (
-                      <tr
-                        key={row.userId}
-                        className={`transition-colors ${i < 3 ? 'bg-amber-50/50 dark:bg-amber-950/10' : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'}`}
-                      >
-                        <td className="py-2.5 pr-4 text-base font-bold">{medalEmoji(i)}</td>
-                        <td className="py-2.5 pr-4 font-medium text-slate-900 dark:text-white">
-                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-mono dark:bg-slate-800">
-                            {row.userId.slice(0, 12)}…
-                          </span>
+                  {ranked.map((row, i) => (
+                    <tr
+                      key={row.userId}
+                      className={`transition-colors ${i < 3 ? 'bg-amber-50/50 dark:bg-amber-950/10' : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'}`}
+                    >
+                      <td className="py-2.5 pr-4 text-base font-bold">{medalEmoji(i)}</td>
+                      <td className="py-2.5 pr-4">
+                        <p className="font-medium text-slate-900 dark:text-white">{row.name}</p>
+                        {row.email && <p className="text-xs text-slate-400">{row.email}</p>}
+                      </td>
+                      {METRICS.map((m) => (
+                        <td key={m.key} className="py-2.5 pr-4 tabular-nums text-slate-700 dark:text-slate-300">
+                          {formatMetricValue(m, (row as unknown as Record<string, number>)[m.key] ?? 0)}
                         </td>
-                        {METRICS.map((m) => (
-                          <td key={m.key} className="py-2.5 pr-4 tabular-nums text-slate-700 dark:text-slate-300">
-                            {formatMetricValue(m, (row as unknown as Record<string, number>)[m.key] ?? 0)}
-                          </td>
-                        ))}
-                        <td className="py-2.5 pr-4">
-                          <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-bold text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400">
-                            ⭐ {row.points}
-                          </span>
-                        </td>
-                        <td className="py-2.5 text-sm font-semibold text-emerald-600 dark:text-emerald-400">
-                          {formatCurrency(bonus)}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                      ))}
+                      <td className="py-2.5">
+                        <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-bold text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400">
+                          ⭐ {row.points}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
               <p className="mt-2 px-1 text-xs text-slate-400">
-                Points: {METRICS.map((m) => `${m.label}×${m.unit === 'currency' ? `÷${m.pointsWeight.toLocaleString()}` : m.pointsWeight}`).join(' + ')} · Est. Bonus: Points × ₹4
+                Points: {METRICS.map((m) => `${m.label}×${m.unit === 'currency' ? `÷${m.pointsWeight.toLocaleString()}` : m.pointsWeight}`).join(' + ')}
               </p>
             </div>
           )}

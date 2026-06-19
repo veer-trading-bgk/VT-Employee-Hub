@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useState, useMemo } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch } from '@/lib/api';
@@ -10,6 +10,13 @@ import { METRICS, formatMetricValue } from '@/lib/metrics.config';
 // Only count-type metrics appear as bulk-entry columns (currency metrics like
 // insurance are entered per employee via their own daily-entry form).
 const BULK_METRICS = METRICS.filter((m) => m.unit === 'count');
+
+interface Employee {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+}
 
 interface MetricRow {
   employeeId: string;
@@ -31,16 +38,39 @@ function emptyRow(): MetricRow {
   };
 }
 
-/** CSV header string shown in the placeholder */
 const CSV_HEADER = ['employeeId', 'name', ...BULK_METRICS.map((m) => m.key), 'date', 'notes'].join(',');
 
 export default function BulkEntryPage() {
   const [mode, setMode] = useState<'form' | 'csv'>('form');
   const [form, setForm] = useState<MetricRow>(emptyRow());
+  const [empSearch, setEmpSearch] = useState('');
+  const [showEmpList, setShowEmpList] = useState(false);
   const [entries, setEntries] = useState<MetricRow[]>([]);
   const [csvText, setCsvText] = useState('');
 
-  // ── Flatten rows → individual metric entries for the API ──────────────────
+  // Fetch employee list for the picker
+  const { data: empData } = useQuery({
+    queryKey: ['admin-employees'],
+    queryFn: () => apiFetch<{ success: boolean; data: Employee[] }>('/api/admin/employees')
+      .catch(() => ({ success: true, data: [] as Employee[] })),
+    staleTime: 1000 * 60 * 5,
+  });
+
+  const employees = empData?.data ?? [];
+
+  const filteredEmps = useMemo(() => {
+    const q = empSearch.toLowerCase();
+    return employees.filter((e) =>
+      e.name?.toLowerCase().includes(q) || e.email?.toLowerCase().includes(q)
+    ).slice(0, 8);
+  }, [employees, empSearch]);
+
+  const selectEmployee = (emp: Employee) => {
+    setForm((f) => ({ ...f, employeeId: emp.id, name: emp.name }));
+    setEmpSearch(emp.name);
+    setShowEmpList(false);
+  };
+
   const { mutate: submit, isPending } = useMutation<{ count: number }, Error, MetricRow[]>({
     mutationFn: (rows) =>
       apiFetch<{ count: number }>('/api/metrics/bulk-entry', {
@@ -51,17 +81,19 @@ export default function BulkEntryPage() {
       toast.success(`✅ ${data.count} metric entries submitted`);
       setEntries([]);
       setForm(emptyRow());
+      setEmpSearch('');
     },
     onError: (err: Error) => toast.error(err.message),
   });
 
   const addRow = () => {
     if (!form.employeeId.trim() || !form.name.trim()) {
-      toast.error('Employee ID and Name are required');
+      toast.error('Select an employee first');
       return;
     }
     setEntries((prev) => [...prev, { ...form, metrics: { ...form.metrics } }]);
     setForm(emptyRow());
+    setEmpSearch('');
     toast.success('Row added');
   };
 
@@ -88,7 +120,6 @@ export default function BulkEntryPage() {
     toast.success(`Parsed ${parsed.length} rows`);
   };
 
-  // Column totals across all staged rows
   const totals = entries.reduce<Record<string, number>>(
     (acc, row) => {
       BULK_METRICS.forEach((m) => { acc[m.key] = (acc[m.key] ?? 0) + (row.metrics[m.key] ?? 0); });
@@ -105,13 +136,13 @@ export default function BulkEntryPage() {
       <div className="space-y-6 p-4 md:p-8">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Bulk Metrics Entry</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
             Enter metrics for multiple employees — {BULK_METRICS.map((m) => m.label).join(', ')}
           </p>
         </div>
 
         {/* Mode tabs */}
-        <div className="flex rounded-lg border border-slate-200 dark:border-slate-700 w-fit">
+        <div className="flex w-fit rounded-lg border border-slate-200 dark:border-slate-700">
           {(['form', 'csv'] as const).map((m) => (
             <button
               key={m}
@@ -125,28 +156,58 @@ export default function BulkEntryPage() {
           ))}
         </div>
 
-        {/* ── Manual form ── */}
+        {/* Manual form */}
         {mode === 'form' && (
           <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
             <h2 className="mb-4 font-semibold text-slate-900 dark:text-white">Add Single Entry</h2>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
-              {/* Fixed fields */}
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Employee ID *</label>
+
+              {/* Employee picker */}
+              <div className="sm:col-span-2 relative">
+                <label className="block text-xs font-medium text-slate-500 mb-1">Employee *</label>
                 <input
-                  value={form.employeeId}
-                  onChange={(e) => setForm((f) => ({ ...f, employeeId: e.target.value }))}
+                  value={empSearch}
+                  onChange={(e) => {
+                    setEmpSearch(e.target.value);
+                    setShowEmpList(true);
+                    if (!e.target.value) setForm((f) => ({ ...f, employeeId: '', name: '' }));
+                  }}
+                  onFocus={() => setShowEmpList(true)}
+                  placeholder="Search by name or email…"
                   className={inputCls}
+                  autoComplete="off"
                 />
+                {form.employeeId && (
+                  <p className="mt-0.5 text-[11px] text-slate-400">ID: {form.employeeId.slice(0, 16)}…</p>
+                )}
+                {showEmpList && empSearch && filteredEmps.length > 0 && (
+                  <div className="absolute z-20 mt-1 w-full rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                    {filteredEmps.map((emp) => (
+                      <button
+                        key={emp.id}
+                        type="button"
+                        onMouseDown={() => selectEmployee(emp)}
+                        className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm hover:bg-slate-50 dark:hover:bg-slate-700"
+                      >
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-indigo-600 text-[10px] font-bold text-white">
+                          {emp.name?.[0]?.toUpperCase() ?? '?'}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="font-medium text-slate-900 dark:text-white">{emp.name}</p>
+                          <p className="truncate text-xs text-slate-400">{emp.email}</p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {showEmpList && empSearch && filteredEmps.length === 0 && employees.length > 0 && (
+                  <div className="absolute z-20 mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-3 text-sm text-slate-400 shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                    No employees found
+                  </div>
+                )}
               </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Full Name *</label>
-                <input
-                  value={form.name}
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                  className={inputCls}
-                />
-              </div>
+
+              {/* Date */}
               <div>
                 <label className="block text-xs font-medium text-slate-500 mb-1">Date</label>
                 <input
@@ -178,7 +239,7 @@ export default function BulkEntryPage() {
                 </div>
               ))}
 
-              {/* Notes spans full width */}
+              {/* Notes full width */}
               <div className="sm:col-span-2 md:col-span-4">
                 <label className="block text-xs font-medium text-slate-500 mb-1">Notes</label>
                 <input
@@ -197,7 +258,7 @@ export default function BulkEntryPage() {
           </div>
         )}
 
-        {/* ── CSV upload ── */}
+        {/* CSV upload */}
         {mode === 'csv' && (
           <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
             <h2 className="mb-1 font-semibold text-slate-900 dark:text-white">Paste CSV Data</h2>
@@ -206,6 +267,10 @@ export default function BulkEntryPage() {
               <code className="rounded bg-slate-100 px-1 font-mono text-[11px] dark:bg-slate-800">
                 {CSV_HEADER}
               </code>
+            </p>
+            <p className="mb-3 text-xs text-amber-600 dark:text-amber-400">
+              Use employee IDs from the{' '}
+              <a href="/admin/employees" className="underline">Employee Directory</a>.
             </p>
             <textarea
               className={`${inputCls} font-mono text-xs`}
@@ -223,7 +288,7 @@ export default function BulkEntryPage() {
           </div>
         )}
 
-        {/* ── Preview table ── */}
+        {/* Preview table */}
         {entries.length > 0 && (
           <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-4 flex items-center justify-between">
@@ -251,7 +316,7 @@ export default function BulkEntryPage() {
                     <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                       <td className="py-2.5 pr-4">
                         <p className="font-medium text-slate-900 dark:text-white">{row.name}</p>
-                        <p className="text-xs text-slate-500">{row.employeeId}</p>
+                        <p className="text-xs text-slate-500">{row.employeeId.slice(0, 12)}…</p>
                       </td>
                       {BULK_METRICS.map((m) => (
                         <td key={m.key} className="py-2.5 pr-4 tabular-nums text-slate-700 dark:text-slate-300">
@@ -273,7 +338,7 @@ export default function BulkEntryPage() {
               </table>
             </div>
 
-            {/* Totals bar — dynamic */}
+            {/* Totals */}
             <div
               className="mt-4 grid gap-4 rounded-lg bg-slate-50 p-4 dark:bg-slate-800"
               style={{ gridTemplateColumns: `repeat(${Math.min(BULK_METRICS.length, 6)}, minmax(0, 1fr))` }}
