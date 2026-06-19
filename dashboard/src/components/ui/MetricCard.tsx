@@ -52,7 +52,7 @@ export function MetricCard({
         ${done ? ringColor : 'border-slate-200 dark:border-slate-800'}
       `}
     >
-      {/* Top row: icon + label + % badge */}
+      {/* Top row: icon + label + % badge + optional edit button */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-xl leading-none flex-shrink-0">{metric.icon}</span>
@@ -60,15 +60,31 @@ export function MetricCard({
             {metric.label}
           </span>
         </div>
-        <span
-          className={`flex-shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums
-            ${done
-              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400'
-              : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
-            }`}
-        >
-          {progress}%
-        </span>
+        <div className="flex flex-shrink-0 items-center gap-1">
+          {/* Pencil edit button — visible when there's a value to correct */}
+          {value > 0 && onFixClick && !isCorrection && (
+            <button
+              onClick={onFixClick}
+              title="Fix wrong value"
+              className="rounded-md p-0.5 text-slate-300 transition
+                hover:bg-amber-50 hover:text-amber-500
+                dark:text-slate-600 dark:hover:bg-amber-950/30 dark:hover:text-amber-400"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+              </svg>
+            </button>
+          )}
+          <span
+            className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums
+              ${done
+                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400'
+                : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+              }`}
+          >
+            {progress}%
+          </span>
+        </div>
       </div>
 
       {/* Logged value */}
@@ -109,7 +125,8 @@ export function MetricCard({
               text-slate-900 placeholder-slate-400 outline-none transition
               focus:border-amber-400 focus:bg-white focus:ring-2 focus:ring-amber-400/20
               disabled:cursor-not-allowed disabled:opacity-50
-              dark:border-amber-700 dark:bg-amber-950/30 dark:text-white dark:placeholder-slate-500"
+              dark:border-amber-700 dark:bg-amber-950/30 dark:text-white dark:placeholder-slate-500
+              dark:focus:bg-slate-800"
           />
           <div className="flex gap-2">
             <button
@@ -133,7 +150,7 @@ export function MetricCard({
         </div>
       ) : isEntry ? (
         /* Add mode */
-        <div className="mt-3 space-y-1.5">
+        <div className="mt-3">
           <input
             type="number"
             inputMode="numeric"
@@ -149,17 +166,6 @@ export function MetricCard({
               dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder-slate-500
               dark:focus:border-indigo-500 dark:focus:bg-slate-900"
           />
-          {/* Fix button — only show when there's already a value to correct */}
-          {value > 0 && onFixClick && (
-            <button
-              onClick={onFixClick}
-              className="w-full rounded-lg py-1 text-[11px] font-medium text-slate-400
-                hover:text-amber-600 hover:bg-amber-50 transition
-                dark:hover:text-amber-400 dark:hover:bg-amber-950/20"
-            >
-              ✏️ Wrong value? Fix it
-            </button>
-          )}
         </div>
       ) : null}
     </div>
