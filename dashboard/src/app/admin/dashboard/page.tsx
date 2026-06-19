@@ -258,12 +258,13 @@ export default function AdminDashboardPage() {
         </div>
 
         {/* Quick links */}
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
           {[
             { href: '/admin/employees',  label: 'Manage Employees', icon: '👥' },
             { href: '/admin/analytics',  label: 'Analytics',        icon: '📈' },
             { href: '/leaderboard',      label: 'Full Leaderboard', icon: '🏆' },
             { href: '/admin/bulk-entry', label: 'Bulk Entry',       icon: '📝' },
+            { href: '/admin/targets',    label: 'Edit Targets',     icon: '🎯' },
           ].map((item) => (
             <a
               key={item.href}

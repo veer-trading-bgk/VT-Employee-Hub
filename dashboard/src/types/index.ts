@@ -7,6 +7,8 @@ export interface User {
   role: Role;
 }
 
+export type VerificationStatus = 'pending' | 'approved' | 'rejected';
+
 export interface MetricRecord {
   PK: string;
   SK: string;
@@ -18,12 +20,15 @@ export interface MetricRecord {
   enteredAt: string;
   enteredFrom: string;
   verified: boolean;
+  verificationStatus?: VerificationStatus;
 }
 
 export interface MyMetricsResponse {
   success: boolean;
   /** Keyed by date string (YYYY-MM-DD), then by metric_type → numeric value */
   data: Record<string, Record<string, number>>;
+  /** Keyed by date then metric_type → verification status */
+  statuses?: Record<string, Record<string, VerificationStatus>>;
   targets: Record<string, number>;
   totalRecords: number;
 }

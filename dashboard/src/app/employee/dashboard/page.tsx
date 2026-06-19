@@ -13,7 +13,7 @@ import { ProgressBarChart } from '@/components/charts/ProgressBarChart';
 import { useAuth } from '@/context/AuthContext';
 import { daysLeftInMonth, currentMonthLabel, today } from '@/utils/date-utils';
 import { toast } from 'sonner';
-import type { MyMetricsResponse } from '@/types';
+import type { MyMetricsResponse, VerificationStatus } from '@/types';
 
 export default function EmployeeDashboardPage() {
   const { user } = useAuth();
@@ -45,8 +45,8 @@ export default function EmployeeDashboardPage() {
   });
 
   const todayStr = today();
-  // data.data is keyed by date: { "2026-06-18": { kyc: 5, demat: 2 } }
   const allDates = data?.data ?? {};
+  const todayStatuses = (data?.statuses?.[todayStr] ?? {}) as Record<string, VerificationStatus>;
   const summary = METRICS.map((metric) => {
     const todayValue = allDates[todayStr]?.[metric.key] ?? 0;
     const monthTotal = Object.values(allDates).reduce(
@@ -146,16 +146,28 @@ export default function EmployeeDashboardPage() {
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {summary.map(({ metric, value, target, progress }) => {
-                const barColor = progress >= 100 ? 'bg-emerald-500' : progress >= 70 ? 'bg-amber-500' : progress > 0 ? 'bg-rose-500' : 'bg-slate-300 dark:bg-slate-700';
+                const status = todayStatuses[metric.key];
+                const isRejected = status === 'rejected';
+                const barColor = isRejected
+                  ? 'bg-rose-300 dark:bg-rose-800'
+                  : progress >= 100 ? 'bg-emerald-500' : progress >= 70 ? 'bg-amber-500' : progress > 0 ? 'bg-rose-500' : 'bg-slate-300 dark:bg-slate-700';
+                const borderCls = isRejected ? 'border-rose-300 dark:border-rose-800' : 'border-slate-200 dark:border-slate-800';
                 const badge =
                   progress >= 100 ? { label: 'Excellent',        cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' }
                   : progress >= 70 ? { label: 'On Track',         cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' }
                   : progress >  0  ? { label: 'Needs Attention',  cls: 'bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400' }
                   :                  { label: 'Not Started',       cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' };
+                const statusChip = status === 'approved'
+                  ? { label: '✓ Approved', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' }
+                  : status === 'rejected'
+                  ? { label: '✕ Rejected', cls: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-400' }
+                  : status === 'pending'
+                  ? { label: '⏳ Pending',  cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' }
+                  : null;
                 return (
                   <div
                     key={metric.key}
-                    className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900"
+                    className={`rounded-xl border bg-white p-5 shadow-sm dark:bg-slate-900 ${borderCls}`}
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-2xl">{metric.icon}</span>
@@ -169,21 +181,30 @@ export default function EmployeeDashboardPage() {
                       </span>
                     </div>
                     <h3 className="mt-3 text-sm font-medium text-slate-500 dark:text-slate-400">{metric.label}</h3>
-                    <p className="mt-1 text-2xl font-bold text-slate-900 dark:text-white">
+                    {statusChip && (
+                      <span className={`mt-1 inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${statusChip.cls}`}>
+                        {statusChip.label}
+                      </span>
+                    )}
+                    <p className={`mt-1 text-2xl font-bold ${isRejected ? 'text-slate-400 dark:text-slate-600 line-through' : 'text-slate-900 dark:text-white'}`}>
                       {formatMetricValue(metric, value)}
                     </p>
                     <p className="text-xs text-slate-400">of {formatMetricValue(metric, Math.round(target))} target</p>
-                    {/* Bar — track always visible; fill is 0-width for not-started metrics */}
                     <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
                       <div
                         className={`h-full rounded-full transition-all duration-500 ${barColor}`}
                         style={{ width: `${Math.min(progress, 100)}%`, minWidth: progress > 0 ? '4px' : '0' }}
                       />
                     </div>
-                    <div className="mt-2">
+                    <div className="mt-2 flex items-center gap-1.5">
                       <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${badge.cls}`}>
                         {badge.label}
                       </span>
+                      {isRejected && (
+                        <a href="/employee/daily-entry" className="text-[10px] font-semibold text-indigo-600 hover:underline dark:text-indigo-400">
+                          Fix →
+                        </a>
+                      )}
                     </div>
                   </div>
                 );

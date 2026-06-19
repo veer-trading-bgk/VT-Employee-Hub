@@ -8,11 +8,7 @@ import { Loading } from '@/components/common/Loading';
 import { MetricCard } from '@/components/ui/MetricCard';
 import { apiFetch } from '@/lib/api';
 import { METRICS, dailyTarget } from '@/lib/metrics.config';
-
-interface MyMetricsResponse {
-  data: Record<string, Record<string, number>>;
-  targets: Record<string, number>;
-}
+import type { MyMetricsResponse, VerificationStatus } from '@/types';
 
 const TODAY     = new Date().toISOString().split('T')[0];
 const YESTERDAY = new Date(Date.now() - 864e5).toISOString().split('T')[0];
@@ -40,9 +36,10 @@ export default function DailyEntryPage() {
     staleTime: 60_000,
   });
 
-  const todayData     = data?.data?.[TODAY]     ?? {};
-  const yesterdayData = data?.data?.[YESTERDAY] ?? {};
-  const apiTargets    = data?.targets            ?? {};
+  const todayData     = data?.data?.[TODAY]       ?? {};
+  const yesterdayData = data?.data?.[YESTERDAY]  ?? {};
+  const apiTargets    = data?.targets             ?? {};
+  const todayStatus   = data?.statuses?.[TODAY]   ?? {};
 
   const { mutate: save, isPending } = useMutation({
     mutationFn: async () => {
@@ -167,6 +164,7 @@ export default function DailyEntryPage() {
                           target={target}
                           progress={progress}
                           yesterday={yest}
+                          verificationStatus={todayStatus[m.key] as VerificationStatus | undefined}
                           // Add mode
                           inputValue={inCorrection ? undefined : (values[m.key] ?? '')}
                           onInputChange={inCorrection ? undefined : (v) => setValues((prev) => ({ ...prev, [m.key]: v }))}

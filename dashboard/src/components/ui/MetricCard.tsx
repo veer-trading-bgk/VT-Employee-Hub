@@ -1,23 +1,30 @@
 import { formatMetricValue, type MetricConfig } from '@/lib/metrics.config';
+import type { VerificationStatus } from '@/types';
 
 interface MetricCardProps {
   metric: MetricConfig;
-  value: number;       // today's logged total
-  target: number;      // daily target
-  progress: number;    // 0-100+
-  yesterday?: number;  // shown as subtle hint
-  // Add mode — card becomes an entry widget (adds to total)
+  value: number;
+  target: number;
+  progress: number;
+  yesterday?: number;
+  verificationStatus?: VerificationStatus;
+  // Add mode
   inputValue?: string;
   onInputChange?: (v: string) => void;
   disabled?: boolean;
-  // Correction mode — replaces today's total
+  // Correction mode
   correctionValue?: string;
   onCorrectionChange?: (v: string) => void;
   onCorrectionSave?: () => void;
   onCorrectionCancel?: () => void;
-  // Called when user clicks "Fix it" to enter correction mode
   onFixClick?: () => void;
 }
+
+const STATUS_CHIP: Record<VerificationStatus, { label: string; cls: string }> = {
+  approved: { label: '✓ Approved', cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' },
+  pending:  { label: '⏳ Pending',  cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400'     },
+  rejected: { label: '✕ Rejected', cls: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-400'         },
+};
 
 export function MetricCard({
   metric,
@@ -25,6 +32,7 @@ export function MetricCard({
   target,
   progress,
   yesterday,
+  verificationStatus,
   inputValue,
   onInputChange,
   disabled,
@@ -36,11 +44,14 @@ export function MetricCard({
 }: MetricCardProps) {
   const isEntry      = onInputChange !== undefined;
   const isCorrection = onCorrectionChange !== undefined;
-  const done    = progress >= 100;
-  const mid     = progress >= 60;
+  const isRejected   = verificationStatus === 'rejected';
+  const done = progress >= 100;
+  const mid  = progress >= 60;
 
   const barColor  = done ? 'bg-emerald-500' : mid ? 'bg-amber-400' : 'bg-rose-400';
-  const ringColor = done
+  const borderCls = isRejected
+    ? 'border-rose-300 dark:border-rose-800'
+    : done
     ? 'border-emerald-200 dark:border-emerald-800'
     : 'border-slate-200 dark:border-slate-800';
 
@@ -49,14 +60,13 @@ export function MetricCard({
       className={`group rounded-xl border bg-white p-4 shadow-sm transition-all duration-200
         dark:bg-slate-900
         ${isEntry ? 'hover:shadow-md hover:border-indigo-200 dark:hover:border-indigo-800' : 'hover:shadow-md'}
-        ${done ? ringColor : 'border-slate-200 dark:border-slate-800'}
+        ${borderCls}
       `}
     >
-      {/* Top row: icon left, controls right — label is NOT here so it gets full width below */}
+      {/* Top row: icon left, controls right */}
       <div className="flex items-center justify-between">
         <span className="text-xl leading-none">{metric.icon}</span>
         <div className="flex items-center gap-1">
-          {/* Pencil edit button — always visible in entry mode */}
           {onFixClick && !isCorrection && (
             <button
               onClick={onFixClick}
@@ -82,13 +92,20 @@ export function MetricCard({
         </div>
       </div>
 
-      {/* Label — own full-width row, never competes with icon or badge */}
+      {/* Label */}
       <p className="mt-1.5 text-xs font-semibold leading-tight text-slate-600 dark:text-slate-400">
         {metric.label}
       </p>
 
+      {/* Verification status chip */}
+      {verificationStatus && (
+        <span className={`mt-1 inline-block rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${STATUS_CHIP[verificationStatus].cls}`}>
+          {STATUS_CHIP[verificationStatus].label}
+        </span>
+      )}
+
       {/* Logged value */}
-      <p className="mt-2 text-2xl font-bold tabular-nums text-slate-900 dark:text-white leading-none">
+      <p className={`mt-2 text-2xl font-bold tabular-nums leading-none ${isRejected ? 'text-slate-400 dark:text-slate-600 line-through' : 'text-slate-900 dark:text-white'}`}>
         {formatMetricValue(metric, value)}
       </p>
       <p className="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">
@@ -103,16 +120,23 @@ export function MetricCard({
       {/* Progress bar */}
       <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
         <div
-          className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+          className={`h-full rounded-full transition-all duration-500 ${isRejected ? 'bg-rose-300 dark:bg-rose-800' : barColor}`}
           style={{ width: `${Math.min(progress, 100)}%` }}
         />
       </div>
 
-      {/* Correction mode — replace today's total */}
+      {/* Rejected notice */}
+      {isRejected && !isCorrection && (
+        <p className="mt-2 text-[11px] text-rose-600 dark:text-rose-400">
+          Entry rejected — use Fix to resubmit
+        </p>
+      )}
+
+      {/* Correction mode */}
       {isCorrection ? (
         <div className="mt-3 space-y-2">
           <p className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
-            {value > 0 ? '✏️ Set correct total:' : '✏️ Set exact value:'}
+            {isRejected ? '🔄 Resubmit corrected value:' : value > 0 ? '✏️ Set correct total:' : '✏️ Set exact value:'}
           </p>
           <input
             type="number"
@@ -151,7 +175,6 @@ export function MetricCard({
           </div>
         </div>
       ) : isEntry ? (
-        /* Add mode */
         <div className="mt-3">
           <input
             type="number"

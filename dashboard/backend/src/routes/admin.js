@@ -381,4 +381,122 @@ router.delete('/employees/:id/2fa', async (req, res, next) => {
   }
 });
 
+// ── Admin: edit a metric entry ────────────────────────────────────────────────
+// Admin-edited entries are auto-approved and preserve the original value in audit
+
+router.put('/metrics/:userId/:date/:metricType', async (req, res, next) => {
+  try {
+    const { userId, date, metricType } = req.params;
+    const { value, notes } = req.body;
+
+    if (value === undefined || isNaN(Number(value)) || Number(value) < 0) {
+      return res.status(400).json({ error: 'value must be a non-negative number' });
+    }
+
+    const existing = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: { PK: userId, SK: `${date}#${metricType}` },
+    }).promise();
+    const originalValue = existing.Item?.value ?? null;
+
+    await dynamodb.update({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: { PK: userId, SK: `${date}#${metricType}` },
+      UpdateExpression:
+        'SET #val = :v, editedBy = :eb, editedAt = :ea, ' +
+        'originalValue = if_not_exists(originalValue, :ov), adminNotes = :an, ' +
+        'verificationStatus = :vs, verified = :vf',
+      ExpressionAttributeNames: { '#val': 'value' },
+      ExpressionAttributeValues: {
+        ':v': Number(value),
+        ':eb': req.user.id,
+        ':ea': new Date().toISOString(),
+        ':ov': originalValue,
+        ':an': notes || '',
+        ':vs': 'approved',
+        ':vf': true,
+      },
+    }).promise();
+
+    await logAudit(req.user.id, 'admin_edit_metric', `${userId}#${date}#${metricType}`, 'success', req.ip, {
+      from: originalValue, to: Number(value),
+    });
+    logger.info(`Admin ${req.user.email} edited ${metricType} for ${userId} on ${date}: ${originalValue} → ${Number(value)}`);
+
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── Admin: targets CRUD ───────────────────────────────────────────────────────
+
+const TARGETS_KEY = { PK: 'CONFIG#TARGETS', SK: 'current' };
+
+const TARGET_DEFAULTS = {
+  kyc:         { target: 4,      targetPeriod: 'day'   },
+  demat:       { target: 50,     targetPeriod: 'month' },
+  mf:          { target: 40,     targetPeriod: 'month' },
+  insurance:   { target: 100000, targetPeriod: 'month' },
+  algo:        { target: 10,     targetPeriod: 'month' },
+  coaching:    { target: 20000,  targetPeriod: 'month' },
+  pms:         { target: 10,     targetPeriod: 'month' },
+  pro_insight: { target: 15,     targetPeriod: 'month' },
+  ltpp:        { target: 10,     targetPeriod: 'month' },
+};
+
+router.get('/targets', async (req, res, next) => {
+  try {
+    const result = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: TARGETS_KEY,
+    }).promise();
+    res.json({
+      success: true,
+      data: result.Item?.targets ?? TARGET_DEFAULTS,
+      isCustom: !!result.Item,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put('/targets', async (req, res, next) => {
+  try {
+    const { targets } = req.body;
+    if (!targets || typeof targets !== 'object') {
+      return res.status(400).json({ error: 'targets object required' });
+    }
+    const VALID_KEYS = ['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching', 'pms', 'pro_insight', 'ltpp'];
+    for (const [key, val] of Object.entries(targets)) {
+      if (!VALID_KEYS.includes(key)) return res.status(400).json({ error: `Unknown metric: ${key}` });
+      if (typeof val.target !== 'number' || val.target <= 0 || !['day', 'month'].includes(val.targetPeriod)) {
+        return res.status(400).json({ error: `Invalid target config for ${key}` });
+      }
+    }
+    await dynamodb.put({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Item: { ...TARGETS_KEY, targets, updatedBy: req.user.id, updatedAt: new Date().toISOString() },
+    }).promise();
+    await logAudit(req.user.id, 'update_targets', 'config', 'success', req.ip, { targets });
+    logger.info(`Admin ${req.user.email} updated metric targets`);
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete('/targets', async (req, res, next) => {
+  try {
+    await dynamodb.delete({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: TARGETS_KEY,
+    }).promise();
+    await logAudit(req.user.id, 'reset_targets', 'config', 'success', req.ip);
+    res.json({ success: true, message: 'Targets reset to defaults' });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
