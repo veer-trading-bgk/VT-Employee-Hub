@@ -5,44 +5,51 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
+import { MetricCard } from '@/components/ui/MetricCard';
 import { apiFetch } from '@/lib/api';
-import { METRICS } from '@/lib/metrics.config';
+import { METRICS, dailyTarget } from '@/lib/metrics.config';
 
 interface MyMetricsResponse {
   data: Record<string, Record<string, number>>;
   targets: Record<string, number>;
 }
 
-const TODAY = new Date().toISOString().split('T')[0];
+const TODAY     = new Date().toISOString().split('T')[0];
 const YESTERDAY = new Date(Date.now() - 864e5).toISOString().split('T')[0];
+
+// Visual grouping — drives section headers only, no logic change
+const GROUPS = [
+  { label: 'Core Metrics',    keys: ['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching'] },
+  { label: 'Matrix Products', keys: ['pms', 'pro_insight', 'ltpp'] },
+];
 
 export default function DailyEntryPage() {
   const qc = useQueryClient();
   const [values, setValues] = useState<Record<string, string>>({});
-  const [notes, setNotes] = useState('');
 
   const { data, isLoading } = useQuery({
     queryKey: ['my-metrics-entry'],
     queryFn: () => apiFetch<MyMetricsResponse>('/api/metrics/my?days=2'),
-    staleTime: 1000 * 60,
+    staleTime: 60_000,
   });
 
-  const todayData = data?.data?.[TODAY] ?? {};
+  const todayData     = data?.data?.[TODAY]     ?? {};
   const yesterdayData = data?.data?.[YESTERDAY] ?? {};
-  const targets = data?.targets ?? {};
+  const apiTargets    = data?.targets            ?? {};
 
   const { mutate: save, isPending } = useMutation({
     mutationFn: async () => {
-      const toSave = METRICS.filter((m) => {
-        const v = parseInt(values[m.key] ?? '0');
-        return v > 0;
-      });
-      if (toSave.length === 0) throw new Error('Enter at least one metric value');
+      const toSave = METRICS.filter((m) => parseInt(values[m.key] ?? '0') > 0);
+      if (toSave.length === 0) throw new Error('Enter at least one value');
       await Promise.all(
         toSave.map((m) =>
           apiFetch('/api/metrics/add', {
             method: 'POST',
-            body: JSON.stringify({ metric_type: m.key, value: parseInt(values[m.key] ?? '0'), date: TODAY, notes }),
+            body: JSON.stringify({
+              metric_type: m.key,
+              value: parseInt(values[m.key]),
+              date: TODAY,
+            }),
           })
         )
       );
@@ -61,14 +68,13 @@ export default function DailyEntryPage() {
       });
       return { previous };
     },
-    onError: (err: Error, _vars, ctx) => {
+    onError: (err: Error, _v, ctx) => {
       if (ctx?.previous) qc.setQueryData(['my-metrics-entry'], ctx.previous);
       toast.error(err.message);
     },
     onSuccess: () => {
-      toast.success('Metrics saved for today!');
+      toast.success('Metrics saved!');
       setValues({});
-      setNotes('');
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['my-metrics-entry'] });
@@ -76,99 +82,79 @@ export default function DailyEntryPage() {
     },
   });
 
+  const hasAnyValue = METRICS.some((m) => parseInt(values[m.key] ?? '0') > 0);
+
   return (
     <>
-      <Navbar title="Daily Metrics Entry" showBack />
-      <div className="space-y-6 p-4 md:p-8 max-w-2xl">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Daily Entry</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Log your metrics for today — {TODAY}
-          </p>
+      <Navbar title="Daily Entry" showBack />
+      <div className="p-4 pb-24 md:p-8 md:pb-8 max-w-3xl">
+
+        {/* Header */}
+        <div className="mb-6">
+          <h1 className="text-xl font-bold text-slate-900 dark:text-white">
+            Today's Entry
+          </h1>
+          <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{TODAY}</p>
         </div>
 
-        {/* Yesterday snapshot */}
-        {Object.keys(yesterdayData).length > 0 && (
-          <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-            <h2 className="text-sm font-semibold text-slate-500 dark:text-slate-400 mb-3 uppercase tracking-wider">
-              Yesterday's Entries
-            </h2>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              {METRICS.slice(0, 4).map((m) => (
-                <div key={m.key} className="text-center">
-                  <p className="text-xs text-slate-500">{m.icon} {m.label}</p>
-                  <p className="text-lg font-bold text-slate-900 dark:text-white">
-                    {yesterdayData[m.key] ?? 0}
-                  </p>
-                </div>
-              ))}
+        {isLoading ? (
+          <Loading />
+        ) : (
+          <div className="space-y-6">
+            {GROUPS.map((group) => {
+              const groupMetrics = METRICS.filter((m) => group.keys.includes(m.key));
+              return (
+                <section key={group.label}>
+                  {/* Section header */}
+                  <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
+                    {group.label}
+                  </h2>
+
+                  {/* Compact grid — 3 cols desktop, 2 cols mobile */}
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {groupMetrics.map((m) => {
+                      const logged    = todayData[m.key]     ?? 0;
+                      const yest      = yesterdayData[m.key] ?? 0;
+                      // Prefer API-returned target (reflects backend config);
+                      // fall back to frontend config for new metrics
+                      const target    = (apiTargets[m.key] as number) ?? dailyTarget(m);
+                      const progress  = target > 0 ? Math.min(Math.round((logged / target) * 100), 999) : 0;
+
+                      return (
+                        <MetricCard
+                          key={m.key}
+                          metric={m}
+                          value={logged}
+                          target={target}
+                          progress={progress}
+                          yesterday={yest}
+                          inputValue={values[m.key] ?? ''}
+                          onInputChange={(v) => setValues((prev) => ({ ...prev, [m.key]: v }))}
+                          disabled={isPending}
+                        />
+                      );
+                    })}
+                  </div>
+                </section>
+              );
+            })}
+
+            {/* Save button — sticky on mobile */}
+            <div className="fixed bottom-16 left-0 right-0 z-30 px-4 pb-2 pt-3 md:static md:bottom-auto md:px-0 md:pb-0 md:pt-0">
+              <div className="md:hidden absolute inset-0 bg-gradient-to-t from-white via-white/90 to-transparent dark:from-slate-950 dark:via-slate-950/90 pointer-events-none -z-10" />
+              <button
+                onClick={() => save()}
+                disabled={isPending || !hasAnyValue}
+                className="w-full rounded-xl bg-indigo-600 py-3.5 text-sm font-bold text-white shadow-lg
+                  hover:bg-indigo-700 active:scale-[0.98] transition-all
+                  disabled:cursor-not-allowed disabled:opacity-40
+                  md:rounded-lg md:shadow-none"
+              >
+                {isPending ? '⏳ Saving…' : '✅ Save Today\'s Metrics'}
+              </button>
             </div>
           </div>
         )}
-
-        {/* Entry form */}
-        <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-          <h2 className="mb-4 font-semibold text-slate-900 dark:text-white">
-            Enter Today's Numbers
-          </h2>
-          {isLoading ? (
-            <Loading size="sm" />
-          ) : (
-            <div className="space-y-4">
-              {METRICS.map((m) => {
-                const target = targets[m.key] ?? 0;
-                const existing = todayData[m.key] ?? 0;
-                return (
-                  <div key={m.key} className="rounded-lg border border-slate-100 p-3 dark:border-slate-800">
-                    <div className="mb-2 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="text-lg">{m.icon}</span>
-                        <div>
-                          <p className="text-sm font-medium text-slate-900 dark:text-white">{m.label}</p>
-                          <p className="text-xs text-slate-500">Daily target: {target}</p>
-                        </div>
-                      </div>
-                      {existing > 0 && (
-                        <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                          ✅ {existing} logged
-                        </span>
-                      )}
-                    </div>
-                    <input
-                      type="number"
-                      min="0"
-                      placeholder={existing > 0 ? `Add more (${existing} already logged)` : 'Enter value…'}
-                      value={values[m.key] ?? ''}
-                      onChange={(e) => setValues((v) => ({ ...v, [m.key]: e.target.value }))}
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                    />
-                  </div>
-                );
-              })}
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  Notes (optional)
-                </label>
-                <textarea
-                  rows={2}
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Any notes about today's activity…"
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
-                />
-              </div>
-            </div>
-          )}
-
-          <button
-            onClick={() => save()}
-            disabled={isPending || isLoading}
-            className="mt-5 w-full rounded-lg bg-indigo-600 py-3 text-sm font-bold text-white hover:bg-indigo-700 disabled:opacity-60"
-          >
-            {isPending ? '⏳ Saving…' : '✅ Save Today\'s Metrics'}
-          </button>
-        </div>
       </div>
     </>
   );

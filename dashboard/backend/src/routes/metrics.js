@@ -98,7 +98,17 @@ router.get('/my', async (req, res, next) => {
     }).promise();
 
     // Group by date → { date: { metric_type: value } }
-    const targets = { kyc: 4, demat: +(50 / 30).toFixed(1), mf: +(40 / 30).toFixed(1), insurance: Math.round(100000 / 30), algo: +(10 / 30).toFixed(2), coaching: Math.round(20000 / 30) };
+    const targets = {
+      kyc:         4,
+      demat:       +(50     / 30).toFixed(1),
+      mf:          +(40     / 30).toFixed(1),
+      insurance:   Math.round(100000 / 30),
+      algo:        +(10     / 30).toFixed(2),
+      coaching:    Math.round(20000  / 30),
+      pms:         +(10     / 30).toFixed(2),
+      pro_insight: +(15     / 30).toFixed(2),
+      ltpp:        +(10     / 30).toFixed(2),
+    };
     const byDate = {};
     result.Items.forEach(item => {
       const d = item.date || item.SK?.split('#')[0] || '';
@@ -164,12 +174,15 @@ router.get('/team-summary', checkRole(['admin', 'manager']), async (req, res, ne
     // Calculate summary
     const summary = {};
     const targets = {
-      kyc: 4,
-      demat: 50 / 30,
-      mf: 40 / 30,
-      insurance: 100000 / 30,
-      algo: 10 / 30,
-      coaching: 20000 / 30,
+      kyc:         4,
+      demat:       50     / 30,
+      mf:          40     / 30,
+      insurance:   100000 / 30,
+      algo:        10     / 30,
+      coaching:    20000  / 30,
+      pms:         10     / 30,
+      pro_insight: 15     / 30,
+      ltpp:        10     / 30,
     };
 
     result.Items.forEach(item => {
@@ -213,7 +226,7 @@ router.post('/bulk-entry', checkRole(['admin', 'manager']), async (req, res, nex
     }
     let count = 0;
     for (const entry of entries) {
-      const metricTypes = ['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching'];
+      const metricTypes = ['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching', 'pms', 'pro_insight', 'ltpp'];
       for (const key of metricTypes) {
         const value = parseInt(entry[key]) || 0;
         if (value <= 0) continue;
