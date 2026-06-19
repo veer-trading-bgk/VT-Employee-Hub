@@ -5,29 +5,42 @@ import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch } from '@/lib/api';
+import { METRICS, formatMetricValue } from '@/lib/metrics.config';
+
+// Only count-type metrics appear as bulk-entry columns (currency metrics like
+// insurance are entered per employee via their own daily-entry form).
+const BULK_METRICS = METRICS.filter((m) => m.unit === 'count');
 
 interface MetricRow {
   employeeId: string;
   name: string;
-  kyc: number;
-  demat: number;
-  mf: number;
-  insurance: number;
+  metrics: Record<string, number>;
   date: string;
   notes: string;
 }
 
-const EMPTY_ROW: MetricRow = {
-  employeeId: '', name: '', kyc: 0, demat: 0, mf: 0, insurance: 0,
-  date: new Date().toISOString().split('T')[0], notes: '',
-};
+const TODAY = new Date().toISOString().split('T')[0];
+
+function emptyRow(): MetricRow {
+  return {
+    employeeId: '',
+    name: '',
+    metrics: Object.fromEntries(BULK_METRICS.map((m) => [m.key, 0])),
+    date: TODAY,
+    notes: '',
+  };
+}
+
+/** CSV header string shown in the placeholder */
+const CSV_HEADER = ['employeeId', 'name', ...BULK_METRICS.map((m) => m.key), 'date', 'notes'].join(',');
 
 export default function BulkEntryPage() {
   const [mode, setMode] = useState<'form' | 'csv'>('form');
-  const [form, setForm] = useState<MetricRow>({ ...EMPTY_ROW });
+  const [form, setForm] = useState<MetricRow>(emptyRow());
   const [entries, setEntries] = useState<MetricRow[]>([]);
   const [csvText, setCsvText] = useState('');
 
+  // ── Flatten rows → individual metric entries for the API ──────────────────
   const { mutate: submit, isPending } = useMutation<{ count: number }, Error, MetricRow[]>({
     mutationFn: (rows) =>
       apiFetch<{ count: number }>('/api/metrics/bulk-entry', {
@@ -37,18 +50,18 @@ export default function BulkEntryPage() {
     onSuccess: (data) => {
       toast.success(`✅ ${data.count} metric entries submitted`);
       setEntries([]);
-      setForm({ ...EMPTY_ROW });
+      setForm(emptyRow());
     },
     onError: (err: Error) => toast.error(err.message),
   });
 
   const addRow = () => {
-    if (!form.employeeId || !form.name) {
+    if (!form.employeeId.trim() || !form.name.trim()) {
       toast.error('Employee ID and Name are required');
       return;
     }
-    setEntries((prev) => [...prev, { ...form }]);
-    setForm({ ...EMPTY_ROW });
+    setEntries((prev) => [...prev, { ...form, metrics: { ...form.metrics } }]);
+    setForm(emptyRow());
     toast.success('Row added');
   };
 
@@ -60,14 +73,14 @@ export default function BulkEntryPage() {
     for (let i = 1; i < lines.length; i++) {
       const vals = lines[i].split(',').map((v) => v.trim());
       const get = (k: string) => vals[headers.indexOf(k)] ?? '';
+      const metrics = Object.fromEntries(
+        BULK_METRICS.map((m) => [m.key, parseInt(get(m.key)) || 0])
+      );
       parsed.push({
         employeeId: get('employeeid'),
         name: get('name'),
-        kyc: parseInt(get('kyc')) || 0,
-        demat: parseInt(get('demat')) || 0,
-        mf: parseInt(get('mf')) || 0,
-        insurance: parseInt(get('insurance')) || 0,
-        date: get('date') || EMPTY_ROW.date,
+        metrics,
+        date: get('date') || TODAY,
         notes: get('notes'),
       });
     }
@@ -75,20 +88,25 @@ export default function BulkEntryPage() {
     toast.success(`Parsed ${parsed.length} rows`);
   };
 
-  const totals = entries.reduce(
-    (s, e) => ({ kyc: s.kyc + e.kyc, demat: s.demat + e.demat, mf: s.mf + e.mf, insurance: s.insurance + e.insurance }),
-    { kyc: 0, demat: 0, mf: 0, insurance: 0 }
+  // Column totals across all staged rows
+  const totals = entries.reduce<Record<string, number>>(
+    (acc, row) => {
+      BULK_METRICS.forEach((m) => { acc[m.key] = (acc[m.key] ?? 0) + (row.metrics[m.key] ?? 0); });
+      return acc;
+    },
+    Object.fromEntries(BULK_METRICS.map((m) => [m.key, 0]))
   );
+
+  const inputCls = 'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white';
 
   return (
     <>
       <Navbar title="Bulk Metrics Entry" showBack />
       <div className="space-y-6 p-4 md:p-8">
-        {/* Header */}
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Bulk Metrics Entry</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Enter KYC, Demat, MF, and Insurance data for multiple employees
+            Enter metrics for multiple employees — {BULK_METRICS.map((m) => m.label).join(', ')}
           </p>
         </div>
 
@@ -107,36 +125,68 @@ export default function BulkEntryPage() {
           ))}
         </div>
 
-        {/* Manual form */}
+        {/* ── Manual form ── */}
         {mode === 'form' && (
           <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
             <h2 className="mb-4 font-semibold text-slate-900 dark:text-white">Add Single Entry</h2>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
-              {[
-                { key: 'employeeId', label: 'Employee ID', type: 'text', span: '' },
-                { key: 'name', label: 'Full Name', type: 'text', span: '' },
-                { key: 'date', label: 'Date', type: 'date', span: '' },
-                { key: 'kyc', label: 'KYC', type: 'number', span: '' },
-                { key: 'demat', label: 'Demat', type: 'number', span: '' },
-                { key: 'mf', label: 'MF Orders', type: 'number', span: '' },
-                { key: 'insurance', label: 'Insurance (₹)', type: 'number', span: '' },
-                { key: 'notes', label: 'Notes', type: 'text', span: 'sm:col-span-2 md:col-span-4' },
-              ].map(({ key, label, type, span }) => (
-                <div key={key} className={span}>
-                  <label className="block text-xs font-medium text-slate-500 dark:text-slate-400 mb-1">{label}</label>
+              {/* Fixed fields */}
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">Employee ID *</label>
+                <input
+                  value={form.employeeId}
+                  onChange={(e) => setForm((f) => ({ ...f, employeeId: e.target.value }))}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">Full Name *</label>
+                <input
+                  value={form.name}
+                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-500 mb-1">Date</label>
+                <input
+                  type="date"
+                  value={form.date}
+                  onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
+                  className={inputCls}
+                />
+              </div>
+
+              {/* Dynamic metric fields */}
+              {BULK_METRICS.map((m) => (
+                <div key={m.key}>
+                  <label className="block text-xs font-medium text-slate-500 mb-1">
+                    {m.icon} {m.label}
+                  </label>
                   <input
-                    type={type}
-                    value={String((form as unknown as Record<string, unknown>)[key] ?? '')}
+                    type="number"
+                    min="0"
+                    value={form.metrics[m.key] ?? 0}
                     onChange={(e) =>
                       setForm((f) => ({
                         ...f,
-                        [key]: type === 'number' ? parseInt(e.target.value) || 0 : e.target.value,
+                        metrics: { ...f.metrics, [m.key]: parseInt(e.target.value) || 0 },
                       }))
                     }
-                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                    className={inputCls}
                   />
                 </div>
               ))}
+
+              {/* Notes spans full width */}
+              <div className="sm:col-span-2 md:col-span-4">
+                <label className="block text-xs font-medium text-slate-500 mb-1">Notes</label>
+                <input
+                  value={form.notes}
+                  onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
+                  className={inputCls}
+                />
+              </div>
             </div>
             <button
               onClick={addRow}
@@ -147,17 +197,20 @@ export default function BulkEntryPage() {
           </div>
         )}
 
-        {/* CSV upload */}
+        {/* ── CSV upload ── */}
         {mode === 'csv' && (
           <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
             <h2 className="mb-1 font-semibold text-slate-900 dark:text-white">Paste CSV Data</h2>
             <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-              Header: <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">employeeId,name,kyc,demat,mf,insurance,date,notes</code>
+              Header:{' '}
+              <code className="rounded bg-slate-100 px-1 font-mono text-[11px] dark:bg-slate-800">
+                {CSV_HEADER}
+              </code>
             </p>
             <textarea
-              className="w-full rounded-lg border border-slate-200 bg-white p-3 font-mono text-xs text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+              className={`${inputCls} font-mono text-xs`}
               rows={6}
-              placeholder={`employeeId,name,kyc,demat,mf,insurance,date,notes\nEMP001,Priya Sharma,5,3,2,25000,2026-06-17,Strong day`}
+              placeholder={`${CSV_HEADER}\nEMP001,Priya Sharma,5,3,2,0,0,1,2,1,2026-06-17,Strong day`}
               value={csvText}
               onChange={(e) => setCsvText(e.target.value)}
             />
@@ -170,17 +223,14 @@ export default function BulkEntryPage() {
           </div>
         )}
 
-        {/* Preview table */}
+        {/* ── Preview table ── */}
         {entries.length > 0 && (
           <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="font-semibold text-slate-900 dark:text-white">
                 Preview ({entries.length} entries)
               </h2>
-              <button
-                onClick={() => setEntries([])}
-                className="text-xs text-rose-500 hover:underline"
-              >
+              <button onClick={() => setEntries([])} className="text-xs text-rose-500 hover:underline">
                 Clear all
               </button>
             </div>
@@ -189,10 +239,9 @@ export default function BulkEntryPage() {
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-slate-800 text-left text-xs font-semibold uppercase text-slate-500">
                     <th className="pb-2 pr-4">Employee</th>
-                    <th className="pb-2 pr-4">KYC</th>
-                    <th className="pb-2 pr-4">Demat</th>
-                    <th className="pb-2 pr-4">MF</th>
-                    <th className="pb-2 pr-4">Insurance</th>
+                    {BULK_METRICS.map((m) => (
+                      <th key={m.key} className="pb-2 pr-4">{m.icon} {m.label}</th>
+                    ))}
                     <th className="pb-2 pr-4">Date</th>
                     <th className="pb-2">Remove</th>
                   </tr>
@@ -204,15 +253,16 @@ export default function BulkEntryPage() {
                         <p className="font-medium text-slate-900 dark:text-white">{row.name}</p>
                         <p className="text-xs text-slate-500">{row.employeeId}</p>
                       </td>
-                      <td className="py-2.5 pr-4 tabular-nums">{row.kyc}</td>
-                      <td className="py-2.5 pr-4 tabular-nums">{row.demat}</td>
-                      <td className="py-2.5 pr-4 tabular-nums">{row.mf}</td>
-                      <td className="py-2.5 pr-4 tabular-nums">₹{row.insurance.toLocaleString()}</td>
+                      {BULK_METRICS.map((m) => (
+                        <td key={m.key} className="py-2.5 pr-4 tabular-nums text-slate-700 dark:text-slate-300">
+                          {row.metrics[m.key] ?? 0}
+                        </td>
+                      ))}
                       <td className="py-2.5 pr-4 text-xs text-slate-500">{row.date}</td>
                       <td className="py-2.5">
                         <button
                           onClick={() => setEntries((e) => e.filter((_, j) => j !== i))}
-                          className="text-rose-500 hover:text-rose-700 text-sm"
+                          className="text-rose-500 hover:text-rose-700"
                         >
                           🗑️
                         </button>
@@ -223,13 +273,16 @@ export default function BulkEntryPage() {
               </table>
             </div>
 
-            {/* Totals bar */}
-            <div className="mt-4 grid grid-cols-4 gap-4 rounded-lg bg-slate-50 p-4 dark:bg-slate-800">
-              {([['kyc', 'KYC', 'text-indigo-600'], ['demat', 'Demat', 'text-emerald-600'], ['mf', 'MF', 'text-amber-600'], ['insurance', 'Ins (₹)', 'text-pink-600']] as const).map(([k, label, cls]) => (
-                <div key={k}>
-                  <p className="text-xs text-slate-500">{label}</p>
-                  <p className={`text-xl font-bold ${cls}`}>
-                    {k === 'insurance' ? `₹${totals[k].toLocaleString()}` : totals[k]}
+            {/* Totals bar — dynamic */}
+            <div
+              className="mt-4 grid gap-4 rounded-lg bg-slate-50 p-4 dark:bg-slate-800"
+              style={{ gridTemplateColumns: `repeat(${Math.min(BULK_METRICS.length, 6)}, minmax(0, 1fr))` }}
+            >
+              {BULK_METRICS.map((m) => (
+                <div key={m.key}>
+                  <p className="text-xs text-slate-500">{m.icon} {m.label}</p>
+                  <p className="text-xl font-bold" style={{ color: m.color }}>
+                    {formatMetricValue(m, totals[m.key] ?? 0)}
                   </p>
                 </div>
               ))}

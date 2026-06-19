@@ -19,19 +19,22 @@ import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Loading } from '@/components/common/Loading';
 import { EmptyState } from '@/components/common/EmptyState';
 import { apiFetch } from '@/lib/api';
-import { METRICS } from '@/lib/metrics.config';
+import { METRICS, calcPoints, formatMetricValue } from '@/lib/metrics.config';
 import { exportTableToCsv, printToPdf } from '@/utils/export';
 import { currentMonthLabel, daysLeftInMonth } from '@/utils/date-utils';
 import { formatCurrency } from '@/utils/formatters';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+type TrendRow = { date: string } & Record<string, number>;
+type EmployeeRow = { userId: string; points?: number } & Record<string, number>;
+
 interface AnalyticsResponse {
   meta: { daysBack: number; totalRecords: number; generatedAt: string };
-  performanceTrend: { date: string; kyc: number; demat: number; mf: number; insurance: number }[];
-  metricTotals: { metric: string; actual: number; target: number; pct: number }[];
+  performanceTrend: TrendRow[];
+  metricTotals: { metric: string; key?: string; actual: number; target: number; pct: number }[];
   conversionFunnel: { name: string; value: number; fill: string }[];
   cohortAnalysis: { month: string; employees: number; revenue: number; growth: number; avgPerformance: number }[];
-  topEmployees: { userId: string; kyc: number; demat: number; mf: number; insurance: number }[];
+  topEmployees: EmployeeRow[];
 }
 
 const DAYS_OPTIONS = [7, 14, 30, 60, 90] as const;
@@ -79,16 +82,11 @@ export default function AdminAnalyticsPage() {
       ? Math.round(metricTotals.reduce((s, m) => s + (m.pct ?? 0), 0) / metricTotals.length)
       : 0;
 
-  // Points calculation for leaderboard
   const ranked = top
-    .map((e, i) => ({
-      rank: i + 1,
+    .map((e) => ({
+      ...e,
       userId: e.userId ?? '',
-      kyc: e.kyc ?? 0,
-      demat: e.demat ?? 0,
-      mf: e.mf ?? 0,
-      insurance: e.insurance ?? 0,
-      points: Math.round((e.kyc ?? 0) * 10 + (e.demat ?? 0) * 15 + (e.mf ?? 0) * 20 + (e.insurance ?? 0) / 10000),
+      points: e.points ?? calcPoints(e as Record<string, number>),
     }))
     .sort((a, b) => b.points - a.points)
     .slice(0, 10);
@@ -254,10 +252,9 @@ export default function AdminAnalyticsPage() {
                     contentStyle={{ fontSize: 12 }}
                   />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <Line type="monotone" dataKey="kyc" stroke="#6366f1" strokeWidth={2} dot={false} name="KYC" />
-                  <Line type="monotone" dataKey="demat" stroke="#22c55e" strokeWidth={2} dot={false} name="Demat" />
-                  <Line type="monotone" dataKey="mf" stroke="#f59e0b" strokeWidth={2} dot={false} name="MF" />
-                  <Line type="monotone" dataKey="insurance" stroke="#ec4899" strokeWidth={2} dot={false} name="Insurance" />
+                  {METRICS.map((m) => (
+                    <Line key={m.key} type="monotone" dataKey={m.key} stroke={m.color} strokeWidth={2} dot={false} name={m.label} />
+                  ))}
                 </LineChart>
               </ResponsiveContainer>
             )}
@@ -391,10 +388,9 @@ export default function AdminAnalyticsPage() {
                   <tr className="border-b border-slate-100 dark:border-slate-800 text-left text-xs font-semibold uppercase text-slate-500">
                     <th className="pb-3 pr-4">Rank</th>
                     <th className="pb-3 pr-4">Employee ID</th>
-                    <th className="pb-3 pr-4">KYC</th>
-                    <th className="pb-3 pr-4">Demat</th>
-                    <th className="pb-3 pr-4">MF</th>
-                    <th className="pb-3 pr-4">Insurance</th>
+                    {METRICS.map((m) => (
+                      <th key={m.key} className="pb-3 pr-4">{m.icon} {m.label}</th>
+                    ))}
                     <th className="pb-3 pr-4">Points</th>
                     <th className="pb-3">Est. Bonus</th>
                   </tr>
@@ -413,12 +409,11 @@ export default function AdminAnalyticsPage() {
                             {row.userId.slice(0, 12)}…
                           </span>
                         </td>
-                        <td className="py-2.5 pr-4 tabular-nums text-slate-700 dark:text-slate-300">{row.kyc ?? 0}</td>
-                        <td className="py-2.5 pr-4 tabular-nums text-slate-700 dark:text-slate-300">{row.demat ?? 0}</td>
-                        <td className="py-2.5 pr-4 tabular-nums text-slate-700 dark:text-slate-300">{row.mf ?? 0}</td>
-                        <td className="py-2.5 pr-4 tabular-nums text-slate-700 dark:text-slate-300">
-                          {formatCurrency(row.insurance ?? 0)}
-                        </td>
+                        {METRICS.map((m) => (
+                          <td key={m.key} className="py-2.5 pr-4 tabular-nums text-slate-700 dark:text-slate-300">
+                            {formatMetricValue(m, (row as unknown as Record<string, number>)[m.key] ?? 0)}
+                          </td>
+                        ))}
                         <td className="py-2.5 pr-4">
                           <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-bold text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400">
                             ⭐ {row.points}
@@ -433,7 +428,7 @@ export default function AdminAnalyticsPage() {
                 </tbody>
               </table>
               <p className="mt-2 px-1 text-xs text-slate-400">
-                Points: KYC×10 + Demat×15 + MF×20 + Insurance÷10k · Est. Bonus: Points × ₹4
+                Points: {METRICS.map((m) => `${m.label}×${m.unit === 'currency' ? `÷${m.pointsWeight.toLocaleString()}` : m.pointsWeight}`).join(' + ')} · Est. Bonus: Points × ₹4
               </p>
             </div>
           )}

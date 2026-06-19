@@ -1,6 +1,8 @@
 // Single source of truth for every metric the dashboard knows about.
-// Add a new metric by adding one entry here - no other code changes needed
-// (cards, charts, leaderboard, and CSV export all read from this config).
+// To add a new metric: append one entry to METRICS below, then add the
+// same key to METRIC_KEYS in the backend analytics route.
+// Everything else (cards, charts, leaderboard, CSV export, daily entry)
+// reads from this config automatically.
 
 export type MetricUnit = 'count' | 'currency';
 export type TargetPeriod = 'day' | 'month';
@@ -15,10 +17,18 @@ export interface MetricConfig {
   targetPeriod: TargetPeriod;
   /** Tailwind color tokens used consistently across cards/charts */
   color: string;
-  icon: string; // emoji, keeps this dependency-free
+  icon: string;
+  /**
+   * Weight used in the points formula: points += value * pointsWeight
+   * For currency metrics (unit === 'currency'), divide value by this
+   * weight instead (i.e. ₹10,000 insurance = 1 point when weight=10000).
+   * Defaults to 1 if omitted.
+   */
+  pointsWeight: number;
 }
 
 export const METRICS: MetricConfig[] = [
+  // ── Core products ───────────────────────────────────────────────────────────
   {
     key: 'kyc',
     label: 'Telecalling (KYC)',
@@ -26,7 +36,8 @@ export const METRICS: MetricConfig[] = [
     target: 4,
     targetPeriod: 'day',
     color: '#6366f1',
-    icon: '📞'
+    icon: '📞',
+    pointsWeight: 10,
   },
   {
     key: 'demat',
@@ -35,7 +46,8 @@ export const METRICS: MetricConfig[] = [
     target: 50,
     targetPeriod: 'month',
     color: '#22c55e',
-    icon: '🏦'
+    icon: '🏦',
+    pointsWeight: 15,
   },
   {
     key: 'mf',
@@ -44,7 +56,8 @@ export const METRICS: MetricConfig[] = [
     target: 40,
     targetPeriod: 'month',
     color: '#f59e0b',
-    icon: '📈'
+    icon: '📈',
+    pointsWeight: 20,
   },
   {
     key: 'insurance',
@@ -53,7 +66,8 @@ export const METRICS: MetricConfig[] = [
     target: 100000,
     targetPeriod: 'month',
     color: '#ec4899',
-    icon: '🛡️'
+    icon: '🛡️',
+    pointsWeight: 10000, // ₹10,000 = 1 point
   },
   {
     key: 'algo',
@@ -62,7 +76,8 @@ export const METRICS: MetricConfig[] = [
     target: 10,
     targetPeriod: 'month',
     color: '#06b6d4',
-    icon: '🤖'
+    icon: '🤖',
+    pointsWeight: 12,
   },
   {
     key: 'coaching',
@@ -71,11 +86,45 @@ export const METRICS: MetricConfig[] = [
     target: 20000,
     targetPeriod: 'month',
     color: '#a855f7',
-    icon: '🎓'
-  }
-  // Future metrics (webinar signups, client retention, etc.) just get
-  // appended here.
+    icon: '🎓',
+    pointsWeight: 1000, // ₹1,000 = 1 point
+  },
+  // ── Matrix products ─────────────────────────────────────────────────────────
+  {
+    key: 'pms',
+    label: 'PMS',
+    unit: 'count',
+    target: 10,
+    targetPeriod: 'month',
+    color: '#0ea5e9',
+    icon: '💼',
+    pointsWeight: 30,
+  },
+  {
+    key: 'pro_insight',
+    label: 'Pro Insight',
+    unit: 'count',
+    target: 15,
+    targetPeriod: 'month',
+    color: '#8b5cf6',
+    icon: '💡',
+    pointsWeight: 20,
+  },
+  {
+    key: 'ltpp',
+    label: 'LTPP',
+    unit: 'count',
+    target: 10,
+    targetPeriod: 'month',
+    color: '#14b8a6',
+    icon: '📋',
+    pointsWeight: 25,
+  },
 ];
+
+// Derived helpers — computed once, used everywhere
+
+export const METRIC_KEYS = METRICS.map((m) => m.key);
 
 export const getMetricConfig = (key: string): MetricConfig | undefined =>
   METRICS.find((m) => m.key === key);
@@ -84,9 +133,20 @@ export const getMetricConfig = (key: string): MetricConfig | undefined =>
 export const dailyTarget = (metric: MetricConfig): number =>
   metric.targetPeriod === 'day' ? metric.target : metric.target / 30;
 
-export const formatMetricValue = (metric: MetricConfig, value: number): string => {
-  if (metric.unit === 'currency') {
-    return `₹${value.toLocaleString('en-IN')}`;
-  }
-  return value.toLocaleString('en-IN');
-};
+export const formatMetricValue = (metric: MetricConfig, value: number): string =>
+  metric.unit === 'currency'
+    ? `₹${value.toLocaleString('en-IN')}`
+    : value.toLocaleString('en-IN');
+
+/**
+ * Calculate points for a single employee's metric totals.
+ * For count metrics:    points += value * pointsWeight
+ * For currency metrics: points += value / pointsWeight
+ */
+export const calcPoints = (metricTotals: Record<string, number>): number =>
+  Math.round(
+    METRICS.reduce((sum, m) => {
+      const v = metricTotals[m.key] ?? 0;
+      return sum + (m.unit === 'currency' ? v / m.pointsWeight : v * m.pointsWeight);
+    }, 0)
+  );
