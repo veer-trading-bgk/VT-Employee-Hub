@@ -52,15 +52,10 @@ export function MetricCard({
         ${done ? ringColor : 'border-slate-200 dark:border-slate-800'}
       `}
     >
-      {/* Top row: icon + label + % badge + optional edit button */}
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-start gap-2 min-w-0">
-          <span className="text-xl leading-none flex-shrink-0 mt-0.5">{metric.icon}</span>
-          <span className="text-xs font-semibold text-slate-600 dark:text-slate-400 line-clamp-2 break-words leading-tight">
-            {metric.label}
-          </span>
-        </div>
-        <div className="flex flex-shrink-0 items-center gap-1">
+      {/* Top row: icon left, controls right — label is NOT here so it gets full width below */}
+      <div className="flex items-center justify-between">
+        <span className="text-xl leading-none">{metric.icon}</span>
+        <div className="flex items-center gap-1">
           {/* Pencil edit button — always visible in entry mode */}
           {onFixClick && !isCorrection && (
             <button
@@ -86,6 +81,11 @@ export function MetricCard({
           </span>
         </div>
       </div>
+
+      {/* Label — own full-width row, never competes with icon or badge */}
+      <p className="mt-1.5 text-xs font-semibold leading-tight text-slate-600 dark:text-slate-400">
+        {metric.label}
+      </p>
 
       {/* Logged value */}
       <p className="mt-2 text-2xl font-bold tabular-nums text-slate-900 dark:text-white leading-none">
