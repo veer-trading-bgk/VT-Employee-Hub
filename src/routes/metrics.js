@@ -75,6 +75,54 @@ router.post('/add', async (req, res, next) => {
   }
 });
 
+// Correct today's value (SET, not ADD) — PUT /api/metrics/set
+router.put('/set', async (req, res, next) => {
+  try {
+    const { metric_type, value } = req.body;
+    const today = new Date().toISOString().split('T')[0];
+    const validTypes = ['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching', 'pms', 'pro_insight', 'ltpp'];
+
+    if (!metric_type || !validTypes.includes(metric_type)) {
+      return res.status(400).json({ error: 'Invalid metric_type' });
+    }
+    if (value === undefined || value === null || isNaN(Number(value)) || Number(value) < 0) {
+      return res.status(400).json({ error: 'value must be a non-negative number' });
+    }
+
+    const userId = req.user.id;
+    const v = Number(value);
+
+    if (v === 0) {
+      await dynamodb.delete({
+        TableName: process.env.DYNAMODB_TABLE_METRICS,
+        Key: { PK: userId, SK: `${today}#${metric_type}` },
+      }).promise();
+    } else {
+      await dynamodb.update({
+        TableName: process.env.DYNAMODB_TABLE_METRICS,
+        Key: { PK: userId, SK: `${today}#${metric_type}` },
+        UpdateExpression: 'SET #val = :v, correctedAt = :ca, correctedFrom = :cf, metric_type = if_not_exists(metric_type, :mt), #dt = if_not_exists(#dt, :dt), userId = if_not_exists(userId, :uid), email = if_not_exists(email, :em)',
+        ExpressionAttributeNames: { '#val': 'value', '#dt': 'date' },
+        ExpressionAttributeValues: {
+          ':v': v,
+          ':ca': new Date().toISOString(),
+          ':cf': 'web_correction',
+          ':mt': metric_type,
+          ':dt': today,
+          ':uid': userId,
+          ':em': req.user.email,
+        },
+      }).promise();
+    }
+
+    await logAudit(userId, 'metric_corrected', `${metric_type}=${v}`, 'success', req.ip);
+
+    res.json({ success: true, data: { metric_type, value: v, date: today } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Get metrics for current user
 router.get('/my', async (req, res, next) => {
   try {

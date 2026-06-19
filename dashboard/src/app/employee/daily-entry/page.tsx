@@ -26,6 +26,13 @@ const GROUPS = [
 export default function DailyEntryPage() {
   const qc = useQueryClient();
   const [values, setValues] = useState<Record<string, string>>({});
+  // correction: null = not correcting; string = correction input value for that key
+  const [correcting, setCorrecting] = useState<Record<string, string | null>>({});
+
+  const enterCorrection = (key: string, currentValue: number) =>
+    setCorrecting((prev) => ({ ...prev, [key]: String(currentValue) }));
+  const cancelCorrection = (key: string) =>
+    setCorrecting((prev) => ({ ...prev, [key]: null }));
 
   const { data, isLoading } = useQuery({
     queryKey: ['my-metrics-entry'],
@@ -82,6 +89,37 @@ export default function DailyEntryPage() {
     },
   });
 
+  const { mutate: correct, isPending: isCorrecting } = useMutation({
+    mutationFn: ({ key, newValue }: { key: string; newValue: number }) =>
+      apiFetch('/api/metrics/set', {
+        method: 'PUT',
+        body: JSON.stringify({ metric_type: key, value: newValue }),
+      }),
+    onMutate: async ({ key, newValue }) => {
+      await qc.cancelQueries({ queryKey: ['my-metrics-entry'] });
+      const previous = qc.getQueryData<MyMetricsResponse>(['my-metrics-entry']);
+      qc.setQueryData<MyMetricsResponse>(['my-metrics-entry'], (old) => {
+        if (!old) return old;
+        const today = { ...(old.data[TODAY] ?? {}), [key]: newValue };
+        return { ...old, data: { ...old.data, [TODAY]: today } };
+      });
+      return { previous };
+    },
+    onError: (err: Error, { key }, ctx) => {
+      if (ctx?.previous) qc.setQueryData(['my-metrics-entry'], ctx.previous);
+      toast.error(err.message);
+      setCorrecting((prev) => ({ ...prev, [key]: null }));
+    },
+    onSuccess: (_res, { key }) => {
+      toast.success('Value corrected!');
+      setCorrecting((prev) => ({ ...prev, [key]: null }));
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['my-metrics-entry'] });
+      qc.invalidateQueries({ queryKey: ['my-metrics'] });
+    },
+  });
+
   const hasAnyValue = METRICS.some((m) => parseInt(values[m.key] ?? '0') > 0);
 
   return (
@@ -120,6 +158,7 @@ export default function DailyEntryPage() {
                       const target    = (apiTargets[m.key] as number) ?? dailyTarget(m);
                       const progress  = target > 0 ? Math.min(Math.round((logged / target) * 100), 999) : 0;
 
+                      const inCorrection = correcting[m.key] !== undefined && correcting[m.key] !== null;
                       return (
                         <MetricCard
                           key={m.key}
@@ -128,9 +167,20 @@ export default function DailyEntryPage() {
                           target={target}
                           progress={progress}
                           yesterday={yest}
-                          inputValue={values[m.key] ?? ''}
-                          onInputChange={(v) => setValues((prev) => ({ ...prev, [m.key]: v }))}
-                          disabled={isPending}
+                          // Add mode
+                          inputValue={inCorrection ? undefined : (values[m.key] ?? '')}
+                          onInputChange={inCorrection ? undefined : (v) => setValues((prev) => ({ ...prev, [m.key]: v }))}
+                          onFixClick={inCorrection ? undefined : () => enterCorrection(m.key, logged)}
+                          // Correction mode
+                          correctionValue={inCorrection ? (correcting[m.key] ?? '') : undefined}
+                          onCorrectionChange={inCorrection ? (v) => setCorrecting((prev) => ({ ...prev, [m.key]: v })) : undefined}
+                          onCorrectionSave={inCorrection ? () => {
+                            const v = parseFloat(correcting[m.key] ?? '');
+                            if (isNaN(v) || v < 0) { toast.error('Enter a valid number'); return; }
+                            correct({ key: m.key, newValue: v });
+                          } : undefined}
+                          onCorrectionCancel={inCorrection ? () => cancelCorrection(m.key) : undefined}
+                          disabled={isPending || isCorrecting}
                         />
                       );
                     })}
