@@ -133,6 +133,10 @@ export const getMetricConfig = (key: string): MetricConfig | undefined =>
 export const dailyTarget = (metric: MetricConfig): number =>
   metric.targetPeriod === 'day' ? metric.target : metric.target / 30;
 
+/** Full monthly target, normalizing day-based targets to a 30-day figure */
+export const monthlyTarget = (metric: MetricConfig): number =>
+  metric.targetPeriod === 'month' ? metric.target : metric.target * 30;
+
 export const formatMetricValue = (metric: MetricConfig, value: number): string =>
   metric.unit === 'currency'
     ? `₹${value.toLocaleString('en-IN')}`
