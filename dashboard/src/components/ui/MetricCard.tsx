@@ -54,9 +54,9 @@ export function MetricCard({
     >
       {/* Top row: icon + label + % badge + optional edit button */}
       <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-xl leading-none flex-shrink-0">{metric.icon}</span>
-          <span className="text-xs font-semibold text-slate-600 dark:text-slate-400 truncate">
+        <div className="flex items-start gap-2 min-w-0">
+          <span className="text-xl leading-none flex-shrink-0 mt-0.5">{metric.icon}</span>
+          <span className="text-xs font-semibold text-slate-600 dark:text-slate-400 line-clamp-2 break-words leading-tight">
             {metric.label}
           </span>
         </div>
