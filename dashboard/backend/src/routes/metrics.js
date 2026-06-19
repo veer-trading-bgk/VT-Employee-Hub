@@ -51,7 +51,7 @@ router.post('/add', async (req, res, next) => {
         ':mid': metricId,
         ':uid': userId,
         ':em': req.user.email,
-        ':nm': req.user.name,
+        ':nm': req.user.name || req.user.email || '',
         ':mt': metric_type,
         ':dt': metricDate,
         ':ea': new Date().toISOString(),

@@ -24,7 +24,7 @@ function cookieAttrs() {
 
 function issueTokens(user, res) {
   const accessToken = jwt.sign(
-    { id: user.id, email: user.email, role: user.role },
+    { id: user.id, email: user.email, role: user.role, name: user.name || '' },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRE || '1h' }
   );
