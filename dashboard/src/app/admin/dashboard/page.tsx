@@ -1,6 +1,8 @@
 'use client';
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMemo, useCallback } from 'react';
+import Link from 'next/link';
 import { Navbar } from '@/components/layout/Navbar';
 import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Loading } from '@/components/common/Loading';
@@ -53,52 +55,75 @@ function toDailyTargetMap(data: TargetsResponse['data']): Record<string, number>
   );
 }
 
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-400">
+      {message}
+    </div>
+  );
+}
+
 export default function AdminDashboardPage() {
   const queryClient = useQueryClient();
 
-  const { data: teamData, isLoading: teamLoading } = useQuery({
+  const { data: teamData, isLoading: teamLoading, isError: teamError } = useQuery({
     queryKey: ['admin-team-summary'],
     queryFn: () => apiFetch<TeamSummaryResponse>('/api/metrics/team-summary'),
     refetchInterval: 30_000,
   });
 
-  const { data: lbData, isLoading: lbLoading } = useQuery({
+  const { data: lbData, isLoading: lbLoading, isError: lbError } = useQuery({
     queryKey: ['admin-leaderboard-monthly'],
     queryFn: () => apiFetch<LeaderboardResponse>('/api/metrics/leaderboard'),
     refetchInterval: 60_000,
   });
 
-  const { data: targetsData } = useQuery({
+  const { data: targetsData, isError: targetsError } = useQuery({
     queryKey: ['admin-targets'],
     queryFn: () => apiFetch<TargetsResponse>('/api/admin/targets'),
     staleTime: 5 * 60 * 1000,
   });
 
-  const teamEntries = teamData ? Object.entries(teamData.data) : [];
-  const dailyTargets = targetsData ? toDailyTargetMap(targetsData.data) : (teamData?.targets ?? {});
-  const monthlyTargets = targetsData ? toMonthlyTargetMap(targetsData.data) : {};
-  const lbEntries = lbData?.data ?? [];
+  const teamEntries = useMemo(
+    () => (teamData ? Object.entries(teamData.data) : []),
+    [teamData]
+  );
 
-  const metricTotals = METRICS.map((m) => {
+  const dailyTargets = useMemo(
+    () => targetsData ? toDailyTargetMap(targetsData.data) : (teamData?.targets ?? {}),
+    [targetsData, teamData]
+  );
+
+  const monthlyTargets = useMemo(
+    () => targetsData ? toMonthlyTargetMap(targetsData.data) : {},
+    [targetsData]
+  );
+
+  const lbEntries = useMemo(() => lbData?.data ?? [], [lbData]);
+
+  // Use leaderboard count as stable team-size denominator (includes all MTD reporters)
+  const teamSize = lbEntries.length || teamEntries.length || 1;
+
+  const metricTotals = useMemo(() => METRICS.map((m) => {
     const total = teamEntries.reduce((sum, [, entry]) => sum + (entry.metrics?.[m.key] ?? 0), 0);
-    const target = (dailyTargets[m.key] ?? 0) * teamEntries.length;
+    const target = (dailyTargets[m.key] ?? 0) * teamSize;
     const pct = target > 0 ? Math.round((total / target) * 100) : 0;
     return { ...m, total, target, pct };
-  });
+  }), [teamEntries, dailyTargets, teamSize]);
 
-  const monthlyChartData = METRICS.map((m) => {
+  const monthlyChartData = useMemo(() => METRICS.map((m) => {
     const total = lbEntries.reduce((sum, entry) => sum + (entry.metrics[m.key] ?? 0), 0);
     const mTarget = (monthlyTargets[m.key] ?? lbData?.monthlyTargets?.[m.key] ?? 0) * (lbEntries.length || 1);
     const pct = mTarget > 0 ? Math.min(Math.round((total / mTarget) * 100), 999) : 0;
     return { label: m.label, icon: m.icon, value: total, target: mTarget, progress: pct, color: m.color, unit: m.unit };
-  });
+  }), [lbEntries, monthlyTargets, lbData]);
 
-  const todayTop5 = teamEntries
+  const todayTop5 = useMemo(() => teamEntries
     .map(([userId, entry]) => {
       const avgScore = Math.round(
         METRICS.reduce((sum, m) => {
           const v = entry.metrics?.[m.key] ?? 0;
-          const t = dailyTargets[m.key] ?? 1;
+          const t = dailyTargets[m.key] || 1;
           return sum + (v / t) * 100;
         }, 0) / METRICS.length
       );
@@ -110,23 +135,26 @@ export default function AdminDashboardPage() {
       };
     })
     .sort((a, b) => b.avgScore - a.avgScore)
-    .slice(0, 5);
+    .slice(0, 5),
+  [teamEntries, dailyTargets]);
 
-  const barData = metricTotals.map((m) => ({
+  const barData = useMemo(() => metricTotals.map((m) => ({
     name: m.key.toUpperCase(),
     actual: m.total,
     target: Math.round(m.target),
-  }));
+  })), [metricTotals]);
 
-  const overallPct = metricTotals.length > 0
-    ? Math.round(metricTotals.reduce((s, m) => s + m.pct, 0) / metricTotals.length)
-    : 0;
+  const overallPct = useMemo(() =>
+    metricTotals.length > 0
+      ? Math.round(metricTotals.reduce((s, m) => s + m.pct, 0) / metricTotals.length)
+      : 0,
+  [metricTotals]);
 
-  const refresh = () => {
+  const refresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['admin-team-summary'] });
     queryClient.invalidateQueries({ queryKey: ['admin-leaderboard-monthly'] });
     queryClient.invalidateQueries({ queryKey: ['admin-targets'] });
-  };
+  }, [queryClient]);
 
   return (
     <>
@@ -140,7 +168,7 @@ export default function AdminDashboardPage() {
               Overview — {currentMonthLabel()}
             </h1>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              {daysLeftInMonth()} days left · {teamEntries.length} active employees
+              {daysLeftInMonth()} days left · {teamSize} employees
               {targetsData?.isCustom && (
                 <span className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300">
                   Custom targets active
@@ -156,10 +184,15 @@ export default function AdminDashboardPage() {
           </button>
         </div>
 
+        {/* Error banners */}
+        {teamError    && <ErrorBanner message="Failed to load today's team metrics. Data may be stale." />}
+        {lbError      && <ErrorBanner message="Failed to load monthly leaderboard data." />}
+        {targetsError && <ErrorBanner message="Failed to load targets — showing defaults." />}
+
         {/* Stats row */}
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-          <StatsCard title="Active Employees" value={teamEntries.length} icon="👥" accent="indigo" loading={teamLoading} />
-          <StatsCard title="Today's Target" value={`${overallPct}%`} icon="🎯"
+          <StatsCard title="Logged Today" value={teamEntries.length} icon="👥" accent="indigo" loading={teamLoading} />
+          <StatsCard title="Daily Progress" value={`${overallPct}%`} icon="🎯"
             accent={overallPct >= 80 ? 'emerald' : overallPct >= 50 ? 'amber' : 'rose'} loading={teamLoading} />
           <StatsCard title="Days Left" value={daysLeftInMonth()} icon="📅" accent="blue" loading={teamLoading} />
           <StatsCard title="Metrics Tracked" value={METRICS.length} icon="📊" accent="purple" loading={false} />
@@ -172,7 +205,7 @@ export default function AdminDashboardPage() {
           </h2>
           {teamLoading ? (
             <Loading />
-          ) : teamEntries.length === 0 ? (
+          ) : teamError ? null : teamEntries.length === 0 ? (
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-8 text-center dark:border-slate-800 dark:bg-slate-800/40">
               <p className="text-sm font-medium text-slate-500 dark:text-slate-400">No entries recorded today yet</p>
               <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">Progress will appear once team members start logging metrics.</p>
@@ -197,7 +230,14 @@ export default function AdminDashboardPage() {
                     <p className="mt-0.5 text-lg font-bold text-slate-900 dark:text-white">
                       {formatMetricValue(m, m.total)}
                     </p>
-                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                    <div
+                      className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800"
+                      role="progressbar"
+                      aria-valuenow={Math.min(m.pct, 100)}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-label={`${m.label} progress`}
+                    >
                       <div
                         className="h-full rounded-full transition-all duration-700"
                         style={{ width: `${Math.min(m.pct, 100)}%`, backgroundColor: m.color, minWidth: m.pct > 0 ? '3px' : '0' }}
@@ -221,7 +261,9 @@ export default function AdminDashboardPage() {
           {/* Today actual vs target bar chart */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
             <h2 className="mb-4 font-semibold text-slate-900 dark:text-white">Target vs Actual (Today)</h2>
-            {teamLoading ? <Loading size="sm" /> : barData.length === 0 ? (
+            {teamLoading ? <Loading size="sm" /> : teamError ? (
+              <p className="py-8 text-center text-sm text-rose-400">Failed to load</p>
+            ) : barData.length === 0 ? (
               <p className="py-8 text-center text-sm text-slate-400">No data yet</p>
             ) : (
               <ResponsiveContainer width="100%" height={220}>
@@ -241,11 +283,13 @@ export default function AdminDashboardPage() {
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="font-semibold text-slate-900 dark:text-white">🏆 Top Performers (Today)</h2>
-              <a href="/leaderboard" className="text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400">
+              <Link href="/leaderboard" className="text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400">
                 Full MTD →
-              </a>
+              </Link>
             </div>
-            {teamLoading ? <Loading size="sm" /> : todayTop5.length === 0 ? (
+            {teamLoading ? <Loading size="sm" /> : teamError ? (
+              <p className="py-8 text-center text-sm text-rose-400">Failed to load</p>
+            ) : todayTop5.length === 0 ? (
               <p className="py-8 text-center text-sm text-slate-400">No data yet</p>
             ) : (
               <div className="space-y-2">
@@ -282,7 +326,9 @@ export default function AdminDashboardPage() {
           <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
             Team MTD totals vs combined monthly targets
           </p>
-          {lbLoading ? <Loading size="sm" /> : (
+          {lbLoading ? <Loading size="sm" /> : lbError ? (
+            <p className="py-4 text-center text-sm text-rose-400">Failed to load monthly data</p>
+          ) : (
             <ProgressBarChart data={monthlyChartData} />
           )}
         </div>
@@ -290,23 +336,23 @@ export default function AdminDashboardPage() {
         {/* Quick links */}
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-8">
           {[
-            { href: '/admin/employees',    label: 'Employees',     icon: '👥' },
-            { href: '/admin/analytics',    label: 'Analytics',     icon: '📈' },
-            { href: '/admin/verification', label: 'Verify',        icon: '✅' },
-            { href: '/admin/audit',        label: 'Audit Logs',    icon: '🔍' },
-            { href: '/admin/compensation', label: 'Payroll',       icon: '💰' },
-            { href: '/leaderboard',        label: 'Leaderboard',   icon: '🏆' },
-            { href: '/admin/bulk-entry',   label: 'Bulk Entry',    icon: '📝' },
-            { href: '/admin/targets',      label: 'Targets',       icon: '🎯' },
+            { href: '/admin/employees',    label: 'Employees',   icon: '👥' },
+            { href: '/admin/analytics',    label: 'Analytics',   icon: '📈' },
+            { href: '/admin/verification', label: 'Verify',      icon: '✅' },
+            { href: '/admin/audit',        label: 'Audit Logs',  icon: '🔍' },
+            { href: '/admin/compensation', label: 'Payroll',     icon: '💰' },
+            { href: '/leaderboard',        label: 'Leaderboard', icon: '🏆' },
+            { href: '/admin/bulk-entry',   label: 'Bulk Entry',  icon: '📝' },
+            { href: '/admin/targets',      label: 'Targets',     icon: '🎯' },
           ].map((item) => (
-            <a
+            <Link
               key={item.href}
               href={item.href}
               className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-indigo-300 hover:bg-indigo-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-950/30"
             >
               <span className="text-lg">{item.icon}</span>
               {item.label}
-            </a>
+            </Link>
           ))}
         </div>
       </div>
