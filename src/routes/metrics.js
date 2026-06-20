@@ -225,7 +225,7 @@ router.get('/team-summary', checkRole(['admin', 'manager']), async (req, res, ne
   try {
     const today = new Date().toISOString().split('T')[0];
 
-    const [result, targetCfg] = await Promise.all([
+    const [result, targetCfg, empResult] = await Promise.all([
       dynamodb.scan({
         TableName: process.env.DYNAMODB_TABLE_METRICS,
         FilterExpression: '#date = :today AND attribute_exists(metric_type)',
@@ -233,13 +233,26 @@ router.get('/team-summary', checkRole(['admin', 'manager']), async (req, res, ne
         ExpressionAttributeValues: { ':today': today },
       }).promise(),
       fetchTargetConfig(),
+      dynamodb.scan({
+        TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+        ProjectionExpression: 'id, #r, #s',
+        ExpressionAttributeNames: { '#r': 'role', '#s': 'status' },
+      }).promise(),
     ]);
+
+    // Active performers only: agent / telecaller / intern
+    const allowedIds = new Set(
+      (empResult.Items ?? [])
+        .filter(e => !TEAM_EXCLUDED_ROLES.has(e.role) && e.status !== 'inactive')
+        .map(e => e.id)
+    );
 
     const targets = toDailyTargets(targetCfg);
     const summary = {};
 
-    result.Items.forEach(item => {
+    (result.Items ?? []).forEach(item => {
       if (!item.userId || !item.metric_type) return;
+      if (!allowedIds.has(item.userId)) return;
       const status = item.verificationStatus || (item.verified === true ? 'approved' : 'pending');
       if (status === 'rejected') return;
       if (!summary[item.userId]) {
@@ -262,7 +275,7 @@ router.get('/team-summary', checkRole(['admin', 'manager']), async (req, res, ne
 
     await logAudit(req.user.id, 'view_team_summary', 'team_metrics', 'success', req.ip);
 
-    res.json({ success: true, date: today, data: summary, targets });
+    res.json({ success: true, date: today, data: summary, targets, activeHeadcount: allowedIds.size });
   } catch (error) {
     next(error);
   }
@@ -392,13 +405,16 @@ router.post('/verify/:metricId', adminMiddleware, async (req, res, next) => {
 
 // ── Monthly leaderboard ───────────────────────────────────────────────────────
 
+// Roles excluded from team metrics — they manage, not perform
+const TEAM_EXCLUDED_ROLES = new Set(['admin', 'manager', 'team_lead']);
+
 router.get('/leaderboard', async (req, res, next) => {
   try {
     const now = new Date();
     const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
     const today = now.toISOString().split('T')[0];
 
-    const [result, targetCfg] = await Promise.all([
+    const [result, targetCfg, empResult] = await Promise.all([
       dynamodb.scan({
         TableName: process.env.DYNAMODB_TABLE_METRICS,
         FilterExpression: '#date BETWEEN :start AND :end AND attribute_exists(metric_type)',
@@ -406,13 +422,27 @@ router.get('/leaderboard', async (req, res, next) => {
         ExpressionAttributeValues: { ':start': monthStart, ':end': today },
       }).promise(),
       fetchTargetConfig(),
+      dynamodb.scan({
+        TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+        ProjectionExpression: 'id, #r, #s',
+        ExpressionAttributeNames: { '#r': 'role', '#s': 'status' },
+      }).promise(),
     ]);
+
+    // Active performers only: agent / telecaller / intern
+    const allowedIds = new Set(
+      (empResult.Items ?? [])
+        .filter(e => !TEAM_EXCLUDED_ROLES.has(e.role) && e.status !== 'inactive')
+        .map(e => e.id)
+    );
+    const activeHeadcount = allowedIds.size;
 
     const monthlyTargets = toMonthlyTargets(targetCfg);
 
     const byUser = {};
     (result.Items ?? []).forEach(item => {
       if (!item.userId || !item.metric_type) return;
+      if (!allowedIds.has(item.userId)) return;
       const status = item.verificationStatus || (item.verified === true ? 'approved' : 'pending');
       if (status === 'rejected') return;
       if (!byUser[item.userId]) {
@@ -434,7 +464,7 @@ router.get('/leaderboard', async (req, res, next) => {
 
     await logAudit(req.user.id, 'view_leaderboard', 'monthly', 'success', req.ip);
 
-    res.json({ success: true, month: monthStart.slice(0, 7), data: ranked, monthlyTargets });
+    res.json({ success: true, month: monthStart.slice(0, 7), data: ranked, monthlyTargets, activeHeadcount });
   } catch (error) {
     next(error);
   }

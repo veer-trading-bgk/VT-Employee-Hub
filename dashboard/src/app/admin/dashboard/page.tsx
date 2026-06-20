@@ -27,6 +27,7 @@ interface LeaderboardResponse {
   month: string;
   data: LeaderboardEntry[];
   monthlyTargets: Record<string, number>;
+  activeHeadcount?: number;
 }
 
 interface TargetsResponse {
@@ -101,8 +102,9 @@ export default function AdminDashboardPage() {
 
   const lbEntries = useMemo(() => lbData?.data ?? [], [lbData]);
 
-  // Use leaderboard count as stable team-size denominator (includes all MTD reporters)
-  const teamSize = lbEntries.length || teamEntries.length || 1;
+  // activeHeadcount = active agent/telecaller/intern employees (from employees table)
+  // Falls back to lbEntries.length (MTD reporters) if not yet returned by API
+  const teamSize = lbData?.activeHeadcount || lbEntries.length || teamEntries.length || 1;
 
   const metricTotals = useMemo(() => METRICS.map((m) => {
     const total = teamEntries.reduce((sum, [, entry]) => sum + (entry.metrics?.[m.key] ?? 0), 0);
@@ -168,7 +170,7 @@ export default function AdminDashboardPage() {
               Overview — {currentMonthLabel()}
             </h1>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              {daysLeftInMonth()} days left · {teamSize} employees
+              {daysLeftInMonth()} days left · {teamSize} performers
               {targetsData?.isCustom && (
                 <span className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300">
                   Custom targets active
@@ -321,7 +323,7 @@ export default function AdminDashboardPage() {
         <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
           <div className="mb-1 flex items-center justify-between">
             <h2 className="font-semibold text-slate-900 dark:text-white">Monthly Team Progress</h2>
-            <span className="text-xs text-slate-400">{lbEntries.length} employees · {currentMonthLabel()}</span>
+            <span className="text-xs text-slate-400">{teamSize} performers · {currentMonthLabel()}</span>
           </div>
           <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
             Team MTD totals vs combined monthly targets
