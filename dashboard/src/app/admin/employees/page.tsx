@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
 import { Navbar } from '@/components/layout/Navbar';
@@ -139,6 +139,46 @@ const IcChevronUp  = () => <Svg size={12}><polyline points="18 15 12 9 6 15"/></
 const IcChevronDown= () => <Svg size={12}><polyline points="6 9 12 15 18 9"/></Svg>;
 const IcSort       = () => <Svg size={12}><line x1="12" y1="5" x2="12" y2="19"/><polyline points="5 12 12 5 19 12"/></Svg>;
 
+// ── Escape key hook ───────────────────────────────────────────────────────────
+function useEscape(fn: (() => void) | null) {
+  useEffect(() => {
+    if (!fn) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') fn(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [fn]);
+}
+
+// ── Pagination bar ────────────────────────────────────────────────────────────
+function PaginationBar({ page, totalItems, pageSize, onPage }: {
+  page: number; totalItems: number; pageSize: number; onPage: (p: number) => void;
+}) {
+  const totalPages = Math.ceil(totalItems / pageSize);
+  if (totalPages <= 1) return null;
+  const from = (page - 1) * pageSize + 1;
+  const to   = Math.min(page * pageSize, totalItems);
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-xs text-slate-400 dark:text-slate-500 tabular-nums">{from}–{to} of {totalItems}</span>
+      <div className="flex gap-1">
+        <button
+          onClick={() => onPage(page - 1)} disabled={page === 1}
+          aria-label="Previous page"
+          className="flex h-7 w-7 items-center justify-center rounded border border-slate-200 text-sm text-slate-500 hover:bg-slate-50 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 dark:border-slate-700 dark:hover:bg-slate-800"
+        >‹</button>
+        <span className="flex h-7 items-center px-2.5 text-xs font-semibold text-slate-700 dark:text-slate-300">
+          {page} / {totalPages}
+        </span>
+        <button
+          onClick={() => onPage(page + 1)} disabled={page === totalPages}
+          aria-label="Next page"
+          className="flex h-7 w-7 items-center justify-center rounded border border-slate-200 text-sm text-slate-500 hover:bg-slate-50 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 dark:border-slate-700 dark:hover:bg-slate-800"
+        >›</button>
+      </div>
+    </div>
+  );
+}
+
 // ── Skeleton rows ─────────────────────────────────────────────────────────────
 function SkeletonRow() {
   return (
@@ -190,7 +230,11 @@ function SortTh({ label, col, current, dir, onSort }: {
   return (
     <th
       onClick={() => onSort(col)}
-      className="cursor-pointer select-none px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400 transition hover:text-slate-600 dark:hover:text-slate-300"
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSort(col); } }}
+      tabIndex={0}
+      scope="col"
+      aria-sort={active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className="cursor-pointer select-none px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400 transition hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400 dark:hover:text-slate-300"
     >
       <span className="inline-flex items-center gap-1">
         {label}
@@ -204,6 +248,7 @@ function SortTh({ label, col, current, dir, onSort }: {
 
 // ── 2FA Setup Modal ───────────────────────────────────────────────────────────
 function Setup2FAModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
+  useEscape(onClose);
   const queryClient = useQueryClient();
   const [result, setResult] = useState<Setup2FAResponse | null>(null);
   const [copied, setCopied] = useState(false);
@@ -297,6 +342,7 @@ function Setup2FAModal({ employee, onClose }: { employee: Employee; onClose: () 
 
 // ── Reset Password Modal ──────────────────────────────────────────────────────
 function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
+  useEscape(onClose);
   const queryClient = useQueryClient();
   const [pwd, setPwd] = useState('');
   const [show, setShow] = useState(false);
@@ -387,6 +433,7 @@ function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose
 
 // ── Reset 2FA Dialog ──────────────────────────────────────────────────────────
 function Reset2FADialog({ employee, onClose }: { employee: Employee; onClose: () => void }) {
+  useEscape(onClose);
   const queryClient = useQueryClient();
   const resetMutation = useMutation({
     mutationFn: () => api.reset2fa(employee.id),
@@ -426,6 +473,7 @@ function Reset2FADialog({ employee, onClose }: { employee: Employee; onClose: ()
 
 // ── Performance Report Modal ──────────────────────────────────────────────────
 function PerformanceReportModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
+  useEscape(onClose);
   const [days, setDays] = useState(30);
 
   const { data, isLoading } = useQuery({
@@ -557,6 +605,7 @@ function PerformanceReportModal({ employee, onClose }: { employee: Employee; onC
 
 // ── Add Employee Modal ────────────────────────────────────────────────────────
 function AddEmployeeModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (name: string) => void }) {
+  useEscape(onClose);
   const [form, setForm] = useState<RegisterForm>({
     name: '', email: '', password: generatePassword(), role: 'telecaller',
     panNumber: '', aadhaarNumber: '', homeAddress: '',
@@ -701,6 +750,10 @@ export default function AdminEmployeesPage() {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
 
+  // Pagination
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState(1);
+
   // Modal state
   const [showAddModal, setShowAddModal]         = useState(false);
   const [setup2faEmployee, setSetup2faEmployee] = useState<Employee | null>(null);
@@ -738,11 +791,11 @@ export default function AdminEmployeesPage() {
   const employees: Employee[] = data?.data ?? [];
 
   // Stats
-  const byRole       = useMemo(() => employees.reduce<Record<string, number>>((a, e) => { a[e.role] = (a[e.role] ?? 0) + 1; return a; }, {}), [employees]);
-  const activeCount  = useMemo(() => employees.filter(e => e.status === 'active' || !e.status).length, [employees]);
-  const inactiveCount = employees.length - activeCount;
-  const active2fa    = useMemo(() => employees.filter(e => e.totpEnabled).length, [employees]);
-  const frontlineCount = (byRole['agent'] ?? 0) + (byRole['telecaller'] ?? 0) + (byRole['intern'] ?? 0);
+  const byRole        = useMemo(() => employees.reduce<Record<string, number>>((a, e) => { a[e.role] = (a[e.role] ?? 0) + 1; return a; }, {}), [employees]);
+  const activeCount   = useMemo(() => employees.filter(e => e.status === 'active' || !e.status).length, [employees]);
+  const inactiveCount = useMemo(() => employees.length - activeCount, [employees, activeCount]);
+  const active2fa     = useMemo(() => employees.filter(e => e.totpEnabled).length, [employees]);
+  const frontlineCount = useMemo(() => (byRole['agent'] ?? 0) + (byRole['telecaller'] ?? 0) + (byRole['intern'] ?? 0), [byRole]);
 
   // Filter
   const filtered = useMemo(() => employees.filter(e => {
@@ -769,14 +822,28 @@ export default function AdminEmployeesPage() {
     else { setSortKey(k); setSortDir('asc'); }
   };
 
+  // Reset to page 1 whenever filters or sort change
+  useEffect(() => { setPage(1); }, [search, roleFilter, statusFilter, sortKey, sortDir]);
+
+  const paginated = useMemo(
+    () => sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE),
+    [sorted, page, PAGE_SIZE]
+  );
+
   const hasFilters = search !== '' || roleFilter !== 'all' || statusFilter !== 'all';
   const clearFilters = () => { setSearch(''); setRoleFilter('all'); setStatusFilter('all'); };
 
   // Bulk
-  const filteredIds         = filtered.map(e => e.id);
-  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every(id => selectedIds.has(id));
-  const someFilteredSelected = filteredIds.some(id => selectedIds.has(id));
-  const toggleSelectAll     = () => setSelectedIds(allFilteredSelected ? new Set() : new Set(filteredIds));
+  const filteredIds          = useMemo(() => filtered.map(e => e.id), [filtered]);
+  const allFilteredSelected  = useMemo(
+    () => filteredIds.length > 0 && filteredIds.every(id => selectedIds.has(id)),
+    [filteredIds, selectedIds]
+  );
+  const someFilteredSelected = useMemo(
+    () => !allFilteredSelected && filteredIds.some(id => selectedIds.has(id)),
+    [filteredIds, selectedIds, allFilteredSelected]
+  );
+  const toggleSelectAll      = () => setSelectedIds(allFilteredSelected ? new Set() : new Set(filteredIds));
   const toggleSelectOne     = (id: string) => setSelectedIds(prev => {
     const next = new Set(prev);
     next.has(id) ? next.delete(id) : next.add(id);
@@ -803,7 +870,7 @@ export default function AdminEmployeesPage() {
   };
 
   // KPI card data
-  const kpiCards = [
+  const kpiCards = useMemo(() => [
     {
       label: 'Total',
       value: employees.length,
@@ -844,7 +911,8 @@ export default function AdminEmployeesPage() {
       onClick: undefined,
       clickable: false,
     },
-  ];
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ], [employees.length, activeCount, inactiveCount, frontlineCount, active2fa, byRole, statusFilter, hasFilters]);
 
   return (
     <>
@@ -1019,14 +1087,16 @@ export default function AdminEmployeesPage() {
                   disabled={bulkPending}
                   className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 transition dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400"
                 >
-                  Activate selected
+                  <span className="sm:hidden">Activate</span>
+                  <span className="hidden sm:inline">Activate selected</span>
                 </button>
                 <button
                   onClick={() => bulkSetStatus('inactive')}
                   disabled={bulkPending}
                   className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 hover:bg-amber-100 disabled:opacity-50 transition dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-400"
                 >
-                  Deactivate selected
+                  <span className="sm:hidden">Deactivate</span>
+                  <span className="hidden sm:inline">Deactivate selected</span>
                 </button>
                 <button onClick={() => setSelectedIds(new Set())}
                   className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-white hover:text-slate-600 dark:hover:bg-slate-800">
@@ -1085,7 +1155,7 @@ export default function AdminEmployeesPage() {
             <>
               {/* ── Mobile cards ─────────────────────────────────────────── */}
               <div className="space-y-2.5 md:hidden">
-                {sorted.map((emp) => {
+                {paginated.map((emp) => {
                   const isActive = emp.status === 'active' || !emp.status;
                   const isSelf   = emp.id === currentUser?.id;
                   const ac       = avatarColor(emp.id);
@@ -1104,6 +1174,7 @@ export default function AdminEmployeesPage() {
                           type="checkbox"
                           checked={selectedIds.has(emp.id)}
                           onChange={() => toggleSelectOne(emp.id)}
+                          aria-label={`Select ${emp.name ?? emp.email}`}
                           className="mt-1 h-4 w-4 shrink-0 accent-indigo-600"
                         />
                         <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-sm font-bold text-white ${ac}`}>
@@ -1150,8 +1221,8 @@ export default function AdminEmployeesPage() {
                       {/* Bottom row: quick actions + join date */}
                       <div className="mt-3 flex items-center justify-between gap-2">
                         {emp.createdAt && (
-                          <p className="text-xs text-slate-400 dark:text-slate-500">
-                            Joined {formatDate(emp.createdAt, 'long')}
+                          <p className="shrink-0 text-xs text-slate-400 dark:text-slate-500">
+                            {formatDate(emp.createdAt, 'short')}
                           </p>
                         )}
                         <div className="ml-auto flex gap-1.5">
@@ -1181,6 +1252,13 @@ export default function AdminEmployeesPage() {
                 })}
               </div>
 
+              {/* Mobile pagination */}
+              {sorted.length > PAGE_SIZE && (
+                <div className="flex justify-center py-2 md:hidden">
+                  <PaginationBar page={page} totalItems={sorted.length} pageSize={PAGE_SIZE} onPage={setPage} />
+                </div>
+              )}
+
               {/* ── Desktop table ─────────────────────────────────────────── */}
               <div className="hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:block">
                 <div className="overflow-x-auto">
@@ -1207,7 +1285,7 @@ export default function AdminEmployeesPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
-                      {sorted.map((emp) => {
+                      {paginated.map((emp) => {
                         const isActive = emp.status === 'active' || !emp.status;
                         const isSelf   = emp.id === currentUser?.id;
                         const ac       = avatarColor(emp.id);
@@ -1226,15 +1304,17 @@ export default function AdminEmployeesPage() {
                                 className="h-3.5 w-3.5 accent-indigo-600"
                               />
                             </td>
-                            <td className="px-4 py-3.5">
-                              <div className="flex items-center gap-3">
+                            <td className="max-w-0 w-48 px-4 py-3.5">
+                              <div className="flex min-w-0 items-center gap-3">
                                 <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ${ac}`}>
                                   {init}
                                 </div>
-                                <span className="font-medium text-slate-900 dark:text-white">{emp.name ?? '—'}</span>
+                                <span className="truncate font-medium text-slate-900 dark:text-white">{emp.name ?? '—'}</span>
                               </div>
                             </td>
-                            <td className="px-4 py-3.5 text-slate-500 dark:text-slate-400">{emp.email}</td>
+                            <td className="max-w-0 w-56 px-4 py-3.5 text-slate-500 dark:text-slate-400">
+                              <span className="block truncate">{emp.email}</span>
+                            </td>
                             <td className="px-4 py-3.5">
                               <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${ROLE_STYLE[emp.role] ?? ROLE_STYLE.telecaller}`}>
                                 {ROLE_LABEL[emp.role] ?? emp.role}
@@ -1280,18 +1360,21 @@ export default function AdminEmployeesPage() {
                     </tbody>
                   </table>
 
-                  <div className="flex items-center justify-between border-t border-slate-100 px-4 py-3 dark:border-slate-800">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 dark:border-slate-800">
                     <p className="text-xs text-slate-400 dark:text-slate-500">
                       {hasFilters
                         ? `${sorted.length} of ${employees.length} employees`
                         : `${employees.length} employee${employees.length !== 1 ? 's' : ''}`}
                       {selectedIds.size > 0 && ` · ${selectedIds.size} selected`}
                     </p>
-                    {selectedIds.size > 0 && (
-                      <button onClick={() => setSelectedIds(new Set())} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
-                        Clear selection
-                      </button>
-                    )}
+                    <div className="flex items-center gap-4">
+                      {selectedIds.size > 0 && (
+                        <button onClick={() => setSelectedIds(new Set())} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+                          Clear selection
+                        </button>
+                      )}
+                      <PaginationBar page={page} totalItems={sorted.length} pageSize={PAGE_SIZE} onPage={setPage} />
+                    </div>
                   </div>
                 </div>
               </div>
