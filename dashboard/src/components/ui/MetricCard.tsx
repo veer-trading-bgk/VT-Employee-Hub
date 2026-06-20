@@ -1,7 +1,7 @@
 import { formatMetricValue, type MetricConfig } from '@/lib/metrics.config';
 import type { VerificationStatus } from '@/types';
 
-interface MetricCardProps {
+export interface MetricCardProps {
   metric: MetricConfig;
   value: number;
   target: number;
