@@ -21,6 +21,7 @@ const registerSchema = z.object({
     .regex(/[!@#$%^&*]/, 'Must contain special character'),
   name: z.string().min(2, 'Name must be at least 2 characters'),
   role: z.enum(['admin', 'manager', 'team_lead', 'agent', 'telecaller', 'intern']).default('telecaller'),
+  mobileNumber: z.string().regex(/^\d{10}$/, 'Mobile must be exactly 10 digits').optional(),
   panNumber: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, 'Invalid PAN (e.g. ABCDE1234F)').optional(),
   aadhaarNumber: z.string().regex(/^\d{12}$/, 'Aadhaar must be exactly 12 digits').optional(),
   homeAddress: z.string().max(300, 'Address must be under 300 characters').optional(),

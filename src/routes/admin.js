@@ -19,7 +19,7 @@ router.get('/employees', async (req, res, next) => {
   try {
     const result = await dynamodb.scan({
       TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
-      ProjectionExpression: 'id, #name, email, #role, createdAt, #status, totpEnabled',
+      ProjectionExpression: 'id, #name, email, mobileNumber, #role, createdAt, #status, totpEnabled',
       ExpressionAttributeNames: { '#name': 'name', '#role': 'role', '#status': 'status' },
     }).promise();
 
