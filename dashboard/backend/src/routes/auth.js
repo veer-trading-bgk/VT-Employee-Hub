@@ -315,7 +315,7 @@ router.post('/register', authMiddleware, async (req, res, next) => {
       return res.status(403).json({ error: 'Only admins can register users' });
     }
 
-    const { email, password, name, role } = registerSchema.parse(req.body);
+    const { email, password, name, role, mobileNumber, panNumber, aadhaarNumber, homeAddress } = registerSchema.parse(req.body);
 
     const existing = await findUserByEmail(email);
     if (existing) return res.status(400).json({ error: 'User already exists' });
@@ -323,21 +323,27 @@ router.post('/register', authMiddleware, async (req, res, next) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const userId = `emp_${Date.now()}`;
 
+    const item = {
+      id: userId,
+      email,
+      password: hashedPassword,
+      name,
+      role,
+      createdAt: new Date().toISOString(),
+      createdBy: req.user.id,
+      status: 'active',
+      totpEnabled: false,
+      totpSecret: null,
+      backupCodes: [],
+    };
+    if (mobileNumber)  item.mobileNumber  = mobileNumber;
+    if (panNumber)     item.panNumber     = panNumber;
+    if (aadhaarNumber) item.aadhaarNumber = aadhaarNumber;
+    if (homeAddress)   item.homeAddress   = homeAddress;
+
     await dynamodb.put({
       TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
-      Item: {
-        id: userId,
-        email,
-        password: hashedPassword,
-        name,
-        role,
-        createdAt: new Date().toISOString(),
-        createdBy: req.user.id,
-        status: 'active',
-        totpEnabled: false,
-        totpSecret: null,
-        backupCodes: [],
-      },
+      Item: item,
     }).promise();
 
     await logAudit(req.user.id, 'user_registered', email, 'success', req.ip, { role, name });
