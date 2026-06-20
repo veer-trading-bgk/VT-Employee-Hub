@@ -5,11 +5,10 @@ import { Navbar } from '@/components/layout/Navbar';
 import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
-import { METRICS, monthlyTarget, formatMetricValue } from '@/lib/metrics.config';
+import { METRICS, formatMetricValue } from '@/lib/metrics.config';
 import { ProgressBarChart } from '@/components/charts/ProgressBarChart';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { daysLeftInMonth, currentMonthLabel } from '@/utils/date-utils';
-import { RealTimeMetricsPanel } from '@/components/dashboard/RealTimeMetricsPanel';
 import type { TeamSummaryResponse } from '@/types';
 
 interface LeaderboardEntry {
@@ -28,7 +27,31 @@ interface LeaderboardResponse {
   monthlyTargets: Record<string, number>;
 }
 
+interface TargetsResponse {
+  success: boolean;
+  data: Record<string, { target: number; targetPeriod: 'day' | 'month' }>;
+  isCustom: boolean;
+}
+
 const MEDAL = ['🥇', '🥈', '🥉'];
+
+function toMonthlyTargetMap(data: TargetsResponse['data']): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(data).map(([k, v]) => [
+      k,
+      v.targetPeriod === 'month' ? v.target : v.target * 30,
+    ])
+  );
+}
+
+function toDailyTargetMap(data: TargetsResponse['data']): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(data).map(([k, v]) => [
+      k,
+      v.targetPeriod === 'day' ? v.target : +(v.target / 30).toFixed(2),
+    ])
+  );
+}
 
 export default function AdminDashboardPage() {
   const queryClient = useQueryClient();
@@ -45,33 +68,37 @@ export default function AdminDashboardPage() {
     refetchInterval: 60_000,
   });
 
+  const { data: targetsData } = useQuery({
+    queryKey: ['admin-targets'],
+    queryFn: () => apiFetch<TargetsResponse>('/api/admin/targets'),
+    staleTime: 5 * 60 * 1000,
+  });
+
   const teamEntries = teamData ? Object.entries(teamData.data) : [];
-  const targets = teamData?.targets ?? {};
+  const dailyTargets = targetsData ? toDailyTargetMap(targetsData.data) : (teamData?.targets ?? {});
+  const monthlyTargets = targetsData ? toMonthlyTargetMap(targetsData.data) : {};
   const lbEntries = lbData?.data ?? [];
 
-  // Today's per-metric team totals
   const metricTotals = METRICS.map((m) => {
     const total = teamEntries.reduce((sum, [, entry]) => sum + (entry.metrics?.[m.key] ?? 0), 0);
-    const target = (targets[m.key] ?? 0) * teamEntries.length;
+    const target = (dailyTargets[m.key] ?? 0) * teamEntries.length;
     const pct = target > 0 ? Math.round((total / target) * 100) : 0;
     return { ...m, total, target, pct };
   });
 
-  // Monthly team totals aggregated from MTD leaderboard data
   const monthlyChartData = METRICS.map((m) => {
     const total = lbEntries.reduce((sum, entry) => sum + (entry.metrics[m.key] ?? 0), 0);
-    const mTarget = monthlyTarget(m) * (lbEntries.length || 1);
+    const mTarget = (monthlyTargets[m.key] ?? lbData?.monthlyTargets?.[m.key] ?? 0) * (lbEntries.length || 1);
     const pct = mTarget > 0 ? Math.min(Math.round((total / mTarget) * 100), 999) : 0;
     return { label: m.label, icon: m.icon, value: total, target: mTarget, progress: pct, color: m.color, unit: m.unit };
   });
 
-  // Today's top performers for compact leaderboard panel
   const todayTop5 = teamEntries
     .map(([userId, entry]) => {
       const avgScore = Math.round(
         METRICS.reduce((sum, m) => {
           const v = entry.metrics?.[m.key] ?? 0;
-          const t = targets[m.key] ?? 1;
+          const t = dailyTargets[m.key] ?? 1;
           return sum + (v / t) * 100;
         }, 0) / METRICS.length
       );
@@ -98,6 +125,7 @@ export default function AdminDashboardPage() {
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['admin-team-summary'] });
     queryClient.invalidateQueries({ queryKey: ['admin-leaderboard-monthly'] });
+    queryClient.invalidateQueries({ queryKey: ['admin-targets'] });
   };
 
   return (
@@ -113,6 +141,11 @@ export default function AdminDashboardPage() {
             </h1>
             <p className="text-sm text-slate-500 dark:text-slate-400">
               {daysLeftInMonth()} days left · {teamEntries.length} active employees
+              {targetsData?.isCustom && (
+                <span className="ml-2 rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300">
+                  Custom targets active
+                </span>
+              )}
             </p>
           </div>
           <button
@@ -181,9 +214,6 @@ export default function AdminDashboardPage() {
             </div>
           )}
         </div>
-
-        {/* Real-time metrics panel */}
-        <RealTimeMetricsPanel />
 
         {/* Charts row */}
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -258,13 +288,16 @@ export default function AdminDashboardPage() {
         </div>
 
         {/* Quick links */}
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-8">
           {[
-            { href: '/admin/employees',  label: 'Manage Employees', icon: '👥' },
-            { href: '/admin/analytics',  label: 'Analytics',        icon: '📈' },
-            { href: '/leaderboard',      label: 'Full Leaderboard', icon: '🏆' },
-            { href: '/admin/bulk-entry', label: 'Bulk Entry',       icon: '📝' },
-            { href: '/admin/targets',    label: 'Edit Targets',     icon: '🎯' },
+            { href: '/admin/employees',    label: 'Employees',     icon: '👥' },
+            { href: '/admin/analytics',    label: 'Analytics',     icon: '📈' },
+            { href: '/admin/verification', label: 'Verify',        icon: '✅' },
+            { href: '/admin/audit',        label: 'Audit Logs',    icon: '🔍' },
+            { href: '/admin/compensation', label: 'Payroll',       icon: '💰' },
+            { href: '/leaderboard',        label: 'Leaderboard',   icon: '🏆' },
+            { href: '/admin/bulk-entry',   label: 'Bulk Entry',    icon: '📝' },
+            { href: '/admin/targets',      label: 'Targets',       icon: '🎯' },
           ].map((item) => (
             <a
               key={item.href}

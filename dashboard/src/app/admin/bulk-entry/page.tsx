@@ -3,12 +3,11 @@
 import { useState, useMemo } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import Papa from 'papaparse';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch } from '@/lib/api';
 import { METRICS, formatMetricValue } from '@/lib/metrics.config';
 
-// Only count-type metrics appear as bulk-entry columns (currency metrics like
-// insurance are entered per employee via their own daily-entry form).
 const BULK_METRICS = METRICS.filter((m) => m.unit === 'count');
 
 interface Employee {
@@ -47,12 +46,15 @@ export default function BulkEntryPage() {
   const [showEmpList, setShowEmpList] = useState(false);
   const [entries, setEntries] = useState<MetricRow[]>([]);
   const [csvText, setCsvText] = useState('');
+  const [csvErrors, setCsvErrors] = useState<string[]>([]);
 
-  // Fetch employee list for the picker
   const { data: empData } = useQuery({
     queryKey: ['admin-employees'],
-    queryFn: () => apiFetch<{ success: boolean; data: Employee[] }>('/api/admin/employees')
-      .catch(() => ({ success: true, data: [] as Employee[] })),
+    queryFn: () =>
+      apiFetch<{ success: boolean; data: Employee[] }>('/api/admin/employees').catch(() => ({
+        success: true,
+        data: [] as Employee[],
+      })),
     staleTime: 1000 * 60 * 5,
   });
 
@@ -60,10 +62,12 @@ export default function BulkEntryPage() {
 
   const filteredEmps = useMemo(() => {
     const q = empSearch.toLowerCase();
-    return employees.filter((e) =>
-      e.name?.toLowerCase().includes(q) || e.email?.toLowerCase().includes(q)
-    ).slice(0, 8);
+    return employees
+      .filter((e) => e.name?.toLowerCase().includes(q) || e.email?.toLowerCase().includes(q))
+      .slice(0, 8);
   }, [employees, empSearch]);
+
+  const employeeIdSet = useMemo(() => new Set(employees.map((e) => e.id)), [employees]);
 
   const selectEmployee = (emp: Employee) => {
     setForm((f) => ({ ...f, employeeId: emp.id, name: emp.name }));
@@ -98,26 +102,69 @@ export default function BulkEntryPage() {
   };
 
   const parseCSV = () => {
-    const lines = csvText.trim().split('\n');
-    if (lines.length < 2) { toast.error('CSV needs a header row + data rows'); return; }
-    const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
-    const parsed: MetricRow[] = [];
-    for (let i = 1; i < lines.length; i++) {
-      const vals = lines[i].split(',').map((v) => v.trim());
-      const get = (k: string) => vals[headers.indexOf(k)] ?? '';
-      const metrics = Object.fromEntries(
-        BULK_METRICS.map((m) => [m.key, parseInt(get(m.key)) || 0])
-      );
-      parsed.push({
-        employeeId: get('employeeid'),
-        name: get('name'),
-        metrics,
-        date: get('date') || TODAY,
-        notes: get('notes'),
-      });
+    if (!csvText.trim()) {
+      toast.error('Paste CSV data first');
+      return;
     }
+
+    const result = Papa.parse<Record<string, string>>(csvText.trim(), {
+      header: true,
+      skipEmptyLines: true,
+      transformHeader: (h) => h.trim().toLowerCase(),
+      transform: (v) => v.trim(),
+    });
+
+    const errors: string[] = [];
+    const parsed: MetricRow[] = [];
+
+    if (result.errors.length > 0) {
+      result.errors.forEach((e) => errors.push(`Row ${e.row}: ${e.message}`));
+    }
+
+    result.data.forEach((row, i) => {
+      const rowNum = i + 2;
+      const employeeId = row['employeeid'] || row['employee_id'] || row['id'] || '';
+      const name = row['name'] || '';
+
+      if (!employeeId) {
+        errors.push(`Row ${rowNum}: missing employeeId`);
+        return;
+      }
+      if (employees.length > 0 && !employeeIdSet.has(employeeId)) {
+        errors.push(`Row ${rowNum}: employee ID "${employeeId}" not found`);
+      }
+
+      const metrics: Record<string, number> = {};
+      BULK_METRICS.forEach((m) => {
+        const raw = row[m.key] ?? row[m.label.toLowerCase().replace(/\s+/g, '_')] ?? '0';
+        const val = parseFloat(raw) || 0;
+        if (val < 0) errors.push(`Row ${rowNum}: ${m.key} cannot be negative`);
+        metrics[m.key] = Math.max(0, val);
+      });
+
+      parsed.push({
+        employeeId,
+        name,
+        metrics,
+        date: row['date'] || TODAY,
+        notes: row['notes'] || '',
+      });
+    });
+
+    setCsvErrors(errors);
+
+    if (parsed.length === 0) {
+      toast.error('No valid rows found');
+      return;
+    }
+
     setEntries(parsed);
-    toast.success(`Parsed ${parsed.length} rows`);
+
+    if (errors.length > 0) {
+      toast.warning(`Parsed ${parsed.length} rows with ${errors.length} warning(s)`);
+    } else {
+      toast.success(`Parsed ${parsed.length} rows`);
+    }
   };
 
   const totals = entries.reduce<Record<string, number>>(
@@ -128,7 +175,8 @@ export default function BulkEntryPage() {
     Object.fromEntries(BULK_METRICS.map((m) => [m.key, 0]))
   );
 
-  const inputCls = 'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white';
+  const inputCls =
+    'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:border-slate-700 dark:bg-slate-800 dark:text-white';
 
   return (
     <>
@@ -148,7 +196,9 @@ export default function BulkEntryPage() {
               key={m}
               onClick={() => setMode(m)}
               className={`px-5 py-2 text-sm font-medium transition first:rounded-l-lg last:rounded-r-lg ${
-                mode === m ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800'
+                mode === m
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-slate-600 hover:bg-slate-50 dark:text-slate-400 dark:hover:bg-slate-800'
               }`}
             >
               {m === 'form' ? '📝 Manual Entry' : '📤 CSV Upload'}
@@ -163,8 +213,8 @@ export default function BulkEntryPage() {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-4">
 
               {/* Employee picker */}
-              <div className="sm:col-span-2 relative">
-                <label className="block text-xs font-medium text-slate-500 mb-1">Employee *</label>
+              <div className="relative sm:col-span-2">
+                <label className="mb-1 block text-xs font-medium text-slate-500">Employee *</label>
                 <input
                   value={empSearch}
                   onChange={(e) => {
@@ -209,7 +259,7 @@ export default function BulkEntryPage() {
 
               {/* Date */}
               <div>
-                <label className="block text-xs font-medium text-slate-500 mb-1">Date</label>
+                <label className="mb-1 block text-xs font-medium text-slate-500">Date</label>
                 <input
                   type="date"
                   value={form.date}
@@ -221,7 +271,7 @@ export default function BulkEntryPage() {
               {/* Dynamic metric fields */}
               {BULK_METRICS.map((m) => (
                 <div key={m.key}>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">
+                  <label className="mb-1 block text-xs font-medium text-slate-500">
                     {m.icon} {m.label}
                   </label>
                   <input
@@ -239,9 +289,9 @@ export default function BulkEntryPage() {
                 </div>
               ))}
 
-              {/* Notes full width */}
+              {/* Notes */}
               <div className="sm:col-span-2 md:col-span-4">
-                <label className="block text-xs font-medium text-slate-500 mb-1">Notes</label>
+                <label className="mb-1 block text-xs font-medium text-slate-500">Notes</label>
                 <input
                   value={form.notes}
                   onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
@@ -263,7 +313,7 @@ export default function BulkEntryPage() {
           <div className="rounded-xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
             <h2 className="mb-1 font-semibold text-slate-900 dark:text-white">Paste CSV Data</h2>
             <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-              Header:{' '}
+              Expected header:{' '}
               <code className="rounded bg-slate-100 px-1 font-mono text-[11px] dark:bg-slate-800">
                 {CSV_HEADER}
               </code>
@@ -271,14 +321,29 @@ export default function BulkEntryPage() {
             <p className="mb-3 text-xs text-amber-600 dark:text-amber-400">
               Use employee IDs from the{' '}
               <a href="/admin/employees" className="underline">Employee Directory</a>.
+              Quoted fields and commas in values are fully supported.
             </p>
             <textarea
               className={`${inputCls} font-mono text-xs`}
-              rows={6}
-              placeholder={`${CSV_HEADER}\nEMP001,Priya Sharma,5,3,2,0,0,1,2,1,2026-06-17,Strong day`}
+              rows={8}
+              placeholder={`${CSV_HEADER}\nemp_1234567890,Priya Sharma,5,3,2,0,0,1,2026-06-17,Strong day`}
               value={csvText}
-              onChange={(e) => setCsvText(e.target.value)}
+              onChange={(e) => { setCsvText(e.target.value); setCsvErrors([]); }}
             />
+
+            {csvErrors.length > 0 && (
+              <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-900/20">
+                <p className="mb-2 text-xs font-semibold text-amber-700 dark:text-amber-300">
+                  {csvErrors.length} warning(s):
+                </p>
+                <ul className="space-y-1">
+                  {csvErrors.map((err, i) => (
+                    <li key={i} className="text-xs text-amber-700 dark:text-amber-300">• {err}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             <button
               onClick={parseCSV}
               className="mt-3 w-full rounded-lg bg-indigo-600 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700"
@@ -302,7 +367,7 @@ export default function BulkEntryPage() {
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-slate-100 dark:border-slate-800 text-left text-xs font-semibold uppercase text-slate-500">
+                  <tr className="border-b border-slate-100 text-left text-xs font-semibold uppercase text-slate-500 dark:border-slate-800">
                     <th className="pb-2 pr-4">Employee</th>
                     {BULK_METRICS.map((m) => (
                       <th key={m.key} className="pb-2 pr-4">{m.icon} {m.label}</th>
@@ -315,8 +380,8 @@ export default function BulkEntryPage() {
                   {entries.map((row, i) => (
                     <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                       <td className="py-2.5 pr-4">
-                        <p className="font-medium text-slate-900 dark:text-white">{row.name}</p>
-                        <p className="text-xs text-slate-500">{row.employeeId.slice(0, 12)}…</p>
+                        <p className="font-medium text-slate-900 dark:text-white">{row.name || row.employeeId}</p>
+                        <p className="text-xs text-slate-500">{row.employeeId.slice(0, 14)}…</p>
                       </td>
                       {BULK_METRICS.map((m) => (
                         <td key={m.key} className="py-2.5 pr-4 tabular-nums text-slate-700 dark:text-slate-300">
@@ -328,6 +393,7 @@ export default function BulkEntryPage() {
                         <button
                           onClick={() => setEntries((e) => e.filter((_, j) => j !== i))}
                           className="text-rose-500 hover:text-rose-700"
+                          aria-label="Remove row"
                         >
                           🗑️
                         </button>

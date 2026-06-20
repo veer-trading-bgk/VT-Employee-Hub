@@ -12,11 +12,12 @@ interface Props {
   onResetPwd: () => void;
   onToggleStatus: () => void;
   on2FA: () => void;
+  onReport: () => void;
 }
 
 export function EmployeeActionMenu({
   isActive, isToggling, totpEnabled, isSelf,
-  onEdit, onDelete, onResetPwd, onToggleStatus, on2FA,
+  onEdit, onDelete, onResetPwd, onToggleStatus, on2FA, onReport,
 }: Props) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -54,6 +55,8 @@ export function EmployeeActionMenu({
         <button onClick={on2FA} className="text-xs font-medium text-slate-500 hover:underline dark:text-slate-400">
           {totpEnabled ? 'Reset 2FA' : 'Enable 2FA'}
         </button>
+        <span className="text-slate-200 dark:text-slate-700">|</span>
+        <button onClick={onReport} className="text-xs font-medium text-indigo-600 hover:underline dark:text-indigo-400">Report</button>
       </div>
 
       {/* Mobile: kebab ⋯ dropdown */}
@@ -83,6 +86,9 @@ export function EmployeeActionMenu({
             <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
             <button onClick={() => run(on2FA)} className="flex w-full items-center px-4 py-3 text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800">
               {totpEnabled ? 'Reset 2FA' : 'Enable 2FA'}
+            </button>
+            <button onClick={() => run(onReport)} className="flex w-full items-center px-4 py-3 text-sm text-indigo-600 hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950/20">
+              Performance Report
             </button>
             {!isSelf && (
               <>

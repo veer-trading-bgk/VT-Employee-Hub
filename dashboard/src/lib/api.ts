@@ -157,4 +157,152 @@ export const api = {
       method: 'DELETE',
       retries: 0,
     }),
+
+  // ── Verification ────────────────────────────────────────────────────────────
+  pendingMetrics: () =>
+    apiFetch<PendingMetricsResponse>('/api/metrics/pending'),
+
+  verifyMetric: (recordId: string, action: 'approved' | 'rejected', note?: string) =>
+    apiFetch<{ success: true; message: string }>('/api/metrics/verify', {
+      method: 'POST',
+      body: JSON.stringify({ recordId, action, note }),
+      retries: 0,
+    }),
+
+  // ── Audit ───────────────────────────────────────────────────────────────────
+  auditLogs: (hours = 24, limit = 500) =>
+    apiFetch<AuditLogsResponse>(`/api/audit/logs?hours=${hours}&limit=${limit}`),
+
+  suspiciousActivity: () =>
+    apiFetch<SuspiciousActivityResponse>('/api/audit/suspicious'),
+
+  securityReport: () =>
+    apiFetch<SecurityReportResponse>('/api/audit/security-report'),
+
+  // ── Compensation ────────────────────────────────────────────────────────────
+  payroll: () =>
+    apiFetch<PayrollResponse>('/api/compensation/payroll'),
+
+  employeeCompensation: (userId: string) =>
+    apiFetch<EmployeeCompensationResponse>(`/api/compensation/calculate/${userId}`),
+
+  // ── Bulk employee operations ─────────────────────────────────────────────────
+  bulkStatusUpdate: (ids: string[], status: 'active' | 'inactive') =>
+    apiFetch<BulkOperationResponse>('/api/admin/employees/bulk-status', {
+      method: 'POST',
+      body: JSON.stringify({ ids, status }),
+      retries: 0,
+    }),
+
+  bulkDeleteEmployees: (ids: string[]) =>
+    apiFetch<BulkOperationResponse>('/api/admin/employees/bulk', {
+      method: 'DELETE',
+      body: JSON.stringify({ ids }),
+      retries: 0,
+    }),
+
+  // ── Per-employee metrics ─────────────────────────────────────────────────────
+  employeeMetrics: (userId: string, days = 30) =>
+    apiFetch<EmployeeMetricsResponse>(`/api/admin/employees/${userId}/metrics?days=${days}`),
 };
+
+// ── Response types for new endpoints ─────────────────────────────────────────
+
+export interface PendingMetric {
+  recordId: string;
+  userId: string;
+  metricType: string;
+  value: number;
+  date: string;
+  source: string;
+  verificationStatus: string;
+  flagged?: boolean;
+  note?: string;
+  submittedAt?: string;
+}
+
+export interface PendingMetricsResponse {
+  success: boolean;
+  data: PendingMetric[];
+  count: number;
+}
+
+export interface AuditEntry {
+  pk?: string;
+  sk?: string;
+  action: string;
+  userId?: string;
+  adminId?: string;
+  targetId?: string;
+  details?: Record<string, unknown>;
+  ip?: string;
+  userAgent?: string;
+  timestamp?: string;
+  suspicious?: boolean;
+}
+
+export interface AuditLogsResponse {
+  success: boolean;
+  logs: AuditEntry[];
+  count: number;
+}
+
+export interface SuspiciousActivityResponse {
+  success: boolean;
+  summary: {
+    totalEvents: number;
+    failedLogins: number;
+    suspiciousEntries: number;
+    deletions: number;
+  };
+  events: AuditEntry[];
+}
+
+export interface SecurityReportResponse {
+  success: boolean;
+  report: {
+    period: string;
+    stats: Record<string, number>;
+    highRiskIps: string[];
+    recommendations: string[];
+  };
+}
+
+export interface PayrollEntry {
+  userId: string;
+  base: number;
+  bonus: number;
+  total: number;
+  metrics: Record<string, number>;
+}
+
+export interface PayrollResponse {
+  success?: boolean;
+  month: string;
+  count: number;
+  payroll: PayrollEntry[];
+}
+
+export interface EmployeeCompensationResponse {
+  success: boolean;
+  userId: string;
+  month: string;
+  base: number;
+  bonus: number;
+  total: number;
+  metrics: Record<string, number>;
+}
+
+export interface BulkOperationResponse {
+  success: boolean;
+  succeeded: number;
+  failed: number;
+  errors?: string[];
+}
+
+export interface EmployeeMetricsResponse {
+  success: boolean;
+  employee: { id: string; name: string; email: string };
+  data: Record<string, Record<string, number>>;
+  totalRecords: number;
+}

@@ -2,25 +2,14 @@ const express = require('express');
 const { addMetricSchema } = require('../utils/validation');
 const { logAudit } = require('../utils/audit');
 const { adminMiddleware, checkRole } = require('../middleware/auth');
+const { TARGET_DEFAULTS, METRIC_KEYS, toDailyTargets, toMonthlyTargets, calcPoints } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
 const bot = require('../config/telegram');
 const logger = require('../config/logger');
 
 const router = express.Router();
 
-// ── Target config helpers ─────────────────────────────────────────────────────
-
-const TARGET_DEFAULTS = {
-  kyc:         { target: 4,      targetPeriod: 'day'   },
-  demat:       { target: 50,     targetPeriod: 'month' },
-  mf:          { target: 40,     targetPeriod: 'month' },
-  insurance:   { target: 100000, targetPeriod: 'month' },
-  algo:        { target: 10,     targetPeriod: 'month' },
-  coaching:    { target: 20000,  targetPeriod: 'month' },
-  pms:         { target: 10,     targetPeriod: 'month' },
-  pro_insight: { target: 15,     targetPeriod: 'month' },
-  ltpp:        { target: 10,     targetPeriod: 'month' },
-};
+// ── Target config helper ──────────────────────────────────────────────────────
 
 async function fetchTargetConfig() {
   try {
@@ -32,24 +21,6 @@ async function fetchTargetConfig() {
   } catch {
     return TARGET_DEFAULTS;
   }
-}
-
-function toDailyTargets(cfg) {
-  return Object.fromEntries(
-    Object.entries(cfg).map(([k, v]) => [
-      k,
-      v.targetPeriod === 'day' ? v.target : +(v.target / 30).toFixed(2),
-    ])
-  );
-}
-
-function toMonthlyTargets(cfg) {
-  return Object.fromEntries(
-    Object.entries(cfg).map(([k, v]) => [
-      k,
-      v.targetPeriod === 'month' ? v.target : v.target * 30,
-    ])
-  );
 }
 
 // ── Add metric (any authenticated user) ──────────────────────────────────────
@@ -130,9 +101,8 @@ router.put('/set', async (req, res, next) => {
   try {
     const { metric_type, value } = req.body;
     const today = new Date().toISOString().split('T')[0];
-    const validTypes = ['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching', 'pms', 'pro_insight', 'ltpp'];
 
-    if (!metric_type || !validTypes.includes(metric_type)) {
+    if (!metric_type || !METRIC_KEYS.includes(metric_type)) {
       return res.status(400).json({ error: 'Invalid metric_type' });
     }
     if (value === undefined || value === null || isNaN(Number(value)) || Number(value) < 0) {
@@ -196,7 +166,6 @@ router.get('/my', async (req, res, next) => {
 
     const targets = toDailyTargets(targetCfg);
 
-    // Group by date; rejected entries count as 0 toward progress (Option A)
     const byDate = {};
     const byStatus = {};
     result.Items.forEach(item => {
@@ -271,7 +240,6 @@ router.get('/team-summary', checkRole(['admin', 'manager']), async (req, res, ne
 
     result.Items.forEach(item => {
       if (!item.userId || !item.metric_type) return;
-      // Option A: exclude rejected entries from team view
       const status = item.verificationStatus || (item.verified === true ? 'approved' : 'pending');
       if (status === 'rejected') return;
       if (!summary[item.userId]) {
@@ -310,9 +278,8 @@ router.post('/bulk-entry', checkRole(['admin', 'manager']), async (req, res, nex
     }
     let count = 0;
     for (const entry of entries) {
-      const metricTypes = ['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching', 'pms', 'pro_insight', 'ltpp'];
-      for (const key of metricTypes) {
-        const value = parseInt(entry[key]) || 0;
+      for (const key of METRIC_KEYS) {
+        const value = parseFloat(entry[key]) || 0;
         if (value <= 0) continue;
         const entryDate = entry.date || new Date().toISOString().split('T')[0];
         const userId = entry.employeeId;
@@ -431,28 +398,6 @@ router.get('/leaderboard', async (req, res, next) => {
     const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
     const today = now.toISOString().split('T')[0];
 
-    // Point weights are separate from targets — they define scoring, not goals
-    const METRIC_WEIGHTS = {
-      kyc:         { unit: 'count',    weight: 10    },
-      demat:       { unit: 'count',    weight: 15    },
-      mf:          { unit: 'count',    weight: 20    },
-      insurance:   { unit: 'currency', weight: 10000 },
-      algo:        { unit: 'count',    weight: 12    },
-      coaching:    { unit: 'currency', weight: 1000  },
-      pms:         { unit: 'count',    weight: 30    },
-      pro_insight: { unit: 'count',    weight: 20    },
-      ltpp:        { unit: 'count',    weight: 25    },
-    };
-
-    function calcPoints(metrics) {
-      return Math.round(
-        Object.entries(METRIC_WEIGHTS).reduce((sum, [key, cfg]) => {
-          const v = metrics[key] ?? 0;
-          return sum + (cfg.unit === 'currency' ? v / cfg.weight : v * cfg.weight);
-        }, 0)
-      );
-    }
-
     const [result, targetCfg] = await Promise.all([
       dynamodb.scan({
         TableName: process.env.DYNAMODB_TABLE_METRICS,
@@ -468,7 +413,6 @@ router.get('/leaderboard', async (req, res, next) => {
     const byUser = {};
     (result.Items ?? []).forEach(item => {
       if (!item.userId || !item.metric_type) return;
-      // Option A: exclude rejected from leaderboard totals
       const status = item.verificationStatus || (item.verified === true ? 'approved' : 'pending');
       if (status === 'rejected') return;
       if (!byUser[item.userId]) {
@@ -485,7 +429,7 @@ router.get('/leaderboard', async (req, res, next) => {
 
     const ranked = Object.values(byUser)
       .map(user => ({ ...user, points: calcPoints(user.metrics) }))
-      .sort((a, b) => b.points - a.points)
+      .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name))
       .map((user, i) => ({ ...user, rank: i + 1 }));
 
     await logAudit(req.user.id, 'view_leaderboard', 'monthly', 'success', req.ip);

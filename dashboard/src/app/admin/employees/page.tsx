@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
 import { Navbar } from '@/components/layout/Navbar';
@@ -12,6 +12,7 @@ import { formatDate } from '@/utils/formatters';
 import { EditEmployeeModal } from '@/components/EditEmployeeModal';
 import { DeleteEmployeeDialog } from '@/components/DeleteEmployeeDialog';
 import { EmployeeActionMenu } from '@/components/EmployeeActionMenu';
+import { METRICS, formatMetricValue, getMetricConfig } from '@/lib/metrics.config';
 import type { Role } from '@/types';
 
 interface Employee {
@@ -32,6 +33,13 @@ interface RegisterForm {
   panNumber: string;
   aadhaarNumber: string;
   homeAddress: string;
+}
+
+interface EmployeeMetricsResponse {
+  success: boolean;
+  employee: Employee;
+  data: Record<string, Record<string, number>>;
+  totalRecords: number;
 }
 
 function validatePAN(v: string) {
@@ -70,7 +78,6 @@ function generatePassword(): string {
   return chars.join('');
 }
 
-// ── Role badge ────────────────────────────────────────────────────────────────
 const ROLE_STYLE: Record<string, string> = {
   admin:      'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-900/20 dark:text-violet-300 dark:ring-violet-800',
   manager:    'bg-blue-50 text-blue-700 ring-1 ring-blue-200 dark:bg-blue-900/20 dark:text-blue-300 dark:ring-blue-800',
@@ -84,7 +91,6 @@ const ROLE_LABEL: Record<string, string> = {
   agent: 'Agent', telecaller: 'Telecaller', intern: 'Intern',
 };
 
-// ── Shared input / button styles ──────────────────────────────────────────────
 const inputCls = 'w-full rounded border border-slate-200 bg-white px-3 py-3 text-sm text-slate-900 placeholder-slate-400 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder-slate-500 dark:focus:border-blue-500 dark:focus:ring-blue-900/30';
 const primaryBtn = 'rounded bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40 transition';
 const ghostBtn   = 'rounded border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 transition dark:border-slate-700 dark:bg-transparent dark:text-slate-300 dark:hover:bg-slate-800';
@@ -122,13 +128,12 @@ function Setup2FAModal({ employee, onClose }: { employee: Employee; onClose: () 
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" aria-label="Close">✕</button>
         </div>
-
         <div className="px-6 py-5">
           {!result ? (
             <div className="space-y-4">
               <div className="rounded border border-blue-100 bg-blue-50 px-4 py-3 text-xs text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-300">
                 <p className="mb-1 font-semibold">What happens when you generate:</p>
-                <ul className="space-y-0.5 list-disc list-inside text-blue-600 dark:text-blue-400">
+                <ul className="list-inside list-disc space-y-0.5 text-blue-600 dark:text-blue-400">
                   <li>Unique TOTP secret generated for {employee.name}</li>
                   <li>5 single-use backup codes created</li>
                   <li>2FA required after 7-day grace period</li>
@@ -144,9 +149,7 @@ function Setup2FAModal({ employee, onClose }: { employee: Employee; onClose: () 
           ) : (
             <div className="space-y-5">
               <div className="text-center">
-                <p className="mb-3 text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wide">
-                  Scan with authenticator app
-                </p>
+                <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Scan with authenticator app</p>
                 <div className="inline-block rounded border border-slate-200 bg-white p-3 dark:border-slate-600">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={result.qrCode} alt="2FA QR Code" className="h-40 w-40" />
@@ -172,13 +175,9 @@ function Setup2FAModal({ employee, onClose }: { employee: Employee; onClose: () 
                     </div>
                   ))}
                 </div>
-                <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
-                  Save these now — they cannot be retrieved later.
-                </p>
+                <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">Save these now — they cannot be retrieved later.</p>
               </div>
-              <button onClick={onClose} className={primaryBtn + ' w-full'}>
-                Done — codes have been saved
-              </button>
+              <button onClick={onClose} className={primaryBtn + ' w-full'}>Done — codes have been saved</button>
             </div>
           )}
         </div>
@@ -290,7 +289,7 @@ function Reset2FADialog({ employee, onClose }: { employee: Employee; onClose: ()
         </div>
         <div className="px-6 py-5">
           <p className="mb-4 text-sm text-slate-600 dark:text-slate-400">
-            This disables 2FA for <span className="font-semibold text-slate-900 dark:text-white">{employee.name}</span> and clears all backup codes. They will need to re-enroll.
+            This disables 2FA for <span className="font-semibold text-slate-900 dark:text-white">{employee.name}</span> and clears all backup codes.
           </p>
           <div className="flex gap-2">
             <button onClick={() => resetMutation.mutate()} disabled={resetMutation.isPending}
@@ -299,6 +298,144 @@ function Reset2FADialog({ employee, onClose }: { employee: Employee; onClose: ()
             </button>
             <button onClick={onClose} className={ghostBtn}>Cancel</button>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Employee Performance Report Modal ─────────────────────────────────────────
+function PerformanceReportModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
+  const [days, setDays] = useState(30);
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['employee-metrics', employee.id, days],
+    queryFn: () => apiFetch<EmployeeMetricsResponse>(`/api/admin/employees/${employee.id}/metrics?days=${days}`),
+    staleTime: 2 * 60_000,
+  });
+
+  const byDate = data?.data ?? {};
+  const sortedDates = Object.keys(byDate).sort((a, b) => b.localeCompare(a));
+
+  const metricTotals = METRICS.reduce<Record<string, number>>((acc, m) => {
+    acc[m.key] = sortedDates.reduce((s, d) => s + (byDate[d]?.[m.key] ?? 0), 0);
+    return acc;
+  }, {});
+
+  const exportCSV = useCallback(() => {
+    const header = ['Date', ...METRICS.map((m) => m.label)].join(',');
+    const rows = sortedDates.map((d) =>
+      [d, ...METRICS.map((m) => byDate[d]?.[m.key] ?? 0)].join(',')
+    );
+    const totalsRow = ['TOTAL', ...METRICS.map((m) => metricTotals[m.key])].join(',');
+    const csv = [header, ...rows, totalsRow].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `performance_${employee.name.replace(/\s+/g, '_')}_${days}d.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [byDate, sortedDates, employee.name, days, metricTotals]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+      <div className="flex max-h-[90vh] w-full max-w-3xl flex-col rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-900">
+        <div className="flex flex-shrink-0 items-center justify-between border-b border-slate-100 px-6 py-4 dark:border-slate-800">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Performance Report</h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">{employee.name} · {employee.email}</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="flex gap-1 rounded-lg border border-slate-200 dark:border-slate-700">
+              {[7, 14, 30, 90].map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setDays(d)}
+                  className={`rounded px-3 py-1 text-xs font-semibold transition ${
+                    days === d ? 'bg-indigo-600 text-white' : 'text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  {d}d
+                </button>
+              ))}
+            </div>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">✕</button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          {isLoading ? (
+            <div className="flex justify-center py-10"><Loading /></div>
+          ) : (
+            <div className="space-y-5">
+              {/* Metric totals summary */}
+              <div className="grid grid-cols-3 gap-3">
+                {METRICS.map((m) => {
+                  const cfg = getMetricConfig(m.key);
+                  return (
+                    <div key={m.key} className="rounded-lg border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">
+                      <p className="text-xs text-slate-500">{m.icon} {m.label}</p>
+                      <p className="mt-0.5 text-lg font-bold" style={{ color: m.color }}>
+                        {cfg ? formatMetricValue(cfg, metricTotals[m.key] ?? 0) : metricTotals[m.key] ?? 0}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Daily breakdown */}
+              {sortedDates.length === 0 ? (
+                <div className="rounded-xl border-2 border-dashed border-slate-200 py-10 text-center dark:border-slate-700">
+                  <p className="text-sm text-slate-400">No metrics in last {days} days</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-100 dark:border-slate-800">
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Date</th>
+                        {METRICS.map((m) => (
+                          <th key={m.key} className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">
+                            {m.icon}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                      {sortedDates.map((date) => (
+                        <tr key={date} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                          <td className="px-4 py-2.5 font-medium text-slate-700 dark:text-slate-300">{date}</td>
+                          {METRICS.map((m) => {
+                            const cfg = getMetricConfig(m.key);
+                            const val = byDate[date]?.[m.key] ?? 0;
+                            return (
+                              <td key={m.key} className="px-4 py-2.5 text-right tabular-nums text-slate-600 dark:text-slate-300">
+                                {val > 0 ? (cfg ? formatMetricValue(cfg, val) : val) : (
+                                  <span className="text-slate-300 dark:text-slate-600">—</span>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-shrink-0 gap-2 border-t border-slate-100 px-6 py-4 dark:border-slate-800">
+          <button
+            onClick={exportCSV}
+            disabled={sortedDates.length === 0}
+            className="flex-1 rounded bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-40 transition"
+          >
+            ⬇️ Export CSV
+          </button>
+          <button onClick={onClose} className={ghostBtn}>Close</button>
         </div>
       </div>
     </div>
@@ -322,11 +459,17 @@ export default function AdminEmployeesPage() {
   const [deleteEmployee, setDeleteEmployee] = useState<Employee | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [resetPwdEmployee, setResetPwdEmployee] = useState<Employee | null>(null);
+  const [reportEmployee, setReportEmployee] = useState<Employee | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkPending, setBulkPending] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ['admin-employees'],
-    queryFn: () => apiFetch<{ success: boolean; data: Employee[] }>('/api/admin/employees')
-      .catch(() => ({ success: true, data: [] })),
+    queryFn: () =>
+      apiFetch<{ success: boolean; data: Employee[] }>('/api/admin/employees').catch(() => ({
+        success: true,
+        data: [],
+      })),
   });
 
   const addMutation = useMutation({
@@ -377,14 +520,54 @@ export default function AdminEmployeesPage() {
     acc[e.role] = (acc[e.role] ?? 0) + 1;
     return acc;
   }, {});
-  const active2fa     = employees.filter((e) => e.totpEnabled).length;
-  const activeCount   = employees.filter((e) => e.status === 'active' || !e.status).length;
+  const active2fa      = employees.filter((e) => e.totpEnabled).length;
+  const activeCount    = employees.filter((e) => e.status === 'active' || !e.status).length;
   const frontlineCount = (byRole['agent'] ?? 0) + (byRole['telecaller'] ?? 0) + (byRole['intern'] ?? 0);
+
+  // ── Bulk operations ───────────────────────────────────────────────────────
+  const filteredIds = filtered.map((e) => e.id);
+  const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
+
+  const toggleSelectAll = () => {
+    if (allFilteredSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredIds));
+    }
+  };
+
+  const toggleSelectOne = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const bulkSetStatus = async (status: 'active' | 'inactive') => {
+    const ids = [...selectedIds].filter((id) => !(status === 'inactive' && id === currentUser?.id));
+    if (ids.length === 0) { toast.error('No eligible employees selected'); return; }
+    setBulkPending(true);
+    try {
+      const result = await apiFetch<{ success: boolean; succeeded: number; failed: number }>('/api/admin/employees/bulk-status', {
+        method: 'POST',
+        body: JSON.stringify({ ids, status }),
+        retries: 0,
+      });
+      toast.success(`${result.succeeded} employee(s) ${status === 'active' ? 'activated' : 'deactivated'}`);
+      if (result.failed > 0) toast.warning(`${result.failed} failed`);
+      setSelectedIds(new Set());
+      queryClient.invalidateQueries({ queryKey: ['admin-employees'] });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Bulk operation failed');
+    } finally {
+      setBulkPending(false);
+    }
+  };
 
   return (
     <>
       <Navbar title="Employee Management" showBack />
-
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-7xl space-y-6 p-6">
 
@@ -452,6 +635,35 @@ export default function AdminEmployeesPage() {
             </select>
           </div>
 
+          {/* Bulk actions bar */}
+          {selectedIds.size > 0 && (
+            <div className="flex flex-wrap items-center gap-3 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 dark:border-indigo-800 dark:bg-indigo-900/20">
+              <span className="text-sm font-medium text-indigo-700 dark:text-indigo-300">
+                {selectedIds.size} selected
+              </span>
+              <button
+                onClick={() => bulkSetStatus('active')}
+                disabled={bulkPending}
+                className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                ✅ Activate
+              </button>
+              <button
+                onClick={() => bulkSetStatus('inactive')}
+                disabled={bulkPending}
+                className="rounded bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-50"
+              >
+                ⏸️ Deactivate
+              </button>
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400"
+              >
+                Clear
+              </button>
+            </div>
+          )}
+
           {/* Content */}
           {isLoading ? (
             <div className="flex items-center justify-center py-16"><Loading /></div>
@@ -478,6 +690,12 @@ export default function AdminEmployeesPage() {
                     <div key={emp.id} className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex min-w-0 items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(emp.id)}
+                            onChange={() => toggleSelectOne(emp.id)}
+                            className="h-4 w-4 shrink-0 accent-indigo-600"
+                          />
                           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm font-bold text-white">
                             {(emp.name ?? emp.email)?.[0]?.toUpperCase()}
                           </div>
@@ -496,6 +714,7 @@ export default function AdminEmployeesPage() {
                           onResetPwd={() => setResetPwdEmployee(emp)}
                           onToggleStatus={() => toggleStatusMutation.mutate({ id: emp.id, status: isActive ? 'inactive' : 'active' })}
                           on2FA={() => emp.totpEnabled ? setReset2faEmployee(emp) : setSetup2faEmployee(emp)}
+                          onReport={() => setReportEmployee(emp)}
                         />
                       </div>
                       <div className="mt-3 flex flex-wrap gap-1.5">
@@ -532,6 +751,15 @@ export default function AdminEmployeesPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-slate-100 dark:border-slate-800">
+                        <th className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            checked={allFilteredSelected}
+                            onChange={toggleSelectAll}
+                            className="h-3.5 w-3.5 accent-indigo-600"
+                            aria-label="Select all"
+                          />
+                        </th>
                         {['Employee', 'Email', 'Role', 'Status', '2FA', 'Joined', 'Actions'].map((h) => (
                           <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
                             {h}
@@ -543,7 +771,15 @@ export default function AdminEmployeesPage() {
                       {filtered.map((emp) => {
                         const isActive = emp.status === 'active' || !emp.status;
                         return (
-                          <tr key={emp.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                          <tr key={emp.id} className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 ${selectedIds.has(emp.id) ? 'bg-indigo-50/50 dark:bg-indigo-900/10' : ''}`}>
+                            <td className="px-4 py-3">
+                              <input
+                                type="checkbox"
+                                checked={selectedIds.has(emp.id)}
+                                onChange={() => toggleSelectOne(emp.id)}
+                                className="h-3.5 w-3.5 accent-indigo-600"
+                              />
+                            </td>
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-3">
                                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white">
@@ -589,6 +825,7 @@ export default function AdminEmployeesPage() {
                                 onResetPwd={() => setResetPwdEmployee(emp)}
                                 onToggleStatus={() => toggleStatusMutation.mutate({ id: emp.id, status: isActive ? 'inactive' : 'active' })}
                                 on2FA={() => emp.totpEnabled ? setReset2faEmployee(emp) : setSetup2faEmployee(emp)}
+                                onReport={() => setReportEmployee(emp)}
                               />
                             </td>
                           </tr>
@@ -598,6 +835,7 @@ export default function AdminEmployeesPage() {
                   </table>
                   <div className="border-t border-slate-100 px-4 py-3.5 text-xs text-slate-400 dark:border-slate-800 dark:text-slate-500">
                     Showing {filtered.length} of {employees.length} employees
+                    {selectedIds.size > 0 && ` · ${selectedIds.size} selected`}
                   </div>
                 </div>
               </div>
@@ -667,12 +905,12 @@ export default function AdminEmployeesPage() {
                         <div>
                           <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">PAN Number <span className="text-slate-400">(optional)</span></label>
                           <input value={form.panNumber} onChange={(e) => setForm((f) => ({ ...f, panNumber: e.target.value.toUpperCase() }))} maxLength={10} placeholder="ABCDE1234F" className={`${inputCls} font-mono uppercase tracking-widest`} />
-                          {panError && <FieldError msg={panError} />}
+                          {validatePAN(form.panNumber) && <FieldError msg={validatePAN(form.panNumber)!} />}
                         </div>
                         <div>
                           <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Aadhaar Number <span className="text-slate-400">(optional)</span></label>
                           <input value={form.aadhaarNumber} onChange={(e) => setForm((f) => ({ ...f, aadhaarNumber: e.target.value.replace(/\D/g, '').slice(0, 12) }))} placeholder="123456789012" inputMode="numeric" className={`${inputCls} font-mono tracking-widest`} />
-                          {aadhaarError && <FieldError msg={aadhaarError} />}
+                          {validateAadhaar(form.aadhaarNumber) && <FieldError msg={validateAadhaar(form.aadhaarNumber)!} />}
                         </div>
                         <div>
                           <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">Home Address <span className="text-slate-400">(optional)</span></label>
@@ -699,6 +937,7 @@ export default function AdminEmployeesPage() {
       {setup2faEmployee && <Setup2FAModal employee={setup2faEmployee} onClose={() => setSetup2faEmployee(null)} />}
       {reset2faEmployee && <Reset2FADialog employee={reset2faEmployee} onClose={() => setReset2faEmployee(null)} />}
       {resetPwdEmployee && <ResetPasswordModal employee={resetPwdEmployee} onClose={() => setResetPwdEmployee(null)} />}
+      {reportEmployee   && <PerformanceReportModal employee={reportEmployee} onClose={() => setReportEmployee(null)} />}
     </>
   );
 }
