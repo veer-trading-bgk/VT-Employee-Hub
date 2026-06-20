@@ -6,7 +6,6 @@ const logger = require('../config/logger');
 
 const router = express.Router();
 const TABLE_METRICS = process.env.DYNAMODB_TABLE_METRICS;
-const TABLE_USERS = process.env.DYNAMODB_TABLE_USERS;
 
 const INCENTIVE_RATES = { kyc: 200, demat: 300, mf: 250, insurance: 500, algo: 100, coaching: 50 };
 
@@ -32,9 +31,10 @@ router.get('/calculate/:userId', authMiddleware, async (req, res, next) => {
       Limit: 1000,
     }).promise();
 
-    // Aggregate per metric_type
+    // Aggregate per metric_type — exclude rejected metrics from pay
     const totals = {};
     (result.Items ?? []).forEach((item) => {
+      if (item.verificationStatus === 'rejected') return;
       totals[item.metric_type] = (totals[item.metric_type] ?? 0) + (item.value ?? 0);
     });
 
@@ -82,9 +82,10 @@ router.get('/payroll', authMiddleware, checkRole(['admin']), async (req, res, ne
       Limit: 5000,
     }).promise();
 
-    // Group by userId → metric_type
+    // Group by userId → metric_type — exclude rejected metrics from pay
     const byUser = {};
     (metricsResult.Items ?? []).forEach((item) => {
+      if (item.verificationStatus === 'rejected') return;
       const uid = item.userId ?? item.PK;
       if (!byUser[uid]) byUser[uid] = {};
       byUser[uid][item.metric_type] = (byUser[uid][item.metric_type] ?? 0) + (item.value ?? 0);

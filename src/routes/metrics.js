@@ -322,7 +322,7 @@ router.get('/pending', checkRole(['admin', 'manager']), async (req, res, next) =
         'attribute_exists(metric_type) AND ' +
         '(attribute_not_exists(verificationStatus) OR verificationStatus = :pending)',
       ExpressionAttributeValues: { ':pending': 'pending' },
-      Limit: 200,
+      Limit: 5000,
     }).promise();
     const items = (result.Items ?? []).sort((a, b) => (b.enteredAt || '').localeCompare(a.enteredAt || ''));
     res.json({ data: items, total: items.length });

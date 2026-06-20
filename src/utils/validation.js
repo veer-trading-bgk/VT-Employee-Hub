@@ -6,7 +6,7 @@ const loginSchema = z.object({
 });
 
 const addMetricSchema = z.object({
-  metric_type: z.enum(['kyc', 'demat', 'mf', 'insurance', 'revenue', 'algo', 'coaching', 'pms', 'pro_insight', 'ltpp']),
+  metric_type: z.enum(['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching', 'pms', 'pro_insight', 'ltpp']),
   value: z.number().min(0, 'Value cannot be negative').max(999999),
   date: z.string().optional(),
   notes: z.string().max(500).optional(),

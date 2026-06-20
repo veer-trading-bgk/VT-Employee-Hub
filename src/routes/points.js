@@ -1,14 +1,14 @@
 const express = require('express');
 const { authMiddleware } = require('../middleware/auth');
+const { METRIC_CONFIG } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 
 const router = express.Router();
 
 const TABLE = process.env.DYNAMODB_TABLE_BADGES || 'vt-badges';
-const TABLE_USERS = process.env.DYNAMODB_TABLE_USERS;
+const TABLE_EMPLOYEES = process.env.DYNAMODB_TABLE_EMPLOYEES;
 
-const POINT_VALUES = { kyc: 10, demat: 15, mf: 20, insurance: 5, algo: 8, coaching: 3 };
 const WEEKEND_MULTIPLIER = 1.5;
 
 // POST /api/points/award — award points for a metric entry
@@ -19,9 +19,11 @@ router.post('/award', authMiddleware, async (req, res, next) => {
       return res.status(400).json({ error: 'employeeId, metricType, quantity required' });
     }
 
-    const base = POINT_VALUES[metricType] ?? 0;
+    const cfg = METRIC_CONFIG[metricType];
+    if (!cfg) return res.json({ success: true, pointsAwarded: 0 });
+    const basePoints = cfg.isCurrency ? quantity / cfg.pointsWeight : quantity * cfg.pointsWeight;
     const isWeekend = [0, 6].includes(new Date().getDay());
-    const points = Math.round(base * quantity * (isWeekend ? WEEKEND_MULTIPLIER : 1));
+    const points = Math.round(basePoints * (isWeekend ? WEEKEND_MULTIPLIER : 1));
     if (points === 0) return res.json({ success: true, pointsAwarded: 0 });
 
     // Store per-day points record
@@ -76,7 +78,7 @@ router.get('/leaderboard', authMiddleware, async (req, res, next) => {
         let name = row.userId;
         try {
           const u = await dynamodb.get({
-            TableName: TABLE_USERS,
+            TableName: TABLE_EMPLOYEES,
             Key: { id: row.userId },
           }).promise();
           if (u.Item?.email) email = u.Item.email;

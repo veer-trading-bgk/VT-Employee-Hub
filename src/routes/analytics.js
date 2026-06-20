@@ -21,7 +21,8 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
       Limit: 5000,
     }).promise();
 
-    const items = result.Items ?? [];
+    // Exclude rejected metrics from all analytics calculations
+    const items = (result.Items ?? []).filter((item) => item.verificationStatus !== 'rejected');
 
     // ── 1. Daily trend ────────────────────────────────────────────────────────
     const byDate = {};
@@ -115,8 +116,9 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
               METRIC_KEYS.reduce((sum, key) => {
                 const cfg = METRIC_CONFIG[key];
                 const v = (c.totals[key] || 0) / employees;
-                const dailyT = cfg.dailyTarget || 1;
-                return sum + Math.min((v / dailyT) * 100, 200);
+                // Compare monthly total per employee against monthly target (not daily target)
+                const monthlyT = cfg.targetPeriod === 'month' ? cfg.target : cfg.dailyTarget * 30;
+                return sum + Math.min((v / (monthlyT || 1)) * 100, 200);
               }, 0) / METRIC_KEYS.length
             )
           : 0;

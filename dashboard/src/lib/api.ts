@@ -134,7 +134,7 @@ export const api = {
     }),
 
   deleteEmployee: (id: string) =>
-    apiFetch<{ success: true; message: string; employee: { id: string; name: string; email: string; status: string } }>(`/api/admin/employees/${id}`, {
+    apiFetch<{ success: true; message: string; employee: { id: string; name: string; email: string }; metricsDeleted: number }>(`/api/admin/employees/${id}`, {
       method: 'DELETE',
       retries: 0,
     }),
@@ -162,10 +162,10 @@ export const api = {
   pendingMetrics: () =>
     apiFetch<PendingMetricsResponse>('/api/metrics/pending'),
 
-  verifyMetric: (recordId: string, action: 'approved' | 'rejected', note?: string) =>
-    apiFetch<{ success: true; message: string }>('/api/metrics/verify', {
+  verifyMetric: (metricId: string, approved: boolean, notes?: string) =>
+    apiFetch<{ success: true }>('/api/metrics/verify', {
       method: 'POST',
-      body: JSON.stringify({ recordId, action, note }),
+      body: JSON.stringify({ metricId, approved, notes }),
       retries: 0,
     }),
 
@@ -209,22 +209,24 @@ export const api = {
 // ── Response types for new endpoints ─────────────────────────────────────────
 
 export interface PendingMetric {
-  recordId: string;
+  PK: string;
+  SK: string;
+  metricId: string;
   userId: string;
-  metricType: string;
+  metric_type: string;
   value: number;
   date: string;
-  source: string;
+  enteredAt?: string;
+  enteredFrom?: string;
+  verified: boolean;
   verificationStatus: string;
   flagged?: boolean;
-  note?: string;
-  submittedAt?: string;
+  verificationNotes?: string;
 }
 
 export interface PendingMetricsResponse {
-  success: boolean;
   data: PendingMetric[];
-  count: number;
+  total: number;
 }
 
 export interface AuditEntry {
@@ -284,13 +286,12 @@ export interface PayrollResponse {
 }
 
 export interface EmployeeCompensationResponse {
-  success: boolean;
-  userId: string;
-  month: string;
-  base: number;
-  bonus: number;
-  total: number;
-  metrics: Record<string, number>;
+  month: number;
+  year: number;
+  breakdown: Record<string, { count: number; rate: number; amount: number }>;
+  baseCompensation: number;
+  performanceBonus: number;
+  totalCompensation: number;
 }
 
 export interface BulkOperationResponse {
