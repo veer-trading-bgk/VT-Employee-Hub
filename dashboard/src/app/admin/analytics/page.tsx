@@ -29,7 +29,7 @@ type TrendRow = { date: string } & Record<string, number>;
 type EmployeeRow = { userId: string; name?: string; email?: string; points?: number } & Record<string, number>;
 
 interface AnalyticsResponse {
-  meta: { daysBack: number; totalRecords: number; generatedAt: string };
+  meta: { daysBack: number; totalRecords: number; activePerformerCount: number; generatedAt: string };
   performanceTrend: TrendRow[];
   metricTotals: { metric: string; key?: string; actual: number; target: number; pct: number }[];
   conversionFunnel: { name: string; value: number; fill: string }[];
@@ -101,6 +101,7 @@ export default function AdminAnalyticsPage() {
 
   const funnelMax = funnel[0]?.value ?? 1;
   const totalRecords = data?.meta?.totalRecords ?? 0;
+  const activePerformerCount = data?.meta?.activePerformerCount ?? 0;
   const overallPct = metricTotals.length > 0
     ? Math.round(metricTotals.reduce((s, m) => s + (m.pct ?? 0), 0) / metricTotals.length)
     : 0;
@@ -157,7 +158,7 @@ export default function AdminAnalyticsPage() {
               Analytics — {currentMonthLabel()}
             </h1>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              {totalRecords.toLocaleString()} metric records · {daysLeftInMonth()} days left
+              {totalRecords.toLocaleString()} metric records · {activePerformerCount > 0 ? `${activePerformerCount} performers · ` : ''}{daysLeftInMonth()} days left
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 print:hidden">

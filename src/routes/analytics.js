@@ -5,6 +5,8 @@ const { METRIC_CONFIG, METRIC_KEYS, calcPoints, emptyTotals, toDailyTargets, TAR
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 
+const TEAM_EXCLUDED_ROLES = new Set(['admin', 'manager', 'team_lead']);
+
 const router = express.Router();
 
 // GET /api/analytics?days=30
@@ -13,23 +15,40 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
     const daysBack = Math.min(parseInt(req.query.days ?? '30', 10), 90);
     const startDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
-    // Fetch live admin-configured targets (falls back to defaults if never customised)
-    const targetCfgRow = await dynamodb.get({
-      TableName: process.env.DYNAMODB_TABLE_METRICS,
-      Key: { PK: 'CONFIG#TARGETS', SK: 'current' },
-    }).promise();
+    // Fetch targets, metrics, and employees in parallel
+    const [targetCfgRow, metricsResult, empResult] = await Promise.all([
+      dynamodb.get({
+        TableName: process.env.DYNAMODB_TABLE_METRICS,
+        Key: { PK: 'CONFIG#TARGETS', SK: 'current' },
+      }).promise(),
+      dynamodb.scan({
+        TableName: process.env.DYNAMODB_TABLE_METRICS,
+        FilterExpression: '#date >= :startDate AND attribute_exists(metric_type)',
+        ExpressionAttributeNames: { '#date': 'date' },
+        ExpressionAttributeValues: { ':startDate': startDate },
+        Limit: 5000,
+      }).promise(),
+      dynamodb.scan({
+        TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+        ProjectionExpression: 'id, #r, #s',
+        ExpressionAttributeNames: { '#r': 'role', '#s': 'status' },
+      }).promise(),
+    ]);
+
     const liveTargets = toDailyTargets(targetCfgRow.Item?.targets ?? TARGET_DEFAULTS);
 
-    const result = await dynamodb.scan({
-      TableName: process.env.DYNAMODB_TABLE_METRICS,
-      FilterExpression: '#date >= :startDate AND attribute_exists(metric_type)',
-      ExpressionAttributeNames: { '#date': 'date' },
-      ExpressionAttributeValues: { ':startDate': startDate },
-      Limit: 5000,
-    }).promise();
+    // Active performers only (agent/telecaller/intern) — same filter as leaderboard
+    const allowedIds = new Set(
+      (empResult.Items ?? [])
+        .filter(e => !TEAM_EXCLUDED_ROLES.has(e.role) && e.status !== 'inactive')
+        .map(e => e.id)
+    );
+    const activePerformerCount = Math.max(allowedIds.size, 1);
 
-    // Exclude rejected metrics from all analytics calculations
-    const items = (result.Items ?? []).filter((item) => item.verificationStatus !== 'rejected');
+    // Exclude rejected metrics and non-performer entries from all calculations
+    const items = (metricsResult.Items ?? [])
+      .filter(item => item.verificationStatus !== 'rejected')
+      .filter(item => allowedIds.has(item.userId ?? item.PK));
 
     // ── 1. Daily trend ────────────────────────────────────────────────────────
     const byDate = {};
@@ -51,7 +70,8 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
     const metricTotals = METRIC_KEYS.map((key) => {
       const cfg = METRIC_CONFIG[key];
       const actual = totals[key] ?? 0;
-      const target = Math.round((liveTargets[key] ?? cfg.dailyTarget) * daysBack);
+      // Team target = daily target per person × days in period × number of active performers
+      const target = Math.round((liveTargets[key] ?? cfg.dailyTarget) * daysBack * activePerformerCount);
       return {
         metric: cfg.label,
         key,
@@ -133,7 +153,7 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
       });
 
     res.json({
-      meta: { daysBack, totalRecords: items.length, generatedAt: new Date().toISOString() },
+      meta: { daysBack, totalRecords: items.length, activePerformerCount, generatedAt: new Date().toISOString() },
       performanceTrend,
       metricTotals,
       conversionFunnel,
