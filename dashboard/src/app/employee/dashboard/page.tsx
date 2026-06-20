@@ -38,6 +38,7 @@ export default function EmployeeDashboardPage() {
       const mt = res?.data?.metric_type ?? addForm.metric_type;
       toast.success(total != null ? `${mt.toUpperCase()} today: ${total}` : 'Metric added!');
       queryClient.invalidateQueries({ queryKey: ['my-metrics-30'] });
+      queryClient.invalidateQueries({ queryKey: ['my-metrics-entry'] });
       setAddForm({ metric_type: 'kyc', value: '' });
       setShowForm(false);
     },

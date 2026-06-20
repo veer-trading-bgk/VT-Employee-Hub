@@ -82,7 +82,7 @@ export default function DailyEntryPage() {
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['my-metrics-entry'] });
-      qc.invalidateQueries({ queryKey: ['my-metrics'] });
+      qc.invalidateQueries({ queryKey: ['my-metrics-30'] });
     },
   });
 
@@ -113,7 +113,7 @@ export default function DailyEntryPage() {
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['my-metrics-entry'] });
-      qc.invalidateQueries({ queryKey: ['my-metrics'] });
+      qc.invalidateQueries({ queryKey: ['my-metrics-30'] });
     },
   });
 
