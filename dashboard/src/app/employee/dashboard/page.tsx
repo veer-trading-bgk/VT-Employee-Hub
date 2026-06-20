@@ -47,14 +47,16 @@ export default function EmployeeDashboardPage() {
   const todayStr = today();
   const allDates = data?.data ?? {};
   const todayStatuses = (data?.statuses?.[todayStr] ?? {}) as Record<string, VerificationStatus>;
+  // API returns live daily targets from /api/metrics/my — use these over hardcoded config
+  const apiTargets = (data?.targets ?? {}) as Record<string, number>;
   const summary = METRICS.map((metric) => {
     const todayValue = allDates[todayStr]?.[metric.key] ?? 0;
     const monthTotal = Object.values(allDates).reduce(
       (sum, dayData) => sum + (dayData[metric.key] ?? 0),
       0
     );
-    const target = dailyTarget(metric);
-    const mTarget = monthlyTarget(metric);
+    const target = apiTargets[metric.key] ?? dailyTarget(metric);
+    const mTarget = target * 30;
     const progress = target > 0 ? Math.min(Math.round((todayValue / target) * 100), 999) : 0;
     const monthPct = mTarget > 0 ? Math.min(Math.round((monthTotal / mTarget) * 100), 999) : 0;
     return { metric, value: todayValue, target, mTarget, progress, monthTotal, monthPct };

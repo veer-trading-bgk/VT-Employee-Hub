@@ -1,7 +1,7 @@
 const express = require('express');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
-const { METRIC_CONFIG, METRIC_KEYS, calcPoints, emptyTotals } = require('../config/metricsConfig');
+const { METRIC_CONFIG, METRIC_KEYS, calcPoints, emptyTotals, toDailyTargets, TARGET_DEFAULTS } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 
@@ -12,6 +12,13 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
   try {
     const daysBack = Math.min(parseInt(req.query.days ?? '30', 10), 90);
     const startDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+    // Fetch live admin-configured targets (falls back to defaults if never customised)
+    const targetCfgRow = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: { PK: 'CONFIG#TARGETS', SK: 'current' },
+    }).promise();
+    const liveTargets = toDailyTargets(targetCfgRow.Item?.targets ?? TARGET_DEFAULTS);
 
     const result = await dynamodb.scan({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
@@ -44,7 +51,7 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
     const metricTotals = METRIC_KEYS.map((key) => {
       const cfg = METRIC_CONFIG[key];
       const actual = totals[key] ?? 0;
-      const target = Math.round(cfg.dailyTarget * daysBack);
+      const target = Math.round((liveTargets[key] ?? cfg.dailyTarget) * daysBack);
       return {
         metric: cfg.label,
         key,
@@ -116,8 +123,8 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
               METRIC_KEYS.reduce((sum, key) => {
                 const cfg = METRIC_CONFIG[key];
                 const v = (c.totals[key] || 0) / employees;
-                // Compare monthly total per employee against monthly target (not daily target)
-                const monthlyT = cfg.targetPeriod === 'month' ? cfg.target : cfg.dailyTarget * 30;
+                // Compare monthly total per employee against live monthly target
+                const monthlyT = (liveTargets[key] ?? cfg.dailyTarget) * 30;
                 return sum + Math.min((v / (monthlyT || 1)) * 100, 200);
               }, 0) / METRIC_KEYS.length
             )
