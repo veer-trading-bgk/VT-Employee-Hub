@@ -19,6 +19,7 @@ interface Employee {
   id: string;
   name: string;
   email: string;
+  mobileNumber?: string;
   role: Role;
   status: string;
   createdAt: string;
@@ -1197,6 +1198,9 @@ export default function AdminEmployeesPage() {
                         <div className="min-w-0 flex-1">
                           <p className="truncate font-semibold text-slate-900 dark:text-white">{emp.name ?? '—'}</p>
                           <p className="truncate text-xs text-slate-500 dark:text-slate-400">{emp.email}</p>
+                          {emp.mobileNumber && (
+                            <p className="truncate text-xs text-slate-400 dark:text-slate-500">{emp.mobileNumber}</p>
+                          )}
                         </div>
                         <EmployeeActionMenu
                           isActive={isActive} isToggling={togglingId === emp.id}
@@ -1290,7 +1294,7 @@ export default function AdminEmployeesPage() {
                           />
                         </th>
                         <SortTh label="Employee" col="name"      current={sortKey} dir={sortDir} onSort={onSort} />
-                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Email</th>
+                        <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Contact</th>
                         <SortTh label="Role"     col="role"      current={sortKey} dir={sortDir} onSort={onSort} />
                         <SortTh label="Status"   col="status"    current={sortKey} dir={sortDir} onSort={onSort} />
                         <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">2FA</th>
@@ -1326,8 +1330,13 @@ export default function AdminEmployeesPage() {
                                 <span className="min-w-0 truncate font-medium text-slate-900 dark:text-white" title={emp.name ?? undefined}>{emp.name ?? '—'}</span>
                               </div>
                             </td>
-                            <td className="px-4 py-3.5 text-slate-500 dark:text-slate-400" style={{ maxWidth: '280px' }}>
-                              <span className="block truncate" title={emp.email}>{emp.email}</span>
+                            <td className="px-4 py-3.5" style={{ maxWidth: '280px' }}>
+                              <span className="block truncate text-slate-500 dark:text-slate-400" title={emp.email}>{emp.email}</span>
+                              {emp.mobileNumber && (
+                                <span className="mt-0.5 block truncate text-xs text-slate-400 dark:text-slate-500" title={emp.mobileNumber}>
+                                  {emp.mobileNumber}
+                                </span>
+                              )}
                             </td>
                             <td className="px-4 py-3.5">
                               <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${ROLE_STYLE[emp.role] ?? ROLE_STYLE.telecaller}`}>
