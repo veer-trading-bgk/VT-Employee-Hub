@@ -28,6 +28,7 @@ interface Employee {
 interface RegisterForm {
   name: string;
   email: string;
+  mobileNumber: string;
   password: string;
   role: Role;
   panNumber: string;
@@ -607,7 +608,7 @@ function PerformanceReportModal({ employee, onClose }: { employee: Employee; onC
 function AddEmployeeModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (name: string) => void }) {
   useEscape(onClose);
   const [form, setForm] = useState<RegisterForm>({
-    name: '', email: '', password: generatePassword(), role: 'telecaller',
+    name: '', email: '', mobileNumber: '', password: generatePassword(), role: 'telecaller',
     panNumber: '', aadhaarNumber: '', homeAddress: '',
   });
   const [showPwd, setShowPwd]           = useState(false);
@@ -623,6 +624,7 @@ function AddEmployeeModal({ onClose, onSuccess }: { onClose: () => void; onSucce
       const body: Record<string, string> = {
         name: form.name, email: form.email, password: form.password, role: form.role,
       };
+      if (form.mobileNumber)  body.mobileNumber  = form.mobileNumber;
       if (form.panNumber)     body.panNumber     = form.panNumber;
       if (form.aadhaarNumber) body.aadhaarNumber = form.aadhaarNumber;
       if (form.homeAddress)   body.homeAddress   = form.homeAddress;
@@ -656,6 +658,18 @@ function AddEmployeeModal({ onClose, onSuccess }: { onClose: () => void; onSucce
                 <label className="mb-1.5 block text-xs font-semibold text-slate-700 dark:text-slate-300">Work Email *</label>
                 <input type="email" value={form.email} onChange={(e) => setForm(f => ({ ...f, email: e.target.value }))}
                   placeholder="rajesh@viirtrading.com" className={inputCls} />
+              </div>
+              <div className="col-span-2">
+                <label className="mb-1.5 block text-xs font-semibold text-slate-700 dark:text-slate-300">Mobile Number</label>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  value={form.mobileNumber}
+                  onChange={(e) => setForm(f => ({ ...f, mobileNumber: e.target.value.replace(/\D/g, '').slice(0, 10) }))}
+                  placeholder="9876543210"
+                  maxLength={10}
+                  className={inputCls}
+                />
               </div>
               <div>
                 <label className="mb-1.5 block text-xs font-semibold text-slate-700 dark:text-slate-300">Role *</label>
@@ -1304,16 +1318,16 @@ export default function AdminEmployeesPage() {
                                 className="h-3.5 w-3.5 accent-indigo-600"
                               />
                             </td>
-                            <td className="max-w-0 w-48 px-4 py-3.5">
+                            <td className="px-4 py-3.5" style={{ maxWidth: '260px' }}>
                               <div className="flex min-w-0 items-center gap-3">
                                 <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ${ac}`}>
                                   {init}
                                 </div>
-                                <span className="truncate font-medium text-slate-900 dark:text-white">{emp.name ?? '—'}</span>
+                                <span className="min-w-0 truncate font-medium text-slate-900 dark:text-white" title={emp.name ?? undefined}>{emp.name ?? '—'}</span>
                               </div>
                             </td>
-                            <td className="max-w-0 w-56 px-4 py-3.5 text-slate-500 dark:text-slate-400">
-                              <span className="block truncate">{emp.email}</span>
+                            <td className="px-4 py-3.5 text-slate-500 dark:text-slate-400" style={{ maxWidth: '280px' }}>
+                              <span className="block truncate" title={emp.email}>{emp.email}</span>
                             </td>
                             <td className="px-4 py-3.5">
                               <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${ROLE_STYLE[emp.role] ?? ROLE_STYLE.telecaller}`}>
