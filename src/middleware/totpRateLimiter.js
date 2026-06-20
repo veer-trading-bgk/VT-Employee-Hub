@@ -1,5 +1,6 @@
 const dynamodb = require('../config/dynamodb');
 const { logAudit } = require('../utils/audit');
+const bot = require('../config/telegram');
 const logger = require('../config/logger');
 
 const MAX_ATTEMPTS = 5;
@@ -39,6 +40,10 @@ async function recordTotpFailure(email, userId) {
     if (attempts >= MAX_ATTEMPTS) {
       logger.warn(`TOTP lockout: ${email} reached ${attempts} failed attempts`);
       await logAudit(userId || 'unknown', 'totp_lockout', email, 'locked', 'system', { attempts }).catch(() => {});
+      bot.sendMessage(
+        process.env.TELEGRAM_ADMIN_CHAT_ID,
+        `🔒 2FA Lockout\n\nUser: ${email}\nFailed attempts: ${attempts}\nLocked for 15 minutes\nTime: ${new Date().toUTCString()}`
+      ).catch((err) => logger.error('Telegram alert failed', err));
     }
 
     return attempts;

@@ -31,6 +31,8 @@ async function loadSecrets() {
       'JWT_SECRET',
       'REFRESH_TOKEN_SECRET',
       'ANTHROPIC_API_KEY',
+      'TELEGRAM_BOT_TOKEN',
+      'TELEGRAM_ADMIN_CHAT_ID',
     ];
     for (const key of MANAGED_KEYS) {
       if (secrets[key]) process.env[key] = secrets[key];

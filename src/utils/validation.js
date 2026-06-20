@@ -41,6 +41,7 @@ const verifyBackupSchema = z.object({
 const updateEmployeeSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   email: z.string().email('Invalid email').optional(),
+  mobileNumber: z.string().regex(/^\d{10}$/, 'Mobile must be exactly 10 digits').optional(),
   role: z.enum(['admin', 'manager', 'team_lead', 'agent', 'telecaller', 'intern']).optional(),
   status: z.enum(['active', 'inactive']).optional(),
   panNumber: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, 'Invalid PAN format').optional(),

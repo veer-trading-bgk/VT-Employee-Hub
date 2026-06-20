@@ -1,42 +1,11 @@
 const express = require('express');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
+const { METRIC_CONFIG, METRIC_KEYS, calcPoints, emptyTotals } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 
 const router = express.Router();
-
-// ── Metric config (mirrors dashboard/src/lib/metrics.config.ts) ───────────────
-// To add a metric: add it here AND to the frontend config + validation enum.
-const METRIC_CONFIG = {
-  kyc:         { label: 'KYC',         dailyTarget: 4,            pointsWeight: 10,    isCurrency: false, color: '#6366f1' },
-  demat:       { label: 'Demat',       dailyTarget: 50 / 30,      pointsWeight: 15,    isCurrency: false, color: '#22c55e' },
-  mf:          { label: 'MF',          dailyTarget: 40 / 30,      pointsWeight: 20,    isCurrency: false, color: '#f59e0b' },
-  insurance:   { label: 'Insurance',   dailyTarget: 100000 / 30,  pointsWeight: 10000, isCurrency: true,  color: '#ec4899' },
-  algo:        { label: 'Algo',        dailyTarget: 10 / 30,      pointsWeight: 12,    isCurrency: false, color: '#06b6d4' },
-  coaching:    { label: 'Coaching',    dailyTarget: 20000 / 30,   pointsWeight: 1000,  isCurrency: true,  color: '#a855f7' },
-  pms:         { label: 'PMS',         dailyTarget: 10 / 30,      pointsWeight: 30,    isCurrency: false, color: '#0ea5e9' },
-  pro_insight: { label: 'Pro Insight', dailyTarget: 15 / 30,      pointsWeight: 20,    isCurrency: false, color: '#8b5cf6' },
-  ltpp:        { label: 'LTPP',        dailyTarget: 10 / 30,      pointsWeight: 25,    isCurrency: false, color: '#14b8a6' },
-};
-
-const METRIC_KEYS = Object.keys(METRIC_CONFIG);
-
-/** Points for one employee across all metrics */
-function calcPoints(totals) {
-  return Math.round(
-    METRIC_KEYS.reduce((sum, key) => {
-      const cfg = METRIC_CONFIG[key];
-      const v = totals[key] ?? 0;
-      return sum + (cfg.isCurrency ? v / cfg.pointsWeight : v * cfg.pointsWeight);
-    }, 0)
-  );
-}
-
-/** Empty per-metric totals object */
-function emptyTotals() {
-  return METRIC_KEYS.reduce((o, k) => { o[k] = 0; return o; }, {});
-}
 
 // GET /api/analytics?days=30
 router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
@@ -46,7 +15,7 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
 
     const result = await dynamodb.scan({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
-      FilterExpression: '#date >= :startDate',
+      FilterExpression: '#date >= :startDate AND attribute_exists(metric_type)',
       ExpressionAttributeNames: { '#date': 'date' },
       ExpressionAttributeValues: { ':startDate': startDate },
       Limit: 5000,
@@ -58,10 +27,9 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
     const byDate = {};
     items.forEach((item) => {
       const d = item.date;
+      if (!d || !METRIC_CONFIG[item.metric_type]) return;
       if (!byDate[d]) byDate[d] = { date: d, ...emptyTotals() };
-      if (METRIC_CONFIG[item.metric_type]) {
-        byDate[d][item.metric_type] = (byDate[d][item.metric_type] ?? 0) + (item.value ?? 0);
-      }
+      byDate[d][item.metric_type] = (byDate[d][item.metric_type] ?? 0) + (item.value ?? 0);
     });
     const performanceTrend = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date));
 
@@ -89,19 +57,29 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
     const byEmployee = {};
     items.forEach((item) => {
       const uid = item.userId ?? item.PK;
-      if (!byEmployee[uid]) byEmployee[uid] = { userId: uid, ...emptyTotals() };
-      if (METRIC_CONFIG[item.metric_type]) {
-        byEmployee[uid][item.metric_type] = (byEmployee[uid][item.metric_type] ?? 0) + (item.value ?? 0);
+      if (!uid || !METRIC_CONFIG[item.metric_type]) return;
+      if (!byEmployee[uid]) {
+        byEmployee[uid] = {
+          userId: uid,
+          name: item.name || item.email || uid,
+          email: item.email || uid,
+          ...emptyTotals(),
+        };
       }
+      byEmployee[uid][item.metric_type] = (byEmployee[uid][item.metric_type] ?? 0) + (item.value ?? 0);
     });
     const employeeTotals = Object.values(byEmployee)
-      .map((e) => ({ ...e, points: calcPoints(e) }))
-      .sort((a, b) => b.points - a.points)
+      .map((e) => {
+        const metrics = Object.fromEntries(METRIC_KEYS.map((k) => [k, e[k] ?? 0]));
+        return { userId: e.userId, name: e.name, email: e.email, ...metrics, points: calcPoints(metrics) };
+      })
+      .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name))
       .slice(0, 20);
 
     // ── 4. Conversion funnel ─────────────────────────────────────────────────
     const uniqueByMetric = {};
     items.forEach((item) => {
+      if (!METRIC_CONFIG[item.metric_type]) return;
       if (!uniqueByMetric[item.metric_type]) uniqueByMetric[item.metric_type] = new Set();
       uniqueByMetric[item.metric_type].add(item.userId ?? item.PK);
     });
@@ -116,21 +94,32 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
     items.forEach((item) => {
       const month = item.date?.slice(0, 7);
       if (!month) return;
-      if (!cohortMap[month]) cohortMap[month] = { month, employeeSet: new Set(), kyc: 0, insurance: 0 };
+      if (!cohortMap[month]) cohortMap[month] = { month, employeeSet: new Set(), totals: emptyTotals() };
       cohortMap[month].employeeSet.add(item.userId ?? item.PK);
-      if (item.metric_type === 'kyc')       cohortMap[month].kyc       += item.value ?? 0;
-      if (item.metric_type === 'insurance') cohortMap[month].insurance += item.value ?? 0;
+      if (METRIC_CONFIG[item.metric_type]) {
+        cohortMap[month].totals[item.metric_type] = (cohortMap[month].totals[item.metric_type] || 0) + (item.value ?? 0);
+      }
     });
     const cohortAnalysis = Object.values(cohortMap)
       .sort((a, b) => a.month.localeCompare(b.month))
       .map((c, idx, arr) => {
         const prev = arr[idx - 1];
         const employees = c.employeeSet.size;
-        const revenue = Math.round(c.insurance);
-        const growth = prev && prev.insurance > 0
-          ? Math.round(((c.insurance - prev.insurance) / prev.insurance) * 1000) / 10
+        const revenue = Math.round(c.totals.insurance || 0);
+        const growth = prev && prev.totals.insurance > 0
+          ? Math.round(((c.totals.insurance - prev.totals.insurance) / prev.totals.insurance) * 1000) / 10
           : 0;
-        const avgPerformance = employees > 0 ? Math.round((c.kyc / employees) * 10) : 0;
+        // avgPerformance: composite score across all metrics vs daily targets
+        const avgPerformance = employees > 0
+          ? Math.round(
+              METRIC_KEYS.reduce((sum, key) => {
+                const cfg = METRIC_CONFIG[key];
+                const v = (c.totals[key] || 0) / employees;
+                const dailyT = cfg.dailyTarget || 1;
+                return sum + Math.min((v / dailyT) * 100, 200);
+              }, 0) / METRIC_KEYS.length
+            )
+          : 0;
         return { month: c.month, employees, revenue, growth, avgPerformance };
       });
 

@@ -1,4 +1,5 @@
 const dynamodb = require('../config/dynamodb');
+const bot = require('../config/telegram');
 const logger = require('../config/logger');
 
 const logAudit = async (userId, action, target, result, ip, details = {}) => {
@@ -22,6 +23,12 @@ const logAudit = async (userId, action, target, result, ip, details = {}) => {
 
     logger.info(`Audit log: ${action} by ${userId} - ${result}`);
 
+    if (['delete_employee', 'change_incentive', 'export_data'].includes(action)) {
+      const message = `🔐 Admin Action Alert\n\nAction: ${action}\nTarget: ${target}\nResult: ${result}\nIP: ${ip}\nTime: ${timestamp}`;
+      bot.sendMessage(process.env.TELEGRAM_ADMIN_CHAT_ID, message).catch(err => {
+        logger.error('Failed to send Telegram alert', err);
+      });
+    }
 
     return true;
   } catch (error) {

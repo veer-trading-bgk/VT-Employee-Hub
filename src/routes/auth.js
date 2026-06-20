@@ -9,6 +9,7 @@ const { rateLimit, loginRateLimiter } = require('../middleware/rateLimiter');
 const { authMiddleware } = require('../middleware/auth');
 const { totpRateLimitCheck, recordTotpFailure, clearTotpAttempts } = require('../middleware/totpRateLimiter');
 const dynamodb = require('../config/dynamodb');
+const bot = require('../config/telegram');
 const logger = require('../config/logger');
 
 const router = express.Router();
@@ -80,6 +81,12 @@ router.post('/login', async (req, res, next) => {
     if (!isPasswordValid) {
       const fails = loginRateLimiter.recordFail(email);
       await logAudit(user.id, 'failed_login', email, 'invalid_password', req.ip);
+      if (fails >= 5) {
+        bot.sendMessage(
+          process.env.TELEGRAM_ADMIN_CHAT_ID,
+          `⚠️ Multiple failed logins for ${email}\nIP: ${req.ip}\nFailed attempts: ${fails}`
+        ).catch(() => {});
+      }
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 

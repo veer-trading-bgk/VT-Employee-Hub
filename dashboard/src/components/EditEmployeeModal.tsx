@@ -17,6 +17,7 @@ interface Employee {
 }
 
 interface EmployeeDetail extends Employee {
+  mobileNumber?: string;
   panNumber?: string;
   aadhaarNumber?: string;
   homeAddress?: string;
@@ -25,6 +26,7 @@ interface EmployeeDetail extends Employee {
 interface EditForm {
   name: string;
   email: string;
+  mobileNumber: string;
   role: Role;
   status: 'active' | 'inactive';
   panNumber: string;
@@ -72,6 +74,7 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
   const [form, setForm] = useState<EditForm>({
     name: employee.name ?? '',
     email: employee.email ?? '',
+    mobileNumber: '',
     role: employee.role,
     status: (employee.status ?? 'active') as 'active' | 'inactive',
     panNumber: '',
@@ -93,20 +96,22 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
       ...f,
       name: d.name ?? f.name,
       email: d.email ?? f.email,
+      mobileNumber: d.mobileNumber ?? '',
       role: d.role ?? f.role,
       status: (d.status ?? f.status) as 'active' | 'inactive',
       panNumber: d.panNumber ?? '',
       aadhaarNumber: d.aadhaarNumber ?? '',
       homeAddress: d.homeAddress ?? '',
     }));
-    if (d.panNumber || d.aadhaarNumber || d.homeAddress) {
+    if (d.mobileNumber || d.panNumber || d.aadhaarNumber || d.homeAddress) {
       setShowAdditional(true);
     }
   }, [detail]);
 
+  const mobileError  = form.mobileNumber && !/^\d{10}$/.test(form.mobileNumber) ? 'Must be exactly 10 digits' : null;
   const panError     = validatePAN(form.panNumber.toUpperCase());
   const aadhaarError = validateAadhaar(form.aadhaarNumber);
-  const hasErrors    = !!panError || !!aadhaarError;
+  const hasErrors    = !!mobileError || !!panError || !!aadhaarError;
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -117,9 +122,11 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
       if (form.role   !== (d?.role   ?? employee.role))   changes.role   = form.role;
       if (form.status !== (d?.status ?? employee.status)) changes.status = form.status;
 
-      const pan = form.panNumber.toUpperCase().trim();
-      const aad = form.aadhaarNumber.trim();
+      const mob  = form.mobileNumber.trim();
+      const pan  = form.panNumber.toUpperCase().trim();
+      const aad  = form.aadhaarNumber.trim();
       const addr = form.homeAddress.trim();
+      if (mob  !== (d?.mobileNumber  ?? '')) changes.mobileNumber  = mob  || '';
       if (pan  !== (d?.panNumber     ?? '')) changes.panNumber     = pan  || '';
       if (aad  !== (d?.aadhaarNumber ?? '')) changes.aadhaarNumber = aad  || '';
       if (addr !== (d?.homeAddress   ?? '')) changes.homeAddress   = addr || '';
@@ -232,7 +239,7 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
                 >
                   <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                     Additional Information
-                    {(detail?.employee?.panNumber || detail?.employee?.aadhaarNumber || detail?.employee?.homeAddress) && (
+                    {(detail?.employee?.mobileNumber || detail?.employee?.panNumber || detail?.employee?.aadhaarNumber || detail?.employee?.homeAddress) && (
                       <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-bold text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
                         Saved
                       </span>
@@ -243,6 +250,22 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
 
                 {showAdditional && (
                   <div className="space-y-4 border-t border-slate-100 px-4 pb-4 pt-3 dark:border-slate-800">
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
+                        Mobile Number <span className="text-slate-400">(optional)</span>
+                      </label>
+                      <input
+                        type="tel"
+                        inputMode="numeric"
+                        value={form.mobileNumber}
+                        onChange={(e) => setForm((f) => ({ ...f, mobileNumber: e.target.value.replace(/\D/g, '').slice(0, 10) }))}
+                        placeholder="9876543210"
+                        maxLength={10}
+                        className={`${inputCls} font-mono tracking-widest`}
+                      />
+                      {mobileError && <FieldError msg={mobileError} />}
+                    </div>
+
                     <div>
                       <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
                         PAN Number <span className="text-slate-400">(optional)</span>
