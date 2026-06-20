@@ -22,14 +22,14 @@ function getTabsForRole(role: Role): NavTab[] {
   ];
   if (role === 'manager') return [
     { href: '/manager/dashboard',      label: 'Team',    icon: '👔' },
+    { href: '/manager/bulk-entry',     label: 'Entry',   icon: '✏️' },
     { href: '/manager/verify-metrics', label: 'Verify',  icon: '✅' },
-    { href: '/leaderboard',            label: 'Board',   icon: '🏆' },
     { href: '/profile',                label: 'Profile', icon: '👤' },
   ];
   if (role === 'team_lead') return [
     { href: '/team-lead/dashboard',      label: 'Team',    icon: '👥' },
+    { href: '/team-lead/add-entry',      label: 'Entry',   icon: '✏️' },
     { href: '/team-lead/verify-metrics', label: 'Verify',  icon: '✅' },
-    { href: '/analytics',                label: 'Stats',   icon: '📊' },
     { href: '/profile',                  label: 'Profile', icon: '👤' },
   ];
   // Employee roles (telecaller, agent, intern)

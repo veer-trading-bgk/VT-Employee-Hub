@@ -470,4 +470,142 @@ router.get('/leaderboard', async (req, res, next) => {
   }
 });
 
+// ── Performer roster — admin / manager / team_lead ────────────────────────────
+// Returns all active performers (agent/telecaller/intern) for entry forms.
+
+router.get('/performers', checkRole(['admin', 'manager', 'team_lead']), async (req, res, next) => {
+  try {
+    const result = await dynamodb.scan({
+      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+      FilterExpression: '#s <> :inactive',
+      ProjectionExpression: 'id, #n, email, #r, teamLeadId',
+      ExpressionAttributeNames: { '#n': 'name', '#s': 'status', '#r': 'role' },
+      ExpressionAttributeValues: { ':inactive': 'inactive' },
+    }).promise();
+
+    const PERFORMER_ROLES = new Set(['agent', 'telecaller', 'intern']);
+    const performers = (result.Items ?? [])
+      .filter(e => PERFORMER_ROLES.has(e.role))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+    res.json({ success: true, data: performers });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── TL: my assigned team ──────────────────────────────────────────────────────
+
+router.get('/my-team', checkRole(['team_lead']), async (req, res, next) => {
+  try {
+    const result = await dynamodb.scan({
+      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+      FilterExpression: 'teamLeadId = :tlId AND #s <> :inactive',
+      ProjectionExpression: 'id, #n, email',
+      ExpressionAttributeNames: { '#n': 'name', '#s': 'status' },
+      ExpressionAttributeValues: { ':tlId': req.user.id, ':inactive': 'inactive' },
+    }).promise();
+
+    const members = (result.Items ?? []).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    res.json({ success: true, data: members });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── Proxy metric entry — TL adds for their team / manager adds for any performer ──
+
+router.post('/add-for-member', checkRole(['team_lead', 'manager', 'admin']), async (req, res, next) => {
+  try {
+    const { targetUserId, metric_type, value, date, notes } = req.body;
+    if (!targetUserId) return res.status(400).json({ error: 'targetUserId required' });
+
+    const validated = addMetricSchema.parse({ metric_type, value, date, notes });
+    const metricDate = validated.date
+      ? new Date(validated.date).toISOString().split('T')[0]
+      : new Date().toISOString().split('T')[0];
+
+    // Fetch and validate target employee
+    const targetResult = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+      Key: { id: targetUserId },
+    }).promise();
+    const target = targetResult.Item;
+    if (!target) return res.status(404).json({ error: 'Employee not found' });
+
+    const PERFORMER_ROLES = new Set(['agent', 'telecaller', 'intern']);
+    if (!PERFORMER_ROLES.has(target.role)) {
+      return res.status(403).json({ error: 'Can only add metrics for performers (agent/telecaller/intern)' });
+    }
+    if (target.status === 'inactive') {
+      return res.status(403).json({ error: 'Cannot add metrics for an inactive employee' });
+    }
+
+    // TL can only add for employees assigned to them
+    if (req.user.role === 'team_lead' && target.teamLeadId !== req.user.id) {
+      return res.status(403).json({ error: 'This employee is not assigned to your team' });
+    }
+
+    const metricId = `${targetUserId}#${metricDate}#${validated.metric_type}`;
+
+    await dynamodb.update({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: { PK: targetUserId, SK: `${metricDate}#${validated.metric_type}` },
+      UpdateExpression: [
+        'ADD #val :inc',
+        'SET metricId = if_not_exists(metricId, :mid)',
+        ', userId = if_not_exists(userId, :uid)',
+        ', email = if_not_exists(email, :em)',
+        ', #nm = if_not_exists(#nm, :nm)',
+        ', metric_type = if_not_exists(metric_type, :mt)',
+        ', #dt = if_not_exists(#dt, :dt)',
+        ', enteredAt = if_not_exists(enteredAt, :ea)',
+        ', enteredFrom = :ef',
+        ', enteredBy = :eb',
+        ', verified = if_not_exists(verified, :vf)',
+        ', verificationStatus = if_not_exists(verificationStatus, :vs)',
+        ', notes = :notes',
+      ].join(' '),
+      ExpressionAttributeNames: { '#val': 'value', '#nm': 'name', '#dt': 'date' },
+      ExpressionAttributeValues: {
+        ':inc': validated.value,
+        ':mid': metricId,
+        ':uid': targetUserId,
+        ':em': target.email,
+        ':nm': target.name || target.email,
+        ':mt': validated.metric_type,
+        ':dt': metricDate,
+        ':ea': new Date().toISOString(),
+        ':ef': 'proxy',
+        ':eb': req.user.id,
+        ':vf': false,
+        ':vs': 'pending',
+        ':notes': validated.notes || '',
+      },
+    }).promise();
+
+    const updated = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: { PK: targetUserId, SK: `${metricDate}#${validated.metric_type}` },
+    }).promise();
+    const totalValue = updated.Item?.value ?? validated.value;
+
+    await logAudit(req.user.id, 'proxy_metric_entry', targetUserId, 'success', req.ip, {
+      metric_type: validated.metric_type,
+      value: validated.value,
+      total: totalValue,
+      date: metricDate,
+    });
+    logger.info(`Proxy entry: ${req.user.email} → ${target.email} ${validated.metric_type}+${validated.value}`);
+
+    res.json({
+      success: true,
+      message: `${validated.metric_type} +${validated.value} for ${target.name} (total: ${totalValue})`,
+      data: { metric_type: validated.metric_type, value: validated.value, total: totalValue, date: metricDate },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

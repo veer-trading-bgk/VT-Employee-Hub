@@ -21,6 +21,7 @@ interface EmployeeDetail extends Employee {
   panNumber?: string;
   aadhaarNumber?: string;
   homeAddress?: string;
+  teamLeadId?: string;
 }
 
 interface EditForm {
@@ -32,6 +33,7 @@ interface EditForm {
   panNumber: string;
   aadhaarNumber: string;
   homeAddress: string;
+  teamLeadId: string; // '' = unassigned
 }
 
 interface Props {
@@ -80,14 +82,25 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
     panNumber: '',
     aadhaarNumber: '',
     homeAddress: '',
+    teamLeadId: '',
   });
 
-  // Fetch full employee detail to pre-populate PAN / Aadhaar / Address
+  // Fetch full employee detail to pre-populate all fields
   const { data: detail, isLoading: detailLoading } = useQuery({
     queryKey: ['employee-detail', employee.id],
     queryFn: () => apiFetch<{ success: boolean; employee: EmployeeDetail }>(`/api/admin/employees/${employee.id}`),
     staleTime: 0,
   });
+
+  // Fetch team leads for the TL assignment dropdown
+  const { data: allEmpData } = useQuery({
+    queryKey: ['admin-employees'],
+    queryFn: () => apiFetch<{ success: boolean; data: Employee[] }>('/api/admin/employees'),
+    staleTime: 5 * 60 * 1000,
+  });
+  const teamLeads = (allEmpData?.data ?? []).filter(
+    (e) => e.role === 'team_lead' && e.status !== 'inactive'
+  );
 
   useEffect(() => {
     if (!detail?.employee) return;
@@ -102,6 +115,7 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
       panNumber: d.panNumber ?? '',
       aadhaarNumber: d.aadhaarNumber ?? '',
       homeAddress: d.homeAddress ?? '',
+      teamLeadId: d.teamLeadId ?? '',
     }));
     if (d.mobileNumber || d.panNumber || d.aadhaarNumber || d.homeAddress) {
       setShowAdditional(true);
@@ -126,10 +140,12 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
       const pan  = form.panNumber.toUpperCase().trim();
       const aad  = form.aadhaarNumber.trim();
       const addr = form.homeAddress.trim();
+      const tl   = form.teamLeadId.trim();
       if (mob  !== (d?.mobileNumber  ?? '')) changes.mobileNumber  = mob  || '';
       if (pan  !== (d?.panNumber     ?? '')) changes.panNumber     = pan  || '';
       if (aad  !== (d?.aadhaarNumber ?? '')) changes.aadhaarNumber = aad  || '';
       if (addr !== (d?.homeAddress   ?? '')) changes.homeAddress   = addr || '';
+      if (tl   !== (d?.teamLeadId    ?? '')) (changes as Record<string, unknown>).teamLeadId = tl || null;
 
       // Remove empty-string values (no point storing blank)
       Object.keys(changes).forEach((k) => {
@@ -229,6 +245,33 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
                   ))}
                 </div>
               </div>
+
+              {/* ── Team Lead assignment (performers only) ── */}
+              {['agent', 'telecaller', 'intern'].includes(form.role) && (
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
+                    Assigned Team Lead
+                    <span className="ml-1 text-slate-400 text-[10px] font-normal">(optional)</span>
+                  </label>
+                  <select
+                    value={form.teamLeadId}
+                    onChange={(e) => setForm((f) => ({ ...f, teamLeadId: e.target.value }))}
+                    className={inputCls}
+                  >
+                    <option value="">— Unassigned —</option>
+                    {teamLeads.map((tl) => (
+                      <option key={tl.id} value={tl.id}>
+                        {tl.name} ({tl.email})
+                      </option>
+                    ))}
+                  </select>
+                  {form.teamLeadId && (
+                    <p className="mt-0.5 text-[11px] text-indigo-600 dark:text-indigo-400">
+                      ✓ Assigned — TL can add entries for this employee
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* ── Collapsible additional info ── */}
               <div className="rounded-lg border border-slate-200 dark:border-slate-700">

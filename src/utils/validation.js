@@ -47,6 +47,7 @@ const updateEmployeeSchema = z.object({
   panNumber: z.string().regex(/^[A-Z]{5}[0-9]{4}[A-Z]$/, 'Invalid PAN format').optional(),
   aadhaarNumber: z.string().regex(/^\d{12}$/, 'Aadhaar must be 12 digits').optional(),
   homeAddress: z.string().max(300).optional(),
+  teamLeadId: z.string().nullable().optional(), // null = remove assignment
 }).strict();
 
 module.exports = {

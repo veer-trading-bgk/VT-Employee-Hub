@@ -140,20 +140,29 @@ router.put('/employees/:id', async (req, res, next) => {
 
     const now = new Date().toISOString();
     const setClauses = [];
+    const removeClauses = [];
     const attrNames = {};
     const attrValues = { ':updatedAt': now, ':updatedBy': req.user.id };
 
     for (const [key, val] of Object.entries(updates)) {
-      setClauses.push(`#${key} = :${key}`);
       attrNames[`#${key}`] = key;
-      attrValues[`:${key}`] = val;
+      if (val === null) {
+        // null means "remove this field" (e.g. clearing teamLeadId assignment)
+        removeClauses.push(`#${key}`);
+      } else {
+        setClauses.push(`#${key} = :${key}`);
+        attrValues[`:${key}`] = val;
+      }
     }
     setClauses.push('updatedAt = :updatedAt', 'updatedBy = :updatedBy');
+
+    const updateParts = [`SET ${setClauses.join(', ')}`];
+    if (removeClauses.length > 0) updateParts.push(`REMOVE ${removeClauses.join(', ')}`);
 
     const result = await dynamodb.update({
       TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
       Key: { id },
-      UpdateExpression: `SET ${setClauses.join(', ')}`,
+      UpdateExpression: updateParts.join(' '),
       ExpressionAttributeNames: attrNames,
       ExpressionAttributeValues: attrValues,
       ReturnValues: 'ALL_NEW',
