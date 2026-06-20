@@ -35,7 +35,13 @@ export default function AdminTargetsPage() {
 
   useEffect(() => {
     if (data?.data) {
-      setForm(data.data);
+      // Merge API response with METRICS defaults so all 9 metrics always appear,
+      // even if the stored config is partial (saved before new metrics existed)
+      const merged: Record<string, TargetEntry> = {};
+      METRICS.forEach((m) => {
+        merged[m.key] = data.data[m.key] ?? { target: m.target, targetPeriod: m.targetPeriod as TargetPeriod };
+      });
+      setForm(merged);
       setDirty(false);
     }
   }, [data?.data]);
@@ -111,7 +117,7 @@ export default function AdminTargetsPage() {
           <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800">
             {METRICS.map((m) => {
               const entry = form[m.key];
-              if (!entry) return null;
+              if (!entry) return null; // Should never happen after merge, but keeps TS happy
               return (
                 <div key={m.key} className="flex flex-wrap items-center gap-4 p-4">
                   <div className="flex w-48 items-center gap-2 flex-shrink-0">

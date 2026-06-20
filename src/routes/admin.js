@@ -490,9 +490,11 @@ router.put('/targets', async (req, res, next) => {
         return res.status(400).json({ error: `Invalid target config for ${key}` });
       }
     }
+    // Merge with defaults so partial submissions never drop missing metrics from the stored config
+    const mergedTargets = { ...TARGET_DEFAULTS, ...targets };
     await dynamodb.put({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
-      Item: { ...TARGETS_KEY, targets, updatedBy: req.user.id, updatedAt: new Date().toISOString() },
+      Item: { ...TARGETS_KEY, targets: mergedTargets, updatedBy: req.user.id, updatedAt: new Date().toISOString() },
     }).promise();
     await logAudit(req.user.id, 'update_targets', 'config', 'success', req.ip, { targets });
     logger.info(`Admin ${req.user.email} updated metric targets`);

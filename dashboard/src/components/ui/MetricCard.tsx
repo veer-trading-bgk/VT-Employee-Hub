@@ -109,7 +109,10 @@ export function MetricCard({
         {formatMetricValue(metric, value)}
       </p>
       <p className="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">
-        of {formatMetricValue(metric, Math.round(target))} daily target
+        of {target > 0 && target < 1
+          ? target.toFixed(1)
+          : formatMetricValue(metric, Math.round(target))
+        } daily target
         {yesterday !== undefined && yesterday > 0 && (
           <span className="ml-2 text-slate-300 dark:text-slate-600">
             · yest: {formatMetricValue(metric, yesterday)}

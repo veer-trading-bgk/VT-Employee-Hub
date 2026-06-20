@@ -192,7 +192,9 @@ export default function EmployeeDashboardPage() {
                     <p className={`mt-1 text-2xl font-bold ${isRejected ? 'text-slate-400 dark:text-slate-600 line-through' : 'text-slate-900 dark:text-white'}`}>
                       {formatMetricValue(metric, value)}
                     </p>
-                    <p className="text-xs text-slate-400">of {formatMetricValue(metric, Math.round(target))} target</p>
+                    <p className="text-xs text-slate-400">
+                      of {target > 0 && target < 1 ? target.toFixed(1) : formatMetricValue(metric, Math.round(target))} target
+                    </p>
                     <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
                       <div
                         className={`h-full rounded-full transition-all duration-500 ${barColor}`}
