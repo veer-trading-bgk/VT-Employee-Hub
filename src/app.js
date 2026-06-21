@@ -36,11 +36,7 @@ const allowedOrigins = [
 
 const corsMiddleware = cors({
   origin: (origin, callback) => {
-    // debug: log the incoming origin vs allowed list
-    const allowed = !origin || allowedOrigins.includes(origin);
-    // eslint-disable-next-line no-console
-    console.log('[CORS]', JSON.stringify({ origin, allowed, allowedOrigins }));
-    if (allowed) return callback(null, true);
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
     callback(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
@@ -67,7 +63,7 @@ app.use('/api/telegram', telegramRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date(), origins: allowedOrigins });
+  res.json({ status: 'ok', timestamp: new Date() });
 });
 
 // Error handling
