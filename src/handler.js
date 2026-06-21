@@ -18,5 +18,13 @@ exports.handler = async (event, context) => {
       headers: event.headers,
     }));
   }
-  return handler(event, context);
+  const result = await handler(event, context);
+  if (event.httpMethod === 'OPTIONS') {
+    // eslint-disable-next-line no-console
+    console.log('[OPTIONS-RESPONSE]', JSON.stringify({
+      statusCode: result.statusCode,
+      headers: result.headers,
+    }));
+  }
+  return result;
 };
