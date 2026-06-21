@@ -9,5 +9,14 @@ const handler = serverless(app);
 exports.handler = async (event, context) => {
   // loadSecrets() is a no-op after the first cold start (cached in module scope)
   await loadSecrets();
+  // debug: log raw headers for OPTIONS so we can see what API GW forwards
+  if (event.httpMethod === 'OPTIONS') {
+    // eslint-disable-next-line no-console
+    console.log('[OPTIONS-EVENT]', JSON.stringify({
+      method: event.httpMethod,
+      path: event.path,
+      headers: event.headers,
+    }));
+  }
   return handler(event, context);
 };
