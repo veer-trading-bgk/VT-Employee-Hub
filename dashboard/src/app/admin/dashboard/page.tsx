@@ -3,6 +3,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useCallback } from 'react';
 import Link from 'next/link';
+import { useAuth } from '@/context/AuthContext';
 import { Navbar } from '@/components/layout/Navbar';
 import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Loading } from '@/components/common/Loading';
@@ -64,8 +65,20 @@ function ErrorBanner({ message }: { message: string }) {
   );
 }
 
+interface TrialStatus {
+  hasTrial: boolean; plan: string; daysLeft: number | null; isExpired: boolean;
+}
+
 export default function AdminDashboardPage() {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+
+  const { data: trialData } = useQuery<TrialStatus>({
+    queryKey: ['trial-status'],
+    queryFn: () => apiFetch('/api/companies/trial'),
+    enabled: !!user?.companyId,
+    staleTime: 60_000 * 10,
+  });
 
   const { data: teamData, isLoading: teamLoading, isError: teamError } = useQuery({
     queryKey: ['admin-team-summary'],
@@ -162,6 +175,30 @@ export default function AdminDashboardPage() {
     <>
       <Navbar title="Admin Dashboard" />
       <div className="space-y-6 p-4 md:p-8">
+
+        {/* Trial banner */}
+        {trialData?.hasTrial && !trialData.isExpired && (trialData.daysLeft ?? 14) <= 7 && (
+          <div className={`flex items-center justify-between gap-3 rounded-xl px-4 py-3 text-sm
+            ${(trialData.daysLeft ?? 7) <= 2
+              ? 'bg-rose-950/50 border border-rose-800 text-rose-300'
+              : 'bg-amber-950/40 border border-amber-700/50 text-amber-300'}`}>
+            <span>
+              ⏳ Your free trial ends in{' '}
+              <strong>{trialData.daysLeft} day{trialData.daysLeft === 1 ? '' : 's'}</strong>.
+            </span>
+            <Link href="/admin/billing" className="shrink-0 rounded-lg bg-indigo-600 px-3 py-1 text-xs font-bold text-white hover:bg-indigo-500 transition">
+              Upgrade
+            </Link>
+          </div>
+        )}
+        {trialData?.isExpired && (
+          <div className="flex items-center justify-between gap-3 rounded-xl px-4 py-3 text-sm bg-rose-950/60 border border-rose-700 text-rose-300">
+            <span>⚠️ Trial expired. <strong>Upgrade now</strong> to keep your data and access.</span>
+            <Link href="/admin/billing" className="shrink-0 rounded-lg bg-rose-600 px-3 py-1 text-xs font-bold text-white hover:bg-rose-500 transition">
+              Upgrade Now
+            </Link>
+          </div>
+        )}
 
         {/* Header */}
         <div className="flex flex-wrap items-center justify-between gap-3">

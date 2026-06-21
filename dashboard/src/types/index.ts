@@ -5,6 +5,7 @@ export interface User {
   email: string;
   name: string;
   role: Role;
+  companyId?: string | null;
 }
 
 export type VerificationStatus = 'pending' | 'approved' | 'rejected';

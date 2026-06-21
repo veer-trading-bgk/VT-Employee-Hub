@@ -12,6 +12,7 @@ const badgesRoutes = require('./routes/badges');
 const pointsRoutes = require('./routes/points');
 const compensationRoutes = require('./routes/compensation');
 const adminRoutes = require('./routes/admin');
+const companiesRoutes = require('./routes/companies');
 const telegramRoutes = require('./routes/telegram');
 const { authMiddleware } = require('./middleware/auth');
 const { errorHandler } = require('./middleware/errorHandler');
@@ -49,6 +50,7 @@ app.use('/api/badges', badgesRoutes);
 app.use('/api/points', pointsRoutes);
 app.use('/api/compensation', compensationRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/companies', companiesRoutes);
 app.use('/api/telegram', telegramRoutes);
 
 // Health check

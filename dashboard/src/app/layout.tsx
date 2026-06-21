@@ -19,14 +19,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "VT Employee Hub",
-  description: "VT Employee Metrics Dashboard",
+  title: "APForce",
+  description: "AP & Sub-Broker Performance Platform",
   manifest: "/manifest.json",
   themeColor: "#4f46e5",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "VT Hub",
+    title: "APForce",
   },
 };
 

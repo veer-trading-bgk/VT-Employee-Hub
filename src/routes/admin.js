@@ -19,11 +19,18 @@ router.use(authMiddleware, adminMiddleware);
 
 router.get('/employees', async (req, res, next) => {
   try {
-    const result = await dynamodb.scan({
+    const { companyId } = req.user;
+    const scanParams = {
       TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
       ProjectionExpression: 'id, #name, email, mobileNumber, #role, telegramId, createdAt, #status, totpEnabled',
       ExpressionAttributeNames: { '#name': 'name', '#role': 'role', '#status': 'status' },
-    }).promise();
+    };
+    if (companyId) {
+      scanParams.FilterExpression = 'companyId = :cid AND attribute_not_exists(#type)';
+      scanParams.ExpressionAttributeNames['#type'] = 'type';
+      scanParams.ExpressionAttributeValues = { ':cid': companyId };
+    }
+    const result = await dynamodb.scan(scanParams).promise();
 
     logAudit(req.user.id, 'list_employees', 'employees_table', 'success', req.ip)
       .catch((err) => logger.error('Audit log failed for list_employees', err));
@@ -81,6 +88,7 @@ router.post('/employees', async (req, res, next) => {
         password: hashedPassword,
         name,
         role,
+        ...(req.user.companyId && { companyId: req.user.companyId }),
         ...(mobileNumber  && { mobileNumber }),
         ...(panNumber     && { panNumber }),
         ...(aadhaarNumber && { aadhaarNumber }),
@@ -469,13 +477,15 @@ router.put('/metrics/:userId/:date/:metricType', async (req, res, next) => {
 
 // ── Targets CRUD ──────────────────────────────────────────────────────────────
 
-const TARGETS_KEY = { PK: 'CONFIG#TARGETS', SK: 'current' };
+function targetsKey(companyId) {
+  return { PK: companyId ? `CONFIG#TARGETS#${companyId}` : 'CONFIG#TARGETS', SK: 'current' };
+}
 
 router.get('/targets', async (req, res, next) => {
   try {
     const result = await dynamodb.get({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
-      Key: TARGETS_KEY,
+      Key: targetsKey(req.user.companyId),
     }).promise();
     res.json({
       success: true,
@@ -499,11 +509,11 @@ router.put('/targets', async (req, res, next) => {
         return res.status(400).json({ error: `Invalid target config for ${key}` });
       }
     }
-    // Merge with defaults so partial submissions never drop missing metrics from the stored config
     const mergedTargets = { ...TARGET_DEFAULTS, ...targets };
+    const key = targetsKey(req.user.companyId);
     await dynamodb.put({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
-      Item: { ...TARGETS_KEY, targets: mergedTargets, updatedBy: req.user.id, updatedAt: new Date().toISOString() },
+      Item: { ...key, targets: mergedTargets, updatedBy: req.user.id, updatedAt: new Date().toISOString() },
     }).promise();
     await logAudit(req.user.id, 'update_targets', 'config', 'success', req.ip, { targets });
     logger.info(`Admin ${req.user.email} updated metric targets`);
@@ -517,7 +527,7 @@ router.delete('/targets', async (req, res, next) => {
   try {
     await dynamodb.delete({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
-      Key: TARGETS_KEY,
+      Key: targetsKey(req.user.companyId),
     }).promise();
     await logAudit(req.user.id, 'reset_targets', 'config', 'success', req.ip);
     res.json({ success: true, message: 'Targets reset to defaults' });

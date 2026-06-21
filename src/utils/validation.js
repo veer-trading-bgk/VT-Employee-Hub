@@ -50,6 +50,19 @@ const updateEmployeeSchema = z.object({
   teamLeadId: z.string().nullable().optional(), // null = remove assignment
 }).strict();
 
+const companySignupSchema = z.object({
+  companyName: z.string().min(2, 'Office name must be at least 2 characters').max(100),
+  broker: z.string().min(1, 'Select your broker').max(100),
+  city: z.string().min(2, 'City must be at least 2 characters').max(100),
+  adminName: z.string().min(2, 'Name must be at least 2 characters').max(100),
+  adminEmail: z.string().email('Invalid email'),
+  adminMobile: z.string().regex(/^\d{10}$/, 'Mobile must be exactly 10 digits').optional(),
+  password: z.string()
+    .min(8, 'Password must be at least 8 characters')
+    .regex(/[A-Z]/, 'Must contain uppercase letter')
+    .regex(/[0-9]/, 'Must contain a number'),
+});
+
 module.exports = {
   loginSchema,
   addMetricSchema,
@@ -57,4 +70,5 @@ module.exports = {
   verifyTotpSchema,
   verifyBackupSchema,
   updateEmployeeSchema,
+  companySignupSchema,
 };

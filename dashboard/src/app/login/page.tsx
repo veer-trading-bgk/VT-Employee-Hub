@@ -358,11 +358,11 @@ export default function LoginPage() {
       <div className="relative z-10 w-full max-w-sm">
         {/* Logo */}
         <div className="mb-8 text-center">
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-600 text-3xl shadow-lg shadow-indigo-900/50">
-            💼
+          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-600 text-3xl font-black text-white shadow-lg shadow-indigo-900/50">
+            A
           </div>
-          <h1 className="text-2xl font-bold text-white">Viir Trading</h1>
-          <p className="mt-1 text-sm text-slate-400">Employee Hub — Sign in to continue</p>
+          <h1 className="text-2xl font-black text-white tracking-tight">APForce</h1>
+          <p className="mt-1 text-sm text-slate-400">Sign in to your office</p>
         </div>
 
         {/* Card */}
@@ -390,8 +390,11 @@ export default function LoginPage() {
           )}
         </div>
 
-        <p className="mt-4 text-center text-xs text-slate-600">
-          © {new Date().getFullYear()} Viir Trading. All rights reserved.
+        <p className="mt-4 text-center text-xs text-slate-500">
+          New AP office?{' '}
+          <Link href="/signup" className="text-indigo-400 hover:text-indigo-300 font-semibold transition">
+            Start free trial →
+          </Link>
         </p>
       </div>
     </div>

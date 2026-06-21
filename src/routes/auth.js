@@ -2,7 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const speakeasy = require('speakeasy');
-const { loginSchema, registerSchema, verifyTotpSchema, verifyBackupSchema } = require('../utils/validation');
+const { loginSchema, registerSchema, verifyTotpSchema, verifyBackupSchema, companySignupSchema } = require('../utils/validation');
 const { logAudit } = require('../utils/audit');
 const { encrypt, decrypt } = require('../utils/encryption');
 const { rateLimit, loginRateLimiter } = require('../middleware/rateLimiter');
@@ -24,7 +24,7 @@ function cookieAttrs() {
 
 function issueTokens(user, res) {
   const accessToken = jwt.sign(
-    { id: user.id, email: user.email, role: user.role, name: user.name || '' },
+    { id: user.id, email: user.email, role: user.role, name: user.name || '', companyId: user.companyId || null },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRE || '1h' }
   );
@@ -111,7 +111,7 @@ router.post('/login', async (req, res, next) => {
       success: true,
       message: 'Login successful',
       token: accessToken,
-      user: { id: user.id, email: user.email, role: user.role, name: user.name },
+      user: { id: user.id, email: user.email, role: user.role, name: user.name, companyId: user.companyId || null },
     });
   } catch (error) {
     next(error);
@@ -183,7 +183,7 @@ router.post('/verify-totp', async (req, res, next) => {
       success: true,
       message: 'Login successful',
       token: accessToken,
-      user: { id: user.id, email: user.email, role: user.role, name: user.name },
+      user: { id: user.id, email: user.email, role: user.role, name: user.name, companyId: user.companyId || null },
     });
   } catch (error) {
     next(error);
@@ -262,7 +262,7 @@ router.post('/verify-totp-backup', async (req, res, next) => {
       success: true,
       message: 'Login successful via backup code.',
       token: accessToken,
-      user: { id: user.id, email: user.email, role: user.role, name: user.name },
+      user: { id: user.id, email: user.email, role: user.role, name: user.name, companyId: user.companyId || null },
       backupCodesRemaining: unusedCount,
       warning: unusedCount <= 2 ? 'You have very few backup codes left. Ask your admin to regenerate them.' : undefined,
     });
@@ -299,7 +299,7 @@ router.post('/refresh', async (req, res) => {
     res.json({
       success: true,
       token: accessToken,
-      user: { id: user.id, email: user.email, role: user.role, name: user.name },
+      user: { id: user.id, email: user.email, role: user.role, name: user.name, companyId: user.companyId || null },
     });
   } catch {
     res.status(500).json({ error: 'Failed to refresh token' });
@@ -365,6 +365,89 @@ router.post('/logout', authMiddleware, async (req, res) => {
     `refreshToken=; HttpOnly; ${attrs}; Max-Age=0; Path=/`,
   ]);
   res.json({ success: true, message: 'Logged out successfully' });
+});
+
+// ── POST /api/auth/company-signup ─────────────────────────────────────────────
+// Public route: self-service signup for a new AP office (creates company + admin user)
+
+router.post('/company-signup', async (req, res, next) => {
+  try {
+    const data = companySignupSchema.parse(req.body);
+
+    // Check email not already registered
+    const existing = await findUserByEmail(data.adminEmail);
+    if (existing) {
+      return res.status(409).json({ error: 'Email already registered. Try logging in instead.' });
+    }
+
+    const now = Date.now();
+    const companyId = `company_${now}`;
+    const adminId = `emp_${now}`;
+    const trialEndsAt = new Date(now + 14 * 24 * 60 * 60 * 1000).toISOString();
+
+    // Create company profile record (stored alongside employees for simplicity)
+    await dynamodb.put({
+      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+      Item: {
+        id: `COMPANY#${companyId}`,
+        type: 'COMPANY_PROFILE',
+        companyId,
+        companyName: data.companyName,
+        broker: data.broker,
+        city: data.city,
+        adminEmail: data.adminEmail,
+        plan: 'trial',
+        trialEndsAt,
+        planStatus: 'active',
+        createdAt: new Date().toISOString(),
+      },
+    }).promise();
+
+    // Create admin user with companyId
+    const hashedPassword = await bcrypt.hash(data.password, 10);
+    await dynamodb.put({
+      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+      Item: {
+        id: adminId,
+        email: data.adminEmail,
+        password: hashedPassword,
+        name: data.adminName,
+        role: 'admin',
+        companyId,
+        ...(data.adminMobile && { mobileNumber: data.adminMobile }),
+        status: 'active',
+        createdAt: new Date().toISOString(),
+        createdBy: 'self',
+        totpEnabled: false,
+        totpSecret: null,
+        backupCodes: [],
+      },
+    }).promise();
+
+    const user = { id: adminId, email: data.adminEmail, role: 'admin', name: data.adminName, companyId };
+    const { accessToken } = issueTokens(user, res);
+
+    await logAudit(adminId, 'company_signup', data.adminEmail, 'success', req.ip, {
+      companyId,
+      companyName: data.companyName,
+    }).catch(() => {});
+    logger.info(`New company signed up: "${data.companyName}" (${companyId}) admin: ${data.adminEmail}`);
+
+    bot.sendMessage(
+      process.env.TELEGRAM_ADMIN_CHAT_ID,
+      `🎉 New APForce Signup!\n\nCompany: ${data.companyName}\nBroker: ${data.broker}\nCity: ${data.city}\nAdmin: ${data.adminEmail}\nTrial ends: ${trialEndsAt.slice(0, 10)}`
+    ).catch(() => {});
+
+    res.status(201).json({
+      success: true,
+      message: 'Account created! Your 14-day free trial starts now.',
+      token: accessToken,
+      user,
+      company: { companyId, companyName: data.companyName, plan: 'trial', trialEndsAt },
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // ── GET /api/auth/me ──────────────────────────────────────────────────────────

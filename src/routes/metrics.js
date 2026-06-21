@@ -11,16 +11,31 @@ const router = express.Router();
 
 // ── Target config helper ──────────────────────────────────────────────────────
 
-async function fetchTargetConfig() {
+async function fetchTargetConfig(companyId) {
   try {
+    const pk = companyId ? `CONFIG#TARGETS#${companyId}` : 'CONFIG#TARGETS';
     const result = await dynamodb.get({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
-      Key: { PK: 'CONFIG#TARGETS', SK: 'current' },
+      Key: { PK: pk, SK: 'current' },
     }).promise();
     return result.Item?.targets ?? TARGET_DEFAULTS;
   } catch {
     return TARGET_DEFAULTS;
   }
+}
+
+// ── Build companyId filter clause for DynamoDB scans ─────────────────────────
+
+function addCompanyFilter(params, companyId, existingFilterExpr) {
+  if (!companyId) return params;
+  const cid = existingFilterExpr
+    ? `${existingFilterExpr} AND companyId = :__cid`
+    : 'companyId = :__cid';
+  return {
+    ...params,
+    FilterExpression: cid,
+    ExpressionAttributeValues: { ...(params.ExpressionAttributeValues || {}), ':__cid': companyId },
+  };
 }
 
 // ── Add metric (any authenticated user) ──────────────────────────────────────
@@ -40,24 +55,25 @@ router.post('/add', async (req, res, next) => {
     }
 
     const metricId = `${userId}#${metricDate}#${metric_type}`;
+    const addSetClauses = [
+      'SET metricId = if_not_exists(metricId, :mid)',
+      ', userId = if_not_exists(userId, :uid)',
+      ', email = if_not_exists(email, :em)',
+      ', #nm = if_not_exists(#nm, :nm)',
+      ', metric_type = if_not_exists(metric_type, :mt)',
+      ', #dt = if_not_exists(#dt, :dt)',
+      ', enteredAt = if_not_exists(enteredAt, :ea)',
+      ', enteredFrom = :ef',
+      ', verified = if_not_exists(verified, :vf)',
+      ', verificationStatus = if_not_exists(verificationStatus, :vs)',
+      ', ipAddress = :ip',
+      ', notes = :notes',
+    ];
+    if (req.user.companyId) addSetClauses.push(', companyId = if_not_exists(companyId, :__cid)');
     await dynamodb.update({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
       Key: { PK: userId, SK: `${metricDate}#${metric_type}` },
-      UpdateExpression: [
-        'ADD #val :inc',
-        'SET metricId = if_not_exists(metricId, :mid)',
-        ', userId = if_not_exists(userId, :uid)',
-        ', email = if_not_exists(email, :em)',
-        ', #nm = if_not_exists(#nm, :nm)',
-        ', metric_type = if_not_exists(metric_type, :mt)',
-        ', #dt = if_not_exists(#dt, :dt)',
-        ', enteredAt = if_not_exists(enteredAt, :ea)',
-        ', enteredFrom = :ef',
-        ', verified = if_not_exists(verified, :vf)',
-        ', verificationStatus = if_not_exists(verificationStatus, :vs)',
-        ', ipAddress = :ip',
-        ', notes = :notes',
-      ].join(' '),
+      UpdateExpression: ['ADD #val :inc', ...addSetClauses].join(' '),
       ExpressionAttributeNames: { '#val': 'value', '#nm': 'name', '#dt': 'date' },
       ExpressionAttributeValues: {
         ':inc': value,
@@ -73,6 +89,7 @@ router.post('/add', async (req, res, next) => {
         ':vs': 'pending',
         ':ip': req.ip,
         ':notes': notes || '',
+        ...(req.user.companyId && { ':__cid': req.user.companyId }),
       },
     }).promise();
 
@@ -161,7 +178,7 @@ router.get('/my', async (req, res, next) => {
         KeyConditionExpression: 'PK = :userId AND SK > :date',
         ExpressionAttributeValues: { ':userId': userId, ':date': startDate },
       }).promise(),
-      fetchTargetConfig(),
+      fetchTargetConfig(req.user.companyId),
     ]);
 
     const targets = toDailyTargets(targetCfg);
@@ -225,19 +242,21 @@ router.get('/team-summary', checkRole(['admin', 'manager']), async (req, res, ne
   try {
     const today = new Date().toISOString().split('T')[0];
 
+    const { companyId } = req.user;
+    const metricsScanParams = addCompanyFilter({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      FilterExpression: '#date = :today AND attribute_exists(metric_type)',
+      ExpressionAttributeNames: { '#date': 'date' },
+      ExpressionAttributeValues: { ':today': today },
+    }, companyId, '#date = :today AND attribute_exists(metric_type)');
+    const empScanParams = companyId
+      ? { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status', '#type': 'type' }, FilterExpression: 'companyId = :__cid AND attribute_not_exists(#type)', ExpressionAttributeValues: { ':__cid': companyId } }
+      : { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status' } };
+
     const [result, targetCfg, empResult] = await Promise.all([
-      dynamodb.scan({
-        TableName: process.env.DYNAMODB_TABLE_METRICS,
-        FilterExpression: '#date = :today AND attribute_exists(metric_type)',
-        ExpressionAttributeNames: { '#date': 'date' },
-        ExpressionAttributeValues: { ':today': today },
-      }).promise(),
-      fetchTargetConfig(),
-      dynamodb.scan({
-        TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
-        ProjectionExpression: 'id, #r, #s',
-        ExpressionAttributeNames: { '#r': 'role', '#s': 'status' },
-      }).promise(),
+      dynamodb.scan(metricsScanParams).promise(),
+      fetchTargetConfig(companyId),
+      dynamodb.scan(empScanParams).promise(),
     ]);
 
     // Active performers only: agent / telecaller / intern
@@ -313,6 +332,7 @@ router.post('/bulk-entry', checkRole(['admin', 'manager']), async (req, res, nex
             verified: false,
             verificationStatus: 'pending',
             flagged: (key === 'kyc' && value > 50) || (key === 'demat' && value > 30),
+            ...(req.user.companyId && { companyId: req.user.companyId }),
           },
         }).promise();
         count++;
@@ -414,19 +434,21 @@ router.get('/leaderboard', async (req, res, next) => {
     const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
     const today = now.toISOString().split('T')[0];
 
+    const { companyId } = req.user;
+    const lbMetricsParams = addCompanyFilter({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      FilterExpression: '#date BETWEEN :start AND :end AND attribute_exists(metric_type)',
+      ExpressionAttributeNames: { '#date': 'date' },
+      ExpressionAttributeValues: { ':start': monthStart, ':end': today },
+    }, companyId, '#date BETWEEN :start AND :end AND attribute_exists(metric_type)');
+    const lbEmpParams = companyId
+      ? { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status', '#type': 'type' }, FilterExpression: 'companyId = :__cid AND attribute_not_exists(#type)', ExpressionAttributeValues: { ':__cid': companyId } }
+      : { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status' } };
+
     const [result, targetCfg, empResult] = await Promise.all([
-      dynamodb.scan({
-        TableName: process.env.DYNAMODB_TABLE_METRICS,
-        FilterExpression: '#date BETWEEN :start AND :end AND attribute_exists(metric_type)',
-        ExpressionAttributeNames: { '#date': 'date' },
-        ExpressionAttributeValues: { ':start': monthStart, ':end': today },
-      }).promise(),
-      fetchTargetConfig(),
-      dynamodb.scan({
-        TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
-        ProjectionExpression: 'id, #r, #s',
-        ExpressionAttributeNames: { '#r': 'role', '#s': 'status' },
-      }).promise(),
+      dynamodb.scan(lbMetricsParams).promise(),
+      fetchTargetConfig(companyId),
+      dynamodb.scan(lbEmpParams).promise(),
     ]);
 
     // Active performers only: agent / telecaller / intern
@@ -475,13 +497,20 @@ router.get('/leaderboard', async (req, res, next) => {
 
 router.get('/performers', checkRole(['admin', 'manager', 'team_lead']), async (req, res, next) => {
   try {
-    const result = await dynamodb.scan({
+    const { companyId } = req.user;
+    const perfParams = {
       TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
-      FilterExpression: '#s <> :inactive',
       ProjectionExpression: 'id, #n, email, #r, teamLeadId',
       ExpressionAttributeNames: { '#n': 'name', '#s': 'status', '#r': 'role' },
+      FilterExpression: '#s <> :inactive',
       ExpressionAttributeValues: { ':inactive': 'inactive' },
-    }).promise();
+    };
+    if (companyId) {
+      perfParams.FilterExpression += ' AND companyId = :__cid AND attribute_not_exists(#type)';
+      perfParams.ExpressionAttributeNames['#type'] = 'type';
+      perfParams.ExpressionAttributeValues[':__cid'] = companyId;
+    }
+    const result = await dynamodb.scan(perfParams).promise();
 
     const PERFORMER_ROLES = new Set(['agent', 'telecaller', 'intern']);
     const performers = (result.Items ?? [])

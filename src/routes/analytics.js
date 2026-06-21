@@ -15,24 +15,32 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
     const daysBack = Math.min(parseInt(req.query.days ?? '30', 10), 90);
     const startDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
+    const { companyId } = req.user;
+    const targetsPK = companyId ? `CONFIG#TARGETS#${companyId}` : 'CONFIG#TARGETS';
+
+    // Build metric scan — add companyId filter for multi-tenancy
+    const metricsScanBase = {
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      ExpressionAttributeNames: { '#date': 'date' },
+      ExpressionAttributeValues: { ':startDate': startDate },
+      Limit: 5000,
+    };
+    if (companyId) {
+      metricsScanBase.FilterExpression = '#date >= :startDate AND attribute_exists(metric_type) AND companyId = :__cid';
+      metricsScanBase.ExpressionAttributeValues[':__cid'] = companyId;
+    } else {
+      metricsScanBase.FilterExpression = '#date >= :startDate AND attribute_exists(metric_type)';
+    }
+
+    const empScanBase = companyId
+      ? { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status', '#type': 'type' }, FilterExpression: 'companyId = :__cid AND attribute_not_exists(#type)', ExpressionAttributeValues: { ':__cid': companyId } }
+      : { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status' } };
+
     // Fetch targets, metrics, and employees in parallel
     const [targetCfgRow, metricsResult, empResult] = await Promise.all([
-      dynamodb.get({
-        TableName: process.env.DYNAMODB_TABLE_METRICS,
-        Key: { PK: 'CONFIG#TARGETS', SK: 'current' },
-      }).promise(),
-      dynamodb.scan({
-        TableName: process.env.DYNAMODB_TABLE_METRICS,
-        FilterExpression: '#date >= :startDate AND attribute_exists(metric_type)',
-        ExpressionAttributeNames: { '#date': 'date' },
-        ExpressionAttributeValues: { ':startDate': startDate },
-        Limit: 5000,
-      }).promise(),
-      dynamodb.scan({
-        TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
-        ProjectionExpression: 'id, #r, #s',
-        ExpressionAttributeNames: { '#r': 'role', '#s': 'status' },
-      }).promise(),
+      dynamodb.get({ TableName: process.env.DYNAMODB_TABLE_METRICS, Key: { PK: targetsPK, SK: 'current' } }).promise(),
+      dynamodb.scan(metricsScanBase).promise(),
+      dynamodb.scan(empScanBase).promise(),
     ]);
 
     const liveTargets = toDailyTargets(targetCfgRow.Item?.targets ?? TARGET_DEFAULTS);

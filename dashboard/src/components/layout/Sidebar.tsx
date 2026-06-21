@@ -24,6 +24,7 @@ const ALL_NAV: NavItem[] = [
   { href: '/admin/employees',  label: 'Employees',      icon: '👥',  roles: ['admin'] },
   { href: '/admin/bulk-entry', label: 'Bulk Entry',     icon: '📋',  roles: ['admin'] },
   { href: '/admin/analytics',  label: 'Analytics',      icon: '📈',  roles: ['admin'] },
+  { href: '/admin/billing',    label: 'Billing & Plan', icon: '💳',  roles: ['admin'] },
   // ── Manager (admin can see too) ─────────────────
   { href: '/manager/dashboard',      label: 'Team Overview',  icon: '👔', roles: ['admin', 'manager'] },
   { href: '/manager/verify-metrics', label: 'Verify Metrics', icon: '✅', roles: ['admin', 'manager'] },
