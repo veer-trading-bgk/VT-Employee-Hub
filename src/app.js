@@ -36,6 +36,7 @@ const corsMiddleware = cors({
 
 // Security middleware
 app.use(helmet());
+app.options('*', corsMiddleware); // explicit preflight — must be before other routes
 app.use(corsMiddleware);
 app.use(express.json({ limit: '10kb' }));
 app.use(cookieParser());
