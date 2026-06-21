@@ -19,10 +19,20 @@ const { errorHandler } = require('./middleware/errorHandler');
 
 const app = express();
 
-// Support a comma-separated list of allowed origins (local dev + Vercel prod)
-const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3001')
-  .split(',')
-  .map((o) => o.trim());
+// Always-allowed APForce production origins — env var can add more
+const STATIC_ORIGINS = [
+  'https://app.apforce.in',
+  'https://dashboard.viirtrading.com',
+  'https://vt-employee-hub.vercel.app',
+];
+
+const allowedOrigins = [
+  ...STATIC_ORIGINS,
+  ...(process.env.FRONTEND_URL || 'http://localhost:3001')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean),
+].filter((v, i, a) => a.indexOf(v) === i); // dedupe
 
 const corsMiddleware = cors({
   origin: (origin, callback) => {
