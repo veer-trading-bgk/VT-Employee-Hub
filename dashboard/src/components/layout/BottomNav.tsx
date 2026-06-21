@@ -15,10 +15,10 @@ const EMPLOYEE_ROLES: Role[] = ['telecaller', 'agent', 'intern'];
 
 function getTabsForRole(role: Role): NavTab[] {
   if (role === 'admin') return [
-    { href: '/admin/dashboard',  label: 'Overview',  icon: '🔑' },
-    { href: '/admin/employees',  label: 'Team',      icon: '👥' },
-    { href: '/admin/analytics',  label: 'Analytics', icon: '📈' },
-    { href: '/profile',          label: 'Profile',   icon: '👤' },
+    { href: '/admin/dashboard',  label: 'Overview', icon: '🔑' },
+    { href: '/admin/employees',  label: 'Team',     icon: '👥' },
+    { href: '/admin/bulk-entry', label: 'Entry',    icon: '📋' },
+    { href: '/profile',          label: 'Profile',  icon: '👤' },
   ];
   if (role === 'manager') return [
     { href: '/manager/dashboard',      label: 'Team',    icon: '👔' },

@@ -369,28 +369,6 @@ export default function AdminDashboardPage() {
           )}
         </div>
 
-        {/* Quick links */}
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-8">
-          {[
-            { href: '/admin/employees',    label: 'Employees',   icon: '👥' },
-            { href: '/admin/analytics',    label: 'Analytics',   icon: '📈' },
-            { href: '/admin/verification', label: 'Verify',      icon: '✅' },
-            { href: '/admin/audit',        label: 'Audit Logs',  icon: '🔍' },
-            { href: '/admin/compensation', label: 'Payroll',     icon: '💰' },
-            { href: '/leaderboard',        label: 'Leaderboard', icon: '🏆' },
-            { href: '/admin/bulk-entry',   label: 'Bulk Entry',  icon: '📝' },
-            { href: '/admin/targets',      label: 'Targets',     icon: '🎯' },
-          ].map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-indigo-300 hover:bg-indigo-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-950/30"
-            >
-              <span className="text-lg">{item.icon}</span>
-              {item.label}
-            </Link>
-          ))}
-        </div>
       </div>
     </>
   );

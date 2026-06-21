@@ -20,11 +20,15 @@ const EMPLOYEE_ROLES: Role[] = ['telecaller', 'agent', 'intern'];
 
 const ALL_NAV: NavItem[] = [
   // ── Admin-only ─────────────────────────────────
-  { href: '/admin/dashboard',  label: 'Admin Overview', icon: '🔑',  roles: ['admin'] },
-  { href: '/admin/employees',  label: 'Employees',      icon: '👥',  roles: ['admin'] },
-  { href: '/admin/bulk-entry', label: 'Bulk Entry',     icon: '📋',  roles: ['admin'] },
-  { href: '/admin/analytics',  label: 'Analytics',      icon: '📈',  roles: ['admin'] },
-  { href: '/admin/billing',    label: 'Billing & Plan', icon: '💳',  roles: ['admin'] },
+  { href: '/admin/dashboard',    label: 'Admin Overview', icon: '🔑',  roles: ['admin'] },
+  { href: '/admin/employees',    label: 'Employees',      icon: '👥',  roles: ['admin'] },
+  { href: '/admin/bulk-entry',   label: 'Bulk Entry',     icon: '📋',  roles: ['admin'] },
+  { href: '/admin/analytics',    label: 'Analytics',      icon: '📈',  roles: ['admin'] },
+  { href: '/admin/verification', label: 'Verify Metrics', icon: '✅',  roles: ['admin'] },
+  { href: '/admin/audit',        label: 'Audit Logs',     icon: '🔍',  roles: ['admin'] },
+  { href: '/admin/compensation', label: 'Payroll',         icon: '💰',  roles: ['admin'] },
+  { href: '/admin/targets',      label: 'Targets',        icon: '🎯',  roles: ['admin'] },
+  { href: '/admin/billing',      label: 'Billing & Plan', icon: '💳',  roles: ['admin'] },
   // ── Manager (admin can see too) ─────────────────
   { href: '/manager/dashboard',      label: 'Team Overview',  icon: '👔', roles: ['admin', 'manager'] },
   { href: '/manager/verify-metrics', label: 'Verify Metrics', icon: '✅', roles: ['admin', 'manager'] },
