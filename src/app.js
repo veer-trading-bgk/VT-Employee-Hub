@@ -36,9 +36,11 @@ const allowedOrigins = [
 
 const corsMiddleware = cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
+    // debug: log the incoming origin vs allowed list
+    const allowed = !origin || allowedOrigins.includes(origin);
+    // eslint-disable-next-line no-console
+    console.log('[CORS]', JSON.stringify({ origin, allowed, allowedOrigins }));
+    if (allowed) return callback(null, true);
     callback(new Error(`Origin ${origin} not allowed by CORS`));
   },
   credentials: true,
