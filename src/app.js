@@ -65,7 +65,7 @@ app.use('/api/telegram', telegramRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date() });
+  res.json({ status: 'ok', timestamp: new Date(), origins: allowedOrigins.length });
 });
 
 // Error handling
