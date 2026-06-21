@@ -9,7 +9,7 @@ import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
 import { METRICS, formatMetricValue } from '@/lib/metrics.config';
-import { ProgressBarChart } from '@/components/charts/ProgressBarChart';
+import { MonthlyTeamProgress } from '@/components/charts/MonthlyTeamProgress';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { daysLeftInMonth, currentMonthLabel } from '@/utils/date-utils';
 import type { TeamSummaryResponse } from '@/types';
@@ -358,17 +358,14 @@ export default function AdminDashboardPage() {
 
         {/* Monthly team progress — MTD from leaderboard */}
         <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
-          <div className="mb-1 flex items-center justify-between">
+          <div className="mb-4 flex items-center justify-between">
             <h2 className="font-semibold text-slate-900 dark:text-white">Monthly Team Progress</h2>
-            <span className="text-xs text-slate-400">{teamSize} performers · {currentMonthLabel()}</span>
+            <span className="text-xs text-slate-400">{currentMonthLabel()}</span>
           </div>
-          <p className="mb-4 text-xs text-slate-400 dark:text-slate-500">
-            Team MTD totals vs combined monthly targets
-          </p>
           {lbLoading ? <Loading size="sm" /> : lbError ? (
             <p className="py-4 text-center text-sm text-rose-400">Failed to load monthly data</p>
           ) : (
-            <ProgressBarChart data={monthlyChartData} />
+            <MonthlyTeamProgress data={monthlyChartData} teamSize={teamSize} />
           )}
         </div>
 
