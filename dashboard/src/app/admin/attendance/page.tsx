@@ -122,14 +122,6 @@ export default function AdminAttendancePage() {
 
   const detailPresentDates = new Set((detailData?.records ?? []).map((r) => r.date));
 
-  // Today's present count
-  const todayCount = isCurrentMonth
-    ? summary.filter((s) => {
-        const presentDates = new Set((detailData?.records ?? []).map((r) => r.date));
-        return presentDates.has(today) || s.daysPresent > 0;
-      }).length
-    : 0;
-
   const avgAttendance = filtered.length > 0
     ? Math.round(filtered.reduce((s, e) => s + e.attendancePct, 0) / filtered.length)
     : 0;
@@ -240,7 +232,9 @@ export default function AdminAttendancePage() {
                                         title={date}
                                         className={`h-2 w-2 rounded-sm ${
                                           isFuture || isSun ? 'bg-slate-100 dark:bg-slate-800' :
-                                          summaryMap[entry.userId] ? 'bg-slate-200 dark:bg-slate-700' :
+                                          entry.attendancePct >= 90 ? 'bg-emerald-400' :
+                                          entry.attendancePct >= 70 ? 'bg-amber-400' :
+                                          entry.attendancePct > 0 ? 'bg-red-300' :
                                           'bg-slate-100 dark:bg-slate-800'
                                         }`}
                                       />

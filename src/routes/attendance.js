@@ -107,15 +107,22 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
     const daysInMonth = new Date(year, mo, 0).getDate();
 
     const pkPrefix = req.user.companyId ? `ATTENDANCE#${req.user.companyId}#` : 'ATTENDANCE#';
-    const result = await dynamodb.scan({
+    const scanParams = {
       TableName: TABLE,
       FilterExpression: 'begins_with(PK, :prefix) AND #mo = :month',
       ExpressionAttributeNames: { '#mo': 'month' },
       ExpressionAttributeValues: { ':prefix': pkPrefix, ':month': month },
-    }).promise();
+    };
+    const allItems = [];
+    let lastKey;
+    do {
+      const result = await dynamodb.scan({ ...scanParams, ...(lastKey && { ExclusiveStartKey: lastKey }) }).promise();
+      allItems.push(...(result.Items ?? []));
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
 
     const byUser = {};
-    (result.Items ?? []).forEach((item) => {
+    allItems.forEach((item) => {
       byUser[item.userId] = (byUser[item.userId] ?? 0) + 1;
     });
 

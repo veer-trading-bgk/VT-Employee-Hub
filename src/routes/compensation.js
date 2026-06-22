@@ -1,7 +1,7 @@
 const express = require('express');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
-const { METRIC_CONFIG, METRIC_KEYS, TARGET_DEFAULTS } = require('../config/metricsConfig');
+const { METRIC_KEYS, TARGET_DEFAULTS } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
 const bot = require('../config/telegram');
 const logger = require('../config/logger');
@@ -578,7 +578,7 @@ router.put('/payroll/status', authMiddleware, checkRole(['admin']), async (req, 
       const snap = await dynamodb.get({ TableName: TABLE, Key: payrollKey(req.user.companyId, month) }).promise();
       const payroll = snap.Item?.payroll ?? [];
 
-      payroll.forEach(async (entry) => {
+      await Promise.allSettled(payroll.map(async (entry) => {
         try {
           const emp = await dynamodb.get({ TableName: TABLE_EMP, Key: { id: entry.userId } }).promise();
           const telegramId = emp.Item?.telegramId;
@@ -604,7 +604,7 @@ router.put('/payroll/status', authMiddleware, checkRole(['admin']), async (req, 
         } catch (e) {
           logger.warn(`Telegram notify failed for ${entry.userId}: ${e.message}`);
         }
-      });
+      }));
     }
 
     res.json({ success: true, month, status });
