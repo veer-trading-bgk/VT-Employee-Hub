@@ -13,9 +13,24 @@ const bot = require('../config/telegram');
 const logger = require('../config/logger');
 
 const router = express.Router();
-
+const TABLE_METRICS = process.env.DYNAMODB_TABLE_METRICS;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+function markAttendance(user) {
+  const date = new Date().toISOString().slice(0, 10);
+  const PK = user.companyId ? `ATTENDANCE#${user.companyId}#${user.id}` : `ATTENDANCE#${user.id}`;
+  dynamodb.put({
+    TableName: TABLE_METRICS,
+    Item: {
+      PK, SK: date,
+      userId: user.id, companyId: user.companyId ?? null,
+      date, month: date.slice(0, 7),
+      checkInTime: new Date().toISOString(), source: 'login',
+    },
+    ConditionExpression: 'attribute_not_exists(SK)',
+  }).promise().catch(() => {});
+}
 
 function cookieAttrs() {
   const isProd = process.env.NODE_ENV === 'production';
@@ -104,6 +119,7 @@ router.post('/login', async (req, res, next) => {
     // ── No 2FA: issue full JWT ─────────────────────────────────────────────────
     loginRateLimiter.reset(email);
     const { accessToken } = issueTokens(user, res);
+    markAttendance(user);
     await logAudit(user.id, 'successful_login', email, 'success', req.ip);
     logger.info(`User ${email} logged in from ${req.ip}`);
 
@@ -176,6 +192,7 @@ router.post('/verify-totp', async (req, res, next) => {
 
     await clearTotpAttempts(user.email);
     const { accessToken } = issueTokens(user, res);
+    markAttendance(user);
     await logAudit(user.id, 'totp_verified', user.email, 'success', req.ip);
     logger.info(`User ${user.email} completed 2FA from ${req.ip}`);
 

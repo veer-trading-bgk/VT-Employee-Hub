@@ -14,6 +14,7 @@ const compensationRoutes = require('./routes/compensation');
 const adminRoutes = require('./routes/admin');
 const companiesRoutes = require('./routes/companies');
 const telegramRoutes = require('./routes/telegram');
+const attendanceRoutes = require('./routes/attendance');
 const { authMiddleware } = require('./middleware/auth');
 const { errorHandler } = require('./middleware/errorHandler');
 
@@ -60,6 +61,7 @@ app.use('/api/compensation', compensationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/companies', companiesRoutes);
 app.use('/api/telegram', telegramRoutes);
+app.use('/api/attendance', attendanceRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
