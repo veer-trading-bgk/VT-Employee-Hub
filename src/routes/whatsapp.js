@@ -149,6 +149,51 @@ router.get('/auth/callback', async (req, res) => {
   }
 });
 
+// ── POST /api/whatsapp/manual-connect — paste token + phone ID directly ───────
+router.post('/manual-connect', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const { accessToken, phoneNumberId } = req.body;
+    if (!accessToken?.trim() || !phoneNumberId?.trim()) {
+      return res.status(400).json({ error: 'accessToken and phoneNumberId are required' });
+    }
+
+    // Verify credentials by fetching phone number info from Meta
+    let phoneNumber = null;
+    let wabaId = null;
+    try {
+      const verifyRes = await axios.get(`${GRAPH}/${phoneNumberId.trim()}`, {
+        params: { fields: 'display_phone_number,verified_name,id', access_token: accessToken.trim() },
+      });
+      phoneNumber = verifyRes.data?.display_phone_number ?? null;
+      wabaId = verifyRes.data?.id ?? null;
+    } catch (e) {
+      return res.status(400).json({ error: 'Invalid credentials — Meta rejected the token or phone number ID' });
+    }
+
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: `CONFIG#WABA#${req.user.companyId}`,
+        SK: 'CURRENT',
+        companyId: req.user.companyId,
+        accessToken: accessToken.trim(),
+        wabaId,
+        phoneNumberId: phoneNumberId.trim(),
+        phoneNumber,
+        connectedBy: req.user.id,
+        connectedAt: new Date().toISOString(),
+        setupMethod: 'manual',
+      },
+    }).promise();
+
+    logger.info(`WABA manually connected for company ${req.user.companyId}: ${phoneNumber}`);
+    res.json({ success: true, phoneNumber });
+  } catch (err) {
+    logger.error('manual-connect error', err);
+    next(err);
+  }
+});
+
 // ── DELETE /api/whatsapp/connection — disconnect WABA ─────────────────────────
 router.delete('/connection', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {

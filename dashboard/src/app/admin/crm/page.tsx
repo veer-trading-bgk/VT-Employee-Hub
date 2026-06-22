@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
@@ -72,6 +72,8 @@ function timeSince(iso: string) {
 
 export default function AdminCrmPage() {
   const queryClient = useQueryClient();
+  const dragLeadId = useRef<string | null>(null);
+  const [dragOverStage, setDragOverStage] = useState<string | null>(null);
   const [view, setView] = useState<'kanban' | 'list'>('kanban');
   const [search, setSearch] = useState('');
   const [filterAssignee, setFilterAssignee] = useState('');
@@ -203,7 +205,21 @@ export default function AdminCrmPage() {
               {stages.map((stage) => {
                 const colLeads = byStage[stage.key] ?? [];
                 return (
-                  <div key={stage.key} className="mr-3 flex w-[220px] flex-shrink-0 flex-col rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+                  <div
+                    key={stage.key}
+                    className={`mr-3 flex w-[220px] flex-shrink-0 flex-col rounded-xl border bg-white transition-colors dark:bg-slate-900 ${dragOverStage === stage.key ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/10' : 'border-slate-200 dark:border-slate-800'}`}
+                    onDragOver={(e) => { e.preventDefault(); setDragOverStage(stage.key); }}
+                    onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverStage(null); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDragOverStage(null);
+                      const leadId = dragLeadId.current;
+                      if (!leadId) return;
+                      const lead = leads.find((l) => l.leadId === leadId);
+                      if (lead && lead.stage !== stage.key) stageMutation.mutate({ leadId, stage: stage.key });
+                      dragLeadId.current = null;
+                    }}
+                  >
                     {/* Column header */}
                     <div className="flex items-center justify-between rounded-t-xl px-3 py-2.5" style={{ borderTop: `3px solid ${stage.color}` }}>
                       <div>
@@ -221,8 +237,13 @@ export default function AdminCrmPage() {
                       {colLeads.map((lead) => {
                         const dl = deadlineLabel(lead.closureDeadline);
                         return (
-                          <Link key={lead.leadId} href={`/admin/crm/${lead.leadId}`}
-                            className="block rounded-lg border border-slate-100 bg-slate-50 p-2.5 transition hover:border-indigo-200 hover:shadow-sm dark:border-slate-800 dark:bg-slate-800/50">
+                          <Link
+                            key={lead.leadId}
+                            href={`/admin/crm/${lead.leadId}`}
+                            draggable
+                            onDragStart={(e) => { dragLeadId.current = lead.leadId; e.dataTransfer.effectAllowed = 'move'; }}
+                            onDragEnd={() => { dragLeadId.current = null; setDragOverStage(null); }}
+                            className="block cursor-grab rounded-lg border border-slate-100 bg-slate-50 p-2.5 transition active:cursor-grabbing hover:border-indigo-200 hover:shadow-sm dark:border-slate-800 dark:bg-slate-800/50">
                             <div className="flex items-start justify-between gap-1">
                               <p className="text-xs font-semibold leading-tight text-slate-900 dark:text-white line-clamp-1">{lead.name}</p>
                               <div className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-indigo-100 text-[8px] font-bold text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400">
