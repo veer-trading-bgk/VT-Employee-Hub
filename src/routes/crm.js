@@ -204,7 +204,8 @@ router.get('/leads/:id', authMiddleware, async (req, res, next) => {
     }
 
     const messages = items.filter((i) => i.SK.startsWith('MSG#')).sort((a, b) => a.SK.localeCompare(b.SK));
-    res.json({ success: true, lead: meta, messages });
+    const internalNotes = items.filter((i) => i.SK.startsWith('NOTE#')).sort((a, b) => a.SK.localeCompare(b.SK));
+    res.json({ success: true, lead: meta, messages, internalNotes });
   } catch (err) {
     logger.error('crm/leads/:id GET error', err);
     next(err);
@@ -267,10 +268,11 @@ router.put('/leads/:id/assign', authMiddleware, checkRole(['admin', 'manager']),
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK, SK: 'METADATA' },
-      UpdateExpression: 'SET assignedTo = :at, assignedToName = :atn, updatedAt = :ua',
+      UpdateExpression: 'SET assignedTo = :at, assignedToName = :atn, chatStatus = :cs, updatedAt = :ua',
       ExpressionAttributeValues: {
         ':at': assignedTo,
         ':atn': assignedToName ?? null,
+        ':cs': 'open',
         ':ua': new Date().toISOString(),
       },
     }).promise();

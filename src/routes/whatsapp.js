@@ -20,11 +20,14 @@ async function getWabaConfig(companyId) {
 // Cache last message on lead METADATA for inbox listing
 async function updateLeadLastMessage(pk, content, direction, ts) {
   try {
+    let expr = 'SET lastMessageAt = :ts, lastMessagePreview = :prev, lastMessageDirection = :dir';
+    const vals = { ':ts': ts, ':prev': String(content).slice(0, 100), ':dir': direction };
+    if (direction === 'inbound') { expr += ', lastInboundAt = :ts'; }
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK: pk, SK: 'METADATA' },
-      UpdateExpression: 'SET lastMessageAt = :ts, lastMessagePreview = :prev, lastMessageDirection = :dir',
-      ExpressionAttributeValues: { ':ts': ts, ':prev': String(content).slice(0, 100), ':dir': direction },
+      UpdateExpression: expr,
+      ExpressionAttributeValues: vals,
     }).promise();
   } catch (e) {
     logger.warn('updateLeadLastMessage failed', e.message);
@@ -285,6 +288,15 @@ router.post('/webhook', async (req, res) => {
           ConditionExpression: 'attribute_not_exists(SK)',
         }).promise().catch(() => {});
         await updateLeadLastMessage(lead.PK, text, 'inbound', timestamp);
+        // Reopen resolved chats when customer sends a new message
+        if (lead.chatStatus === 'resolved') {
+          await dynamodb.update({
+            TableName: TABLE,
+            Key: { PK: lead.PK, SK: 'METADATA' },
+            UpdateExpression: 'SET chatStatus = :s',
+            ExpressionAttributeValues: { ':s': 'open' },
+          }).promise().catch(() => {});
+        }
       } else if (phoneNumberId) {
         // Unknown contact — route to INBOX# by looking up companyId from phoneNumberId
         const config = await getCompanyByPhoneNumberId(phoneNumberId);
@@ -355,12 +367,18 @@ router.post('/send', authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── GET /api/whatsapp/inbox — all conversations (leads + unknown contacts) ─────
+// ── GET /api/whatsapp/inbox — conversations with status filter + counts ────────
 router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
+    const statusFilter = req.query.status ?? 'all'; // open | unassigned | resolved | all
 
-    // Known leads that have received at least one WhatsApp message
+    function effectiveStatus(l) {
+      if (l.chatStatus) return l.chatStatus;
+      return l.assignedTo ? 'open' : 'unassigned';
+    }
+
+    // Known leads with WhatsApp messages
     const leadItems = [];
     let lk1;
     do {
@@ -374,7 +392,7 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
       lk1 = r.LastEvaluatedKey;
     } while (lk1);
 
-    // Unknown contacts (inbound from numbers not in CRM)
+    // Unknown contacts
     const unknownItems = [];
     let lk2;
     do {
@@ -388,31 +406,52 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
       lk2 = r.LastEvaluatedKey;
     } while (lk2);
 
-    const conversations = [
+    // Build counts before filtering
+    const counts = { open: 0, unassigned: 0, resolved: 0 };
+    leadItems.forEach((l) => { const s = effectiveStatus(l); if (counts[s] !== undefined) counts[s]++; });
+    unknownItems.forEach(() => counts.unassigned++);
+
+    const allConvs = [
       ...leadItems.map((l) => ({
         type: 'lead',
         leadId: l.leadId,
         PK: l.PK,
         name: l.name,
         phone: l.phone,
+        email: l.email ?? null,
+        source: l.source ?? null,
         stage: l.stage,
-        assignedTo: l.assignedTo,
-        assignedToName: l.assignedToName,
+        tags: l.tags ?? [],
+        notes: l.notes ?? '',
+        assignedTo: l.assignedTo ?? null,
+        assignedToName: l.assignedToName ?? null,
+        chatStatus: effectiveStatus(l),
         lastMessageAt: l.lastMessageAt,
         lastMessagePreview: l.lastMessagePreview,
         lastMessageDirection: l.lastMessageDirection,
+        lastInboundAt: l.lastInboundAt ?? null,
+        createdAt: l.createdAt,
       })),
       ...unknownItems.map((u) => ({
         type: 'unknown',
         phone: u.phone,
         name: u.name ?? null,
+        email: null, source: null, stage: null, tags: [], notes: '',
+        assignedTo: null, assignedToName: null,
+        chatStatus: 'unassigned',
         lastMessageAt: u.lastMessageAt,
         lastMessagePreview: u.lastMessagePreview,
         lastMessageDirection: u.lastMessageDirection,
+        lastInboundAt: u.lastMessageAt ?? null,
+        createdAt: u.createdAt ?? null,
       })),
     ].sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
 
-    res.json({ success: true, conversations });
+    const conversations = statusFilter === 'all'
+      ? allConvs
+      : allConvs.filter((c) => c.chatStatus === statusFilter);
+
+    res.json({ success: true, conversations, counts });
   } catch (err) {
     next(err);
   }
@@ -462,6 +501,143 @@ router.post('/inbox/unknown/:phone/send', authMiddleware, checkRole(['admin', 'm
   } catch (err) {
     next(err);
   }
+});
+
+// ── PUT /api/whatsapp/inbox/:leadId/resolve ───────────────────────────────────
+router.put('/inbox/:leadId/resolve', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK, SK: 'METADATA' },
+      UpdateExpression: 'SET chatStatus = :s, resolvedAt = :ra, resolvedBy = :rb',
+      ExpressionAttributeValues: { ':s': 'resolved', ':ra': new Date().toISOString(), ':rb': req.user.id },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /api/whatsapp/inbox/:leadId/reopen ─────────────────────────────────────
+router.put('/inbox/:leadId/reopen', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK, SK: 'METADATA' },
+      UpdateExpression: 'SET chatStatus = :s REMOVE resolvedAt, resolvedBy',
+      ExpressionAttributeValues: { ':s': 'open' },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/inbox/:leadId/note — internal team note ─────────────────
+router.post('/inbox/:leadId/note', authMiddleware, async (req, res, next) => {
+  try {
+    const { content } = req.body;
+    if (!content?.trim()) return res.status(400).json({ error: 'content required' });
+    const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
+    const timestamp = new Date().toISOString();
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK, SK: `NOTE#${timestamp}`,
+        content: content.trim(),
+        authorId: req.user.id,
+        authorName: req.user.name,
+        type: 'note',
+        timestamp,
+      },
+    }).promise();
+    res.json({ success: true, timestamp });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/inbox/auto-assign — round-robin assign unassigned ───────
+router.post('/inbox/auto-assign', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+
+    // Get employees for this company
+    const empResult = await dynamodb.scan({
+      TableName: TABLE,
+      FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk AND #r IN (:r1, :r2, :r3)',
+      ExpressionAttributeNames: { '#r': 'role' },
+      ExpressionAttributeValues: { ':prefix': `EMP#${companyId}#`, ':sk': 'PROFILE', ':r1': 'telecaller', ':r2': 'agent', ':r3': 'intern' },
+    }).promise();
+    const employees = empResult.Items ?? [];
+    if (employees.length === 0) return res.status(400).json({ error: 'No employees available to assign' });
+
+    // Get unassigned conversations
+    const unassigned = [];
+    let lk;
+    do {
+      const r = await dynamodb.scan({
+        TableName: TABLE,
+        FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND attribute_exists(lastMessageAt) AND (attribute_not_exists(assignedTo) OR assignedTo = :empty)',
+        ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA', ':empty': '' },
+        ...(lk && { ExclusiveStartKey: lk }),
+      }).promise();
+      unassigned.push(...(r.Items ?? []));
+      lk = r.LastEvaluatedKey;
+    } while (lk);
+
+    let assigned = 0;
+    await Promise.allSettled(unassigned.map(async (lead, idx) => {
+      const emp = employees[idx % employees.length];
+      await dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: lead.PK, SK: 'METADATA' },
+        UpdateExpression: 'SET assignedTo = :at, assignedToName = :atn, chatStatus = :cs, updatedAt = :ua',
+        ExpressionAttributeValues: { ':at': emp.userId ?? emp.id, ':atn': emp.name, ':cs': 'open', ':ua': new Date().toISOString() },
+      }).promise();
+      assigned++;
+    }));
+
+    res.json({ success: true, assigned });
+  } catch (err) { next(err); }
+});
+
+// ── GET /api/whatsapp/inbox/canned — list canned responses ────────────────────
+router.get('/inbox/canned', authMiddleware, async (req, res, next) => {
+  try {
+    const result = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: { ':pk': `CONFIG#CANNED#${req.user.companyId}`, ':sk': 'CANNED#' },
+    }).promise();
+    res.json({ success: true, responses: (result.Items ?? []).sort((a, b) => a.title?.localeCompare(b.title)) });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/inbox/canned — create canned response ──────────────────
+router.post('/inbox/canned', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const { title, body, shortcut } = req.body;
+    if (!title?.trim() || !body?.trim()) return res.status(400).json({ error: 'title and body required' });
+    const id = require('crypto').randomUUID();
+    const item = {
+      PK: `CONFIG#CANNED#${req.user.companyId}`,
+      SK: `CANNED#${id}`,
+      id, title: title.trim(), body: body.trim(),
+      shortcut: shortcut?.trim().toLowerCase().replace(/\s+/g, '_') ?? null,
+      createdBy: req.user.id,
+      createdAt: new Date().toISOString(),
+    };
+    await dynamodb.put({ TableName: TABLE, Item: item }).promise();
+    res.json({ success: true, response: item });
+  } catch (err) { next(err); }
+});
+
+// ── DELETE /api/whatsapp/inbox/canned/:id — delete canned response ────────────
+router.delete('/inbox/canned/:id', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    await dynamodb.delete({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#CANNED#${req.user.companyId}`, SK: `CANNED#${req.params.id}` },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
 });
 
 // HTML page returned to popup after OAuth completes

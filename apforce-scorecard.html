@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>APForce — Industry Scorecard 2026</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background: #f8fafc;
+    color: #1e293b;
+    padding: 40px 48px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+
+  /* ── Header ── */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 36px;
+    padding-bottom: 24px;
+    border-bottom: 2px solid #e2e8f0;
+  }
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .logo-icon {
+    width: 48px; height: 48px;
+    background: #4f46e5;
+    border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px;
+  }
+  .logo-text h1 { font-size: 22px; font-weight: 800; color: #1e293b; }
+  .logo-text p { font-size: 12px; color: #64748b; margin-top: 2px; }
+  .header-meta { text-align: right; }
+  .header-meta p { font-size: 12px; color: #94a3b8; }
+  .header-meta strong { font-size: 13px; color: #475569; }
+
+  /* ── Overall score hero ── */
+  .score-hero {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    border-radius: 20px;
+    padding: 32px 36px;
+    color: white;
+    margin-bottom: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .score-hero h2 { font-size: 18px; font-weight: 700; opacity: 0.9; }
+  .score-hero p { font-size: 13px; opacity: 0.7; margin-top: 6px; max-width: 400px; line-height: 1.6; }
+  .score-circle {
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .score-circle .num { font-size: 64px; font-weight: 800; line-height: 1; }
+  .score-circle .denom { font-size: 18px; opacity: 0.6; font-weight: 500; }
+  .score-circle .label { font-size: 11px; opacity: 0.7; margin-top: 4px; letter-spacing: 1px; text-transform: uppercase; }
+
+  /* ── Module cards ── */
+  .modules { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 32px; }
+  .module {
+    background: white;
+    border-radius: 14px;
+    border: 1px solid #e2e8f0;
+    padding: 20px;
+  }
+  .module-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .module-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #1e293b;
+  }
+  .module-score {
+    font-size: 22px;
+    font-weight: 800;
+  }
+  .score-bar-track {
+    height: 7px;
+    background: #f1f5f9;
+    border-radius: 99px;
+    margin-bottom: 14px;
+    overflow: hidden;
+  }
+  .score-bar-fill {
+    height: 100%;
+    border-radius: 99px;
+    transition: width 0.3s;
+  }
+
+  .feature-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 11px;
+    border-bottom: 1px solid #f8fafc;
+  }
+  .feature-row:last-child { border-bottom: none; }
+  .feature-name { color: #475569; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 7px;
+    border-radius: 99px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .badge-done   { background: #dcfce7; color: #15803d; }
+  .badge-warn   { background: #fef9c3; color: #a16207; }
+  .badge-miss   { background: #fee2e2; color: #dc2626; }
+
+  /* ── Summary table ── */
+  .summary-section { margin-bottom: 32px; }
+  .section-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #1e293b;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: #e2e8f0;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th {
+    background: #f8fafc;
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 600;
+    color: #64748b;
+    border-bottom: 2px solid #e2e8f0;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid #f1f5f9; color: #334155; }
+  tr:last-child td { border-bottom: none; }
+  .total-row td { font-weight: 700; color: #1e293b; background: #f8fafc; }
+
+  .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 99px;
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  /* ── Roadmap ── */
+  .roadmap { background: white; border-radius: 14px; border: 1px solid #e2e8f0; padding: 20px; margin-bottom: 32px; }
+  .roadmap-row {
+    display: grid;
+    grid-template-columns: 3fr 1fr 1fr 1fr;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 12px;
+  }
+  .roadmap-row:last-child { border-bottom: none; }
+  .roadmap-header {
+    font-size: 11px;
+    font-weight: 700;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #e2e8f0;
+    margin-bottom: 4px;
+  }
+  .roadmap-fix { font-weight: 600; color: #1e293b; }
+  .roadmap-jump { font-weight: 700; color: #4f46e5; text-align: center; }
+  .effort-low  { color: #16a34a; font-weight: 600; text-align: center; }
+  .effort-med  { color: #d97706; font-weight: 600; text-align: center; }
+  .effort-high { color: #dc2626; font-weight: 600; text-align: center; }
+
+  /* ── Positioning ── */
+  .pos-section { margin-bottom: 32px; }
+  .pos-card {
+    background: white;
+    border-radius: 14px;
+    border: 1px solid #e2e8f0;
+    padding: 20px 24px;
+  }
+  .comp-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0;
+    font-size: 12px;
+    border-bottom: 1px solid #f8fafc;
+  }
+  .comp-row:last-child { border-bottom: none; }
+  .comp-name { width: 110px; font-weight: 600; color: #334155; flex-shrink: 0; }
+  .bar-outer { flex: 1; height: 10px; background: #f1f5f9; border-radius: 99px; overflow: hidden; }
+  .bar-inner { height: 100%; border-radius: 99px; }
+  .comp-num { width: 34px; text-align: right; font-weight: 700; color: #475569; font-size: 11px; }
+  .comp-note { width: 200px; font-size: 10px; color: #94a3b8; }
+
+  /* ── Footer ── */
+  .footer {
+    padding-top: 20px;
+    border-top: 1px solid #e2e8f0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 11px;
+    color: #94a3b8;
+  }
+  .footer strong { color: #64748b; }
+
+  /* ── Print ── */
+  @media print {
+    body { background: white; padding: 24px 32px; }
+    .score-hero { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .score-bar-fill { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .badge { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .bar-inner { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .pill { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="logo">
+    <div class="logo-icon">💼</div>
+    <div class="logo-text">
+      <h1>APForce</h1>
+      <p>Broker CRM &amp; Team Operations Platform</p>
+    </div>
+  </div>
+  <div class="header-meta">
+    <p>Industry Scorecard</p>
+    <strong>June 2026</strong>
+    <p style="margin-top:4px">Target: AP / Sub-Broker Market</p>
+  </div>
+</div>
+
+<!-- Overall Score -->
+<div class="score-hero">
+  <div>
+    <h2>Overall Platform Score</h2>
+    <p>Evaluated across Employee Management, CRM, WhatsApp Business, Analytics, and SaaS Infrastructure against industry benchmarks (Interakt, LeadSquared, Kylas CRM).</p>
+  </div>
+  <div class="score-circle">
+    <div class="num">72</div>
+    <div class="denom">/ 100</div>
+    <div class="label">Current Build</div>
+  </div>
+</div>
+
+<!-- Module Breakdown -->
+<div class="section-title">Module Breakdown</div>
+<div class="modules">
+
+  <!-- Employee Management -->
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">👥 Employee Management</span>
+      <span class="module-score" style="color:#16a34a">95</span>
+    </div>
+    <div class="score-bar-track">
+      <div class="score-bar-fill" style="width:95%;background:#16a34a"></div>
+    </div>
+    <div class="feature-row"><span class="feature-name">Roles &amp; permissions</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Daily metric entry</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Attendance tracking</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Payroll &amp; incentives</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Leaderboard &amp; targets</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Geo-fencing / selfie punch</span><span class="badge badge-miss">Missing</span></div>
+  </div>
+
+  <!-- CRM -->
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">🤝 CRM Pipeline</span>
+      <span class="module-score" style="color:#d97706">70</span>
+    </div>
+    <div class="score-bar-track">
+      <div class="score-bar-fill" style="width:70%;background:#d97706"></div>
+    </div>
+    <div class="feature-row"><span class="feature-name">Kanban + drag &amp; drop</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Dynamic pipeline stages</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Lead assign + follow-ups</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">CSV import / web form</span><span class="badge badge-miss">Missing</span></div>
+    <div class="feature-row"><span class="feature-name">Duplicate detection</span><span class="badge badge-miss">Missing</span></div>
+    <div class="feature-row"><span class="feature-name">Workflow automation</span><span class="badge badge-miss">Missing</span></div>
+  </div>
+
+  <!-- WhatsApp -->
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">💬 WhatsApp Business</span>
+      <span class="module-score" style="color:#dc2626">55</span>
+    </div>
+    <div class="score-bar-track">
+      <div class="score-bar-fill" style="width:55%;background:#dc2626"></div>
+    </div>
+    <div class="feature-row"><span class="feature-name">Connect (manual + OAuth)</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Inbox + send/receive</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Unknown contact routing</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Template messages</span><span class="badge badge-miss">Missing</span></div>
+    <div class="feature-row"><span class="feature-name">Bulk broadcast</span><span class="badge badge-miss">Missing</span></div>
+    <div class="feature-row"><span class="feature-name">Canned responses</span><span class="badge badge-miss">Missing</span></div>
+  </div>
+
+  <!-- Analytics -->
+  <div class="module">
+    <div class="module-header">
+      <span class="module-title">📈 Analytics &amp; Reporting</span>
+      <span class="module-score" style="color:#d97706">60</span>
+    </div>
+    <div class="score-bar-track">
+      <div class="score-bar-fill" style="width:60%;background:#d97706"></div>
+    </div>
+    <div class="feature-row"><span class="feature-name">Admin overview dashboard</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Employee performance</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Audit logs</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Funnel conversion %</span><span class="badge badge-warn">Partial</span></div>
+    <div class="feature-row"><span class="feature-name">PDF / Excel export</span><span class="badge badge-miss">Missing</span></div>
+    <div class="feature-row"><span class="feature-name">Revenue forecasting</span><span class="badge badge-miss">Missing</span></div>
+  </div>
+
+</div>
+
+<!-- SaaS Infrastructure (full width) -->
+<div class="module" style="margin-bottom:32px">
+  <div class="module-header">
+    <span class="module-title">🔒 SaaS Infrastructure</span>
+    <span class="module-score" style="color:#2563eb">80</span>
+  </div>
+  <div class="score-bar-track">
+    <div class="score-bar-fill" style="width:80%;background:#2563eb"></div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 24px">
+    <div class="feature-row"><span class="feature-name">Multi-tenant isolation</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Auth &amp; role-based access</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Rate limiting / security</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Billing &amp; plan management</span><span class="badge badge-done">✓ Done</span></div>
+    <div class="feature-row"><span class="feature-name">Payment gateway (Razorpay)</span><span class="badge badge-miss">Missing</span></div>
+    <div class="feature-row"><span class="feature-name">Onboarding wizard</span><span class="badge badge-warn">Partial</span></div>
+  </div>
+</div>
+
+<!-- Weighted Summary Table -->
+<div class="summary-section">
+  <div class="section-title">Weighted Score Summary</div>
+  <div style="background:white;border-radius:14px;border:1px solid #e2e8f0;overflow:hidden">
+    <table>
+      <thead>
+        <tr>
+          <th>Module</th>
+          <th style="text-align:center">Score</th>
+          <th style="text-align:center">Weight</th>
+          <th style="text-align:center">Weighted</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>👥 Employee Management</td>
+          <td style="text-align:center;font-weight:700;color:#16a34a">95</td>
+          <td style="text-align:center">25%</td>
+          <td style="text-align:center;font-weight:700">23.75</td>
+          <td><span class="pill" style="background:#dcfce7;color:#15803d">Industry Leading</span></td>
+        </tr>
+        <tr>
+          <td>🤝 CRM Pipeline</td>
+          <td style="text-align:center;font-weight:700;color:#d97706">70</td>
+          <td style="text-align:center">25%</td>
+          <td style="text-align:center;font-weight:700">17.50</td>
+          <td><span class="pill" style="background:#fef9c3;color:#a16207">Competitive</span></td>
+        </tr>
+        <tr>
+          <td>💬 WhatsApp Business</td>
+          <td style="text-align:center;font-weight:700;color:#dc2626">55</td>
+          <td style="text-align:center">25%</td>
+          <td style="text-align:center;font-weight:700">13.75</td>
+          <td><span class="pill" style="background:#fee2e2;color:#dc2626">Needs Work</span></td>
+        </tr>
+        <tr>
+          <td>📈 Analytics &amp; Reporting</td>
+          <td style="text-align:center;font-weight:700;color:#d97706">60</td>
+          <td style="text-align:center">15%</td>
+          <td style="text-align:center;font-weight:700">9.00</td>
+          <td><span class="pill" style="background:#fef9c3;color:#a16207">Basic</span></td>
+        </tr>
+        <tr>
+          <td>🔒 SaaS Infrastructure</td>
+          <td style="text-align:center;font-weight:700;color:#2563eb">80</td>
+          <td style="text-align:center">10%</td>
+          <td style="text-align:center;font-weight:700">8.00</td>
+          <td><span class="pill" style="background:#dbeafe;color:#1d4ed8">Solid</span></td>
+        </tr>
+        <tr class="total-row">
+          <td>TOTAL</td>
+          <td style="text-align:center;font-size:18px;color:#4f46e5">72</td>
+          <td style="text-align:center">100%</td>
+          <td style="text-align:center;font-size:18px;color:#4f46e5">72.00</td>
+          <td><span class="pill" style="background:#ede9fe;color:#6d28d9">MVP Ready</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Priority Roadmap -->
+<div class="summary-section">
+  <div class="section-title">Priority Roadmap — What Moves the Needle</div>
+  <div class="roadmap">
+    <div class="roadmap-row roadmap-header">
+      <span>Feature</span>
+      <span style="text-align:center">Score Jump</span>
+      <span style="text-align:center">Effort</span>
+      <span style="text-align:center">Target Score</span>
+    </div>
+    <div class="roadmap-row">
+      <span class="roadmap-fix">💬 WhatsApp Template Messages (Meta pre-approved)</span>
+      <span class="roadmap-jump">+8 pts</span>
+      <span class="effort-med">Medium</span>
+      <span style="text-align:center;font-weight:700">80</span>
+    </div>
+    <div class="roadmap-row">
+      <span class="roadmap-fix">⚙️ Stage → auto-send WA template (1 automation rule)</span>
+      <span class="roadmap-jump">+7 pts</span>
+      <span class="effort-high">High</span>
+      <span style="text-align:center;font-weight:700">87</span>
+    </div>
+    <div class="roadmap-row">
+      <span class="roadmap-fix">📤 Bulk WhatsApp broadcast to filtered segment</span>
+      <span class="roadmap-jump">+5 pts</span>
+      <span class="effort-med">Medium</span>
+      <span style="text-align:center;font-weight:700">92</span>
+    </div>
+    <div class="roadmap-row">
+      <span class="roadmap-fix">📥 CSV lead import with column mapping</span>
+      <span class="roadmap-jump">+4 pts</span>
+      <span class="effort-low">Low</span>
+      <span style="text-align:center;font-weight:700">96</span>
+    </div>
+    <div class="roadmap-row">
+      <span class="roadmap-fix">📊 Funnel conversion % + stage time analytics</span>
+      <span class="roadmap-jump">+3 pts</span>
+      <span class="effort-low">Low</span>
+      <span style="text-align:center;font-weight:700">99</span>
+    </div>
+  </div>
+</div>
+
+<!-- Competitive Positioning -->
+<div class="pos-section">
+  <div class="section-title">Competitive Positioning</div>
+  <div class="pos-card">
+    <div class="comp-row">
+      <span class="comp-name">Interakt</span>
+      <div class="bar-outer"><div class="bar-inner" style="width:82%;background:#6366f1"></div></div>
+      <span class="comp-num">82</span>
+      <span class="comp-note">WA-first, weak team management</span>
+    </div>
+    <div class="comp-row">
+      <span class="comp-name">LeadSquared</span>
+      <div class="bar-outer"><div class="bar-inner" style="width:80%;background:#6366f1"></div></div>
+      <span class="comp-num">80</span>
+      <span class="comp-note">Strong CRM, no WA depth</span>
+    </div>
+    <div class="comp-row">
+      <span class="comp-name">Kylas CRM</span>
+      <div class="bar-outer"><div class="bar-inner" style="width:62%;background:#6366f1"></div></div>
+      <span class="comp-num">62</span>
+      <span class="comp-note">India-focused, basic features</span>
+    </div>
+    <div class="comp-row">
+      <span class="comp-name" style="color:#4f46e5;font-weight:800">APForce Now</span>
+      <div class="bar-outer"><div class="bar-inner" style="width:72%;background:#4f46e5"></div></div>
+      <span class="comp-num" style="color:#4f46e5;font-weight:800">72</span>
+      <span class="comp-note" style="color:#4f46e5">CRM + WA + HR in one product</span>
+    </div>
+    <div class="comp-row">
+      <span class="comp-name" style="color:#16a34a;font-weight:800">APForce v2 🎯</span>
+      <div class="bar-outer"><div class="bar-inner" style="width:92%;background:#16a34a"></div></div>
+      <span class="comp-num" style="color:#16a34a;font-weight:800">92</span>
+      <span class="comp-note" style="color:#16a34a">After roadmap items 1–3</span>
+    </div>
+  </div>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  <div>
+    <strong>APForce</strong> — Broker CRM &amp; Team Ops Platform &nbsp;|&nbsp; Built for AP / Sub-Broker Market
+  </div>
+  <div>
+    Prepared June 2026 &nbsp;|&nbsp; Confidential
+  </div>
+</div>
+
+</body>
+</html>
