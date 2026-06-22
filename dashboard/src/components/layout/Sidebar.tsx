@@ -27,12 +27,13 @@ const ALL_NAV: NavItem[] = [
   { href: '/admin/verification', label: 'Verify Metrics', icon: '✅',  roles: ['admin'] },
   { href: '/admin/audit',        label: 'Audit Logs',     icon: '🔍',  roles: ['admin'] },
   { href: '/admin/compensation', label: 'Payroll',         icon: '💰',  roles: ['admin'] },
-  { href: '/admin/attendance',   label: 'Attendance',     icon: '📅',  roles: ['admin', 'manager'] },
+  { href: '/admin/attendance',   label: 'Attendance',     icon: '📅',  roles: ['admin'] },
   { href: '/admin/targets',      label: 'Targets',        icon: '🎯',  roles: ['admin'] },
   { href: '/admin/billing',      label: 'Billing & Plan', icon: '💳',  roles: ['admin'] },
   // ── Manager (admin can see too) ─────────────────
   { href: '/manager/dashboard',      label: 'Team Overview',  icon: '👔', roles: ['admin', 'manager'] },
   { href: '/manager/verify-metrics', label: 'Verify Metrics', icon: '✅', roles: ['admin', 'manager'] },
+  { href: '/manager/attendance',     label: 'Attendance',     icon: '📅', roles: ['manager'] },
   // ── Team Lead ──────────────────────────────────
   { href: '/team-lead/dashboard',      label: 'Team Overview',  icon: '👥', roles: ['team_lead'] },
   { href: '/team-lead/verify-metrics', label: 'Verify Metrics', icon: '✅', roles: ['team_lead'] },
