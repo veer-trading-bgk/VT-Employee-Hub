@@ -179,6 +179,11 @@ export default function CompensationPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-payroll', month] }),
   });
 
+  const unlockMutation = useMutation({
+    mutationFn: () => apiFetch('/api/compensation/payroll/unlock', { method: 'POST', body: JSON.stringify({ month }) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-payroll', month] }),
+  });
+
   const addAdjMutation = useMutation({
     mutationFn: (body: { userId: string; month: string; amount: number; reason: string; type: string }) =>
       apiFetch('/api/compensation/adjustments', { method: 'POST', body: JSON.stringify(body) }),
@@ -378,9 +383,19 @@ export default function CompensationPage() {
                   </>
                 )}
                 {status === 'locked' && (
-                  <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
-                    🔒 Payroll finalised
-                  </span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                      🔒 Payroll finalised
+                    </span>
+                    <button
+                      onClick={() => { if (confirm(`Unlock payroll for ${month}? This will revert it to Approved status.`)) unlockMutation.mutate(); }}
+                      disabled={unlockMutation.isPending}
+                      className="rounded-lg border border-red-200 px-3 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-900/20"
+                    >
+                      {unlockMutation.isPending ? 'Unlocking…' : '🔓 Unlock'}
+                    </button>
+                    {unlockMutation.isError && <p className="text-xs text-red-500">Unlock failed</p>}
+                  </div>
                 )}
                 {(snapshotMutation.isError || statusMutation.isError) && (
                   <p className="self-center text-xs text-red-500">Action failed. Try again.</p>

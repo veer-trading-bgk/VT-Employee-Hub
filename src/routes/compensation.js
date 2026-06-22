@@ -662,4 +662,41 @@ router.delete('/adjustments/:id', authMiddleware, checkRole(['admin']), async (r
   } catch (error) { next(error); }
 });
 
+// ── POST /api/compensation/payroll/unlock ──────────────────────────────────────
+// Emergency admin-only unlock — reverts a locked payroll back to 'approved'
+
+router.post('/payroll/unlock', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const month = parseMonth(req.body.month ?? req.query.month);
+
+    const existing = await dynamodb.get({
+      TableName: TABLE,
+      Key: payrollKey(req.user.companyId, month),
+    }).promise();
+
+    if (!existing.Item) {
+      return res.status(404).json({ error: 'No payroll snapshot found for this month' });
+    }
+    if (existing.Item.status !== 'locked') {
+      return res.status(400).json({ error: `Payroll is not locked (current status: ${existing.Item.status})` });
+    }
+
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: payrollKey(req.user.companyId, month),
+      UpdateExpression: 'SET #s = :s, updatedAt = :ua, updatedBy = :ub REMOVE lockedAt, lockedBy',
+      ExpressionAttributeNames: { '#s': 'status' },
+      ExpressionAttributeValues: { ':s': 'approved', ':ua': new Date().toISOString(), ':ub': req.user.id },
+    }).promise();
+
+    await logAudit(req.user.id, 'payroll_unlocked', month, 'success', req.ip);
+    logger.warn(`ADMIN ${req.user.email} force-unlocked payroll for ${month}`);
+
+    res.json({ success: true, month, status: 'approved', message: 'Payroll unlocked and returned to approved status' });
+  } catch (error) {
+    logger.error('payroll/unlock error', error);
+    next(error);
+  }
+});
+
 module.exports = router;
