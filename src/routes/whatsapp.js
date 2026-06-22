@@ -17,6 +17,37 @@ async function getWabaConfig(companyId) {
   return result.Item ?? null;
 }
 
+// Cache last message on lead METADATA for inbox listing
+async function updateLeadLastMessage(pk, content, direction, ts) {
+  try {
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK: pk, SK: 'METADATA' },
+      UpdateExpression: 'SET lastMessageAt = :ts, lastMessagePreview = :prev, lastMessageDirection = :dir',
+      ExpressionAttributeValues: { ':ts': ts, ':prev': String(content).slice(0, 100), ':dir': direction },
+    }).promise();
+  } catch (e) {
+    logger.warn('updateLeadLastMessage failed', e.message);
+  }
+}
+
+// Find which company owns a given phoneNumberId (used in webhook routing)
+async function getCompanyByPhoneNumberId(phoneNumberId) {
+  const items = [];
+  let lastKey;
+  do {
+    const result = await dynamodb.scan({
+      TableName: TABLE,
+      FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk AND phoneNumberId = :pid',
+      ExpressionAttributeValues: { ':prefix': 'CONFIG#WABA#', ':sk': 'CURRENT', ':pid': phoneNumberId },
+      ...(lastKey && { ExclusiveStartKey: lastKey }),
+    }).promise();
+    items.push(...(result.Items ?? []));
+    lastKey = result.LastEvaluatedKey;
+  } while (lastKey);
+  return items[0] ?? null;
+}
+
 async function sendTextMessage(companyId, to, body) {
   const cfg = await getWabaConfig(companyId);
   if (!cfg?.accessToken || !cfg?.phoneNumberId) {
@@ -226,7 +257,9 @@ router.post('/webhook', async (req, res) => {
     const change = entry?.changes?.[0];
     if (change?.field !== 'messages') return;
 
+    const phoneNumberId = change.value?.metadata?.phone_number_id;
     const messages = change.value?.messages ?? [];
+
     for (const msg of messages) {
       if (msg.type !== 'text') continue;
       const fromPhone = msg.from;
@@ -234,7 +267,7 @@ router.post('/webhook', async (req, res) => {
       const waMessageId = msg.id;
       const timestamp = new Date(Number(msg.timestamp) * 1000).toISOString();
 
-      // Find lead by phone across all companies (webhook doesn't carry companyId)
+      // Find lead by phone (scan across all companies)
       const scanResult = await dynamodb.scan({
         TableName: TABLE,
         FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND phone = :phone',
@@ -243,22 +276,36 @@ router.post('/webhook', async (req, res) => {
       }).promise();
 
       const lead = scanResult.Items?.[0];
-      if (!lead) continue;
 
-      await dynamodb.put({
-        TableName: TABLE,
-        Item: {
-          PK: lead.PK,
-          SK: `MSG#${timestamp}#${waMessageId}`,
-          messageId: waMessageId,
-          direction: 'inbound',
-          content: text,
-          type: 'text',
-          timestamp,
-          waMessageId,
-        },
-        ConditionExpression: 'attribute_not_exists(SK)',
-      }).promise().catch(() => {});
+      if (lead) {
+        // Known lead — store under lead PK
+        await dynamodb.put({
+          TableName: TABLE,
+          Item: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}`, messageId: waMessageId, direction: 'inbound', content: text, type: 'text', timestamp, waMessageId },
+          ConditionExpression: 'attribute_not_exists(SK)',
+        }).promise().catch(() => {});
+        await updateLeadLastMessage(lead.PK, text, 'inbound', timestamp);
+      } else if (phoneNumberId) {
+        // Unknown contact — route to INBOX# by looking up companyId from phoneNumberId
+        const config = await getCompanyByPhoneNumberId(phoneNumberId);
+        if (!config) continue;
+        const companyId = config.companyId;
+        const PK = `INBOX#${companyId}#${fromPhone}`;
+
+        await dynamodb.put({
+          TableName: TABLE,
+          Item: { PK, SK: `MSG#${timestamp}#${waMessageId}`, messageId: waMessageId, direction: 'inbound', content: text, type: 'text', timestamp, waMessageId },
+          ConditionExpression: 'attribute_not_exists(SK)',
+        }).promise().catch(() => {});
+
+        // Create / refresh CONTACT record
+        await dynamodb.update({
+          TableName: TABLE,
+          Key: { PK, SK: 'CONTACT' },
+          UpdateExpression: 'SET phone = if_not_exists(phone, :ph), companyId = if_not_exists(companyId, :cid), createdAt = if_not_exists(createdAt, :ts), lastMessageAt = :lma, lastMessagePreview = :prev, lastMessageDirection = :dir',
+          ExpressionAttributeValues: { ':ph': fromPhone, ':cid': companyId, ':ts': timestamp, ':lma': timestamp, ':prev': text.slice(0, 100), ':dir': 'inbound' },
+        }).promise();
+      }
     }
   } catch (err) {
     logger.error('WhatsApp webhook error', err);
@@ -300,9 +347,119 @@ router.post('/send', authMiddleware, async (req, res, next) => {
       },
     }).promise();
 
+    await updateLeadLastMessage(pk, message.trim(), 'outbound', timestamp);
     res.json({ success: true, messageId: waMessageId, timestamp });
   } catch (err) {
     logger.error('whatsapp/send error', err);
+    next(err);
+  }
+});
+
+// ── GET /api/whatsapp/inbox — all conversations (leads + unknown contacts) ─────
+router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+
+    // Known leads that have received at least one WhatsApp message
+    const leadItems = [];
+    let lk1;
+    do {
+      const r = await dynamodb.scan({
+        TableName: TABLE,
+        FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND attribute_exists(lastMessageAt)',
+        ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA' },
+        ...(lk1 && { ExclusiveStartKey: lk1 }),
+      }).promise();
+      leadItems.push(...(r.Items ?? []));
+      lk1 = r.LastEvaluatedKey;
+    } while (lk1);
+
+    // Unknown contacts (inbound from numbers not in CRM)
+    const unknownItems = [];
+    let lk2;
+    do {
+      const r = await dynamodb.scan({
+        TableName: TABLE,
+        FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk',
+        ExpressionAttributeValues: { ':prefix': `INBOX#${companyId}#`, ':sk': 'CONTACT' },
+        ...(lk2 && { ExclusiveStartKey: lk2 }),
+      }).promise();
+      unknownItems.push(...(r.Items ?? []));
+      lk2 = r.LastEvaluatedKey;
+    } while (lk2);
+
+    const conversations = [
+      ...leadItems.map((l) => ({
+        type: 'lead',
+        leadId: l.leadId,
+        PK: l.PK,
+        name: l.name,
+        phone: l.phone,
+        stage: l.stage,
+        assignedTo: l.assignedTo,
+        assignedToName: l.assignedToName,
+        lastMessageAt: l.lastMessageAt,
+        lastMessagePreview: l.lastMessagePreview,
+        lastMessageDirection: l.lastMessageDirection,
+      })),
+      ...unknownItems.map((u) => ({
+        type: 'unknown',
+        phone: u.phone,
+        name: u.name ?? null,
+        lastMessageAt: u.lastMessageAt,
+        lastMessagePreview: u.lastMessagePreview,
+        lastMessageDirection: u.lastMessageDirection,
+      })),
+    ].sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
+
+    res.json({ success: true, conversations });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /api/whatsapp/inbox/unknown/:phone/messages ───────────────────────────
+router.get('/inbox/unknown/:phone/messages', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+    const phone = req.params.phone.replace(/\D/g, '');
+    const result = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: { ':pk': `INBOX#${companyId}#${phone}`, ':sk': 'MSG#' },
+    }).promise();
+    res.json({ success: true, messages: (result.Items ?? []).sort((a, b) => a.SK.localeCompare(b.SK)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/whatsapp/inbox/unknown/:phone/send ──────────────────────────────
+router.post('/inbox/unknown/:phone/send', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+    const phone = req.params.phone.replace(/\D/g, '');
+    const { message } = req.body;
+    if (!message?.trim()) return res.status(400).json({ error: 'message required' });
+
+    const waMessageId = await sendTextMessage(companyId, phone, message.trim());
+    const timestamp = new Date().toISOString();
+    const PK = `INBOX#${companyId}#${phone}`;
+
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: { PK, SK: `MSG#${timestamp}#${waMessageId ?? Date.now()}`, direction: 'outbound', content: message.trim(), type: 'text', sentBy: req.user.id, sentByName: req.user.name, timestamp, waMessageId },
+    }).promise();
+
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK, SK: 'CONTACT' },
+      UpdateExpression: 'SET lastMessageAt = :ts, lastMessagePreview = :prev, lastMessageDirection = :dir',
+      ExpressionAttributeValues: { ':ts': timestamp, ':prev': message.trim().slice(0, 100), ':dir': 'outbound' },
+    }).promise();
+
+    res.json({ success: true, messageId: waMessageId, timestamp });
+  } catch (err) {
     next(err);
   }
 });
