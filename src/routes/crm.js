@@ -456,6 +456,101 @@ router.put('/followups/:date/:leadId/done', authMiddleware, async (req, res, nex
   }
 });
 
+// ── POST /api/crm/import ──────────────────────────────────────────────────────
+router.post('/import', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const { leads, options = {} } = req.body;
+    const {
+      duplicateAction = 'skip',   // 'skip' | 'overwrite'
+      defaultStage,
+      defaultAssignedTo,
+      defaultAssignedToName,
+      importTag,
+    } = options;
+
+    if (!Array.isArray(leads) || leads.length === 0) {
+      return res.status(400).json({ error: 'leads array is required' });
+    }
+    if (leads.length > 2000) {
+      return res.status(400).json({ error: 'Maximum 2000 leads per import batch' });
+    }
+
+    const companyId = req.user.companyId;
+    const stages = await getPipelineStages(companyId);
+    const stageKeys = new Set(stages.map((s) => s.key));
+    const finalStage = defaultStage && stageKeys.has(defaultStage) ? defaultStage : stages[0]?.key ?? 'new_lead';
+
+    // Build phone→existing-lead map for duplicate detection
+    const existingLeads = await scanAllLeads(companyId);
+    const phoneMap = new Map(existingLeads.map((l) => [l.phone, l]));
+
+    const results = { imported: 0, overwritten: 0, skipped: 0, errors: [] };
+    const now = new Date().toISOString();
+
+    await Promise.allSettled(
+      leads.map(async (lead, idx) => {
+        try {
+          const name = String(lead.name ?? '').trim();
+          const phone = String(lead.phone ?? '').replace(/\D/g, '');
+
+          if (!name || phone.length < 7) {
+            results.errors.push({ row: idx + 2, phone: phone || '—', reason: !name ? 'Name is required' : 'Invalid phone number' });
+            return;
+          }
+
+          const existing = phoneMap.get(phone);
+          if (existing && duplicateAction === 'skip') {
+            results.skipped++;
+            return;
+          }
+
+          const tags = [...new Set([...(Array.isArray(lead.tags) ? lead.tags : []), ...(importTag ? [importTag] : [])])].filter(Boolean);
+
+          const leadId = existing?.leadId ?? uuidv4();
+          await dynamodb.put({
+            TableName: TABLE,
+            Item: {
+              PK: leadPK(companyId, leadId),
+              SK: 'METADATA',
+              leadId,
+              companyId,
+              name,
+              phone,
+              email: String(lead.email ?? '').trim() || null,
+              productInterest: Array.isArray(lead.productInterest) ? lead.productInterest : [],
+              source: lead.source ?? 'import',
+              notes: String(lead.notes ?? '').trim(),
+              stage: finalStage,
+              tags,
+              closureDeadline: lead.closureDeadline ?? null,
+              assignedTo: defaultAssignedTo ?? req.user.id,
+              assignedToName: defaultAssignedToName ?? req.user.name ?? null,
+              createdBy: req.user.id,
+              createdAt: existing?.createdAt ?? now,
+              updatedAt: now,
+              convertedAt: null,
+              importedAt: now,
+            },
+          }).promise();
+
+          if (existing) results.overwritten++;
+          else results.imported++;
+        } catch (e) {
+          results.errors.push({ row: idx + 2, phone: String(leads[idx]?.phone ?? ''), reason: e.message });
+        }
+      })
+    );
+
+    await logAudit(req.user.id, 'crm_bulk_import', 'batch', 'success', req.ip, {
+      imported: results.imported, overwritten: results.overwritten, skipped: results.skipped, errors: results.errors.length,
+    });
+    res.json({ success: true, ...results });
+  } catch (err) {
+    logger.error('crm/import error', err);
+    next(err);
+  }
+});
+
 // ── GET /api/crm/stats ─────────────────────────────────────────────────────────
 router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
