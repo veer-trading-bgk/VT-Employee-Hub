@@ -27,6 +27,7 @@ const ALL_NAV: NavItem[] = [
   { href: '/admin/verification', label: 'Verify Metrics', icon: '✅',  roles: ['admin'] },
   { href: '/admin/audit',        label: 'Audit Logs',     icon: '🔍',  roles: ['admin'] },
   { href: '/admin/compensation', label: 'Payroll',         icon: '💰',  roles: ['admin'] },
+  { href: '/admin/attendance',   label: 'Attendance',     icon: '📅',  roles: ['admin', 'manager'] },
   { href: '/admin/targets',      label: 'Targets',        icon: '🎯',  roles: ['admin'] },
   { href: '/admin/billing',      label: 'Billing & Plan', icon: '💳',  roles: ['admin'] },
   // ── Manager (admin can see too) ─────────────────
@@ -40,6 +41,7 @@ const ALL_NAV: NavItem[] = [
   { href: '/employee/daily-entry',  label: 'Daily Entry',  icon: '✏️', roles: EMPLOYEE_ROLES },
   { href: '/employee/achievements',  label: 'Achievements', icon: '🏅', roles: EMPLOYEE_ROLES },
   { href: '/employee/compensation',  label: 'My Pay',       icon: '💰', roles: EMPLOYEE_ROLES },
+  { href: '/employee/attendance',    label: 'Attendance',   icon: '📅', roles: EMPLOYEE_ROLES },
   // ── Shared ─────────────────────────────────────
   { href: '/leaderboard', label: 'Leaderboard', icon: '🏆' },
   { href: '/profile',     label: 'Profile',     icon: '👤' },
