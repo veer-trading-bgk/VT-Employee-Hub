@@ -14,6 +14,8 @@ interface BonusSlab { minBase: number; pct: number; }
 
 interface PayrollEntry {
   userId: string;
+  fixedBase: number;
+  incentive: number;
   base: number;
   bonus: number;
   total: number;
@@ -701,6 +703,8 @@ export default function CompensationPage() {
                           </th>
                         );
                       })}
+                      <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">Stipend</th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">Incentive</th>
                       <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">Base</th>
                       <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">Bonus</th>
                       <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">Adj</th>
@@ -738,6 +742,12 @@ export default function CompensationPage() {
                               </td>
                             );
                           })}
+                          <td className="px-4 py-3 text-right tabular-nums text-slate-500 dark:text-slate-400">
+                            {entry.fixedBase > 0 ? fmt(entry.fixedBase) : <span className="text-slate-300 dark:text-slate-700">—</span>}
+                          </td>
+                          <td className="px-4 py-3 text-right tabular-nums font-medium text-slate-700 dark:text-slate-300">
+                            {fmt(entry.incentive ?? entry.base)}
+                          </td>
                           <td className="px-4 py-3 text-right tabular-nums font-medium text-slate-800 dark:text-slate-200">
                             {fmt(entry.base)}
                           </td>
@@ -773,6 +783,12 @@ export default function CompensationPage() {
                           </td>
                         );
                       })}
+                      <td className="px-4 py-3 text-right font-semibold text-slate-500 dark:text-slate-400">
+                        {fmt(filtered.reduce((s, e) => s + (e.fixedBase ?? 0), 0))}
+                      </td>
+                      <td className="px-4 py-3 text-right font-semibold text-slate-700 dark:text-slate-300">
+                        {fmt(filtered.reduce((s, e) => s + (e.incentive ?? e.base), 0))}
+                      </td>
                       <td className="px-4 py-3 text-right font-semibold text-slate-800 dark:text-slate-200">{fmt(totalBase)}</td>
                       <td className="px-4 py-3 text-right font-semibold text-blue-600 dark:text-blue-400">{fmt(totalBonus)}</td>
                       <td className="px-4 py-3 text-right font-semibold text-orange-600 dark:text-orange-400">

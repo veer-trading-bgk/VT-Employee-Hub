@@ -22,6 +22,7 @@ interface EmployeeDetail extends Employee {
   aadhaarNumber?: string;
   homeAddress?: string;
   teamLeadId?: string;
+  baseSalary?: number;
 }
 
 interface EditForm {
@@ -33,7 +34,8 @@ interface EditForm {
   panNumber: string;
   aadhaarNumber: string;
   homeAddress: string;
-  teamLeadId: string; // '' = unassigned
+  teamLeadId: string;
+  baseSalary: string; // stored as string in input, parsed to number on save
 }
 
 interface Props {
@@ -83,6 +85,7 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
     aadhaarNumber: '',
     homeAddress: '',
     teamLeadId: '',
+    baseSalary: '',
   });
 
   // Fetch full employee detail to pre-populate all fields
@@ -116,8 +119,9 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
       aadhaarNumber: d.aadhaarNumber ?? '',
       homeAddress: d.homeAddress ?? '',
       teamLeadId: d.teamLeadId ?? '',
+      baseSalary: d.baseSalary != null ? String(d.baseSalary) : '',
     }));
-    if (d.mobileNumber || d.panNumber || d.aadhaarNumber || d.homeAddress) {
+    if (d.mobileNumber || d.panNumber || d.aadhaarNumber || d.homeAddress || d.baseSalary) {
       setShowAdditional(true);
     }
   }, [detail]);
@@ -146,6 +150,11 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
       if (aad  !== (d?.aadhaarNumber ?? '')) changes.aadhaarNumber = aad  || '';
       if (addr !== (d?.homeAddress   ?? '')) changes.homeAddress   = addr || '';
       if (tl   !== (d?.teamLeadId    ?? '')) (changes as Record<string, unknown>).teamLeadId = tl || null;
+
+      const salaryStr = form.baseSalary.trim();
+      const salaryNum = salaryStr !== '' ? Number(salaryStr) : null;
+      const prevSalary = d?.baseSalary ?? null;
+      if (salaryNum !== prevSalary) (changes as Record<string, unknown>).baseSalary = salaryNum;
 
       // Remove empty-string values (no point storing blank)
       Object.keys(changes).forEach((k) => {
@@ -335,6 +344,29 @@ export function EditEmployeeModal({ employee, onClose }: Props) {
                         className={`${inputCls} font-mono tracking-widest`}
                       />
                       {aadhaarError && <FieldError msg={aadhaarError} />}
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-slate-700 dark:text-slate-300">
+                        Fixed Base Salary / Stipend <span className="text-slate-400">(optional)</span>
+                      </label>
+                      <div className="flex items-center gap-1">
+                        <span className="text-sm text-slate-400">₹</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={1000000}
+                          step={500}
+                          value={form.baseSalary}
+                          onChange={(e) => setForm((f) => ({ ...f, baseSalary: e.target.value }))}
+                          placeholder="0 — pure incentive"
+                          className={inputCls}
+                        />
+                        <span className="whitespace-nowrap text-xs text-slate-400">/ month</span>
+                      </div>
+                      <p className="mt-1 text-[11px] text-slate-400">
+                        Added to metric earnings every month automatically. Leave blank or 0 for pure incentive.
+                      </p>
                     </div>
 
                     <div>

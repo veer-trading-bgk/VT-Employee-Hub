@@ -22,6 +22,8 @@ interface BreakdownEntry {
 interface CompensationResponse {
   month: string;
   breakdown: Record<string, BreakdownEntry>;
+  fixedBase: number;
+  incentiveTotal: number;
   baseCompensation: number;
   performanceBonus: number;
   totalCompensation: number;
@@ -153,10 +155,16 @@ export default function EmployeeCompensationPage() {
                 <p className="mt-1 text-4xl font-bold tabular-nums">{fmt(data.totalCompensation)}</p>
                 <p className="mt-0.5 text-sm text-indigo-200">Total earned this month</p>
 
-                <div className="mt-4 grid grid-cols-2 gap-3">
+                <div className={`mt-4 grid gap-3 ${data.fixedBase > 0 ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                  {data.fixedBase > 0 && (
+                    <div className="rounded-xl bg-white/10 p-3">
+                      <p className="text-xs text-indigo-200">Fixed Stipend</p>
+                      <p className="mt-0.5 text-lg font-semibold tabular-nums">{fmt(data.fixedBase)}</p>
+                    </div>
+                  )}
                   <div className="rounded-xl bg-white/10 p-3">
-                    <p className="text-xs text-indigo-200">Base Incentive</p>
-                    <p className="mt-0.5 text-lg font-semibold tabular-nums">{fmt(data.baseCompensation)}</p>
+                    <p className="text-xs text-indigo-200">{data.fixedBase > 0 ? 'Metric Incentive' : 'Base Incentive'}</p>
+                    <p className="mt-0.5 text-lg font-semibold tabular-nums">{fmt(data.incentiveTotal ?? data.baseCompensation)}</p>
                   </div>
                   <div className="rounded-xl bg-white/10 p-3">
                     <p className="text-xs text-indigo-200">Performance Bonus</p>
@@ -248,6 +256,18 @@ export default function EmployeeCompensationPage() {
                       );
                     })}
                   </div>
+                  {data.fixedBase > 0 && (
+                    <div className="flex items-center justify-between border-t border-slate-100 px-4 py-2.5 dark:border-slate-800">
+                      <div className="flex items-center gap-3">
+                        <span className="text-lg">💼</span>
+                        <div>
+                          <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Fixed Stipend</p>
+                          <p className="text-xs text-slate-400">Monthly base salary</p>
+                        </div>
+                      </div>
+                      <p className="text-sm font-semibold tabular-nums text-slate-600 dark:text-slate-400">{fmt(data.fixedBase)}</p>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between rounded-b-xl border-t border-slate-100 bg-slate-50 px-4 py-3 dark:border-slate-800 dark:bg-slate-800/50">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Base Total</p>
                     <p className="text-sm font-bold tabular-nums text-slate-800 dark:text-slate-200">{fmt(data.baseCompensation)}</p>

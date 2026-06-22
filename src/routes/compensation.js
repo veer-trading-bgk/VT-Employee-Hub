@@ -110,6 +110,24 @@ async function loadRates(companyId) {
   return { rates: DEFAULT_INCENTIVE_RATES, bonusSlabs: DEFAULT_BONUS_SLABS };
 }
 
+async function loadBaseSalaries(companyId) {
+  try {
+    const items = await scanAll({
+      TableName: TABLE_EMP,
+      FilterExpression: 'attribute_exists(baseSalary) AND baseSalary > :zero'
+        + (companyId ? ' AND companyId = :cid' : ''),
+      ExpressionAttributeValues: {
+        ':zero': 0,
+        ...(companyId ? { ':cid': companyId } : {}),
+      },
+      ProjectionExpression: 'id, baseSalary',
+    });
+    return Object.fromEntries(items.map((e) => [e.id, e.baseSalary]));
+  } catch {
+    return {};
+  }
+}
+
 async function loadTargets(companyId) {
   try {
     const pk = companyId ? `CONFIG#TARGETS#${companyId}` : 'CONFIG#TARGETS';
@@ -120,7 +138,7 @@ async function loadTargets(companyId) {
   }
 }
 
-function buildPayrollEntries(metricsItems, rates, bonusSlabs) {
+function buildPayrollEntries(metricsItems, rates, bonusSlabs, baseSalaryMap = {}) {
   const byUser = {};
   metricsItems.forEach((item) => {
     if (item.verificationStatus === 'rejected') return;
@@ -130,11 +148,18 @@ function buildPayrollEntries(metricsItems, rates, bonusSlabs) {
     byUser[uid][item.metric_type] = (byUser[uid][item.metric_type] ?? 0) + (item.value ?? 0);
   });
 
+  // Include employees who have a baseSalary even if they logged no metrics this month
+  Object.keys(baseSalaryMap).forEach((uid) => {
+    if (!byUser[uid]) byUser[uid] = {};
+  });
+
   return Object.entries(byUser).map(([userId, metrics]) => {
-    let base = 0;
-    Object.entries(metrics).forEach(([k, v]) => { base += calcAmount(v, rates[k]); });
+    let incentive = 0;
+    Object.entries(metrics).forEach(([k, v]) => { incentive += calcAmount(v, rates[k]); });
+    const fixedBase = baseSalaryMap[userId] ?? 0;
+    const base = incentive + fixedBase;
     const bonus = calcBonus(base, bonusSlabs);
-    return { userId, base, bonus, total: base + bonus, metrics };
+    return { userId, fixedBase, incentive, base, bonus, total: base + bonus, metrics };
   }).sort((a, b) => b.total - a.total);
 }
 
@@ -206,7 +231,7 @@ router.get('/calculate/:userId', authMiddleware, async (req, res, next) => {
     }
 
     const month = parseMonth(req.query.month);
-    const [metricsItems, { rates, bonusSlabs }] = await Promise.all([
+    const [metricsItems, { rates, bonusSlabs }, empResult] = await Promise.all([
       scanAll({
         TableName: TABLE,
         FilterExpression: 'userId = :uid AND begins_with(#date, :month)',
@@ -214,7 +239,9 @@ router.get('/calculate/:userId', authMiddleware, async (req, res, next) => {
         ExpressionAttributeValues: { ':uid': userId, ':month': month },
       }),
       loadRates(req.user.companyId),
+      dynamodb.get({ TableName: TABLE_EMP, Key: { id: userId } }).promise(),
     ]);
+    const fixedBase = empResult.Item?.baseSalary ?? 0;
 
     const totals = {};
     metricsItems.forEach((item) => {
@@ -222,15 +249,16 @@ router.get('/calculate/:userId', authMiddleware, async (req, res, next) => {
       totals[item.metric_type] = (totals[item.metric_type] ?? 0) + (item.value ?? 0);
     });
 
-    let baseCompensation = 0;
+    let incentiveTotal = 0;
     const breakdown = {};
     Object.entries(totals).forEach(([key, metricValue]) => {
       const rateCfg = rates[key];
       if (!rateCfg) return;
       const amount = calcAmount(metricValue, rateCfg);
       breakdown[key] = { value: Math.round(metricValue), rate: rateCfg, amount };
-      baseCompensation += amount;
+      incentiveTotal += amount;
     });
+    const baseCompensation = incentiveTotal + fixedBase;
 
     const performanceBonus = calcBonus(baseCompensation, bonusSlabs);
     const totalCompensation = baseCompensation + performanceBonus;
@@ -258,6 +286,8 @@ router.get('/calculate/:userId', authMiddleware, async (req, res, next) => {
     res.json({
       month,
       breakdown,
+      fixedBase,
+      incentiveTotal,
       baseCompensation,
       performanceBonus,
       totalCompensation,
@@ -353,7 +383,7 @@ router.get('/payroll', authMiddleware, checkRole(['admin', 'manager']), async (r
     }
 
     // Live calculation
-    const [metricsItems, { rates, bonusSlabs }, adjItems] = await Promise.all([
+    const [metricsItems, { rates, bonusSlabs }, adjItems, baseSalaryMap] = await Promise.all([
       scanAll({
         TableName: TABLE,
         FilterExpression: 'begins_with(#date, :month) AND attribute_exists(metric_type)',
@@ -369,9 +399,10 @@ router.get('/payroll', authMiddleware, checkRole(['admin', 'manager']), async (r
           ':snap': 'SNAPSHOT',
         },
       }),
+      loadBaseSalaries(req.user.companyId),
     ]);
 
-    const payroll = buildPayrollEntries(metricsItems, rates, bonusSlabs);
+    const payroll = buildPayrollEntries(metricsItems, rates, bonusSlabs, baseSalaryMap);
 
     await logAudit(req.user.id, 'view_payroll', month, 'success', req.ip);
     res.json({
@@ -406,7 +437,7 @@ router.post('/payroll/snapshot', authMiddleware, checkRole(['admin']), async (re
       return res.status(409).json({ error: 'Payroll for this month is already locked' });
     }
 
-    const [metricsItems, { rates, bonusSlabs }, targetCfg, adjItems] = await Promise.all([
+    const [metricsItems, { rates, bonusSlabs }, targetCfg, adjItems, baseSalaryMap] = await Promise.all([
       scanAll({
         TableName: TABLE,
         FilterExpression: 'begins_with(#date, :month) AND attribute_exists(metric_type)',
@@ -423,9 +454,10 @@ router.post('/payroll/snapshot', authMiddleware, checkRole(['admin']), async (re
           ':snap': 'SNAPSHOT',
         },
       }),
+      loadBaseSalaries(req.user.companyId),
     ]);
 
-    const basePayroll = buildPayrollEntries(metricsItems, rates, bonusSlabs);
+    const basePayroll = buildPayrollEntries(metricsItems, rates, bonusSlabs, baseSalaryMap);
 
     // Point 9: monthly target achievement % per employee
     const [year, mo] = month.split('-').map(Number);

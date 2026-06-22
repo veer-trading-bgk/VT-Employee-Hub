@@ -48,6 +48,7 @@ const updateEmployeeSchema = z.object({
   aadhaarNumber: z.string().regex(/^\d{12}$/, 'Aadhaar must be 12 digits').optional(),
   homeAddress: z.string().max(300).optional(),
   teamLeadId: z.string().nullable().optional(), // null = remove assignment
+  baseSalary: z.number().min(0).max(1000000).nullable().optional(),
 }).strict();
 
 const companySignupSchema = z.object({
