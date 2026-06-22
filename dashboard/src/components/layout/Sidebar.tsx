@@ -28,6 +28,7 @@ const ALL_NAV: NavItem[] = [
   { href: '/admin/audit',        label: 'Audit Logs',     icon: '🔍',  roles: ['admin'] },
   { href: '/admin/compensation', label: 'Payroll',         icon: '💰',  roles: ['admin'] },
   { href: '/admin/crm',          label: 'CRM',             icon: '🤝',  roles: ['admin'] },
+  { href: '/admin/crm/settings', label: 'CRM Settings',   icon: '⚙️',  roles: ['admin'] },
   { href: '/admin/attendance',   label: 'Attendance',     icon: '📅',  roles: ['admin'] },
   { href: '/admin/targets',      label: 'Targets',        icon: '🎯',  roles: ['admin'] },
   { href: '/admin/billing',      label: 'Billing & Plan', icon: '💳',  roles: ['admin'] },

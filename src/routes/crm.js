@@ -7,26 +7,41 @@ const logger = require('../config/logger');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
-const TABLE_EMP = process.env.DYNAMODB_TABLE || process.env.DYNAMODB_TABLE_METRICS;
 
-// Pipeline stages in order
-const STAGES = ['new', 'contacted', 'interested', 'kyc_done', 'demat_done', 'converted', 'churned'];
+const DEFAULT_STAGES = [
+  { key: 'new_lead',   label: 'New Lead',     color: '#64748b', order: 0 },
+  { key: 'contacted',  label: 'Contacted',    color: '#3b82f6', order: 1 },
+  { key: 'interested', label: 'Interested',   color: '#8b5cf6', order: 2 },
+  { key: 'kyc_done',   label: 'KYC Done',     color: '#f59e0b', order: 3 },
+  { key: 'demat_done', label: 'Demat Done',   color: '#f97316', order: 4 },
+  { key: 'converted',  label: 'Converted',    color: '#10b981', order: 5 },
+  { key: 'churned',    label: 'Closed Lost',  color: '#ef4444', order: 6 },
+];
 
-// Stages that trigger auto-metric credit
+// Stages that auto-credit a payroll metric
 const METRIC_STAGE_MAP = { kyc_done: 'kyc', demat_done: 'demat' };
 
 function leadPK(companyId, leadId) {
   return `LEAD#${companyId}#${leadId}`;
 }
 
+async function getPipelineStages(companyId) {
+  try {
+    const result = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#CRM#${companyId}`, SK: 'PIPELINE' },
+    }).promise();
+    return result.Item?.stages ?? DEFAULT_STAGES;
+  } catch {
+    return DEFAULT_STAGES;
+  }
+}
+
 async function scanAllLeads(companyId) {
   const params = {
     TableName: TABLE,
     FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta',
-    ExpressionAttributeValues: {
-      ':prefix': `LEAD#${companyId}#`,
-      ':meta': 'METADATA',
-    },
+    ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA' },
   };
   const items = [];
   let lastKey;
@@ -38,6 +53,57 @@ async function scanAllLeads(companyId) {
   return items;
 }
 
+// ── GET /api/crm/pipeline ──────────────────────────────────────────────────────
+router.get('/pipeline', authMiddleware, async (req, res, next) => {
+  try {
+    const stages = await getPipelineStages(req.user.companyId);
+    res.json({ success: true, stages });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── PUT /api/crm/pipeline ──────────────────────────────────────────────────────
+router.put('/pipeline', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const { stages } = req.body;
+    if (!Array.isArray(stages) || stages.length === 0) {
+      return res.status(400).json({ error: 'stages must be a non-empty array' });
+    }
+    for (const s of stages) {
+      if (!s.key || !s.label) return res.status(400).json({ error: 'each stage needs key and label' });
+    }
+
+    // Block deleting a stage that still has leads
+    const leads = await scanAllLeads(req.user.companyId);
+    const newKeys = new Set(stages.map((s) => s.key));
+    const existingStages = await getPipelineStages(req.user.companyId);
+    for (const s of existingStages) {
+      if (!newKeys.has(s.key)) {
+        const hasLeads = leads.some((l) => l.stage === s.key);
+        if (hasLeads) {
+          return res.status(409).json({ error: `Cannot delete stage "${s.label}" — it has active leads. Move them first.` });
+        }
+      }
+    }
+
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: `CONFIG#CRM#${req.user.companyId}`,
+        SK: 'PIPELINE',
+        stages: stages.map((s, i) => ({ key: s.key, label: s.label, color: s.color ?? '#64748b', order: i })),
+        updatedAt: new Date().toISOString(),
+      },
+    }).promise();
+
+    res.json({ success: true, stages });
+  } catch (err) {
+    logger.error('crm/pipeline PUT error', err);
+    next(err);
+  }
+});
+
 // ── GET /api/crm/leads ─────────────────────────────────────────────────────────
 router.get('/leads', authMiddleware, async (req, res, next) => {
   try {
@@ -47,7 +113,6 @@ router.get('/leads', authMiddleware, async (req, res, next) => {
 
     let leads = await scanAllLeads(companyId);
 
-    // Employees only see their assigned leads
     if (empRoles.includes(req.user.role)) {
       leads = leads.filter((l) => l.assignedTo === req.user.id);
     } else if (assignedTo) {
@@ -74,12 +139,15 @@ router.get('/leads', authMiddleware, async (req, res, next) => {
 // ── POST /api/crm/leads ────────────────────────────────────────────────────────
 router.post('/leads', authMiddleware, async (req, res, next) => {
   try {
-    const { name, phone, email, productInterest, source, notes, assignedTo } = req.body;
+    const { name, phone, email, productInterest, source, notes, assignedTo, assignedToName, closureDeadline, tags, stage } = req.body;
     if (!name?.trim() || !phone?.trim()) {
       return res.status(400).json({ error: 'name and phone are required' });
     }
 
     const companyId = req.user.companyId;
+    const stages = await getPipelineStages(companyId);
+    const defaultStage = stage ?? stages[0]?.key ?? 'new_lead';
+
     const leadId = uuidv4();
     const now = new Date().toISOString();
 
@@ -94,9 +162,11 @@ router.post('/leads', authMiddleware, async (req, res, next) => {
       productInterest: productInterest ?? [],
       source: source ?? 'manual',
       notes: notes?.trim() ?? '',
-      stage: 'new',
+      stage: defaultStage,
+      tags: tags ?? [],
+      closureDeadline: closureDeadline ?? null,
       assignedTo: assignedTo ?? req.user.id,
-      assignedToName: null,
+      assignedToName: assignedToName ?? req.user.name ?? null,
       createdBy: req.user.id,
       createdAt: now,
       updatedAt: now,
@@ -105,7 +175,6 @@ router.post('/leads', authMiddleware, async (req, res, next) => {
 
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();
     await logAudit(req.user.id, 'crm_lead_created', leadId, 'success', req.ip, { name });
-
     res.status(201).json({ success: true, lead: item });
   } catch (err) {
     logger.error('crm/leads POST error', err);
@@ -119,7 +188,6 @@ router.get('/leads/:id', authMiddleware, async (req, res, next) => {
     const companyId = req.user.companyId;
     const PK = leadPK(companyId, req.params.id);
 
-    // Fetch all items for this lead (METADATA + messages)
     const result = await dynamodb.query({
       TableName: TABLE,
       KeyConditionExpression: 'PK = :pk',
@@ -135,10 +203,7 @@ router.get('/leads/:id', authMiddleware, async (req, res, next) => {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    const messages = items
-      .filter((i) => i.SK.startsWith('MSG#'))
-      .sort((a, b) => a.SK.localeCompare(b.SK));
-
+    const messages = items.filter((i) => i.SK.startsWith('MSG#')).sort((a, b) => a.SK.localeCompare(b.SK));
     res.json({ success: true, lead: meta, messages });
   } catch (err) {
     logger.error('crm/leads/:id GET error', err);
@@ -160,7 +225,7 @@ router.put('/leads/:id', authMiddleware, async (req, res, next) => {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    const allowed = ['name', 'phone', 'email', 'productInterest', 'source', 'notes', 'assignedTo'];
+    const allowed = ['name', 'phone', 'email', 'productInterest', 'source', 'notes', 'closureDeadline', 'tags'];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
@@ -187,17 +252,50 @@ router.put('/leads/:id', authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── PUT /api/crm/leads/:id/stage ───────────────────────────────────────────────
-router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
+// ── PUT /api/crm/leads/:id/assign ─────────────────────────────────────────────
+router.put('/leads/:id/assign', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
-    const { stage } = req.body;
-    if (!STAGES.includes(stage)) {
-      return res.status(400).json({ error: `stage must be one of: ${STAGES.join(', ')}` });
-    }
+    const { assignedTo, assignedToName } = req.body;
+    if (!assignedTo) return res.status(400).json({ error: 'assignedTo required' });
 
     const companyId = req.user.companyId;
     const PK = leadPK(companyId, req.params.id);
 
+    const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'Lead not found' });
+
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK, SK: 'METADATA' },
+      UpdateExpression: 'SET assignedTo = :at, assignedToName = :atn, updatedAt = :ua',
+      ExpressionAttributeValues: {
+        ':at': assignedTo,
+        ':atn': assignedToName ?? null,
+        ':ua': new Date().toISOString(),
+      },
+    }).promise();
+
+    await logAudit(req.user.id, 'crm_lead_assigned', req.params.id, 'success', req.ip, { assignedTo });
+    res.json({ success: true, assignedTo, assignedToName });
+  } catch (err) {
+    logger.error('crm/leads/:id/assign error', err);
+    next(err);
+  }
+});
+
+// ── PUT /api/crm/leads/:id/stage ───────────────────────────────────────────────
+router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
+  try {
+    const { stage } = req.body;
+    if (!stage) return res.status(400).json({ error: 'stage required' });
+
+    const companyId = req.user.companyId;
+    const stages = await getPipelineStages(companyId);
+    if (!stages.find((s) => s.key === stage)) {
+      return res.status(400).json({ error: 'Invalid stage key' });
+    }
+
+    const PK = leadPK(companyId, req.params.id);
     const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
     if (!existing.Item) return res.status(404).json({ error: 'Lead not found' });
 
@@ -208,17 +306,14 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
     }
 
     const now = new Date().toISOString();
-    const updateAttrs = {
-      '#stage': 'stage',
-      '#updatedAt': 'updatedAt',
-    };
-    const updateVals = { ':stage': stage, ':updatedAt': now };
-    let updateExpr = 'SET #stage = :stage, #updatedAt = :updatedAt';
+    const updateAttrs = { '#stage': 'stage', '#ua': 'updatedAt' };
+    const updateVals = { ':stage': stage, ':ua': now };
+    let updateExpr = 'SET #stage = :stage, #ua = :ua';
 
     if (stage === 'converted') {
-      updateExpr += ', #convertedAt = :convertedAt';
-      updateAttrs['#convertedAt'] = 'convertedAt';
-      updateVals[':convertedAt'] = now;
+      updateExpr += ', #ca = :ca';
+      updateAttrs['#ca'] = 'convertedAt';
+      updateVals[':ca'] = now;
     }
 
     await dynamodb.update({
@@ -229,36 +324,25 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
       ExpressionAttributeValues: updateVals,
     }).promise();
 
-    // Auto-credit metric for assigned employee when stage hits kyc_done / demat_done
+    // Auto-credit metric
     const metricType = METRIC_STAGE_MAP[stage];
     if (metricType && lead.assignedTo && lead.stage !== stage) {
       try {
         const date = now.split('T')[0];
-        const metricId = `${lead.assignedTo}#${date}#${metricType}`;
         await dynamodb.update({
           TableName: TABLE,
-          Key: { PK: `METRICS#${companyId}`, SK: metricId },
+          Key: { PK: `METRICS#${companyId}`, SK: `${lead.assignedTo}#${date}#${metricType}` },
           UpdateExpression: 'SET #uid = if_not_exists(#uid, :uid), #mt = if_not_exists(#mt, :mt), #d = if_not_exists(#d, :d), #ci = if_not_exists(#ci, :ci), #val = if_not_exists(#val, :zero) + :inc, #src = :src, #ua = :ua',
-          ExpressionAttributeNames: {
-            '#uid': 'userId', '#mt': 'metric_type', '#d': 'date',
-            '#ci': 'companyId', '#val': 'value', '#src': 'source', '#ua': 'updatedAt',
-          },
-          ExpressionAttributeValues: {
-            ':uid': lead.assignedTo, ':mt': metricType, ':d': date,
-            ':ci': companyId, ':zero': 0, ':inc': 1, ':src': 'crm_auto', ':ua': now,
-          },
+          ExpressionAttributeNames: { '#uid': 'userId', '#mt': 'metric_type', '#d': 'date', '#ci': 'companyId', '#val': 'value', '#src': 'source', '#ua': 'updatedAt' },
+          ExpressionAttributeValues: { ':uid': lead.assignedTo, ':mt': metricType, ':d': date, ':ci': companyId, ':zero': 0, ':inc': 1, ':src': 'crm_auto', ':ua': now },
         }).promise();
-        logger.info(`Auto-credited ${metricType} to ${lead.assignedTo} from CRM lead ${req.params.id}`);
       } catch (e) {
         logger.warn(`Auto-metric credit failed for lead ${req.params.id}: ${e.message}`);
       }
     }
 
-    await logAudit(req.user.id, 'crm_stage_change', req.params.id, 'success', req.ip, {
-      from: lead.stage, to: stage,
-    });
-
-    res.json({ success: true, leadId: req.params.id, stage, autoMetric: metricType ?? null });
+    await logAudit(req.user.id, 'crm_stage_change', req.params.id, 'success', req.ip, { from: lead.stage, to: stage });
+    res.json({ success: true, stage, autoMetric: metricType ?? null });
   } catch (err) {
     logger.error('crm/leads/:id/stage error', err);
     next(err);
@@ -268,10 +352,7 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
 // ── DELETE /api/crm/leads/:id ──────────────────────────────────────────────────
 router.delete('/leads/:id', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
-    const companyId = req.user.companyId;
-    const PK = leadPK(companyId, req.params.id);
-
-    // Fetch all items (metadata + messages) and batch delete
+    const PK = leadPK(req.user.companyId, req.params.id);
     const result = await dynamodb.query({
       TableName: TABLE,
       KeyConditionExpression: 'PK = :pk',
@@ -282,13 +363,10 @@ router.delete('/leads/:id', authMiddleware, checkRole(['admin', 'manager']), asy
     const items = result.Items ?? [];
     if (items.length === 0) return res.status(404).json({ error: 'Lead not found' });
 
-    // DynamoDB batch delete in chunks of 25
     for (let i = 0; i < items.length; i += 25) {
       const chunk = items.slice(i, i + 25);
       await dynamodb.batchWrite({
-        RequestItems: {
-          [TABLE]: chunk.map((item) => ({ DeleteRequest: { Key: { PK: item.PK, SK: item.SK } } })),
-        },
+        RequestItems: { [TABLE]: chunk.map((item) => ({ DeleteRequest: { Key: { PK: item.PK, SK: item.SK } } })) },
       }).promise();
     }
 
@@ -309,47 +387,26 @@ router.get('/followups', authMiddleware, async (req, res, next) => {
     const endDate = new Date(Date.now() + daysAhead * 86400000).toISOString().slice(0, 10);
     const empRoles = ['telecaller', 'agent', 'intern'];
 
-    const params = {
-      TableName: TABLE,
-      FilterExpression: 'begins_with(PK, :prefix) AND SK >= :start AND SK <= :end AND (attribute_not_exists(done) OR done = :false)',
-      ExpressionAttributeValues: {
-        ':prefix': `FOLLOWUP#${companyId}#`,
-        ':start': `LEAD#`,
-        ':end': `LEAD#~`,
-        ':false': false,
-      },
-    };
-
-    // Scan FOLLOWUP records for date range
-    const dateParams = {
-      TableName: TABLE,
-      FilterExpression: 'begins_with(PK, :prefix) AND #dt >= :start AND #dt <= :end AND (attribute_not_exists(done) OR done = :false)',
-      ExpressionAttributeNames: { '#dt': 'date' },
-      ExpressionAttributeValues: {
-        ':prefix': `FOLLOWUP#${companyId}#`,
-        ':start': today,
-        ':end': endDate,
-        ':false': false,
-      },
-    };
-
     const items = [];
     let lastKey;
     do {
-      const result = await dynamodb.scan({ ...dateParams, ...(lastKey && { ExclusiveStartKey: lastKey }) }).promise();
+      const result = await dynamodb.scan({
+        TableName: TABLE,
+        FilterExpression: 'begins_with(PK, :prefix) AND #dt >= :start AND #dt <= :end AND (attribute_not_exists(done) OR done = :false)',
+        ExpressionAttributeNames: { '#dt': 'date' },
+        ExpressionAttributeValues: { ':prefix': `FOLLOWUP#${companyId}#`, ':start': today, ':end': endDate, ':false': false },
+        ...(lastKey && { ExclusiveStartKey: lastKey }),
+      }).promise();
       items.push(...(result.Items ?? []));
       lastKey = result.LastEvaluatedKey;
     } while (lastKey);
 
-    let followups = items;
-    if (empRoles.includes(req.user.role)) {
-      followups = followups.filter((f) => f.assignedTo === req.user.id);
-    }
+    const followups = empRoles.includes(req.user.role)
+      ? items.filter((f) => f.assignedTo === req.user.id)
+      : items;
 
-    followups.sort((a, b) => a.date.localeCompare(b.date));
-    res.json({ success: true, followups });
+    res.json({ success: true, followups: followups.sort((a, b) => a.date.localeCompare(b.date)) });
   } catch (err) {
-    logger.error('crm/followups GET error', err);
     next(err);
   }
 });
@@ -363,16 +420,12 @@ router.post('/leads/:id/followup', authMiddleware, async (req, res, next) => {
     }
 
     const companyId = req.user.companyId;
-    const leadId = req.params.id;
-    const PK = `FOLLOWUP#${companyId}#${date}`;
-    const SK = `LEAD#${leadId}`;
-
     await dynamodb.put({
       TableName: TABLE,
       Item: {
-        PK,
-        SK,
-        leadId,
+        PK: `FOLLOWUP#${companyId}#${date}`,
+        SK: `LEAD#${req.params.id}`,
+        leadId: req.params.id,
         companyId,
         date,
         note: note?.trim() ?? '',
@@ -382,9 +435,8 @@ router.post('/leads/:id/followup', authMiddleware, async (req, res, next) => {
       },
     }).promise();
 
-    res.status(201).json({ success: true, date, leadId });
+    res.status(201).json({ success: true });
   } catch (err) {
-    logger.error('crm/followup POST error', err);
     next(err);
   }
 });
@@ -392,23 +444,14 @@ router.post('/leads/:id/followup', authMiddleware, async (req, res, next) => {
 // ── PUT /api/crm/followups/:date/:leadId/done ──────────────────────────────────
 router.put('/followups/:date/:leadId/done', authMiddleware, async (req, res, next) => {
   try {
-    const { date, leadId } = req.params;
-    const companyId = req.user.companyId;
-
     await dynamodb.update({
       TableName: TABLE,
-      Key: { PK: `FOLLOWUP#${companyId}#${date}`, SK: `LEAD#${leadId}` },
+      Key: { PK: `FOLLOWUP#${req.user.companyId}#${req.params.date}`, SK: `LEAD#${req.params.leadId}` },
       UpdateExpression: 'SET done = :t, doneAt = :da, doneBy = :db',
-      ExpressionAttributeValues: {
-        ':t': true,
-        ':da': new Date().toISOString(),
-        ':db': req.user.id,
-      },
+      ExpressionAttributeValues: { ':t': true, ':da': new Date().toISOString(), ':db': req.user.id },
     }).promise();
-
     res.json({ success: true });
   } catch (err) {
-    logger.error('crm/followup done error', err);
     next(err);
   }
 });
@@ -416,26 +459,22 @@ router.put('/followups/:date/:leadId/done', authMiddleware, async (req, res, nex
 // ── GET /api/crm/stats ─────────────────────────────────────────────────────────
 router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
-    const leads = await scanAllLeads(req.user.companyId);
-    const today = new Date().toISOString().slice(0, 10);
+    const [leads, stages] = await Promise.all([
+      scanAllLeads(req.user.companyId),
+      getPipelineStages(req.user.companyId),
+    ]);
 
-    const byStage = Object.fromEntries(STAGES.map((s) => [s, 0]));
+    const today = new Date().toISOString().slice(0, 10);
+    const byStage = Object.fromEntries(stages.map((s) => [s.key, 0]));
     let convertedToday = 0;
 
     for (const lead of leads) {
-      byStage[lead.stage] = (byStage[lead.stage] ?? 0) + 1;
-      if (lead.stage === 'converted' && lead.convertedAt?.startsWith(today)) convertedToday++;
+      if (byStage[lead.stage] !== undefined) byStage[lead.stage]++;
+      if (lead.convertedAt?.startsWith(today)) convertedToday++;
     }
 
-    res.json({
-      success: true,
-      total: leads.length,
-      byStage,
-      convertedToday,
-      stages: STAGES,
-    });
+    res.json({ success: true, total: leads.length, byStage, convertedToday, stages });
   } catch (err) {
-    logger.error('crm/stats error', err);
     next(err);
   }
 });
