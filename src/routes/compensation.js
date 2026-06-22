@@ -7,7 +7,17 @@ const logger = require('../config/logger');
 const router = express.Router();
 const TABLE_METRICS = process.env.DYNAMODB_TABLE_METRICS;
 
-const DEFAULT_INCENTIVE_RATES = { kyc: 200, demat: 300, mf: 250, insurance: 500, algo: 100, coaching: 50 };
+// Each rate is { value: number, type: 'flat' | 'percent' }
+// flat    → incentive = metricValue * value          (₹ per unit)
+// percent → incentive = metricValue * value / 100   (% of metric value, for currency metrics like insurance)
+const DEFAULT_INCENTIVE_RATES = {
+  kyc:       { value: 200, type: 'flat' },
+  demat:     { value: 300, type: 'flat' },
+  mf:        { value: 250, type: 'flat' },
+  insurance: { value: 2,   type: 'percent' },
+  algo:      { value: 100, type: 'flat' },
+  coaching:  { value: 50,  type: 'flat' },
+};
 const DEFAULT_BONUS_THRESHOLD = 50000;
 const DEFAULT_BONUS_PCT = 10;
 
@@ -15,12 +25,28 @@ function ratesKey(companyId) {
   return { PK: companyId ? `CONFIG#RATES#${companyId}` : 'CONFIG#RATES', SK: 'current' };
 }
 
+function normalizeRates(raw) {
+  return Object.fromEntries(
+    Object.entries(raw).map(([k, v]) => [
+      k,
+      typeof v === 'number' ? { value: v, type: 'flat' } : v,
+    ])
+  );
+}
+
+function calcAmount(metricValue, rateCfg) {
+  if (!rateCfg) return 0;
+  return rateCfg.type === 'percent'
+    ? Math.round(metricValue * rateCfg.value / 100)
+    : Math.round(metricValue * rateCfg.value);
+}
+
 async function loadRates(companyId) {
   try {
     const result = await dynamodb.get({ TableName: TABLE_METRICS, Key: ratesKey(companyId) }).promise();
     if (result.Item) {
       return {
-        rates: result.Item.rates ?? DEFAULT_INCENTIVE_RATES,
+        rates: normalizeRates(result.Item.rates ?? DEFAULT_INCENTIVE_RATES),
         bonusThreshold: result.Item.bonusThreshold ?? DEFAULT_BONUS_THRESHOLD,
         bonusPct: result.Item.bonusPct ?? DEFAULT_BONUS_PCT,
       };
@@ -50,8 +76,17 @@ router.put('/rates', authMiddleware, checkRole(['admin']), async (req, res, next
       return res.status(400).json({ error: 'rates object required' });
     }
     for (const [key, val] of Object.entries(rates)) {
-      if (typeof val !== 'number' || val < 0) {
-        return res.status(400).json({ error: `Rate for "${key}" must be a non-negative number` });
+      if (!val || typeof val !== 'object') {
+        return res.status(400).json({ error: `Rate for "${key}" must be an object with value and type` });
+      }
+      if (typeof val.value !== 'number' || val.value < 0) {
+        return res.status(400).json({ error: `Rate value for "${key}" must be a non-negative number` });
+      }
+      if (!['flat', 'percent'].includes(val.type)) {
+        return res.status(400).json({ error: `Rate type for "${key}" must be "flat" or "percent"` });
+      }
+      if (val.type === 'percent' && val.value > 100) {
+        return res.status(400).json({ error: `Percent rate for "${key}" cannot exceed 100` });
       }
     }
     if (bonusThreshold !== undefined && (typeof bonusThreshold !== 'number' || bonusThreshold < 0)) {
@@ -125,11 +160,11 @@ router.get('/calculate/:userId', authMiddleware, async (req, res, next) => {
 
     let baseCompensation = 0;
     const breakdown = {};
-    Object.entries(totals).forEach(([key, count]) => {
-      const rate = rates[key];
-      if (!rate) return;
-      const amount = Math.round(count * rate);
-      breakdown[key] = { count: Math.round(count), rate, amount };
+    Object.entries(totals).forEach(([key, metricValue]) => {
+      const rateCfg = rates[key];
+      if (!rateCfg) return;
+      const amount = calcAmount(metricValue, rateCfg);
+      breakdown[key] = { value: Math.round(metricValue), rate: rateCfg, amount };
       baseCompensation += amount;
     });
 
@@ -173,7 +208,7 @@ router.get('/payroll', authMiddleware, checkRole(['admin']), async (req, res, ne
     const payroll = Object.entries(byUser).map(([userId, metrics]) => {
       let base = 0;
       Object.entries(metrics).forEach(([k, v]) => {
-        base += Math.round(v * (rates[k] ?? 0));
+        base += calcAmount(v, rates[k]);
       });
       const bonus = base >= bonusThreshold ? Math.round(base * bonusPct / 100) : 0;
       return { userId, base, bonus, total: base + bonus, metrics };

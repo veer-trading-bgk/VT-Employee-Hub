@@ -15,11 +15,15 @@ interface PayrollEntry {
   metrics: Record<string, number>;
 }
 
+interface RateEntry {
+  value: number;
+  type: 'flat' | 'percent';
+}
+
 interface RatesConfig {
-  rates: Record<string, number>;
+  rates: Record<string, RateEntry>;
   bonusThreshold: number;
   bonusPct: number;
-  defaults?: Record<string, number>;
 }
 
 interface PayrollResponse extends RatesConfig {
@@ -41,7 +45,18 @@ function fmt(n: number) {
   return `₹${n.toLocaleString('en-IN')}`;
 }
 
-function exportCSV(payroll: PayrollEntry[], empMap: EmployeeMap, month: string, rates: Record<string, number>) {
+function calcAmount(metricValue: number, rate: RateEntry | undefined): number {
+  if (!rate) return 0;
+  return rate.type === 'percent'
+    ? Math.round(metricValue * rate.value / 100)
+    : Math.round(metricValue * rate.value);
+}
+
+function fmtRate(rate: RateEntry): string {
+  return rate.type === 'percent' ? `${rate.value}% of value` : `${fmt(rate.value)} / unit`;
+}
+
+function exportCSV(payroll: PayrollEntry[], empMap: EmployeeMap, month: string, rates: Record<string, RateEntry>) {
   const metricKeys = Object.keys(rates);
   const header = ['Name', 'Email', ...metricKeys.map((k) => getMetricConfig(k)?.label ?? k), 'Base (₹)', 'Bonus (₹)', 'Total (₹)'];
   const rows = payroll.map((entry) => {
@@ -70,7 +85,7 @@ export default function CompensationPage() {
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<'total' | 'base' | 'bonus'>('total');
   const [editingRates, setEditingRates] = useState(false);
-  const [draftRates, setDraftRates] = useState<Record<string, number>>({});
+  const [draftRates, setDraftRates] = useState<Record<string, RateEntry>>({});
   const [draftThreshold, setDraftThreshold] = useState(50000);
   const [draftBonusPct, setDraftBonusPct] = useState(10);
 
@@ -87,7 +102,7 @@ export default function CompensationPage() {
   });
 
   const saveRatesMutation = useMutation({
-    mutationFn: (body: { rates: Record<string, number>; bonusThreshold: number; bonusPct: number }) =>
+    mutationFn: (body: { rates: Record<string, RateEntry>; bonusThreshold: number; bonusPct: number }) =>
       apiFetch('/api/compensation/rates', { method: 'PUT', body: JSON.stringify(body) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['admin-payroll'] });
@@ -130,10 +145,22 @@ export default function CompensationPage() {
   const totalPayout = payroll.reduce((s, e) => s + e.total, 0);
 
   function openEditor() {
-    setDraftRates({ ...rates });
+    setDraftRates(
+      Object.fromEntries(
+        Object.entries(rates).map(([k, v]) => [k, { ...v }])
+      )
+    );
     setDraftThreshold(bonusThreshold);
     setDraftBonusPct(bonusPct);
     setEditingRates(true);
+  }
+
+  function setDraftValue(key: string, value: number) {
+    setDraftRates((r) => ({ ...r, [key]: { ...r[key], value } }));
+  }
+
+  function setDraftType(key: string, type: 'flat' | 'percent') {
+    setDraftRates((r) => ({ ...r, [key]: { ...r[key], type } }));
   }
 
   const rateKeys = Object.keys(rates).length > 0 ? Object.keys(rates) : METRICS.map((m) => m.key);
@@ -189,25 +216,47 @@ export default function CompensationPage() {
               </div>
 
               {/* Per-metric rates */}
-              <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+              <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
                 {rateKeys.map((key) => {
                   const cfg = getMetricConfig(key);
+                  const draft = draftRates[key] ?? { value: 0, type: 'flat' as const };
+                  const isPercent = draft.type === 'percent';
                   return (
                     <div key={key} className="rounded-lg border border-amber-100 bg-white p-3 dark:border-amber-800 dark:bg-slate-900">
-                      <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400">
-                        <span>{cfg?.icon}</span>
-                        <span>{cfg?.label ?? key}</span>
-                      </label>
+                      <div className="mb-2 flex items-center justify-between">
+                        <label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400">
+                          <span>{cfg?.icon}</span>
+                          <span>{cfg?.label ?? key}</span>
+                        </label>
+                        {/* flat / % toggle */}
+                        <div className="flex rounded border border-slate-200 text-xs dark:border-slate-700">
+                          <button
+                            onClick={() => setDraftType(key, 'flat')}
+                            className={`px-2 py-0.5 ${!isPercent ? 'bg-amber-500 text-white' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                          >
+                            ₹
+                          </button>
+                          <button
+                            onClick={() => setDraftType(key, 'percent')}
+                            className={`px-2 py-0.5 ${isPercent ? 'bg-amber-500 text-white' : 'text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                          >
+                            %
+                          </button>
+                        </div>
+                      </div>
                       <div className="flex items-center gap-1">
-                        <span className="text-sm text-slate-400">₹</span>
+                        {!isPercent && <span className="text-sm text-slate-400">₹</span>}
                         <input
                           type="number"
                           min={0}
-                          value={draftRates[key] ?? 0}
-                          onChange={(e) => setDraftRates((r) => ({ ...r, [key]: Number(e.target.value) }))}
+                          max={isPercent ? 100 : undefined}
+                          step={isPercent ? 0.1 : 1}
+                          value={draft.value}
+                          onChange={(e) => setDraftValue(key, Number(e.target.value))}
                           className="w-full rounded border border-slate-200 bg-slate-50 px-2 py-1 text-sm tabular-nums text-slate-900 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                         />
-                        <span className="whitespace-nowrap text-xs text-slate-400">/ unit</span>
+                        {isPercent && <span className="text-sm text-slate-400">%</span>}
+                        {!isPercent && <span className="whitespace-nowrap text-xs text-slate-400">/ unit</span>}
                       </div>
                     </div>
                   );
@@ -289,7 +338,7 @@ export default function CompensationPage() {
           {!editingRates && Object.keys(rates).length > 0 && (
             <div className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
               <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                Current Incentive Rates (per unit)
+                Current Incentive Rates
               </p>
               <div className="flex flex-wrap gap-3">
                 {Object.entries(rates).map(([key, rate]) => {
@@ -299,7 +348,7 @@ export default function CompensationPage() {
                       <span className="text-base">{cfg?.icon}</span>
                       <div>
                         <p className="text-xs font-medium text-slate-700 dark:text-slate-300">{cfg?.label ?? key}</p>
-                        <p className="text-xs font-bold text-emerald-600">{fmt(rate)}</p>
+                        <p className="text-xs font-bold text-emerald-600">{fmtRate(rate)}</p>
                       </div>
                     </div>
                   );
@@ -351,9 +400,11 @@ export default function CompensationPage() {
                       <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Employee</th>
                       {rateKeys.map((key) => {
                         const cfg = getMetricConfig(key);
+                        const rate = rates[key];
                         return (
                           <th key={key} className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">
-                            {cfg?.icon} {cfg?.label ?? key}
+                            <p>{cfg?.icon} {cfg?.label ?? key}</p>
+                            {rate && <p className="text-slate-300 dark:text-slate-600">{fmtRate(rate)}</p>}
                           </th>
                         );
                       })}
@@ -374,14 +425,14 @@ export default function CompensationPage() {
                           </td>
                           {rateKeys.map((key) => {
                             const cfg = getMetricConfig(key);
-                            const count = entry.metrics[key] ?? 0;
-                            const amount = Math.round(count * (rates[key] ?? 0));
+                            const metricValue = entry.metrics[key] ?? 0;
+                            const amount = calcAmount(metricValue, rates[key]);
                             return (
                               <td key={key} className="px-4 py-3 text-right tabular-nums">
-                                <p className="text-slate-700 dark:text-slate-300 font-medium">
-                                  {cfg ? formatMetricValue(cfg, count) : count}
+                                <p className="font-medium text-slate-700 dark:text-slate-300">
+                                  {cfg ? formatMetricValue(cfg, metricValue) : metricValue}
                                 </p>
-                                {count > 0 && (
+                                {metricValue > 0 && (
                                   <p className="text-xs text-emerald-600 dark:text-emerald-400">{fmt(amount)}</p>
                                 )}
                               </td>
@@ -406,12 +457,14 @@ export default function CompensationPage() {
                         Team Total ({filtered.length} employees)
                       </td>
                       {rateKeys.map((key) => {
-                        const totalCount = filtered.reduce((s, e) => s + (e.metrics[key] ?? 0), 0);
-                        const totalAmount = Math.round(totalCount * (rates[key] ?? 0));
+                        const totalMetric = filtered.reduce((s, e) => s + (e.metrics[key] ?? 0), 0);
+                        const totalAmount = calcAmount(totalMetric, rates[key]);
                         return (
                           <td key={key} className="px-4 py-3 text-right tabular-nums">
-                            <p className="text-xs font-semibold text-slate-600 dark:text-slate-400">{totalCount}</p>
-                            {totalCount > 0 && (
+                            <p className="text-xs font-semibold text-slate-600 dark:text-slate-400">
+                              {getMetricConfig(key)?.unit === 'currency' ? fmt(totalMetric) : totalMetric}
+                            </p>
+                            {totalMetric > 0 && (
                               <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400">{fmt(totalAmount)}</p>
                             )}
                           </td>
