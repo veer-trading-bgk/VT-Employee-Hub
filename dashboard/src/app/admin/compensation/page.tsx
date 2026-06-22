@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
@@ -15,7 +15,14 @@ interface PayrollEntry {
   metrics: Record<string, number>;
 }
 
-interface PayrollResponse {
+interface RatesConfig {
+  rates: Record<string, number>;
+  bonusThreshold: number;
+  bonusPct: number;
+  defaults?: Record<string, number>;
+}
+
+interface PayrollResponse extends RatesConfig {
   month: string;
   count: number;
   payroll: PayrollEntry[];
@@ -30,16 +37,12 @@ interface EmployeesResponse {
   data: { id: string; name: string; email: string; role: string }[];
 }
 
-const INCENTIVE_RATES: Record<string, number> = {
-  kyc: 200, demat: 300, mf: 250, insurance: 500, algo: 100, coaching: 50,
-};
-
 function fmt(n: number) {
   return `₹${n.toLocaleString('en-IN')}`;
 }
 
-function exportCSV(payroll: PayrollEntry[], empMap: EmployeeMap, month: string) {
-  const metricKeys = METRICS.map((m) => m.key);
+function exportCSV(payroll: PayrollEntry[], empMap: EmployeeMap, month: string, rates: Record<string, number>) {
+  const metricKeys = Object.keys(rates);
   const header = ['Name', 'Email', ...metricKeys.map((k) => getMetricConfig(k)?.label ?? k), 'Base (₹)', 'Bonus (₹)', 'Total (₹)'];
   const rows = payroll.map((entry) => {
     const emp = empMap[entry.userId] ?? {};
@@ -66,6 +69,10 @@ export default function CompensationPage() {
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<'total' | 'base' | 'bonus'>('total');
+  const [editingRates, setEditingRates] = useState(false);
+  const [draftRates, setDraftRates] = useState<Record<string, number>>({});
+  const [draftThreshold, setDraftThreshold] = useState(50000);
+  const [draftBonusPct, setDraftBonusPct] = useState(10);
 
   const { data: payrollData, isLoading: payrollLoading } = useQuery({
     queryKey: ['admin-payroll'],
@@ -79,11 +86,31 @@ export default function CompensationPage() {
     staleTime: 10 * 60_000,
   });
 
+  const saveRatesMutation = useMutation({
+    mutationFn: (body: { rates: Record<string, number>; bonusThreshold: number; bonusPct: number }) =>
+      apiFetch('/api/compensation/rates', { method: 'PUT', body: JSON.stringify(body) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-payroll'] });
+      setEditingRates(false);
+    },
+  });
+
+  const resetRatesMutation = useMutation({
+    mutationFn: () => apiFetch('/api/compensation/rates', { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-payroll'] });
+      setEditingRates(false);
+    },
+  });
+
   const empMap: EmployeeMap = Object.fromEntries(
     (empData?.data ?? []).map((e) => [e.id, { name: e.name, email: e.email, role: e.role }])
   );
 
   const payroll = payrollData?.payroll ?? [];
+  const rates = payrollData?.rates ?? {};
+  const bonusThreshold = payrollData?.bonusThreshold ?? 50000;
+  const bonusPct = payrollData?.bonusPct ?? 10;
 
   const filtered = payroll
     .filter((entry) => {
@@ -98,9 +125,18 @@ export default function CompensationPage() {
     })
     .sort((a, b) => b[sortBy] - a[sortBy]);
 
-  const totalBase  = payroll.reduce((s, e) => s + e.base, 0);
+  const totalBase = payroll.reduce((s, e) => s + e.base, 0);
   const totalBonus = payroll.reduce((s, e) => s + e.bonus, 0);
   const totalPayout = payroll.reduce((s, e) => s + e.total, 0);
+
+  function openEditor() {
+    setDraftRates({ ...rates });
+    setDraftThreshold(bonusThreshold);
+    setDraftBonusPct(bonusPct);
+    setEditingRates(true);
+  }
+
+  const rateKeys = Object.keys(rates).length > 0 ? Object.keys(rates) : METRICS.map((m) => m.key);
 
   return (
     <>
@@ -118,13 +154,19 @@ export default function CompensationPage() {
             </div>
             <div className="flex gap-2">
               <button
+                onClick={openEditor}
+                className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-400"
+              >
+                ⚙️ Edit Rates
+              </button>
+              <button
                 onClick={() => queryClient.invalidateQueries({ queryKey: ['admin-payroll'] })}
                 className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
               >
                 🔄 Refresh
               </button>
               <button
-                onClick={() => payrollData && exportCSV(filtered, empMap, payrollData.month)}
+                onClick={() => payrollData && exportCSV(filtered, empMap, payrollData.month, rates)}
                 disabled={!payrollData || filtered.length === 0}
                 className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
               >
@@ -132,6 +174,100 @@ export default function CompensationPage() {
               </button>
             </div>
           </div>
+
+          {/* Edit Rates Panel */}
+          {editingRates && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 dark:border-amber-800 dark:bg-amber-900/10">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-300">Edit Incentive Rates</h2>
+                <button
+                  onClick={() => setEditingRates(false)}
+                  className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                >
+                  ✕ Cancel
+                </button>
+              </div>
+
+              {/* Per-metric rates */}
+              <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+                {rateKeys.map((key) => {
+                  const cfg = getMetricConfig(key);
+                  return (
+                    <div key={key} className="rounded-lg border border-amber-100 bg-white p-3 dark:border-amber-800 dark:bg-slate-900">
+                      <label className="mb-1 flex items-center gap-1.5 text-xs font-medium text-slate-600 dark:text-slate-400">
+                        <span>{cfg?.icon}</span>
+                        <span>{cfg?.label ?? key}</span>
+                      </label>
+                      <div className="flex items-center gap-1">
+                        <span className="text-sm text-slate-400">₹</span>
+                        <input
+                          type="number"
+                          min={0}
+                          value={draftRates[key] ?? 0}
+                          onChange={(e) => setDraftRates((r) => ({ ...r, [key]: Number(e.target.value) }))}
+                          className="w-full rounded border border-slate-200 bg-slate-50 px-2 py-1 text-sm tabular-nums text-slate-900 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                        />
+                        <span className="whitespace-nowrap text-xs text-slate-400">/ unit</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Bonus config */}
+              <div className="mb-4 flex flex-wrap gap-4 rounded-lg border border-amber-100 bg-white p-4 dark:border-amber-800 dark:bg-slate-900">
+                <p className="w-full text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Performance Bonus</p>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Threshold (Base ≥)</label>
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm text-slate-400">₹</span>
+                    <input
+                      type="number"
+                      min={0}
+                      value={draftThreshold}
+                      onChange={(e) => setDraftThreshold(Number(e.target.value))}
+                      className="w-36 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-sm tabular-nums text-slate-900 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-400">Bonus %</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={draftBonusPct}
+                      onChange={(e) => setDraftBonusPct(Number(e.target.value))}
+                      className="w-20 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-sm tabular-nums text-slate-900 outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                    />
+                    <span className="text-sm text-slate-400">%</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => saveRatesMutation.mutate({ rates: draftRates, bonusThreshold: draftThreshold, bonusPct: draftBonusPct })}
+                  disabled={saveRatesMutation.isPending}
+                  className="rounded-lg bg-amber-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {saveRatesMutation.isPending ? 'Saving…' : 'Save Rates'}
+                </button>
+                <button
+                  onClick={() => { if (confirm('Reset all rates to defaults?')) resetRatesMutation.mutate(); }}
+                  disabled={resetRatesMutation.isPending}
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                >
+                  Reset to Defaults
+                </button>
+                {saveRatesMutation.isError && (
+                  <p className="self-center text-xs text-red-500">Save failed. Try again.</p>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Summary cards */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -149,31 +285,35 @@ export default function CompensationPage() {
             </div>
           </div>
 
-          {/* Incentive rate info */}
-          <div className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Incentive Rates (per unit)</p>
-            <div className="flex flex-wrap gap-3">
-              {Object.entries(INCENTIVE_RATES).map(([key, rate]) => {
-                const cfg = getMetricConfig(key);
-                return (
-                  <div key={key} className="flex items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800">
-                    <span className="text-base">{cfg?.icon}</span>
-                    <div>
-                      <p className="text-xs font-medium text-slate-700 dark:text-slate-300">{cfg?.label ?? key}</p>
-                      <p className="text-xs font-bold text-emerald-600">₹{rate.toLocaleString('en-IN')}</p>
+          {/* Incentive rate reference */}
+          {!editingRates && Object.keys(rates).length > 0 && (
+            <div className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+              <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Current Incentive Rates (per unit)
+              </p>
+              <div className="flex flex-wrap gap-3">
+                {Object.entries(rates).map(([key, rate]) => {
+                  const cfg = getMetricConfig(key);
+                  return (
+                    <div key={key} className="flex items-center gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 dark:border-slate-700 dark:bg-slate-800">
+                      <span className="text-base">{cfg?.icon}</span>
+                      <div>
+                        <p className="text-xs font-medium text-slate-700 dark:text-slate-300">{cfg?.label ?? key}</p>
+                        <p className="text-xs font-bold text-emerald-600">{fmt(rate)}</p>
+                      </div>
                     </div>
+                  );
+                })}
+                <div className="flex items-center gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 dark:border-blue-800 dark:bg-blue-900/20">
+                  <span className="text-base">🎁</span>
+                  <div>
+                    <p className="text-xs font-medium text-blue-700 dark:text-blue-300">Performance Bonus</p>
+                    <p className="text-xs font-bold text-blue-600">+{bonusPct}% if base ≥ {fmt(bonusThreshold)}</p>
                   </div>
-                );
-              })}
-              <div className="flex items-center gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 dark:border-blue-800 dark:bg-blue-900/20">
-                <span className="text-base">🎁</span>
-                <div>
-                  <p className="text-xs font-medium text-blue-700 dark:text-blue-300">Performance Bonus</p>
-                  <p className="text-xs font-bold text-blue-600">+10% if base ≥ ₹50,000</p>
                 </div>
               </div>
             </div>
-          </div>
+          )}
 
           {/* Filters */}
           <div className="flex flex-wrap gap-2">
@@ -209,7 +349,7 @@ export default function CompensationPage() {
                     <tr className="border-b border-slate-100 dark:border-slate-800">
                       <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">#</th>
                       <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Employee</th>
-                      {Object.keys(INCENTIVE_RATES).map((key) => {
+                      {rateKeys.map((key) => {
                         const cfg = getMetricConfig(key);
                         return (
                           <th key={key} className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">
@@ -232,12 +372,18 @@ export default function CompensationPage() {
                             <p className="font-medium text-slate-900 dark:text-white">{emp?.name ?? entry.userId}</p>
                             {emp?.email && <p className="text-xs text-slate-400">{emp.email}</p>}
                           </td>
-                          {Object.keys(INCENTIVE_RATES).map((key) => {
+                          {rateKeys.map((key) => {
                             const cfg = getMetricConfig(key);
-                            const val = entry.metrics[key] ?? 0;
+                            const count = entry.metrics[key] ?? 0;
+                            const amount = Math.round(count * (rates[key] ?? 0));
                             return (
-                              <td key={key} className="px-4 py-3 text-right tabular-nums text-slate-600 dark:text-slate-300">
-                                {cfg ? formatMetricValue(cfg, val) : val}
+                              <td key={key} className="px-4 py-3 text-right tabular-nums">
+                                <p className="text-slate-700 dark:text-slate-300 font-medium">
+                                  {cfg ? formatMetricValue(cfg, count) : count}
+                                </p>
+                                {count > 0 && (
+                                  <p className="text-xs text-emerald-600 dark:text-emerald-400">{fmt(amount)}</p>
+                                )}
                               </td>
                             );
                           })}
@@ -256,9 +402,21 @@ export default function CompensationPage() {
                   </tbody>
                   <tfoot>
                     <tr className="border-t-2 border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/50">
-                      <td colSpan={2 + Object.keys(INCENTIVE_RATES).length} className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      <td colSpan={2} className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
                         Team Total ({filtered.length} employees)
                       </td>
+                      {rateKeys.map((key) => {
+                        const totalCount = filtered.reduce((s, e) => s + (e.metrics[key] ?? 0), 0);
+                        const totalAmount = Math.round(totalCount * (rates[key] ?? 0));
+                        return (
+                          <td key={key} className="px-4 py-3 text-right tabular-nums">
+                            <p className="text-xs font-semibold text-slate-600 dark:text-slate-400">{totalCount}</p>
+                            {totalCount > 0 && (
+                              <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400">{fmt(totalAmount)}</p>
+                            )}
+                          </td>
+                        );
+                      })}
                       <td className="px-4 py-3 text-right font-semibold text-slate-800 dark:text-slate-200">{fmt(totalBase)}</td>
                       <td className="px-4 py-3 text-right font-semibold text-blue-600 dark:text-blue-400">{fmt(totalBonus)}</td>
                       <td className="px-4 py-3 text-right font-bold text-indigo-700 dark:text-indigo-300">{fmt(totalPayout)}</td>

@@ -7,13 +7,96 @@ const logger = require('../config/logger');
 const router = express.Router();
 const TABLE_METRICS = process.env.DYNAMODB_TABLE_METRICS;
 
-const INCENTIVE_RATES = { kyc: 200, demat: 300, mf: 250, insurance: 500, algo: 100, coaching: 50 };
+const DEFAULT_INCENTIVE_RATES = { kyc: 200, demat: 300, mf: 250, insurance: 500, algo: 100, coaching: 50 };
+const DEFAULT_BONUS_THRESHOLD = 50000;
+const DEFAULT_BONUS_PCT = 10;
+
+function ratesKey(companyId) {
+  return { PK: companyId ? `CONFIG#RATES#${companyId}` : 'CONFIG#RATES', SK: 'current' };
+}
+
+async function loadRates(companyId) {
+  try {
+    const result = await dynamodb.get({ TableName: TABLE_METRICS, Key: ratesKey(companyId) }).promise();
+    if (result.Item) {
+      return {
+        rates: result.Item.rates ?? DEFAULT_INCENTIVE_RATES,
+        bonusThreshold: result.Item.bonusThreshold ?? DEFAULT_BONUS_THRESHOLD,
+        bonusPct: result.Item.bonusPct ?? DEFAULT_BONUS_PCT,
+      };
+    }
+  } catch (err) {
+    logger.warn('loadRates fallback to defaults', err.message);
+  }
+  return { rates: DEFAULT_INCENTIVE_RATES, bonusThreshold: DEFAULT_BONUS_THRESHOLD, bonusPct: DEFAULT_BONUS_PCT };
+}
+
+// GET /api/compensation/rates
+router.get('/rates', authMiddleware, async (req, res, next) => {
+  try {
+    const config = await loadRates(req.user.companyId);
+    res.json({ success: true, ...config, defaults: DEFAULT_INCENTIVE_RATES });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// PUT /api/compensation/rates — admin only
+router.put('/rates', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const { rates, bonusThreshold, bonusPct } = req.body;
+
+    if (!rates || typeof rates !== 'object') {
+      return res.status(400).json({ error: 'rates object required' });
+    }
+    for (const [key, val] of Object.entries(rates)) {
+      if (typeof val !== 'number' || val < 0) {
+        return res.status(400).json({ error: `Rate for "${key}" must be a non-negative number` });
+      }
+    }
+    if (bonusThreshold !== undefined && (typeof bonusThreshold !== 'number' || bonusThreshold < 0)) {
+      return res.status(400).json({ error: 'bonusThreshold must be a non-negative number' });
+    }
+    if (bonusPct !== undefined && (typeof bonusPct !== 'number' || bonusPct < 0 || bonusPct > 100)) {
+      return res.status(400).json({ error: 'bonusPct must be between 0 and 100' });
+    }
+
+    const key = ratesKey(req.user.companyId);
+    await dynamodb.put({
+      TableName: TABLE_METRICS,
+      Item: {
+        ...key,
+        rates,
+        bonusThreshold: bonusThreshold ?? DEFAULT_BONUS_THRESHOLD,
+        bonusPct: bonusPct ?? DEFAULT_BONUS_PCT,
+        updatedBy: req.user.id,
+        updatedAt: new Date().toISOString(),
+      },
+    }).promise();
+
+    await logAudit(req.user.id, 'update_incentive_rates', 'config', 'success', req.ip, { rates, bonusThreshold, bonusPct });
+    logger.info(`Admin ${req.user.email} updated incentive rates`);
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// DELETE /api/compensation/rates — reset to defaults
+router.delete('/rates', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    await dynamodb.delete({ TableName: TABLE_METRICS, Key: ratesKey(req.user.companyId) }).promise();
+    await logAudit(req.user.id, 'reset_incentive_rates', 'config', 'success', req.ip);
+    res.json({ success: true, message: 'Rates reset to defaults' });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // GET /api/compensation/calculate/:userId
 router.get('/calculate/:userId', authMiddleware, async (req, res, next) => {
   try {
     const { userId } = req.params;
-    // Only admin/manager can view others; employee can only view own
     if (req.user.role === 'telecaller' && req.user.id !== userId) {
       return res.status(403).json({ error: 'Forbidden' });
     }
@@ -23,17 +106,19 @@ router.get('/calculate/:userId', authMiddleware, async (req, res, next) => {
     const year = now.getFullYear();
     const monthPrefix = `${year}-${month}`;
 
-    const result = await dynamodb.scan({
-      TableName: TABLE_METRICS,
-      FilterExpression: 'userId = :uid AND begins_with(#date, :month)',
-      ExpressionAttributeNames: { '#date': 'date' },
-      ExpressionAttributeValues: { ':uid': userId, ':month': monthPrefix },
-      Limit: 1000,
-    }).promise();
+    const [metricsResult, { rates, bonusThreshold, bonusPct }] = await Promise.all([
+      dynamodb.scan({
+        TableName: TABLE_METRICS,
+        FilterExpression: 'userId = :uid AND begins_with(#date, :month)',
+        ExpressionAttributeNames: { '#date': 'date' },
+        ExpressionAttributeValues: { ':uid': userId, ':month': monthPrefix },
+        Limit: 1000,
+      }).promise(),
+      loadRates(req.user.companyId),
+    ]);
 
-    // Aggregate per metric_type — exclude rejected metrics from pay
     const totals = {};
-    (result.Items ?? []).forEach((item) => {
+    (metricsResult.Items ?? []).forEach((item) => {
       if (item.verificationStatus === 'rejected') return;
       totals[item.metric_type] = (totals[item.metric_type] ?? 0) + (item.value ?? 0);
     });
@@ -41,27 +126,19 @@ router.get('/calculate/:userId', authMiddleware, async (req, res, next) => {
     let baseCompensation = 0;
     const breakdown = {};
     Object.entries(totals).forEach(([key, count]) => {
-      const rate = INCENTIVE_RATES[key];
+      const rate = rates[key];
       if (!rate) return;
       const amount = Math.round(count * rate);
       breakdown[key] = { count: Math.round(count), rate, amount };
       baseCompensation += amount;
     });
 
-    // 10% performance bonus if total > ₹50,000
-    const performanceBonus = baseCompensation >= 50000 ? Math.round(baseCompensation * 0.1) : 0;
+    const performanceBonus = baseCompensation >= bonusThreshold ? Math.round(baseCompensation * bonusPct / 100) : 0;
     const totalCompensation = baseCompensation + performanceBonus;
 
     await logAudit(req.user.id, 'view_compensation', userId, 'success', req.ip);
 
-    res.json({
-      month: parseInt(month),
-      year,
-      breakdown,
-      baseCompensation,
-      performanceBonus,
-      totalCompensation,
-    });
+    res.json({ month: parseInt(month), year, breakdown, baseCompensation, performanceBonus, totalCompensation });
   } catch (error) {
     logger.error('compensation/calculate error', error);
     next(error);
@@ -74,15 +151,17 @@ router.get('/payroll', authMiddleware, checkRole(['admin']), async (req, res, ne
     const now = new Date();
     const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
-    const metricsResult = await dynamodb.scan({
-      TableName: TABLE_METRICS,
-      FilterExpression: 'begins_with(#date, :month)',
-      ExpressionAttributeNames: { '#date': 'date' },
-      ExpressionAttributeValues: { ':month': monthPrefix },
-      Limit: 5000,
-    }).promise();
+    const [metricsResult, { rates, bonusThreshold, bonusPct }] = await Promise.all([
+      dynamodb.scan({
+        TableName: TABLE_METRICS,
+        FilterExpression: 'begins_with(#date, :month)',
+        ExpressionAttributeNames: { '#date': 'date' },
+        ExpressionAttributeValues: { ':month': monthPrefix },
+        Limit: 5000,
+      }).promise(),
+      loadRates(req.user.companyId),
+    ]);
 
-    // Group by userId → metric_type — exclude rejected metrics from pay
     const byUser = {};
     (metricsResult.Items ?? []).forEach((item) => {
       if (item.verificationStatus === 'rejected') return;
@@ -94,14 +173,14 @@ router.get('/payroll', authMiddleware, checkRole(['admin']), async (req, res, ne
     const payroll = Object.entries(byUser).map(([userId, metrics]) => {
       let base = 0;
       Object.entries(metrics).forEach(([k, v]) => {
-        base += Math.round(v * (INCENTIVE_RATES[k] ?? 0));
+        base += Math.round(v * (rates[k] ?? 0));
       });
-      const bonus = base >= 50000 ? Math.round(base * 0.1) : 0;
+      const bonus = base >= bonusThreshold ? Math.round(base * bonusPct / 100) : 0;
       return { userId, base, bonus, total: base + bonus, metrics };
     }).sort((a, b) => b.total - a.total);
 
     await logAudit(req.user.id, 'view_payroll', 'all', 'success', req.ip);
-    res.json({ month: monthPrefix, count: payroll.length, payroll });
+    res.json({ month: monthPrefix, count: payroll.length, payroll, rates, bonusThreshold, bonusPct });
   } catch (error) {
     logger.error('compensation/payroll error', error);
     next(error);
