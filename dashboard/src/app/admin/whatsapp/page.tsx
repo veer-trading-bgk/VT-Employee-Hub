@@ -631,7 +631,7 @@ export default function WhatsAppInboxPage() {
                   </button>
                 </div>
                 {(sendMutation.isError || noteMutation.isError) && (
-                  <p className="mt-1 text-xs text-red-500">Failed — check WhatsApp connection in CRM Settings.</p>
+                  <p className="mt-1 text-xs text-red-500">Failed — check WhatsApp connection in <a href="/admin/whatsapp/settings" className="underline">WhatsApp Settings</a>.</p>
                 )}
               </div>
             </div>

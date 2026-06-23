@@ -7,6 +7,7 @@ const TABS = [
   { href: '/admin/whatsapp',            label: 'Inbox',     icon: '💬' },
   { href: '/admin/whatsapp/templates',  label: 'Templates', icon: '📝' },
   { href: '/admin/whatsapp/broadcast',  label: 'Broadcast', icon: '📢' },
+  { href: '/admin/whatsapp/settings',   label: 'Settings',  icon: '⚙️' },
 ];
 
 export function WhatsAppSubNav() {
