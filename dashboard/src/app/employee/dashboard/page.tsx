@@ -67,6 +67,11 @@ function greetingByTime() {
   return 'Good evening';
 }
 
+function currentMonthStart(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-01`;
+}
+
 function performanceBadge(avg: number) {
   if (avg >= 100) return { label: 'Excellent', cls: 'bg-emerald-500 text-white', icon: '🔥' };
   if (avg >= 70)  return { label: 'On Track',  cls: 'bg-amber-500 text-white',   icon: '☀️' };
@@ -80,14 +85,20 @@ function fmt(n: number) {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function KpiBar({ label, icon, value, target, progress }: {
+function KpiBar({ label, icon, value, target, progress, monthlyGoal, isCurrency }: {
   label: string; icon: string; value: number; target: number; progress: number;
+  monthlyGoal?: number; isCurrency?: boolean;
 }) {
   const color =
     progress >= 100 ? 'bg-emerald-500' :
     progress >= 70  ? 'bg-amber-500' :
     progress > 0    ? 'bg-rose-500' :
     'bg-slate-300 dark:bg-slate-700';
+
+  const dailyStr = target > 0 && target < 1 ? target.toFixed(1) : Math.round(target);
+  const moStr    = monthlyGoal !== undefined
+    ? (isCurrency ? `₹${monthlyGoal.toLocaleString('en-IN')}` : monthlyGoal.toLocaleString('en-IN'))
+    : null;
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
@@ -105,7 +116,7 @@ function KpiBar({ label, icon, value, target, progress }: {
       </div>
       <p className="text-xl font-bold text-slate-900 dark:text-white tabular-nums">{value}</p>
       <p className="text-[10px] text-slate-400 mb-2">
-        of {target > 0 && target < 1 ? target.toFixed(1) : Math.round(target)} target
+        of {dailyStr}/day{moStr && <span className="ml-1 opacity-70">· {moStr}/mo</span>}
       </p>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
         <div className={`h-full rounded-full transition-all duration-500 ${color}`}
@@ -163,8 +174,8 @@ export default function EmployeeDashboardPage() {
 
   // ── Queries ────────────────────────────────────────────────────────────────
   const { data, isLoading } = useQuery({
-    queryKey: ['my-metrics-30'],
-    queryFn: () => apiFetch<MyMetricsResponse>('/api/metrics/my?days=30'),
+    queryKey: ['my-metrics-month'],
+    queryFn: () => apiFetch<MyMetricsResponse>('/api/metrics/my?days=31'),
     refetchInterval: 60_000,
   });
 
@@ -193,7 +204,7 @@ export default function EmployeeDashboardPage() {
       const total = res?.data?.total;
       const mt = res?.data?.metric_type ?? addForm.metric_type;
       toast.success(total != null ? `${mt.toUpperCase()} today: ${total}` : 'Metric added!');
-      queryClient.invalidateQueries({ queryKey: ['my-metrics-30'] });
+      queryClient.invalidateQueries({ queryKey: ['my-metrics-month'] });
       queryClient.invalidateQueries({ queryKey: ['my-metrics-entry'] });
       setAddForm({ metric_type: 'kyc', value: '' });
       setShowForm(false);
@@ -213,21 +224,23 @@ export default function EmployeeDashboardPage() {
   const todayStatuses = (data?.statuses?.[todayStr] ?? {}) as Record<string, VerificationStatus>;
   const apiTargets = (data?.targets ?? {}) as Record<string, number>;
 
-  const sortedSummary = useMemo(() =>
-    sortedMetrics.map((metric) => {
+  const sortedSummary = useMemo(() => {
+    const monthStart = currentMonthStart();
+    return sortedMetrics.map((metric) => {
       const todayValue = allDates[todayStr]?.[metric.key] ?? 0;
-      const monthTotal = Object.values(allDates).reduce(
-        (sum, dayData) => sum + (dayData[metric.key] ?? 0), 0,
-      );
+      // Sum only current calendar month — the API returns a rolling window that may
+      // include days from the previous month at the start of a new month.
+      const monthTotal = Object.entries(allDates)
+        .filter(([date]) => date >= monthStart)
+        .reduce((sum, [, dayData]) => sum + (dayData[metric.key] ?? 0), 0);
       const target   = apiTargets[metric.key] ?? dailyTarget(metric);
-      const mTarget  = target * 30;
+      const mTarget  = Math.round(target * 30);  // round: backend sends 50/30=1.67, 1.67*30=50.1 → 50
       const progress = target > 0 ? Math.min(Math.round((todayValue / target) * 100), 999) : 0;
       const monthPct = mTarget > 0 ? Math.min(Math.round((monthTotal / mTarget) * 100), 999) : 0;
       return { metric, value: todayValue, target, mTarget, progress, monthTotal, monthPct };
-    }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sortedMetrics, allDates, todayStr, apiTargets],
-  );
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortedMetrics, allDates, todayStr, apiTargets]);
 
   const avgProgress = sortedSummary.length > 0
     ? Math.round(sortedSummary.reduce((s, m) => s + m.progress, 0) / sortedSummary.length)
@@ -487,7 +500,7 @@ export default function EmployeeDashboardPage() {
               </DndContext>
             ) : (
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                {sortedSummary.map(({ metric, value, target, progress }) => (
+                {sortedSummary.map(({ metric, value, target, progress, mTarget }) => (
                   <KpiBar
                     key={metric.key}
                     label={metric.label}
@@ -495,6 +508,8 @@ export default function EmployeeDashboardPage() {
                     value={value}
                     target={target}
                     progress={progress}
+                    monthlyGoal={metric.targetPeriod === 'month' ? mTarget : undefined}
+                    isCurrency={metric.unit === 'currency'}
                   />
                 ))}
               </div>
@@ -516,7 +531,9 @@ export default function EmployeeDashboardPage() {
                         {metric.icon} {metric.label}
                       </span>
                       <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 tabular-nums">
-                        {monthTotal} / {mTarget}
+                        {metric.unit === 'currency' ? `₹${monthTotal.toLocaleString('en-IN')}` : monthTotal.toLocaleString('en-IN')}
+                        {' / '}
+                        {metric.unit === 'currency' ? `₹${mTarget.toLocaleString('en-IN')}` : mTarget.toLocaleString('en-IN')}
                       </span>
                     </div>
                     <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">

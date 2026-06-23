@@ -80,7 +80,7 @@ export default function DailyEntryPage() {
     onSuccess: () => { toast.success('Metrics saved!'); setValues({}); },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['my-metrics-entry'] });
-      qc.invalidateQueries({ queryKey: ['my-metrics-30'] });
+      qc.invalidateQueries({ queryKey: ['my-metrics-month'] });
     },
   });
 
@@ -110,7 +110,7 @@ export default function DailyEntryPage() {
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['my-metrics-entry'] });
-      qc.invalidateQueries({ queryKey: ['my-metrics-30'] });
+      qc.invalidateQueries({ queryKey: ['my-metrics-month'] });
     },
   });
 
