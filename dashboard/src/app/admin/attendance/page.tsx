@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
+import { TeamSubNav } from '@/components/layout/TeamSubNav';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
 
@@ -131,6 +132,7 @@ export default function AdminAttendancePage() {
   return (
     <>
       <Navbar title="Attendance" showBack />
+      <TeamSubNav />
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-6xl space-y-6 p-6">
 

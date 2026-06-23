@@ -14,6 +14,7 @@ interface NavItem {
   label: string;
   icon: string;
   roles?: Role[];
+  activeOn?: string[];
 }
 
 const EMPLOYEE_ROLES: Role[] = ['telecaller', 'agent', 'intern'];
@@ -21,15 +22,13 @@ const EMPLOYEE_ROLES: Role[] = ['telecaller', 'agent', 'intern'];
 const ALL_NAV: NavItem[] = [
   // ── Admin-only ─────────────────────────────────
   { href: '/admin/dashboard',    label: 'Admin Overview', icon: '🔑',  roles: ['admin'] },
-  { href: '/admin/employees',    label: 'Employees',      icon: '👥',  roles: ['admin'] },
+  { href: '/admin/employees', label: 'Team', icon: '👥', roles: ['admin'], activeOn: ['/admin/employees', '/admin/attendance', '/admin/compensation'] },
   { href: '/admin/bulk-entry',   label: 'Bulk Entry',     icon: '📋',  roles: ['admin'] },
   { href: '/admin/analytics',    label: 'Analytics',      icon: '📈',  roles: ['admin'] },
   { href: '/admin/verification', label: 'Verify Metrics', icon: '✅',  roles: ['admin'] },
   { href: '/admin/audit',        label: 'Audit Logs',     icon: '🔍',  roles: ['admin'] },
-  { href: '/admin/compensation', label: 'Payroll',         icon: '💰',  roles: ['admin'] },
-  { href: '/admin/crm',       label: 'CRM',        icon: '🤝',  roles: ['admin'] },
-  { href: '/admin/whatsapp',  label: 'WA Inbox',   icon: '💬',  roles: ['admin'] },
-  { href: '/admin/attendance',   label: 'Attendance',     icon: '📅',  roles: ['admin'] },
+  { href: '/admin/crm',          label: 'CRM',            icon: '🤝',  roles: ['admin'] },
+  { href: '/admin/whatsapp',     label: 'WA Inbox',       icon: '💬',  roles: ['admin'] },
   { href: '/admin/targets',      label: 'Targets',        icon: '🎯',  roles: ['admin'] },
   { href: '/admin/billing',      label: 'Billing & Plan', icon: '💳',  roles: ['admin'] },
   // ── Manager (admin can see too) ─────────────────
@@ -69,7 +68,9 @@ function NavItemLink({
   pathname: string;
   onNavigate: () => void;
 }) {
-  const active = pathname === item.href || pathname.startsWith(item.href + '/');
+  const active = pathname === item.href
+    || pathname.startsWith(item.href + '/')
+    || (item.activeOn ?? []).some((p) => pathname === p || pathname.startsWith(p + '/'));
   return (
     <Link
       href={item.href}

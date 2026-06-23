@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
+import { TeamSubNav } from '@/components/layout/TeamSubNav';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
 import { METRICS, formatMetricValue, getMetricConfig } from '@/lib/metrics.config';
@@ -259,6 +260,7 @@ export default function CompensationPage() {
   return (
     <>
       <Navbar title="Compensation & Payroll" showBack />
+      <TeamSubNav />
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-7xl space-y-6 p-6">
 

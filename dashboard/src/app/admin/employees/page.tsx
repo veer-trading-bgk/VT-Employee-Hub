@@ -4,6 +4,7 @@ import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/context/AuthContext';
 import { Navbar } from '@/components/layout/Navbar';
+import { TeamSubNav } from '@/components/layout/TeamSubNav';
 import { apiFetch, api } from '@/lib/api';
 import type { Setup2FAResponse } from '@/lib/api';
 import { toast } from 'sonner';
@@ -932,6 +933,7 @@ export default function AdminEmployeesPage() {
   return (
     <>
       <Navbar title="Employee Management" showBack />
+      <TeamSubNav />
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-7xl space-y-5 p-4 sm:p-6">
 
