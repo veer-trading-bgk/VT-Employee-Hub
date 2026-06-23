@@ -51,13 +51,28 @@ async function getCompanyByPhoneNumberId(phoneNumberId) {
   return items[0] ?? null;
 }
 
+// Strip non-digits and ensure Indian numbers have country code for Meta E.164
+function toE164(p) {
+  const d = String(p).replace(/\D/g, '');
+  if (d.length === 10) return '91' + d;           // 9901251785  → 919901251785
+  if (d.length === 11 && d.startsWith('0')) return '91' + d.slice(1); // 09901251785 → 919901251785
+  return d;
+}
+
+// Normalize Meta E.164 to 10-digit for matching against stored leads
+function to10Digit(p) {
+  const d = String(p).replace(/\D/g, '');
+  if (d.length === 12 && d.startsWith('91')) return d.slice(2);
+  return d;
+}
+
 async function sendTextMessage(companyId, to, body) {
   const cfg = await getWabaConfig(companyId);
   if (!cfg?.accessToken || !cfg?.phoneNumberId) {
     logger.warn(`WhatsApp not configured for company ${companyId}`);
     return null;
   }
-  const phone = String(to).replace(/\D/g, '');
+  const phone = toE164(to);
   try {
     const res = await axios.post(
       `${GRAPH}/${cfg.phoneNumberId}/messages`,
@@ -350,12 +365,19 @@ router.post('/webhook', async (req, res) => {
       const waMessageId = msg.id;
       const timestamp = new Date(Number(msg.timestamp) * 1000).toISOString();
 
-      // Find lead by phone (scan across all companies)
+      // Normalize to 10-digit for matching (Meta sends 919901251785, leads store 9901251785)
+      const phone10 = to10Digit(fromPhone);
+
+      // Find lead — try all common formats; no Limit (Limit restricts items read, not returned)
       const scanResult = await dynamodb.scan({
         TableName: TABLE,
-        FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND phone = :phone',
-        ExpressionAttributeValues: { ':prefix': 'LEAD#', ':meta': 'METADATA', ':phone': fromPhone },
-        Limit: 1,
+        FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND (phone = :p1 OR phone = :p2 OR phone = :p3)',
+        ExpressionAttributeValues: {
+          ':prefix': 'LEAD#', ':meta': 'METADATA',
+          ':p1': phone10,             // 9901251785
+          ':p2': fromPhone,           // 919901251785
+          ':p3': '+91' + phone10,     // +919901251785
+        },
       }).promise();
 
       const lead = scanResult.Items?.[0];
@@ -382,7 +404,7 @@ router.post('/webhook', async (req, res) => {
         const config = await getCompanyByPhoneNumberId(phoneNumberId);
         if (!config) continue;
         const companyId = config.companyId;
-        const PK = `INBOX#${companyId}#${fromPhone}`;
+        const PK = `INBOX#${companyId}#${phone10}`;
 
         await dynamodb.put({
           TableName: TABLE,
@@ -395,7 +417,7 @@ router.post('/webhook', async (req, res) => {
           TableName: TABLE,
           Key: { PK, SK: 'CONTACT' },
           UpdateExpression: 'SET phone = if_not_exists(phone, :ph), companyId = if_not_exists(companyId, :cid), createdAt = if_not_exists(createdAt, :ts), lastMessageAt = :lma, lastMessagePreview = :prev, lastMessageDirection = :dir',
-          ExpressionAttributeValues: { ':ph': fromPhone, ':cid': companyId, ':ts': timestamp, ':lma': timestamp, ':prev': text.slice(0, 100), ':dir': 'inbound' },
+          ExpressionAttributeValues: { ':ph': phone10, ':cid': companyId, ':ts': timestamp, ':lma': timestamp, ':prev': text.slice(0, 100), ':dir': 'inbound' },
         }).promise();
       }
     }
