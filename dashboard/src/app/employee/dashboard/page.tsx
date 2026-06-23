@@ -158,8 +158,6 @@ function FollowupItem({ fu, onDone }: { fu: Followup & { priority: 'overdue' | '
 export default function EmployeeDashboardPage() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
-  const [addForm, setAddForm] = useState({ metric_type: 'kyc', value: '' });
-  const [showForm, setShowForm] = useState(false);
   const [showReorder, setShowReorder] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [showComp, setShowComp] = useState(false);
@@ -194,24 +192,6 @@ export default function EmployeeDashboardPage() {
   });
 
   // ── Mutations ──────────────────────────────────────────────────────────────
-  const addMutation = useMutation({
-    mutationFn: ({ metric_type, value }: { metric_type: string; value: number }) =>
-      apiFetch<{ data?: { total?: number; metric_type?: string } }>('/api/metrics/add', {
-        method: 'POST',
-        body: JSON.stringify({ metric_type, value }),
-      }),
-    onSuccess: (res) => {
-      const total = res?.data?.total;
-      const mt = res?.data?.metric_type ?? addForm.metric_type;
-      toast.success(total != null ? `${mt.toUpperCase()} today: ${total}` : 'Metric added!');
-      queryClient.invalidateQueries({ queryKey: ['my-metrics-month'] });
-      queryClient.invalidateQueries({ queryKey: ['my-metrics-entry'] });
-      setAddForm({ metric_type: 'kyc', value: '' });
-      setShowForm(false);
-    },
-    onError: (e: Error) => toast.error(e.message),
-  });
-
   const doneMutation = useMutation({
     mutationFn: ({ date, leadId }: { date: string; leadId: string }) =>
       apiFetch(`/api/crm/followups/${date}/${leadId}/done`, { method: 'PUT' }),
@@ -258,12 +238,6 @@ export default function EmployeeDashboardPage() {
     .filter((f) => !f.done && f.date <= todayDate)
     .map((f) => ({ ...f, priority: f.date < todayDate ? 'overdue' as const : 'today' as const }))
     .sort((a, b) => a.date.localeCompare(b.date));
-
-  const handleAddMetric = () => {
-    const v = parseFloat(addForm.value);
-    if (isNaN(v) || v <= 0) { toast.error('Enter a valid positive number.'); return; }
-    addMutation.mutate({ metric_type: addForm.metric_type, value: v });
-  };
 
   const handleDragStart = ({ active }: DragStartEvent) => setActiveId(active.id as string);
   const handleDragEnd = ({ active, over }: DragEndEvent) => {
@@ -405,12 +379,6 @@ export default function EmployeeDashboardPage() {
                   </button>
                 )}
                 <button
-                  onClick={() => { setShowForm((v) => !v); setShowReorder(false); }}
-                  className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
-                >
-                  {showForm ? 'Cancel' : '+ Add'}
-                </button>
-                <button
                   onClick={() => { setShowReorder((v) => !v); setShowForm(false); }}
                   className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                     showReorder
@@ -422,37 +390,6 @@ export default function EmployeeDashboardPage() {
                 </button>
               </div>
             </div>
-
-            {/* Add metric form */}
-            {showForm && (
-              <div className="mb-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4 dark:border-indigo-900/50 dark:bg-indigo-950/20">
-                <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-                  <select
-                    value={addForm.metric_type}
-                    onChange={(e) => setAddForm((f) => ({ ...f, metric_type: e.target.value }))}
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white sm:w-auto"
-                  >
-                    {METRICS.map((m) => (
-                      <option key={m.key} value={m.key}>{m.icon} {m.label}</option>
-                    ))}
-                  </select>
-                  <input
-                    type="number" min="0" step="1"
-                    placeholder="Value"
-                    value={addForm.value}
-                    onChange={(e) => setAddForm((f) => ({ ...f, value: e.target.value }))}
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white sm:w-28"
-                  />
-                  <button
-                    onClick={handleAddMetric}
-                    disabled={addMutation.isPending}
-                    className="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50 sm:w-auto"
-                  >
-                    {addMutation.isPending ? 'Adding…' : 'Add Entry'}
-                  </button>
-                </div>
-              </div>
-            )}
 
             {showReorder && (
               <div className="mb-3 flex items-center gap-2 rounded-xl bg-indigo-50 px-4 py-2.5 dark:bg-indigo-950/30">
