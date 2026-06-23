@@ -144,7 +144,7 @@ export function MetricCard({
 
         {/* ── Value (large, bold) ── */}
         <p
-          className={`mt-1.5 text-3xl font-black leading-none tabular-nums tracking-tight
+          className={`mt-1.5 truncate text-2xl font-bold leading-none tabular-nums tracking-tight
             ${isRejected ? 'text-slate-300 line-through dark:text-slate-700' : 'text-slate-900 dark:text-white'}`}
         >
           {formatMetricValue(metric, value)}

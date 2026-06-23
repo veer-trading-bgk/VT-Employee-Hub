@@ -151,7 +151,7 @@ export default function DailyEntryPage() {
   return (
     <>
       <Navbar title="Daily Entry" showBack />
-      <div className="p-4 pb-24 md:p-8 md:pb-8 max-w-3xl">
+      <div className="mx-auto p-4 pb-24 md:p-8 md:pb-8 max-w-3xl">
 
         {/* Header */}
         <div className="mb-5 flex items-end justify-between">
@@ -176,7 +176,7 @@ export default function DailyEntryPage() {
                 <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
                   Your Metrics
                 </h2>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                <div className="grid grid-cols-3 gap-2">
                   {sortedMetrics.map((m) => renderCard(m))}
                 </div>
               </section>
@@ -187,7 +187,7 @@ export default function DailyEntryPage() {
                   <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">
                     {group.label}
                   </h2>
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  <div className={`grid gap-2 ${group.keys.length === 3 ? 'grid-cols-3' : 'grid-cols-2 sm:grid-cols-3'}`}>
                     {METRICS.filter((m) => group.keys.includes(m.key)).map((m) => renderCard(m))}
                   </div>
                 </section>

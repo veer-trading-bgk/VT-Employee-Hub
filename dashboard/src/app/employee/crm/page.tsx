@@ -210,14 +210,14 @@ export default function EmployeeCrmPage() {
           </div>
 
           {/* Stage pills */}
-          <div className="flex gap-2 overflow-x-auto pb-1">
+          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
             <button onClick={() => setStageFilter('')}
-              className={`flex-shrink-0 rounded-full px-3 py-1 text-xs font-medium border transition ${!stageFilter ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-200 text-slate-500 bg-white dark:border-slate-700 dark:bg-slate-900'}`}>
+              className={`flex-shrink-0 whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium border transition ${!stageFilter ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-200 text-slate-500 bg-white dark:border-slate-700 dark:bg-slate-900'}`}>
               All ({leads.length})
             </button>
             {STAGES.map((s) => (
               <button key={s.key} onClick={() => setStageFilter(stageFilter === s.key ? '' : s.key)}
-                className={`flex-shrink-0 rounded-full px-3 py-1 text-xs font-medium border transition ${stageFilter === s.key ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-200 text-slate-500 bg-white dark:border-slate-700 dark:bg-slate-900'}`}>
+                className={`flex-shrink-0 whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium border transition ${stageFilter === s.key ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-200 text-slate-500 bg-white dark:border-slate-700 dark:bg-slate-900'}`}>
                 {s.label} {byStage[s.key] > 0 ? `(${byStage[s.key]})` : ''}
               </button>
             ))}
@@ -239,8 +239,8 @@ export default function EmployeeCrmPage() {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2">
-                          <p className="font-semibold text-slate-900 dark:text-white">{lead.name}</p>
-                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${stage?.color}`}>{stage?.label}</span>
+                          <p className="min-w-0 truncate font-semibold text-slate-900 dark:text-white">{lead.name}</p>
+                          <span className={`flex-shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${stage?.color}`}>{stage?.label}</span>
                         </div>
                         <p className="mt-0.5 text-sm text-slate-400">📱 {lead.phone}</p>
                         {lead.productInterest?.length > 0 && (
