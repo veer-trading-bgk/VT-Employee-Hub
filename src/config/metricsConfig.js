@@ -97,12 +97,13 @@ const TARGET_DEFAULTS = Object.fromEntries(
   ])
 );
 
-function calcPoints(metricTotals) {
+function calcPoints(metricTotals, customWeights) {
   return Math.round(
     METRIC_KEYS.reduce((sum, key) => {
       const cfg = METRIC_CONFIG[key];
       const v = metricTotals[key] ?? 0;
-      return sum + (cfg.isCurrency ? v / cfg.pointsWeight : v * cfg.pointsWeight);
+      const w = (customWeights && customWeights[key] != null) ? customWeights[key] : cfg.pointsWeight;
+      return sum + (cfg.isCurrency ? v / w : v * w);
     }, 0)
   );
 }

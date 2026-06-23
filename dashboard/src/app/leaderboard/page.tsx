@@ -116,9 +116,6 @@ export default function LeaderboardPage() {
                             </span>
                           )}
                         </div>
-                        <p className="truncate text-xs text-slate-400 dark:text-slate-500">
-                          {entry.email}
-                        </p>
                       </div>
                     </div>
                     <div className="flex flex-shrink-0 flex-col items-end gap-1">

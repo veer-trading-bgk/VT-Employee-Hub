@@ -487,9 +487,16 @@ router.get('/targets', async (req, res, next) => {
       TableName: process.env.DYNAMODB_TABLE_METRICS,
       Key: targetsKey(req.user.companyId),
     }).promise();
+    const storedTargets = result.Item?.targets ?? TARGET_DEFAULTS;
+    // Extract pointsWeights from stored targets so frontend can show current values
+    const pointsWeights = {};
+    Object.entries(storedTargets).forEach(([k, v]) => {
+      if (v && v.pointsWeight != null) pointsWeights[k] = v.pointsWeight;
+    });
     res.json({
       success: true,
-      data: result.Item?.targets ?? TARGET_DEFAULTS,
+      data: storedTargets,
+      pointsWeights: Object.keys(pointsWeights).length ? pointsWeights : null,
       isCustom: !!result.Item,
     });
   } catch (error) {
@@ -507,6 +514,9 @@ router.put('/targets', async (req, res, next) => {
       if (!METRIC_KEYS.includes(key)) return res.status(400).json({ error: `Unknown metric: ${key}` });
       if (typeof val.target !== 'number' || val.target <= 0 || !['day', 'month'].includes(val.targetPeriod)) {
         return res.status(400).json({ error: `Invalid target config for ${key}` });
+      }
+      if (val.pointsWeight !== undefined && (typeof val.pointsWeight !== 'number' || val.pointsWeight <= 0)) {
+        return res.status(400).json({ error: `pointsWeight for ${key} must be a positive number` });
       }
     }
     const mergedTargets = { ...TARGET_DEFAULTS, ...targets };

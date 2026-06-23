@@ -13,6 +13,7 @@ type TargetPeriod = 'day' | 'month';
 interface TargetEntry {
   target: number;
   targetPeriod: TargetPeriod;
+  pointsWeight?: number;
 }
 
 interface TargetsResponse {
@@ -35,11 +36,14 @@ export default function AdminTargetsPage() {
 
   useEffect(() => {
     if (data?.data) {
-      // Merge API response with METRICS defaults so all 9 metrics always appear,
-      // even if the stored config is partial (saved before new metrics existed)
       const merged: Record<string, TargetEntry> = {};
       METRICS.forEach((m) => {
-        merged[m.key] = data.data[m.key] ?? { target: m.target, targetPeriod: m.targetPeriod as TargetPeriod };
+        const stored = data.data[m.key];
+        merged[m.key] = {
+          target: stored?.target ?? m.target,
+          targetPeriod: (stored?.targetPeriod ?? m.targetPeriod) as TargetPeriod,
+          pointsWeight: stored?.pointsWeight ?? m.pointsWeight,
+        };
       });
       setForm(merged);
       setDirty(false);
@@ -69,10 +73,10 @@ export default function AdminTargetsPage() {
     onError: (err: Error) => toast.error(err.message),
   });
 
-  const updateField = (key: string, field: 'target' | 'targetPeriod', value: string | number) => {
+  const updateField = (key: string, field: 'target' | 'targetPeriod' | 'pointsWeight', value: string | number) => {
     setForm((prev) => ({
       ...prev,
-      [key]: { ...prev[key], [field]: field === 'target' ? Number(value) : value },
+      [key]: { ...prev[key], [field]: field === 'targetPeriod' ? value : Number(value) },
     }));
     setDirty(true);
   };
@@ -85,7 +89,7 @@ export default function AdminTargetsPage() {
   return (
     <>
       <Navbar title="Metric Targets" showBack />
-      <div className="space-y-6 p-4 md:p-8 max-w-3xl">
+      <div className="space-y-6 p-4 md:p-8 max-w-5xl">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Metric Targets</h1>
@@ -153,6 +157,24 @@ export default function AdminTargetsPage() {
                         <option value="month">Monthly</option>
                       </select>
                     </div>
+                    <div className="w-32">
+                      <label className="block text-xs font-medium text-slate-500 mb-1">
+                        Points Wt
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        step={m.unit === 'currency' ? '1000' : '1'}
+                        value={entry.pointsWeight ?? m.pointsWeight}
+                        onChange={(e) => updateField(m.key, 'pointsWeight', e.target.value)}
+                        className={inputCls}
+                      />
+                      <p className="mt-0.5 text-[10px] text-slate-400">
+                        {m.unit === 'currency'
+                          ? `÷${(entry.pointsWeight ?? m.pointsWeight).toLocaleString('en-IN')} = 1 pt`
+                          : `×${entry.pointsWeight ?? m.pointsWeight} pts each`}
+                      </p>
+                    </div>
                   </div>
                 </div>
               );
@@ -180,6 +202,7 @@ export default function AdminTargetsPage() {
           <ul className="space-y-1 text-xs text-slate-500 dark:text-slate-400">
             <li>• Daily targets are shown directly on employee cards.</li>
             <li>• Monthly targets are divided by 30 to derive the daily figure shown to employees.</li>
+            <li>• <strong>Points Wt</strong>: count metrics earn <code>value × weight</code> pts; currency metrics earn <code>value ÷ weight</code> pts.</li>
             <li>• Leaderboard and progress bars update immediately after saving.</li>
             <li>• Use Reset to Defaults to go back to the original system targets.</li>
           </ul>

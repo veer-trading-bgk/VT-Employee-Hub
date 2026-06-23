@@ -479,8 +479,15 @@ router.get('/leaderboard', async (req, res, next) => {
         (byUser[item.userId].metrics[item.metric_type] || 0) + (item.value || 0);
     });
 
+    // Build custom weights map from stored config (admin-configurable per metric)
+    const customWeights = {};
+    Object.entries(targetCfg).forEach(([k, v]) => {
+      if (v && v.pointsWeight != null) customWeights[k] = v.pointsWeight;
+    });
+    const hasCustomWeights = Object.keys(customWeights).length > 0;
+
     const ranked = Object.values(byUser)
-      .map(user => ({ ...user, points: calcPoints(user.metrics) }))
+      .map(user => ({ ...user, points: calcPoints(user.metrics, hasCustomWeights ? customWeights : null) }))
       .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name))
       .map((user, i) => ({ ...user, rank: i + 1 }));
 
