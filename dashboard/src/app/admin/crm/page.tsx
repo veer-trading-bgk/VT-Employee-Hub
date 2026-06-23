@@ -7,6 +7,7 @@ import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch, ApiClientError } from '@/lib/api';
 import { CrmSubNav } from '@/components/layout/CrmSubNav';
+import { calculateScore, scoreBadge } from '@/utils/leadScore';
 
 export interface PipelineStage {
   key: string;
@@ -268,6 +269,7 @@ export default function AdminCrmPage() {
                               </div>
                             </div>
                             <p className="mt-0.5 text-[10px] text-slate-400">{lead.phone}</p>
+                            {(() => { const s = scoreBadge(calculateScore(lead, stages)); return <span className={`mt-1 inline-block rounded-full px-1.5 py-0.5 text-[9px] font-bold ${s.cls}`}>{s.label}</span>; })()}
 
                             {lead.tags?.length > 0 && (
                               <div className="mt-1.5 flex flex-wrap gap-1">
@@ -315,7 +317,7 @@ export default function AdminCrmPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-slate-800">
-                      {['Name', 'Phone', 'Tags', 'Stage', 'Assigned', 'Deadline', 'Updated', ''].map((h) => (
+                      {['Name', 'Phone', 'Score', 'Stage', 'Assigned', 'Deadline', 'Updated', ''].map((h) => (
                         <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
                       ))}
                     </tr>
@@ -331,11 +333,7 @@ export default function AdminCrmPage() {
                           <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{lead.name}</td>
                           <td className="px-4 py-3 tabular-nums text-slate-500">{lead.phone}</td>
                           <td className="px-4 py-3">
-                            <div className="flex flex-wrap gap-1">
-                              {(lead.tags ?? []).slice(0, 2).map((t) => (
-                                <span key={t} className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] text-indigo-500 dark:bg-indigo-900/30">{t}</span>
-                              ))}
-                            </div>
+                            {(() => { const s = scoreBadge(calculateScore(lead, stages)); return <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${s.cls}`}>{s.label}</span>; })()}
                           </td>
                           <td className="px-4 py-3">
                             {stage && (

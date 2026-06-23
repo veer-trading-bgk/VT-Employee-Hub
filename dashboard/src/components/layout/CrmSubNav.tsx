@@ -4,11 +4,13 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const TABS = [
-  { href: '/admin/crm',             label: 'Pipeline',    icon: '⬛' },
-  { href: '/admin/crm/analytics',   label: 'Analytics',   icon: '📊' },
-  { href: '/admin/crm/automations', label: 'Automations', icon: '⚡' },
-  { href: '/admin/crm/forms',       label: 'Forms',       icon: '📋' },
-  { href: '/admin/crm/settings',    label: 'Settings',    icon: '⚙️' },
+  { href: '/admin/crm',              label: 'Pipeline',    icon: '⬛' },
+  { href: '/admin/crm/followups',    label: 'Follow-ups',  icon: '📅' },
+  { href: '/admin/crm/analytics',    label: 'Analytics',   icon: '📊' },
+  { href: '/admin/crm/automations',  label: 'Automations', icon: '⚡' },
+  { href: '/admin/crm/forms',        label: 'Forms',       icon: '📋' },
+  { href: '/admin/crm/import',       label: 'Import',      icon: '↑' },
+  { href: '/admin/crm/settings',     label: 'Settings',    icon: '⚙️' },
 ];
 
 export function CrmSubNav() {

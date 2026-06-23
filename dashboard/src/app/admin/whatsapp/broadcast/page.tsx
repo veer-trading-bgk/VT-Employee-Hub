@@ -11,6 +11,7 @@ interface Template { id: string; name: string; templateName: string; variables: 
 interface Stage { key: string; label: string; color: string; }
 interface BroadcastRecord {
   id: string; templateName: string; sent: number; failed: number; totalMatched: number;
+  deliveredCount?: number; readCount?: number;
   createdByName?: string; createdAt: string; filter: Record<string, any>;
 }
 interface BroadcastResult { sent: number; failed: number; total: number; errors: { phone: string; error: string }[]; }
@@ -230,10 +231,16 @@ export default function BroadcastPage() {
                   <div key={b.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900">
                     <p className="text-sm font-semibold text-slate-900 dark:text-white">{b.templateName}</p>
                     <p className="mt-0.5 text-xs text-slate-400">by {b.createdByName ?? 'Admin'} · {new Date(b.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</p>
-                    <div className="mt-2 flex gap-3 text-xs">
+                    <div className="mt-2 flex flex-wrap gap-3 text-xs">
                       <span className="font-semibold text-emerald-600">{b.sent} sent</span>
                       {b.failed > 0 && <span className="font-semibold text-red-500">{b.failed} failed</span>}
                       <span className="text-slate-400">{b.totalMatched} matched</span>
+                      {(b.deliveredCount ?? 0) > 0 && (
+                        <span className="font-semibold text-sky-600 dark:text-sky-400">✓✓ {b.deliveredCount}</span>
+                      )}
+                      {(b.readCount ?? 0) > 0 && (
+                        <span className="font-semibold text-blue-600 dark:text-blue-400">👁 {b.readCount} read</span>
+                      )}
                     </div>
                   </div>
                 ))}

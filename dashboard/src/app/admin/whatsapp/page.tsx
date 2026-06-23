@@ -40,6 +40,7 @@ interface Message {
   timestamp: string;
   type?: string;
   authorName?: string;
+  msgStatus?: 'sent' | 'delivered' | 'read' | 'failed';
 }
 
 interface PipelineStage { key: string; label: string; color: string; }
@@ -143,6 +144,15 @@ function CannedModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =>
   );
 }
 
+// ── Message Status Tick ───────────────────────────────────────────────────────
+function MsgTick({ status }: { status?: Message['msgStatus'] }) {
+  if (!status || status === 'sent') return <span className="ml-0.5 text-[10px] text-indigo-300">✓</span>;
+  if (status === 'delivered') return <span className="ml-0.5 text-[10px] text-indigo-300">✓✓</span>;
+  if (status === 'read') return <span className="ml-0.5 text-[10px] text-sky-300">✓✓</span>;
+  if (status === 'failed') return <span className="ml-0.5 text-[10px] text-red-400">✗</span>;
+  return null;
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function WhatsAppInboxPage() {
   const qc = useQueryClient();
@@ -161,6 +171,8 @@ export default function WhatsAppInboxPage() {
   const [newTag, setNewTag] = useState('');
   const [quickNote, setQuickNote] = useState('');
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [showAddLeadModal, setShowAddLeadModal] = useState(false);
+  const [addLeadForm, setAddLeadForm] = useState({ name: '', stage: '', assignedTo: '' });
 
   // ── Queries ──────────────────────────────────────────────────────────────
   const { data: inboxData, isLoading: inboxLoading } = useQuery({
@@ -273,6 +285,25 @@ export default function WhatsAppInboxPage() {
   const autoAssignMutation = useMutation({
     mutationFn: () => apiFetch('/api/whatsapp/inbox/auto-assign', { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['wa-inbox'] }),
+  });
+
+  const addLeadMutation = useMutation({
+    mutationFn: () => apiFetch('/api/crm/leads', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: addLeadForm.name.trim() || selected?.phone,
+        phone: selected?.phone,
+        stage: addLeadForm.stage || stages[0]?.key || 'new',
+        assignedTo: addLeadForm.assignedTo || undefined,
+        assignedToName: employees.find((e) => e.id === addLeadForm.assignedTo)?.name,
+        source: 'whatsapp',
+      }),
+    }),
+    onSuccess: () => {
+      setShowAddLeadModal(false);
+      setAddLeadForm({ name: '', stage: '', assignedTo: '' });
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+    },
   });
 
   const sendMutation = useMutation({
@@ -463,7 +494,9 @@ export default function WhatsAppInboxPage() {
                   </Link>
                 )}
                 {selected.type === 'unknown' && (
-                  <button className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-indigo-700">
+                  <button
+                    onClick={() => { setShowAddLeadModal(true); setAddLeadForm({ name: '', stage: stages[0]?.key ?? '', assignedTo: '' }); }}
+                    className="rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-bold text-white hover:bg-indigo-700">
                     + Add to CRM
                   </button>
                 )}
@@ -521,9 +554,10 @@ export default function WhatsAppInboxPage() {
                         : 'rounded-bl-sm bg-white text-slate-900 shadow-none ring-1 ring-slate-100 dark:bg-slate-800 dark:text-white dark:ring-slate-700'
                     }`}>
                       <p className="whitespace-pre-wrap break-words">{item.content}</p>
-                      <p className={`mt-1 text-[10px] ${item.direction === 'outbound' ? 'text-indigo-200' : 'text-slate-400'}`}>
+                      <p className={`mt-1 flex items-center gap-0.5 text-[10px] ${item.direction === 'outbound' ? 'text-indigo-200' : 'text-slate-400'}`}>
                         {item.direction === 'outbound' && item.sentByName ? `${item.sentByName} · ` : ''}
                         {new Date(item.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                        {item.direction === 'outbound' && <MsgTick status={item.msgStatus} />}
                       </p>
                     </div>
                   </div>
@@ -719,6 +753,48 @@ export default function WhatsAppInboxPage() {
           onClose={() => setShowCannedModal(false)}
           onSaved={() => { refetchCanned(); setShowCannedModal(false); }}
         />
+      )}
+
+      {showAddLeadModal && selected?.type === 'unknown' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900">
+            <h3 className="mb-1 text-base font-bold text-slate-900 dark:text-white">Add to CRM</h3>
+            <p className="mb-4 text-xs text-slate-400">Phone: {selected.phone}</p>
+            <div className="space-y-3">
+              <input
+                value={addLeadForm.name}
+                onChange={(e) => setAddLeadForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="Full name (optional)"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
+              <select
+                value={addLeadForm.stage}
+                onChange={(e) => setAddLeadForm((f) => ({ ...f, stage: e.target.value }))}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white">
+                {stages.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+              </select>
+              <select
+                value={addLeadForm.assignedTo}
+                onChange={(e) => setAddLeadForm((f) => ({ ...f, assignedTo: e.target.value }))}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white">
+                <option value="">Unassigned</option>
+                {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+              </select>
+            </div>
+            {addLeadMutation.isError && (
+              <p className="mt-2 text-xs text-red-500">{(addLeadMutation.error as any)?.message ?? 'Failed to add lead'}</p>
+            )}
+            <div className="mt-4 flex gap-2">
+              <button onClick={() => setShowAddLeadModal(false)}
+                className="flex-1 rounded-lg border border-slate-200 py-2 text-sm text-slate-500 dark:border-slate-700">
+                Cancel
+              </button>
+              <button onClick={() => addLeadMutation.mutate()} disabled={addLeadMutation.isPending}
+                className="flex-1 rounded-lg bg-indigo-600 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-40">
+                {addLeadMutation.isPending ? 'Adding…' : 'Add to CRM'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

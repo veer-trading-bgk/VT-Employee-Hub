@@ -438,6 +438,8 @@ router.get('/followups', authMiddleware, async (req, res, next) => {
     const today = new Date().toISOString().slice(0, 10);
     const daysAhead = Number(req.query.days ?? 7);
     const endDate = new Date(Date.now() + daysAhead * 86400000).toISOString().slice(0, 10);
+    const includeOverdue = req.query.overdue === 'true';
+    const startDate = includeOverdue ? '2000-01-01' : today;
     const empRoles = ['telecaller', 'agent', 'intern'];
 
     const items = [];
@@ -447,16 +449,31 @@ router.get('/followups', authMiddleware, async (req, res, next) => {
         TableName: TABLE,
         FilterExpression: 'begins_with(PK, :prefix) AND #dt >= :start AND #dt <= :end AND (attribute_not_exists(done) OR done = :false)',
         ExpressionAttributeNames: { '#dt': 'date' },
-        ExpressionAttributeValues: { ':prefix': `FOLLOWUP#${companyId}#`, ':start': today, ':end': endDate, ':false': false },
+        ExpressionAttributeValues: { ':prefix': `FOLLOWUP#${companyId}#`, ':start': startDate, ':end': endDate, ':false': false },
         ...(lastKey && { ExclusiveStartKey: lastKey }),
       }).promise();
       items.push(...(result.Items ?? []));
       lastKey = result.LastEvaluatedKey;
     } while (lastKey);
 
-    const followups = empRoles.includes(req.user.role)
+    let followups = empRoles.includes(req.user.role)
       ? items.filter((f) => f.assignedTo === req.user.id)
       : items;
+
+    // Batch-enrich with lead names (for global dashboard)
+    const needsName = followups.filter((f) => f.leadId && !f.leadName);
+    if (needsName.length) {
+      const keys = needsName.map((f) => ({ PK: `LEAD#${companyId}#${f.leadId}`, SK: 'METADATA' }));
+      for (let i = 0; i < keys.length; i += 100) {
+        const batch = keys.slice(i, i + 100);
+        const br = await dynamodb.batchGet({ RequestItems: { [TABLE]: { Keys: batch, ProjectionExpression: 'leadId, #n, phone', ExpressionAttributeNames: { '#n': 'name' } } } }).promise();
+        const leads = br.Responses?.[TABLE] ?? [];
+        leads.forEach((lead) => {
+          const fu = followups.find((f) => f.leadId === lead.leadId);
+          if (fu) { fu.leadName = lead.name; fu.leadPhone = lead.phone; }
+        });
+      }
+    }
 
     res.json({ success: true, followups: followups.sort((a, b) => a.date.localeCompare(b.date)) });
   } catch (err) {
@@ -473,12 +490,20 @@ router.post('/leads/:id/followup', authMiddleware, async (req, res, next) => {
     }
 
     const companyId = req.user.companyId;
+    // Fetch lead name to store with the followup for denormalized display
+    const leadMeta = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `LEAD#${companyId}#${req.params.id}`, SK: 'METADATA' },
+    }).promise();
+
     await dynamodb.put({
       TableName: TABLE,
       Item: {
         PK: `FOLLOWUP#${companyId}#${date}`,
         SK: `LEAD#${req.params.id}`,
         leadId: req.params.id,
+        leadName: leadMeta.Item?.name ?? null,
+        leadPhone: leadMeta.Item?.phone ?? null,
         companyId,
         date,
         note: note?.trim() ?? '',

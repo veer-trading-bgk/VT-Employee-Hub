@@ -280,7 +280,19 @@ router.get('/webhook', (req, res) => {
   res.status(403).end();
 });
 
-// ── POST /api/whatsapp/webhook — inbound messages ─────────────────────────────
+// Helper to store WAMID → MSG# reverse-lookup so status updates can find the right record
+async function storeWamidLookup(wamid, leadPK, msgSK, companyId, extras = {}) {
+  if (!wamid) return;
+  try {
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: { PK: `WAMID#${wamid}`, SK: 'LOOKUP', leadPK, msgSK, companyId, ...extras },
+      ConditionExpression: 'attribute_not_exists(PK)',
+    }).promise();
+  } catch { /* ignore duplicate */ }
+}
+
+// ── POST /api/whatsapp/webhook — inbound messages + delivery/read statuses ────
 router.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
@@ -290,6 +302,46 @@ router.post('/webhook', async (req, res) => {
 
     const phoneNumberId = change.value?.metadata?.phone_number_id;
     const messages = change.value?.messages ?? [];
+
+    // ── Handle message status updates (delivered / read) ──────────────────────
+    const statuses = change.value?.statuses ?? [];
+    for (const statusUpdate of statuses) {
+      try {
+        const wamid = statusUpdate.id;
+        const statusType = statusUpdate.status; // 'sent'|'delivered'|'read'|'failed'
+        if (!['delivered', 'read'].includes(statusType)) continue;
+
+        const lookup = await dynamodb.get({
+          TableName: TABLE,
+          Key: { PK: `WAMID#${wamid}`, SK: 'LOOKUP' },
+        }).promise();
+        if (!lookup.Item) continue;
+
+        const { leadPK, msgSK, broadcastId, broadcastSK, companyId: cid } = lookup.Item;
+
+        // Update MSG# record status (read wins over delivered)
+        await dynamodb.update({
+          TableName: TABLE,
+          Key: { PK: leadPK, SK: msgSK },
+          UpdateExpression: 'SET msgStatus = :s',
+          ConditionExpression: 'attribute_not_exists(msgStatus) OR msgStatus <> :read',
+          ExpressionAttributeValues: { ':s': statusType, ':read': 'read' },
+        }).promise().catch(() => {});
+
+        // Increment broadcast stats if this came from a broadcast
+        if (broadcastId && broadcastSK && cid) {
+          const field = statusType === 'delivered' ? 'deliveredCount' : 'readCount';
+          await dynamodb.update({
+            TableName: TABLE,
+            Key: { PK: `BROADCAST#${cid}`, SK: broadcastSK },
+            UpdateExpression: `ADD ${field} :one`,
+            ExpressionAttributeValues: { ':one': 1 },
+          }).promise().catch(() => {});
+        }
+      } catch (e) {
+        logger.warn('status-update failed', e.message);
+      }
+    }
 
     for (const msg of messages) {
       if (msg.type !== 'text') continue;
@@ -370,23 +422,23 @@ router.post('/send', authMiddleware, async (req, res, next) => {
 
     const waMessageId = await sendTextMessage(req.user.companyId, lead.phone, message.trim());
     const timestamp = new Date().toISOString();
+    const msgSK = `MSG#${timestamp}#${waMessageId ?? Date.now()}`;
 
     await dynamodb.put({
       TableName: TABLE,
       Item: {
-        PK: pk,
-        SK: `MSG#${timestamp}#${waMessageId ?? Date.now()}`,
+        PK: pk, SK: msgSK,
         messageId: waMessageId,
         direction: 'outbound',
         content: message.trim(),
         type: 'text',
         sentBy: req.user.id,
         sentByName: req.user.name,
-        timestamp,
-        waMessageId,
+        timestamp, waMessageId, msgStatus: 'sent',
       },
     }).promise();
 
+    await storeWamidLookup(waMessageId, pk, msgSK, req.user.companyId);
     await updateLeadLastMessage(pk, message.trim(), 'outbound', timestamp);
     res.json({ success: true, messageId: waMessageId, timestamp });
   } catch (err) {
@@ -512,11 +564,13 @@ router.post('/inbox/unknown/:phone/send', authMiddleware, checkRole(['admin', 'm
     const waMessageId = await sendTextMessage(companyId, phone, message.trim());
     const timestamp = new Date().toISOString();
     const PK = `INBOX#${companyId}#${phone}`;
+    const unknownMsgSK = `MSG#${timestamp}#${waMessageId ?? Date.now()}`;
 
     await dynamodb.put({
       TableName: TABLE,
-      Item: { PK, SK: `MSG#${timestamp}#${waMessageId ?? Date.now()}`, direction: 'outbound', content: message.trim(), type: 'text', sentBy: req.user.id, sentByName: req.user.name, timestamp, waMessageId },
+      Item: { PK, SK: unknownMsgSK, direction: 'outbound', content: message.trim(), type: 'text', sentBy: req.user.id, sentByName: req.user.name, timestamp, waMessageId, msgStatus: 'sent' },
     }).promise();
+    await storeWamidLookup(waMessageId, PK, unknownMsgSK, companyId);
 
     await dynamodb.update({
       TableName: TABLE,
@@ -740,8 +794,10 @@ router.delete('/templates/:id', authMiddleware, checkRole(['admin']), async (req
 // ── POST /api/whatsapp/send-template — send template to a lead ────────────────
 router.post('/send-template', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
-    const { leadPK: pk, templateId, variableValues } = req.body;
-    if (!pk || !templateId) return res.status(400).json({ error: 'leadPK and templateId required' });
+    const { leadId, leadPK: leadPK0, templateId, variableValues } = req.body;
+    // Accept either leadId (from TemplatePicker) or leadPK (direct)
+    const pk = leadPK0 || (leadId ? `LEAD#${req.user.companyId}#${leadId}` : null);
+    if (!pk || !templateId) return res.status(400).json({ error: 'leadId (or leadPK) and templateId required' });
 
     const [tmplResult, leadResult] = await Promise.all([
       dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${templateId}` } }).promise(),
@@ -754,19 +810,20 @@ router.post('/send-template', authMiddleware, checkRole(['admin', 'manager']), a
     if (!lead) return res.status(404).json({ error: 'Lead not found' });
 
     const params = (variableValues ?? []).map(String);
-    await sendTemplateMessage(req.user.companyId, lead.phone, tmpl.templateName, tmpl.language, params);
+    const wamid = await sendTemplateMessage(req.user.companyId, lead.phone, tmpl.templateName, tmpl.language, params);
 
-    // Store outbound message record
     const ts = new Date().toISOString();
+    const tmplMsgSK = `MSG#${ts}#${wamid ?? Date.now()}`;
     await dynamodb.put({
       TableName: TABLE,
       Item: {
-        PK: pk, SK: `MSG#${ts}`,
+        PK: pk, SK: tmplMsgSK,
         direction: 'outbound', content: `[Template: ${tmpl.name}]`,
         sentBy: req.user.id, sentByName: req.user.name ?? null,
-        templateId, timestamp: ts, type: 'template',
+        templateId, timestamp: ts, type: 'template', waMessageId: wamid, msgStatus: 'sent',
       },
     }).promise();
+    await storeWamidLookup(wamid, pk, tmplMsgSK, req.user.companyId);
     await updateLeadLastMessage(pk, `[Template: ${tmpl.name}]`, 'outbound', ts);
 
     res.json({ success: true });
@@ -816,6 +873,7 @@ router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), async
 
     const broadcastId = require('crypto').randomUUID();
     const now = new Date().toISOString();
+    const broadcastSK = `${now}#${broadcastId}`;
     let sent = 0; let failed = 0;
     const errors = [];
 
@@ -826,18 +884,20 @@ router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), async
           if (v === '{{phone}}') return lead.phone ?? '';
           return String(v);
         });
-        await sendTemplateMessage(companyId, lead.phone, tmpl.templateName, tmpl.language, params);
+        const wamid = await sendTemplateMessage(companyId, lead.phone, tmpl.templateName, tmpl.language, params);
 
         const ts = new Date().toISOString();
+        const bMsgSK = `MSG#${ts}#${wamid ?? Date.now()}`;
         await dynamodb.put({
           TableName: TABLE,
           Item: {
-            PK: lead.PK, SK: `MSG#${ts}`,
+            PK: lead.PK, SK: bMsgSK,
             direction: 'outbound', content: `[Broadcast: ${tmpl.name}]`,
             sentBy: req.user.id, sentByName: req.user.name ?? null,
-            broadcastId, templateId, timestamp: ts, type: 'template',
+            broadcastId, templateId, timestamp: ts, type: 'template', waMessageId: wamid, msgStatus: 'sent',
           },
         }).promise();
+        await storeWamidLookup(wamid, lead.PK, bMsgSK, companyId, { broadcastId, broadcastSK });
         await updateLeadLastMessage(lead.PK, `[Broadcast: ${tmpl.name}]`, 'outbound', ts);
         sent++;
       } catch (e) {
@@ -850,11 +910,12 @@ router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), async
     await dynamodb.put({
       TableName: TABLE,
       Item: {
-        PK: `BROADCAST#${companyId}`, SK: `${now}#${broadcastId}`,
+        PK: `BROADCAST#${companyId}`, SK: broadcastSK,
         id: broadcastId, companyId,
         templateId, templateName: tmpl.name,
         filter: filter ?? {},
         totalMatched: items.length, sent, failed,
+        deliveredCount: 0, readCount: 0,
         createdBy: req.user.id, createdByName: req.user.name ?? null,
         createdAt: now,
       },
