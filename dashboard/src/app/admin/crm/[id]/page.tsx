@@ -384,10 +384,10 @@ export default function LeadDetailPage() {
           {/* ── Tabs ────────────────────────────────────────────────────── */}
           <div className="mb-4 flex gap-1 rounded-xl border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             {([
-              { key: 'chat', label: '💬 Chat', count: timeline.length },
-              { key: 'followups', label: '📅 Follow-ups', count: followups.length },
-              { key: 'info', label: 'ℹ Info' },
-            ] as const).map((tab) => (
+              { key: 'chat' as const,      label: '💬 Chat',        count: timeline.length },
+              { key: 'followups' as const, label: '📅 Follow-ups',  count: followups.length },
+              { key: 'info' as const,      label: 'ℹ Info',         count: undefined },
+            ] as { key: 'chat' | 'followups' | 'info'; label: string; count?: number }[]).map((tab) => (
               <button key={tab.key} onClick={() => setActiveTab(tab.key)}
                 className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-sm font-medium transition-colors ${activeTab === tab.key ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>
                 {tab.label}
