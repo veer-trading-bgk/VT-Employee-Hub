@@ -39,7 +39,12 @@ interface Message {
   sentByName?: string;
   timestamp: string;
   type?: string;
+  mediaId?: string;
+  mediaUrl?: string;
+  mimeType?: string;
+  filename?: string;
   authorName?: string;
+  waMessageId?: string;
   msgStatus?: 'sent' | 'delivered' | 'read' | 'failed';
 }
 
@@ -173,6 +178,9 @@ export default function WhatsAppInboxPage() {
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const [showAddLeadModal, setShowAddLeadModal] = useState(false);
   const [addLeadForm, setAddLeadForm] = useState({ name: '', stage: '', assignedTo: '' });
+  const [showMediaInput, setShowMediaInput] = useState(false);
+  const [mediaUrl, setMediaUrl] = useState('');
+  const [mediaCaption, setMediaCaption] = useState('');
 
   // ── Queries ──────────────────────────────────────────────────────────────
   const { data: inboxData, isLoading: inboxLoading } = useQuery({
@@ -203,7 +211,7 @@ export default function WhatsAppInboxPage() {
         ? apiFetch<{ lead: any; messages: Message[]; internalNotes: Message[] }>(`/api/crm/leads/${selected!.leadId}`)
         : apiFetch<{ messages: Message[] }>(`/api/whatsapp/inbox/unknown/${selected!.phone}/messages`),
     enabled: !!selected,
-    refetchInterval: 8_000,
+    refetchInterval: 3_000,
     staleTime: 0,
   });
 
@@ -304,6 +312,33 @@ export default function WhatsAppInboxPage() {
       setAddLeadForm({ name: '', stage: '', assignedTo: '' });
       qc.invalidateQueries({ queryKey: ['wa-inbox'] });
     },
+  });
+
+  // Mark messages as read when conversation is opened (sends read receipt to customer)
+  useEffect(() => {
+    if (!selected?.leadId) return;
+    const lastInbound = rawMessages.filter((m) => m.direction === 'inbound' && m.waMessageId).at(-1);
+    if (!lastInbound?.waMessageId) return;
+    apiFetch(`/api/whatsapp/inbox/${selected.leadId}/mark-read`, {
+      method: 'POST',
+      body: JSON.stringify({ lastWaMessageId: lastInbound.waMessageId }),
+    }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convKey, rawMessages.length]);
+
+  const mediaMutation = useMutation({
+    mutationFn: () => {
+      const ext = mediaUrl.split('.').pop()?.toLowerCase() ?? '';
+      const mediaType = ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext) ? 'image'
+        : ['mp4', 'mov', '3gp'].includes(ext) ? 'video'
+        : ['mp3', 'ogg', 'aac', 'm4a'].includes(ext) ? 'audio'
+        : 'document';
+      return apiFetch('/api/whatsapp/send-media', {
+        method: 'POST',
+        body: JSON.stringify({ leadPK: selected!.PK, mediaType, mediaUrl, caption: mediaCaption || undefined }),
+      });
+    },
+    onSuccess: () => { setMediaUrl(''); setMediaCaption(''); setShowMediaInput(false); invalidate(); },
   });
 
   const sendMutation = useMutation({
@@ -546,6 +581,7 @@ export default function WhatsAppInboxPage() {
                     </div>
                   );
                 }
+                const mediaUrl_ = item.mediaUrl ?? (item.mediaId ? `/api/whatsapp/media/${item.mediaId}` : null);
                 return (
                   <div key={item.SK} className={`flex ${item.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-xs rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
@@ -553,7 +589,32 @@ export default function WhatsAppInboxPage() {
                         ? 'rounded-br-sm bg-indigo-600 text-white'
                         : 'rounded-bl-sm bg-white text-slate-900 shadow-none ring-1 ring-slate-100 dark:bg-slate-800 dark:text-white dark:ring-slate-700'
                     }`}>
-                      <p className="whitespace-pre-wrap break-words">{item.content}</p>
+                      {item.type === 'image' && mediaUrl_ && (
+                        <a href={mediaUrl_} target="_blank" rel="noreferrer">
+                          <img src={mediaUrl_} alt="photo" className="mb-1.5 max-h-48 w-full rounded-xl object-cover" />
+                        </a>
+                      )}
+                      {item.type === 'document' && mediaUrl_ && (
+                        <a href={mediaUrl_} target="_blank" rel="noreferrer"
+                          className={`mb-1.5 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium ${item.direction === 'outbound' ? 'border-indigo-400/40 bg-indigo-500/30 text-indigo-100' : 'border-slate-200 bg-slate-50 text-indigo-600 dark:border-slate-700 dark:bg-slate-700 dark:text-indigo-400'}`}>
+                          📄 {item.filename ?? 'Document'}
+                        </a>
+                      )}
+                      {item.type === 'audio' && mediaUrl_ && (
+                        <audio controls src={mediaUrl_} className="mb-1.5 w-full max-w-[220px]" />
+                      )}
+                      {item.type === 'video' && mediaUrl_ && (
+                        <video controls src={mediaUrl_} className="mb-1.5 max-h-48 w-full rounded-xl" />
+                      )}
+                      {item.type === 'sticker' && mediaUrl_ && (
+                        <img src={mediaUrl_} alt="sticker" className="mb-1.5 h-20 w-20 object-contain" />
+                      )}
+                      {(item.content && item.content !== `[${item.type}]`) && (
+                        <p className="whitespace-pre-wrap break-words">{item.content}</p>
+                      )}
+                      {item.content === `[${item.type}]` && !mediaUrl_ && (
+                        <p className="italic text-xs opacity-60">{item.content}</p>
+                      )}
                       <p className={`mt-1 flex items-center gap-0.5 text-[10px] ${item.direction === 'outbound' ? 'text-indigo-200' : 'text-slate-400'}`}>
                         {item.direction === 'outbound' && item.sentByName ? `${item.sentByName} · ` : ''}
                         {new Date(item.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
@@ -603,7 +664,35 @@ export default function WhatsAppInboxPage() {
                     onClose={() => setShowCanned(false)}
                   />
                 )}
+
+                {/* Media URL input panel */}
+                {showMediaInput && inputMode === 'reply' && selected?.type === 'lead' && (
+                  <div className="mb-2 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800">
+                    <p className="mb-2 text-xs font-semibold text-slate-500">Send Media (paste public URL)</p>
+                    <input value={mediaUrl} onChange={(e) => setMediaUrl(e.target.value)}
+                      placeholder="https://example.com/image.jpg or file.pdf"
+                      className="mb-1.5 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white" />
+                    <input value={mediaCaption} onChange={(e) => setMediaCaption(e.target.value)}
+                      placeholder="Caption (optional)"
+                      className="mb-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white" />
+                    <div className="flex gap-2">
+                      <button onClick={() => setShowMediaInput(false)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-500 dark:border-slate-700">Cancel</button>
+                      <button onClick={() => mediaMutation.mutate()} disabled={!mediaUrl.trim() || mediaMutation.isPending}
+                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40">
+                        {mediaMutation.isPending ? 'Sending…' : 'Send'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex gap-2">
+                  {inputMode === 'reply' && selected?.type === 'lead' && !windowExpired && (
+                    <button onClick={() => setShowMediaInput((v) => !v)}
+                      title="Send image or document"
+                      className={`flex-shrink-0 rounded-xl border px-3 py-2.5 text-sm transition ${showMediaInput ? 'border-indigo-300 bg-indigo-50 text-indigo-600 dark:border-indigo-700 dark:bg-indigo-900/20' : 'border-slate-200 text-slate-400 hover:text-indigo-600 dark:border-slate-700'}`}>
+                      📎
+                    </button>
+                  )}
                   <input
                     ref={inputRef}
                     value={msgText}

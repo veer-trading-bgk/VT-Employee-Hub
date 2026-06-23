@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
@@ -22,6 +22,9 @@ export default function WhatsAppSettingsPage() {
   const [manualPhoneId, setManualPhoneId] = useState('');
   const [wabaStatus, setWabaStatus] = useState('');
   const [showTokenHelp, setShowTokenHelp] = useState(false);
+  const [welcomeEnabled, setWelcomeEnabled] = useState(false);
+  const [welcomeTemplate, setWelcomeTemplate] = useState('');
+  const [welcomeLanguage, setWelcomeLanguage] = useState('en');
 
   const { data: wabaData, isLoading: wabaLoading } = useQuery({
     queryKey: ['waba-connection'],
@@ -32,6 +35,28 @@ export default function WhatsAppSettingsPage() {
   const disconnectMutation = useMutation({
     mutationFn: () => apiFetch('/api/whatsapp/connection', { method: 'DELETE' }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['waba-connection'] }),
+  });
+
+  const { data: welcomeData } = useQuery({
+    queryKey: ['welcome-config'],
+    queryFn: () => apiFetch<{ config: { enabled: boolean; templateName: string; language: string } }>('/api/whatsapp/welcome-config'),
+    staleTime: 60_000,
+  });
+
+  useEffect(() => {
+    if (welcomeData?.config) {
+      setWelcomeEnabled(welcomeData.config.enabled);
+      setWelcomeTemplate(welcomeData.config.templateName ?? '');
+      setWelcomeLanguage(welcomeData.config.language ?? 'en');
+    }
+  }, [welcomeData]);
+
+  const welcomeMutation = useMutation({
+    mutationFn: () => apiFetch('/api/whatsapp/welcome-config', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled: welcomeEnabled, templateName: welcomeTemplate, language: welcomeLanguage }),
+    }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['welcome-config'] }),
   });
 
   const manualConnectMutation = useMutation({
@@ -191,6 +216,45 @@ export default function WhatsAppSettingsPage() {
                 )}
               </div>
             )}
+          </section>
+
+          {/* Welcome Message */}
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <h2 className="mb-1 text-sm font-bold text-slate-900 dark:text-white">Welcome Message</h2>
+            <p className="mb-4 text-xs text-slate-400">Auto-send a WhatsApp template when a new contact messages for the first time.</p>
+
+            <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">
+              <div>
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">Enable welcome message</p>
+                <p className="text-xs text-slate-400">Fires once per new contact</p>
+              </div>
+              <button onClick={() => setWelcomeEnabled((v) => !v)}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${welcomeEnabled ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-600'}`}>
+                <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${welcomeEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
+            {welcomeEnabled && (
+              <div className="mt-3 space-y-2">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-500">Meta Template Name (exact slug)</label>
+                  <input value={welcomeTemplate} onChange={(e) => setWelcomeTemplate(e.target.value)}
+                    placeholder="e.g. hello_world"
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-500">Language code</label>
+                  <input value={welcomeLanguage} onChange={(e) => setWelcomeLanguage(e.target.value)}
+                    placeholder="en"
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
+                </div>
+              </div>
+            )}
+
+            <button onClick={() => welcomeMutation.mutate()} disabled={welcomeMutation.isPending}
+              className="mt-4 rounded-xl bg-indigo-600 px-5 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
+              {welcomeMutation.isPending ? 'Saving…' : welcomeMutation.isSuccess ? 'Saved ✓' : 'Save Welcome Config'}
+            </button>
           </section>
 
         </div>

@@ -359,14 +359,27 @@ router.post('/webhook', async (req, res) => {
     }
 
     for (const msg of messages) {
-      if (msg.type !== 'text') continue;
-      const fromPhone = msg.from;
-      const text = msg.text?.body ?? '';
-      const waMessageId = msg.id;
-      const timestamp = new Date(Number(msg.timestamp) * 1000).toISOString();
+      const { type, from: fromPhone, id: waMessageId, timestamp: ts } = msg;
+      const MEDIA_TYPES = ['image', 'document', 'audio', 'video', 'sticker'];
+      if (type !== 'text' && !MEDIA_TYPES.includes(type)) continue;
 
-      // Normalize to 10-digit for matching (Meta sends 919901251785, leads store 9901251785)
+      const timestamp = new Date(Number(ts) * 1000).toISOString();
       const phone10 = to10Digit(fromPhone);
+
+      // Extract content + media metadata
+      let text = '';
+      let mediaId = null;
+      let mimeType = null;
+      let filename = null;
+      if (type === 'text') {
+        text = msg.text?.body ?? '';
+      } else {
+        const m = msg[type] ?? {};
+        mediaId = m.id ?? null;
+        mimeType = m.mime_type ?? null;
+        filename = m.filename ?? null;
+        text = m.caption ?? `[${type}]`;
+      }
 
       // Find lead — try all common formats; no Limit (Limit restricts items read, not returned)
       const scanResult = await dynamodb.scan({
@@ -374,23 +387,27 @@ router.post('/webhook', async (req, res) => {
         FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND (phone = :p1 OR phone = :p2 OR phone = :p3)',
         ExpressionAttributeValues: {
           ':prefix': 'LEAD#', ':meta': 'METADATA',
-          ':p1': phone10,             // 9901251785
-          ':p2': fromPhone,           // 919901251785
-          ':p3': '+91' + phone10,     // +919901251785
+          ':p1': phone10,
+          ':p2': fromPhone,
+          ':p3': '+91' + phone10,
         },
       }).promise();
 
       const lead = scanResult.Items?.[0];
 
+      const msgItem = {
+        direction: 'inbound', content: text, type,
+        timestamp, waMessageId, messageId: waMessageId,
+        ...(mediaId && { mediaId, mimeType, filename }),
+      };
+
       if (lead) {
-        // Known lead — store under lead PK
         await dynamodb.put({
           TableName: TABLE,
-          Item: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}`, messageId: waMessageId, direction: 'inbound', content: text, type: 'text', timestamp, waMessageId },
+          Item: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
           ConditionExpression: 'attribute_not_exists(SK)',
         }).promise().catch(() => {});
         await updateLeadLastMessage(lead.PK, text, 'inbound', timestamp);
-        // Reopen resolved chats when customer sends a new message
         if (lead.chatStatus === 'resolved') {
           await dynamodb.update({
             TableName: TABLE,
@@ -400,25 +417,38 @@ router.post('/webhook', async (req, res) => {
           }).promise().catch(() => {});
         }
       } else if (phoneNumberId) {
-        // Unknown contact — route to INBOX# by looking up companyId from phoneNumberId
         const config = await getCompanyByPhoneNumberId(phoneNumberId);
         if (!config) continue;
         const companyId = config.companyId;
         const PK = `INBOX#${companyId}#${phone10}`;
 
+        // Is this the first message from this contact?
+        const existingContact = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'CONTACT' } }).promise();
+        const isFirstContact = !existingContact.Item;
+
         await dynamodb.put({
           TableName: TABLE,
-          Item: { PK, SK: `MSG#${timestamp}#${waMessageId}`, messageId: waMessageId, direction: 'inbound', content: text, type: 'text', timestamp, waMessageId },
+          Item: { PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
           ConditionExpression: 'attribute_not_exists(SK)',
         }).promise().catch(() => {});
 
-        // Create / refresh CONTACT record
         await dynamodb.update({
           TableName: TABLE,
           Key: { PK, SK: 'CONTACT' },
           UpdateExpression: 'SET phone = if_not_exists(phone, :ph), companyId = if_not_exists(companyId, :cid), createdAt = if_not_exists(createdAt, :ts), lastMessageAt = :lma, lastMessagePreview = :prev, lastMessageDirection = :dir',
           ExpressionAttributeValues: { ':ph': phone10, ':cid': companyId, ':ts': timestamp, ':lma': timestamp, ':prev': text.slice(0, 100), ':dir': 'inbound' },
         }).promise();
+
+        // Send welcome message on first contact
+        if (isFirstContact) {
+          try {
+            const wc = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#WELCOME#${companyId}`, SK: 'CURRENT' } }).promise();
+            if (wc.Item?.enabled && wc.Item?.templateName) {
+              await sendTemplateMessage(companyId, phone10, wc.Item.templateName, wc.Item.language ?? 'en', []);
+              logger.info(`Welcome message sent to ${phone10} for company ${companyId}`);
+            }
+          } catch (e) { logger.warn('Welcome message failed: ' + e.message); }
+        }
       }
     }
   } catch (err) {
@@ -962,6 +992,119 @@ router.get('/broadcasts', authMiddleware, checkRole(['admin', 'manager']), async
     }).promise();
     res.json({ success: true, broadcasts: result.Items ?? [] });
   } catch (err) { next(err); }
+});
+
+// ── GET /api/whatsapp/welcome-config ──────────────────────────────────────────
+router.get('/welcome-config', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const result = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#WELCOME#${req.user.companyId}`, SK: 'CURRENT' },
+    }).promise();
+    res.json({ success: true, config: result.Item ?? { enabled: false, templateName: '', language: 'en' } });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /api/whatsapp/welcome-config ──────────────────────────────────────────
+router.put('/welcome-config', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const { enabled, templateName, language } = req.body;
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: `CONFIG#WELCOME#${req.user.companyId}`, SK: 'CURRENT',
+        companyId: req.user.companyId,
+        enabled: !!enabled,
+        templateName: templateName?.trim() ?? '',
+        language: language?.trim() ?? 'en',
+        updatedAt: new Date().toISOString(),
+      },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/inbox/:leadId/mark-read ────────────────────────────────
+router.post('/inbox/:leadId/mark-read', authMiddleware, async (req, res, next) => {
+  try {
+    const { lastWaMessageId } = req.body;
+    if (!lastWaMessageId) return res.json({ success: true }); // nothing to mark
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg?.accessToken || !cfg?.phoneNumberId) return res.json({ success: true });
+    await axios.post(`${GRAPH}/${cfg.phoneNumberId}/messages`, {
+      messaging_product: 'whatsapp',
+      status: 'read',
+      message_id: lastWaMessageId,
+    }, { headers: { Authorization: `Bearer ${cfg.accessToken}` } }).catch(() => {});
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── GET /api/whatsapp/media/:mediaId — proxy Meta media download URL ──────────
+router.get('/media/:mediaId', authMiddleware, async (req, res, next) => {
+  try {
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg?.accessToken) return res.status(403).json({ error: 'WhatsApp not configured' });
+    const metaRes = await axios.get(`${GRAPH}/${req.params.mediaId}`, {
+      params: { access_token: cfg.accessToken },
+    });
+    const mediaUrl = metaRes.data?.url;
+    if (!mediaUrl) return res.status(404).json({ error: 'Media not found' });
+    // Redirect to the short-lived Meta URL
+    res.redirect(mediaUrl);
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/send-media — send image/document to lead ───────────────
+router.post('/send-media', authMiddleware, async (req, res, next) => {
+  try {
+    const { leadPK: pk, mediaType, mediaUrl, caption, filename } = req.body;
+    if (!pk || !mediaType || !mediaUrl) return res.status(400).json({ error: 'leadPK, mediaType, and mediaUrl are required' });
+
+    const result = await dynamodb.get({ TableName: TABLE, Key: { PK: pk, SK: 'METADATA' } }).promise();
+    const lead = result.Item;
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    if (lead.companyId !== req.user.companyId) return res.status(403).json({ error: 'Forbidden' });
+
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg?.accessToken || !cfg?.phoneNumberId) return res.status(400).json({ error: 'WhatsApp not configured' });
+
+    const phone = toE164(lead.phone);
+    const mediaPayload = { link: mediaUrl };
+    if (caption) mediaPayload.caption = caption;
+    if (filename && mediaType === 'document') mediaPayload.filename = filename;
+
+    const sendRes = await axios.post(`${GRAPH}/${cfg.phoneNumberId}/messages`, {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone,
+      type: mediaType,
+      [mediaType]: mediaPayload,
+    }, { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } });
+
+    const waMessageId = sendRes.data?.messages?.[0]?.id ?? null;
+    const timestamp = new Date().toISOString();
+    const msgSK = `MSG#${timestamp}#${waMessageId ?? Date.now()}`;
+
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: pk, SK: msgSK,
+        messageId: waMessageId, waMessageId,
+        direction: 'outbound', type: mediaType,
+        content: caption ?? `[${mediaType}]`,
+        mediaUrl, filename: filename ?? null,
+        sentBy: req.user.id, sentByName: req.user.name,
+        timestamp, msgStatus: 'sent',
+      },
+    }).promise();
+
+    await storeWamidLookup(waMessageId, pk, msgSK, req.user.companyId);
+    res.json({ success: true, messageId: waMessageId, timestamp });
+  } catch (err) {
+    logger.error('send-media error', err?.response?.data ?? err.message);
+    next(err);
+  }
 });
 
 // HTML page returned to popup after OAuth completes

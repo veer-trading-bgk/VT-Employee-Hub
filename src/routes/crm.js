@@ -295,6 +295,24 @@ router.put('/leads/:id', authMiddleware, async (req, res, next) => {
       ExpressionAttributeValues: values,
     }).promise();
 
+    // Fire tag_added automation for each newly added tag
+    if (Array.isArray(updates.tags)) {
+      const addedTags = updates.tags.filter((t) => !(existing.Item.tags ?? []).includes(t));
+      if (addedTags.length) {
+        try {
+          const { runAutomations } = require('./automations');
+          for (const tag of addedTags) {
+            await runAutomations(companyId, 'tag_added', {
+              leadId: req.params.id, leadPK: PK,
+              phone: existing.Item.phone, name: existing.Item.name,
+              tags: updates.tags, stage: existing.Item.stage,
+              assignedTo: existing.Item.assignedTo,
+            });
+          }
+        } catch (e) { logger.warn('tag_added automation error: ' + e.message); }
+      }
+    }
+
     res.json({ success: true, updated: updates });
   } catch (err) {
     logger.error('crm/leads/:id PUT error', err);
