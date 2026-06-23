@@ -379,7 +379,7 @@ export default function EmployeeDashboardPage() {
                   </button>
                 )}
                 <button
-                  onClick={() => { setShowReorder((v) => !v); setShowForm(false); }}
+                  onClick={() => { setShowReorder((v) => !v); }}
                   className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                     showReorder
                       ? 'bg-emerald-600 text-white hover:bg-emerald-700'
