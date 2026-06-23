@@ -8,6 +8,11 @@ import { apiFetch } from '@/lib/api';
 import { CrmSubNav } from '@/components/layout/CrmSubNav';
 import type { PipelineStage } from '../page';
 
+interface AutoAssignConfig {
+  enabled: boolean;
+  updatedAt?: string;
+}
+
 export default function CrmSettingsPage() {
   const queryClient = useQueryClient();
 
@@ -20,6 +25,12 @@ export default function CrmSettingsPage() {
     staleTime: 5 * 60_000,
   });
 
+  const { data: aaData, isLoading: aaLoading } = useQuery({
+    queryKey: ['crm-auto-assign'],
+    queryFn: () => apiFetch<{ success: boolean; data: AutoAssignConfig }>('/api/admin/crm/auto-assign'),
+    staleTime: 30_000,
+  });
+
   useEffect(() => {
     if (pipelineData?.stages) {
       setStages([...pipelineData.stages].sort((a, b) => a.order - b.order));
@@ -29,6 +40,12 @@ export default function CrmSettingsPage() {
   const savePipelineMutation = useMutation({
     mutationFn: () => apiFetch('/api/crm/pipeline', { method: 'PUT', body: JSON.stringify({ stages }) }),
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['crm-pipeline'] }); setDirty(false); },
+  });
+
+  const toggleAutoAssign = useMutation({
+    mutationFn: (enabled: boolean) =>
+      apiFetch('/api/admin/crm/auto-assign', { method: 'PUT', body: JSON.stringify({ enabled }) }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['crm-auto-assign'] }),
   });
 
   const updateStage = (idx: number, patch: Partial<PipelineStage>) => {
@@ -52,12 +69,71 @@ export default function CrmSettingsPage() {
     setDirty(true);
   };
 
+  const aaEnabled = aaData?.data?.enabled ?? false;
+  const aaUpdatedAt = aaData?.data?.updatedAt;
+
   return (
     <>
       <Navbar title="CRM Settings" showBack />
       <CrmSubNav />
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-2xl space-y-6 p-4 pb-10">
+
+          {/* ── Lead Auto-Assign ── */}
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <h2 className="text-base font-semibold text-slate-900 dark:text-white">Lead Auto-Assign</h2>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  New leads are automatically assigned to the telecaller / agent with the fewest open leads.
+                  Each employee is filled up to <strong>5 open leads</strong> before the next person receives one.
+                </p>
+                {aaUpdatedAt && (
+                  <p className="mt-1 text-xs text-slate-400">
+                    Last changed {new Date(aaUpdatedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </p>
+                )}
+
+                <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  <span className="flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 dark:bg-slate-800">
+                    ✅ Manual CRM entry
+                  </span>
+                  <span className="flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 dark:bg-slate-800">
+                    ✅ Web / Meta form submissions
+                  </span>
+                  <span className="flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 dark:bg-slate-800">
+                    💡 Explicit assignee always overrides
+                  </span>
+                </div>
+              </div>
+
+              {/* Toggle */}
+              {aaLoading ? (
+                <div className="h-8 w-14 flex-shrink-0 animate-pulse rounded-full bg-slate-200 dark:bg-slate-700" />
+              ) : (
+                <button
+                  onClick={() => toggleAutoAssign.mutate(!aaEnabled)}
+                  disabled={toggleAutoAssign.isPending}
+                  aria-label={aaEnabled ? 'Disable auto-assign' : 'Enable auto-assign'}
+                  className={`relative inline-flex h-7 w-14 flex-shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 disabled:opacity-60 ${
+                    aaEnabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'
+                  }`}
+                >
+                  <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-md transition-transform duration-200 ${aaEnabled ? 'translate-x-8' : 'translate-x-1'}`} />
+                </button>
+              )}
+            </div>
+
+            {/* Status row */}
+            <div className={`mt-4 flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium ${
+              aaEnabled
+                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400'
+                : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+            }`}>
+              <span>{aaEnabled ? '🟢' : '⚫'}</span>
+              <span>{aaEnabled ? 'Auto-assign is ON — new leads will be distributed automatically' : 'Auto-assign is OFF — leads default to the creator'}</span>
+            </div>
+          </section>
 
           {/* ── Pipeline stages ── */}
           <section className="rounded-2xl border border-slate-200 bg-white p-6 dark:border-slate-800 dark:bg-slate-900">

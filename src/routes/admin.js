@@ -536,6 +536,43 @@ router.delete('/targets', async (req, res, next) => {
   }
 });
 
+// ── CRM Auto-Assign Config ────────────────────────────────────────────────────
+
+function autoAssignKey(companyId) {
+  return { PK: `CONFIG#AUTOASSIGN#${companyId}`, SK: 'current' };
+}
+
+router.get('/crm/auto-assign', async (req, res, next) => {
+  try {
+    const r = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: autoAssignKey(req.user.companyId),
+    }).promise();
+    res.json({ success: true, data: r.Item ?? { enabled: false } });
+  } catch (err) { next(err); }
+});
+
+router.put('/crm/auto-assign', async (req, res, next) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled (boolean) required' });
+    }
+    await dynamodb.put({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Item: {
+        ...autoAssignKey(req.user.companyId),
+        enabled,
+        updatedBy: req.user.id,
+        updatedAt: new Date().toISOString(),
+      },
+    }).promise();
+    await logAudit(req.user.id, 'crm_auto_assign_toggle', enabled ? 'enabled' : 'disabled', 'success', req.ip);
+    logger.info(`Admin ${req.user.email} ${enabled ? 'enabled' : 'disabled'} CRM auto-assign`);
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 // ── GET /api/admin/employees/:id/metrics ─────────────────────────────────────
 // Per-employee metrics history for performance export
 

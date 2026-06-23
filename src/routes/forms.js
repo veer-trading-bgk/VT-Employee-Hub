@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
+const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -134,6 +135,20 @@ router.post('/:id/submit', async (req, res, next) => {
 
     const leadId = uuidv4();
     const now = new Date().toISOString();
+
+    // Auto-assign: use form's static assignee; fall back to auto-assign if none set
+    let formAssignedTo   = form.defaultAssignedTo   ?? null;
+    let formAssignedName = form.defaultAssignedToName ?? null;
+    if (!formAssignedTo) {
+      try {
+        const cfg = await getAutoAssignConfig(companyId);
+        if (cfg.enabled) {
+          const picked = await pickNextEmployee(companyId);
+          if (picked) { formAssignedTo = picked.id; formAssignedName = picked.name ?? null; }
+        }
+      } catch (e) { logger.warn('form auto-assign error: ' + e.message); }
+    }
+
     const item = {
       PK: leadPK(companyId, leadId), SK: 'METADATA',
       leadId, companyId,
@@ -144,8 +159,8 @@ router.post('/:id/submit', async (req, res, next) => {
       notes: notes?.trim() ?? '',
       stage: defaultStage,
       tags: [`form:${form.name}`],
-      assignedTo: form.defaultAssignedTo ?? null,
-      assignedToName: form.defaultAssignedToName ?? null,
+      assignedTo: formAssignedTo,
+      assignedToName: formAssignedName,
       createdBy: 'form_submit',
       createdAt: now, updatedAt: now,
       convertedAt: null,

@@ -4,6 +4,7 @@ const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const { logAudit } = require('../utils/audit');
 const logger = require('../config/logger');
+const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -164,6 +165,27 @@ router.post('/leads', authMiddleware, async (req, res, next) => {
     const leadId = uuidv4();
     const now = new Date().toISOString();
 
+    // Auto-assign: if no explicit assignee, pick least-loaded performer
+    let resolvedAssignedTo   = assignedTo   ?? null;
+    let resolvedAssignedName = assignedToName ?? null;
+    if (!resolvedAssignedTo) {
+      try {
+        const cfg = await getAutoAssignConfig(companyId);
+        if (cfg.enabled) {
+          const picked = await pickNextEmployee(companyId);
+          if (picked) {
+            resolvedAssignedTo   = picked.id;
+            resolvedAssignedName = picked.name ?? null;
+          }
+        }
+      } catch (e) { logger.warn('auto-assign error: ' + e.message); }
+      // Fallback: assign to creator if auto-assign off or no employees found
+      if (!resolvedAssignedTo) {
+        resolvedAssignedTo   = req.user.id;
+        resolvedAssignedName = req.user.name ?? null;
+      }
+    }
+
     const item = {
       PK: leadPK(companyId, leadId),
       SK: 'METADATA',
@@ -178,8 +200,8 @@ router.post('/leads', authMiddleware, async (req, res, next) => {
       stage: defaultStage,
       tags: tags ?? [],
       closureDeadline: closureDeadline ?? null,
-      assignedTo: assignedTo ?? req.user.id,
-      assignedToName: assignedToName ?? req.user.name ?? null,
+      assignedTo: resolvedAssignedTo,
+      assignedToName: resolvedAssignedName,
       createdBy: req.user.id,
       createdAt: now,
       updatedAt: now,
