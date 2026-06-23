@@ -71,6 +71,34 @@ async function sendTextMessage(companyId, to, body) {
   }
 }
 
+async function sendTemplateMessage(companyId, to, templateName, languageCode, bodyParams) {
+  const cfg = await getWabaConfig(companyId);
+  if (!cfg?.accessToken || !cfg?.phoneNumberId) {
+    logger.warn(`WhatsApp not configured for company ${companyId}`);
+    return null;
+  }
+  const phone = String(to).replace(/\D/g, '');
+  const components = bodyParams?.length
+    ? [{ type: 'body', parameters: bodyParams.map((v) => ({ type: 'text', text: String(v) })) }]
+    : [];
+  try {
+    const res = await axios.post(
+      `${GRAPH}/${cfg.phoneNumberId}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to: phone,
+        type: 'template',
+        template: { name: templateName, language: { code: languageCode ?? 'en' }, components },
+      },
+      { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } }
+    );
+    return res.data?.messages?.[0]?.id ?? null;
+  } catch (err) {
+    logger.error('WhatsApp sendTemplateMessage failed', err?.response?.data ?? err.message);
+    throw err;
+  }
+}
+
 // ── GET /api/whatsapp/connection — WABA connection status ──────────────────────
 router.get('/connection', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
@@ -640,6 +668,219 @@ router.delete('/inbox/canned/:id', authMiddleware, checkRole(['admin', 'manager'
   } catch (err) { next(err); }
 });
 
+// ── GET /api/whatsapp/templates — list stored templates ───────────────────────
+router.get('/templates', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const result = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: { ':pk': `CONFIG#TMPL#${req.user.companyId}`, ':sk': 'TMPL#' },
+    }).promise();
+    res.json({ success: true, templates: (result.Items ?? []).sort((a, b) => a.name?.localeCompare(b.name)) });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/templates — create template ────────────────────────────
+router.post('/templates', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const { name, templateName, language, category, bodyPreview, variables } = req.body;
+    if (!name?.trim() || !templateName?.trim()) {
+      return res.status(400).json({ error: 'name and templateName are required' });
+    }
+    const id = require('crypto').randomUUID();
+    const now = new Date().toISOString();
+    const item = {
+      PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${id}`,
+      id, companyId: req.user.companyId,
+      name: name.trim(),
+      templateName: templateName.trim().toLowerCase().replace(/\s+/g, '_'),
+      language: language ?? 'en',
+      category: category ?? 'UTILITY',
+      bodyPreview: bodyPreview?.trim() ?? '',
+      variables: variables ?? [],
+      createdBy: req.user.id,
+      createdAt: now, updatedAt: now,
+    };
+    await dynamodb.put({ TableName: TABLE, Item: item }).promise();
+    res.status(201).json({ success: true, template: item });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /api/whatsapp/templates/:id — update template ────────────────────────
+router.put('/templates/:id', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const { name, templateName, language, category, bodyPreview, variables } = req.body;
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
+      UpdateExpression: 'SET #n = :n, templateName = :tn, #lang = :lang, category = :cat, bodyPreview = :bp, variables = :vars, updatedAt = :ua',
+      ExpressionAttributeNames: { '#n': 'name', '#lang': 'language' },
+      ExpressionAttributeValues: {
+        ':n': name?.trim(), ':tn': templateName?.trim().toLowerCase().replace(/\s+/g, '_'),
+        ':lang': language ?? 'en', ':cat': category ?? 'UTILITY',
+        ':bp': bodyPreview?.trim() ?? '', ':vars': variables ?? [],
+        ':ua': new Date().toISOString(),
+      },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── DELETE /api/whatsapp/templates/:id ───────────────────────────────────────
+router.delete('/templates/:id', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    await dynamodb.delete({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/send-template — send template to a lead ────────────────
+router.post('/send-template', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const { leadPK: pk, templateId, variableValues } = req.body;
+    if (!pk || !templateId) return res.status(400).json({ error: 'leadPK and templateId required' });
+
+    const [tmplResult, leadResult] = await Promise.all([
+      dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${templateId}` } }).promise(),
+      dynamodb.get({ TableName: TABLE, Key: { PK: pk, SK: 'METADATA' } }).promise(),
+    ]);
+
+    const tmpl = tmplResult.Item;
+    const lead = leadResult.Item;
+    if (!tmpl) return res.status(404).json({ error: 'Template not found' });
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
+    const params = (variableValues ?? []).map(String);
+    await sendTemplateMessage(req.user.companyId, lead.phone, tmpl.templateName, tmpl.language, params);
+
+    // Store outbound message record
+    const ts = new Date().toISOString();
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: pk, SK: `MSG#${ts}`,
+        direction: 'outbound', content: `[Template: ${tmpl.name}]`,
+        sentBy: req.user.id, sentByName: req.user.name ?? null,
+        templateId, timestamp: ts, type: 'template',
+      },
+    }).promise();
+    await updateLeadLastMessage(pk, `[Template: ${tmpl.name}]`, 'outbound', ts);
+
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('send-template error', err?.response?.data ?? err.message);
+    next(err);
+  }
+});
+
+// ── POST /api/whatsapp/broadcast — send template to a lead segment ────────────
+router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const { templateId, variableValues, filter } = req.body;
+    if (!templateId) return res.status(400).json({ error: 'templateId required' });
+
+    const companyId = req.user.companyId;
+
+    const tmplResult = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${companyId}`, SK: `TMPL#${templateId}` },
+    }).promise();
+    const tmpl = tmplResult.Item;
+    if (!tmpl) return res.status(404).json({ error: 'Template not found' });
+
+    // Scan leads matching filter
+    let items = [];
+    let lastKey;
+    do {
+      const r = await dynamodb.scan({
+        TableName: TABLE,
+        FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta',
+        ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA' },
+        ...(lastKey && { ExclusiveStartKey: lastKey }),
+      }).promise();
+      items.push(...(r.Items ?? []));
+      lastKey = r.LastEvaluatedKey;
+    } while (lastKey);
+
+    // Apply filters
+    if (filter?.stages?.length) items = items.filter((l) => filter.stages.includes(l.stage));
+    if (filter?.tags?.length) items = items.filter((l) => filter.tags.some((t) => (l.tags ?? []).includes(t)));
+    if (filter?.assignedTo) items = items.filter((l) => l.assignedTo === filter.assignedTo);
+    if (filter?.source) items = items.filter((l) => l.source === filter.source);
+
+    if (items.length === 0) return res.status(400).json({ error: 'No leads match the selected filters' });
+    if (items.length > 1000) return res.status(400).json({ error: 'Broadcast limited to 1000 leads per batch. Refine your filters.' });
+
+    const broadcastId = require('crypto').randomUUID();
+    const now = new Date().toISOString();
+    let sent = 0; let failed = 0;
+    const errors = [];
+
+    await Promise.allSettled(items.map(async (lead) => {
+      try {
+        const params = (variableValues ?? []).map((v) => {
+          if (v === '{{name}}') return lead.name ?? '';
+          if (v === '{{phone}}') return lead.phone ?? '';
+          return String(v);
+        });
+        await sendTemplateMessage(companyId, lead.phone, tmpl.templateName, tmpl.language, params);
+
+        const ts = new Date().toISOString();
+        await dynamodb.put({
+          TableName: TABLE,
+          Item: {
+            PK: lead.PK, SK: `MSG#${ts}`,
+            direction: 'outbound', content: `[Broadcast: ${tmpl.name}]`,
+            sentBy: req.user.id, sentByName: req.user.name ?? null,
+            broadcastId, templateId, timestamp: ts, type: 'template',
+          },
+        }).promise();
+        await updateLeadLastMessage(lead.PK, `[Broadcast: ${tmpl.name}]`, 'outbound', ts);
+        sent++;
+      } catch (e) {
+        failed++;
+        errors.push({ phone: lead.phone, error: e?.response?.data?.error?.message ?? e.message });
+      }
+    }));
+
+    // Store broadcast record
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: `BROADCAST#${companyId}`, SK: `${now}#${broadcastId}`,
+        id: broadcastId, companyId,
+        templateId, templateName: tmpl.name,
+        filter: filter ?? {},
+        totalMatched: items.length, sent, failed,
+        createdBy: req.user.id, createdByName: req.user.name ?? null,
+        createdAt: now,
+      },
+    }).promise();
+
+    res.json({ success: true, sent, failed, total: items.length, errors: errors.slice(0, 20) });
+  } catch (err) {
+    logger.error('broadcast error', err.message);
+    next(err);
+  }
+});
+
+// ── GET /api/whatsapp/broadcasts — broadcast history ─────────────────────────
+router.get('/broadcasts', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const result = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk',
+      ExpressionAttributeValues: { ':pk': `BROADCAST#${req.user.companyId}` },
+      ScanIndexForward: false,
+      Limit: 50,
+    }).promise();
+    res.json({ success: true, broadcasts: result.Items ?? [] });
+  } catch (err) { next(err); }
+});
+
 // HTML page returned to popup after OAuth completes
 function popupHtml(success, message) {
   const color = success ? '#10b981' : '#ef4444';
@@ -656,3 +897,4 @@ ${success ? 'Done — Close Window' : 'Close & Retry'}</button></div></body></ht
 
 module.exports = router;
 module.exports.sendTextMessage = sendTextMessage;
+module.exports.sendTemplateMessage = sendTemplateMessage;

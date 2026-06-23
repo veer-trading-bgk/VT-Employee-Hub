@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, ApiClientError } from '@/lib/api';
 
 export interface PipelineStage {
   key: string;
@@ -79,6 +79,7 @@ export default function AdminCrmPage() {
   const [filterAssignee, setFilterAssignee] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [addStage, setAddStage] = useState('');
+  const [duplicateWarning, setDuplicateWarning] = useState<{ existingLeadId: string; existingName: string } | null>(null);
   const [form, setForm] = useState({
     name: '', phone: '', email: '', source: 'manual', notes: '',
     assignedTo: '', closureDeadline: '', tags: '', productInterest: [] as string[],
@@ -106,18 +107,32 @@ export default function AdminCrmPage() {
   const employees = (empData?.data ?? []).filter((e) => ['telecaller', 'agent', 'intern', 'team_lead', 'manager'].includes(e.role));
 
   const addMutation = useMutation({
-    mutationFn: (body: typeof form & { stage: string }) =>
-      apiFetch('/api/crm/leads', {
-        method: 'POST',
-        body: JSON.stringify({
-          ...body,
-          tags: body.tags ? body.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
-          assignedToName: employees.find((e) => e.id === body.assignedTo)?.name,
-        }),
-      }),
+    mutationFn: async (body: typeof form & { stage: string }) => {
+      try {
+        return await apiFetch('/api/crm/leads', {
+          method: 'POST',
+          retries: 0,
+          body: JSON.stringify({
+            ...body,
+            tags: body.tags ? body.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
+            assignedToName: employees.find((e) => e.id === body.assignedTo)?.name,
+          }),
+        });
+      } catch (err) {
+        if (err instanceof ApiClientError && err.status === 409) {
+          const b = err.body ?? {};
+          setDuplicateWarning({
+            existingLeadId: (b.existingLeadId as string) ?? '',
+            existingName: (b.existingName as string) ?? 'an existing lead',
+          });
+        }
+        throw err;
+      }
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['crm-leads'] });
       setShowAddForm(false);
+      setDuplicateWarning(null);
       setForm({ name: '', phone: '', email: '', source: 'manual', notes: '', assignedTo: '', closureDeadline: '', tags: '', productInterest: [] });
     },
   });
@@ -366,13 +381,31 @@ export default function AdminCrmPage() {
           <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-base font-semibold text-slate-900 dark:text-white">New Lead</h2>
-              <button onClick={() => setShowAddForm(false)} className="text-slate-400 hover:text-slate-600">✕</button>
+              <button onClick={() => { setShowAddForm(false); setDuplicateWarning(null); }} className="text-slate-400 hover:text-slate-600">✕</button>
             </div>
+
+            {/* Duplicate phone warning */}
+            {duplicateWarning && (
+              <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 dark:border-amber-900/30 dark:bg-amber-900/10">
+                <span className="mt-0.5 text-amber-500">⚠</span>
+                <div className="min-w-0 flex-1 text-xs text-amber-800 dark:text-amber-300">
+                  <span className="font-semibold">Duplicate phone detected.</span> This number already exists as{' '}
+                  <span className="font-semibold">{duplicateWarning.existingName}</span>.{' '}
+                  {duplicateWarning.existingLeadId && (
+                    <Link href={`/admin/crm/${duplicateWarning.existingLeadId}`}
+                      className="underline hover:text-amber-600"
+                      onClick={() => { setShowAddForm(false); setDuplicateWarning(null); }}>
+                      Open existing lead →
+                    </Link>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <input placeholder="Full Name *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
                   className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
-                <input placeholder="WhatsApp Phone *" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                <input placeholder="WhatsApp Phone *" value={form.phone} onChange={(e) => { setForm({ ...form, phone: e.target.value }); setDuplicateWarning(null); }}
                   className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
               </div>
               <input placeholder="Email (optional)" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
@@ -416,7 +449,7 @@ export default function AdminCrmPage() {
                 className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <button onClick={() => setShowAddForm(false)} className="rounded-lg px-4 py-2 text-sm text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">Cancel</button>
+              <button onClick={() => { setShowAddForm(false); setDuplicateWarning(null); }} className="rounded-lg px-4 py-2 text-sm text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">Cancel</button>
               <button onClick={() => addMutation.mutate({ ...form, stage: addStage })}
                 disabled={!form.name || !form.phone || addMutation.isPending}
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">

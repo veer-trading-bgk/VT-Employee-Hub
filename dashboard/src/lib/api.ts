@@ -2,9 +2,11 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
 export class ApiClientError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  body?: Record<string, unknown>;
+  constructor(message: string, status: number, body?: Record<string, unknown>) {
     super(message);
     this.status = status;
+    this.body = body;
     this.name = 'ApiClientError';
   }
 }
@@ -38,11 +40,12 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 
       if (!res.ok) {
         let message = `Request failed (${res.status})`;
+        let errorBody: Record<string, unknown> | undefined;
         try {
-          const body = await res.json();
-          message = body.error || message;
+          errorBody = await res.json() as Record<string, unknown>;
+          message = (errorBody.error as string) || message;
         } catch { /* non-JSON body */ }
-        throw new ApiClientError(message, res.status);
+        throw new ApiClientError(message, res.status, errorBody);
       }
 
       if (res.status === 204) return undefined as T;

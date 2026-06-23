@@ -1,18 +1,20 @@
 {
-  "name": "VT Employee Hub",
-  "short_name": "VT Hub",
-  "description": "Viir Trading Employee Metrics Dashboard",
-  "start_url": "/",
+  "name": "APForce — AP CRM",
+  "short_name": "APForce",
+  "description": "WhatsApp CRM for AP offices and sub-brokers",
+  "start_url": "/admin/dashboard",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#4f46e5",
   "orientation": "portrait-primary",
   "icons": [
-    {
-      "src": "/favicon.ico",
-      "sizes": "48x48",
-      "type": "image/x-icon"
-    }
+    { "src": "/favicon.ico", "sizes": "48x48", "type": "image/x-icon" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
   ],
-  "categories": ["business", "productivity"]
+  "categories": ["business", "productivity", "finance"],
+  "shortcuts": [
+    { "name": "WA Inbox", "url": "/admin/whatsapp", "description": "Open WhatsApp inbox" },
+    { "name": "CRM Pipeline", "url": "/admin/crm", "description": "Open CRM kanban" }
+  ]
 }

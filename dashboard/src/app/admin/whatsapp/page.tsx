@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch } from '@/lib/api';
+import { TemplatePicker } from '@/components/whatsapp/TemplatePicker';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ChatStatus = 'open' | 'unassigned' | 'resolved';
@@ -158,6 +159,7 @@ export default function WhatsAppInboxPage() {
   const [showCannedModal, setShowCannedModal] = useState(false);
   const [newTag, setNewTag] = useState('');
   const [quickNote, setQuickNote] = useState('');
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
   // ── Queries ──────────────────────────────────────────────────────────────
   const { data: inboxData, isLoading: inboxLoading } = useQuery({
@@ -470,16 +472,27 @@ export default function WhatsAppInboxPage() {
               </div>
             </div>
 
-            {/* 24h window warning */}
-            {windowExpired && inputMode === 'reply' && (
+            {/* 24h window warning + template picker */}
+            {windowExpired && inputMode === 'reply' && !showTemplatePicker && (
               <div className="flex items-center gap-3 border-b border-amber-100 bg-amber-50 px-4 py-2.5 dark:border-amber-900/30 dark:bg-amber-900/10">
                 <span className="text-base">⚠</span>
                 <p className="flex-1 text-xs text-amber-700 dark:text-amber-400">
-                  Customer last replied <strong>{timeAgo(selected.lastInboundAt ?? currentLead?.lastInboundAt ?? '')}</strong> ago. The 24-hour window has expired — use a WhatsApp Template to re-initiate.
+                  Customer last replied <strong>{timeAgo(selected.lastInboundAt ?? currentLead?.lastInboundAt ?? '')}</strong> ago. The 24-hour window has expired.
                 </p>
-                <button className="flex-shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-bold text-white opacity-50 cursor-not-allowed">
+                <button onClick={() => setShowTemplatePicker(true)}
+                  className="flex-shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-amber-700">
                   Send Template
                 </button>
+              </div>
+            )}
+            {windowExpired && inputMode === 'reply' && showTemplatePicker && selected.leadId && (
+              <div className="border-b border-amber-100 p-3 dark:border-amber-900/30">
+                <TemplatePicker
+                  leadId={selected.leadId}
+                  phone={selected.phone}
+                  onSent={() => { setShowTemplatePicker(false); qc.invalidateQueries({ queryKey: ['wa-conv', convKey] }); }}
+                  onCancel={() => setShowTemplatePicker(false)}
+                />
               </div>
             )}
 

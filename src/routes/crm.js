@@ -145,6 +145,19 @@ router.post('/leads', authMiddleware, async (req, res, next) => {
     }
 
     const companyId = req.user.companyId;
+    const cleanPhone = String(phone).replace(/\D/g, '');
+
+    // Duplicate phone check
+    const dupCheck = await dynamodb.scan({
+      TableName: TABLE,
+      FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND phone = :ph',
+      ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA', ':ph': cleanPhone },
+    }).promise();
+    if ((dupCheck.Items?.length ?? 0) > 0) {
+      const existing = dupCheck.Items[0];
+      return res.status(409).json({ error: 'A lead with this phone number already exists', existingLeadId: existing.leadId, existingName: existing.name });
+    }
+
     const stages = await getPipelineStages(companyId);
     const defaultStage = stage ?? stages[0]?.key ?? 'new_lead';
 
@@ -157,7 +170,7 @@ router.post('/leads', authMiddleware, async (req, res, next) => {
       leadId,
       companyId,
       name: name.trim(),
-      phone: String(phone).replace(/\D/g, ''),
+      phone: cleanPhone,
       email: email?.trim() ?? null,
       productInterest: productInterest ?? [],
       source: source ?? 'manual',
@@ -175,6 +188,17 @@ router.post('/leads', authMiddleware, async (req, res, next) => {
 
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();
     await logAudit(req.user.id, 'crm_lead_created', leadId, 'success', req.ip, { name });
+
+    // Fire automations
+    try {
+      const { runAutomations } = require('./automations');
+      await runAutomations(companyId, 'lead_created', {
+        leadId, leadPK: item.PK, phone: cleanPhone, name: name.trim(),
+        source: item.source, stage: defaultStage, tags: item.tags,
+        assignedTo: item.assignedTo,
+      });
+    } catch (e) { logger.warn('lead_created automation error: ' + e.message); }
+
     res.status(201).json({ success: true, lead: item });
   } catch (err) {
     logger.error('crm/leads POST error', err);
@@ -325,6 +349,33 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
       ExpressionAttributeNames: updateAttrs,
       ExpressionAttributeValues: updateVals,
     }).promise();
+
+    // Write stage history record
+    try {
+      await dynamodb.put({
+        TableName: TABLE,
+        Item: {
+          PK,
+          SK: `STAGE#${now}`,
+          fromStage: lead.stage,
+          toStage: stage,
+          changedBy: req.user.id,
+          changedByName: req.user.name ?? null,
+          changedAt: now,
+        },
+      }).promise();
+    } catch (e) { logger.warn('Stage history write failed: ' + e.message); }
+
+    // Fire automations
+    try {
+      const { runAutomations } = require('./automations');
+      await runAutomations(companyId, 'stage_change', {
+        leadId: req.params.id, leadPK: PK,
+        phone: lead.phone, name: lead.name,
+        fromStage: lead.stage, toStage: stage,
+        stage, tags: lead.tags ?? [], assignedTo: lead.assignedTo,
+      });
+    } catch (e) { logger.warn('stage_change automation error: ' + e.message); }
 
     // Auto-credit metric
     const metricType = METRIC_STAGE_MAP[stage];
@@ -572,6 +623,104 @@ router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req
 
     res.json({ success: true, total: leads.length, byStage, convertedToday, stages });
   } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /api/crm/crm-analytics ────────────────────────────────────────────────
+router.get('/crm-analytics', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+    const [leads, stages] = await Promise.all([
+      scanAllLeads(companyId),
+      getPipelineStages(companyId),
+    ]);
+
+    // Stage distribution
+    const byStage = Object.fromEntries(stages.map((s) => [s.key, 0]));
+    for (const lead of leads) { if (byStage[lead.stage] !== undefined) byStage[lead.stage]++; }
+
+    // Funnel with conversion rates between adjacent stages
+    const funnel = stages.map((s, i) => {
+      const count = byStage[s.key] ?? 0;
+      const prevCount = i > 0 ? (byStage[stages[i - 1]?.key] ?? 0) : null;
+      const conversionRate = prevCount ? Math.round((count / prevCount) * 100) : null;
+      return { key: s.key, label: s.label, color: s.color, count, conversionRate };
+    });
+
+    // Stage history for avg time calc
+    let stageHistoryItems = [];
+    try {
+      let lastKey;
+      do {
+        const r = await dynamodb.scan({
+          TableName: TABLE,
+          FilterExpression: 'begins_with(PK, :prefix) AND begins_with(SK, :sk)',
+          ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':sk': 'STAGE#' },
+          ...(lastKey && { ExclusiveStartKey: lastKey }),
+        }).promise();
+        stageHistoryItems.push(...(r.Items ?? []));
+        lastKey = r.LastEvaluatedKey;
+      } while (lastKey);
+    } catch (e) { logger.warn('Stage history scan failed: ' + e.message); }
+
+    // Calculate avg days per stage from history
+    const stageTimeMap = {};
+    for (const item of stageHistoryItems) {
+      if (!stageTimeMap[item.fromStage]) stageTimeMap[item.fromStage] = [];
+    }
+    // Group by lead PK, sort by time, calc duration between consecutive stage entries
+    const byLead = {};
+    for (const item of stageHistoryItems) {
+      if (!byLead[item.PK]) byLead[item.PK] = [];
+      byLead[item.PK].push(item);
+    }
+    const stageDurations = {};
+    for (const items of Object.values(byLead)) {
+      const sorted = items.sort((a, b) => a.changedAt?.localeCompare(b.changedAt));
+      for (let i = 1; i < sorted.length; i++) {
+        const days = (new Date(sorted[i].changedAt) - new Date(sorted[i - 1].changedAt)) / 86400000;
+        if (!stageDurations[sorted[i - 1].fromStage]) stageDurations[sorted[i - 1].fromStage] = [];
+        stageDurations[sorted[i - 1].fromStage].push(days);
+      }
+    }
+    const avgDaysPerStage = Object.fromEntries(
+      Object.entries(stageDurations).map(([k, v]) => [k, Math.round(v.reduce((a, b) => a + b, 0) / v.length * 10) / 10])
+    );
+
+    // Source breakdown
+    const bySource = {};
+    for (const lead of leads) {
+      const src = lead.source ?? 'unknown';
+      bySource[src] = (bySource[src] ?? 0) + 1;
+    }
+
+    // Leads created per day (last 30 days)
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const dailyCreated = {};
+    for (const lead of leads) {
+      const day = lead.createdAt?.slice(0, 10);
+      if (day && day >= thirtyDaysAgo) dailyCreated[day] = (dailyCreated[day] ?? 0) + 1;
+    }
+    const trend = Object.entries(dailyCreated).sort(([a], [b]) => a.localeCompare(b)).map(([date, count]) => ({ date, count }));
+
+    // Today and this week stats
+    const today = new Date().toISOString().slice(0, 10);
+    const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    const newToday = leads.filter((l) => l.createdAt?.startsWith(today)).length;
+    const newThisWeek = leads.filter((l) => l.createdAt?.slice(0, 10) >= weekAgo).length;
+    const convertedThisMonth = leads.filter((l) => l.convertedAt?.startsWith(new Date().toISOString().slice(0, 7))).length;
+
+    res.json({
+      success: true,
+      summary: { total: leads.length, newToday, newThisWeek, convertedThisMonth },
+      funnel,
+      bySource: Object.entries(bySource).map(([source, count]) => ({ source, count })).sort((a, b) => b.count - a.count),
+      avgDaysPerStage,
+      trend,
+    });
+  } catch (err) {
+    logger.error('crm-analytics error', err);
     next(err);
   }
 });

@@ -8,6 +8,7 @@ import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
 import type { PipelineStage } from '../page';
+import { TemplatePicker } from '@/components/whatsapp/TemplatePicker';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Lead {
@@ -86,6 +87,7 @@ export default function LeadDetailPage() {
   const [fuNote, setFuNote] = useState('');
   const [activeTab, setActiveTab] = useState<'chat' | 'followups' | 'info'>('chat');
   const [newTag, setNewTag] = useState('');
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
   // ── Queries ──────────────────────────────────────────────────────────────
   const { data, isLoading } = useQuery({
@@ -400,13 +402,27 @@ export default function LeadDetailPage() {
           {activeTab === 'chat' && (
             <div className="flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900" style={{ height: '58vh' }}>
 
-              {/* 24h window warning */}
-              {windowExpired && inputMode === 'reply' && (
+              {/* 24h window warning + template picker */}
+              {windowExpired && inputMode === 'reply' && !showTemplatePicker && (
                 <div className="flex items-center gap-2 border-b border-amber-100 bg-amber-50 px-4 py-2.5 dark:border-amber-900/30 dark:bg-amber-900/10">
                   <span>⚠</span>
                   <p className="flex-1 text-xs text-amber-700 dark:text-amber-400">
-                    Customer last replied <strong>{timeAgo(lead.lastInboundAt!)}</strong>. The 24-hour window expired — switch to Note or use a WhatsApp Template.
+                    Customer last replied <strong>{timeAgo(lead.lastInboundAt!)}</strong>. The 24-hour window expired.
                   </p>
+                  <button onClick={() => setShowTemplatePicker(true)}
+                    className="flex-shrink-0 rounded-lg bg-amber-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-amber-700">
+                    Send Template
+                  </button>
+                </div>
+              )}
+              {windowExpired && inputMode === 'reply' && showTemplatePicker && (
+                <div className="border-b border-amber-100 p-3 dark:border-amber-900/30">
+                  <TemplatePicker
+                    leadId={lead.leadId}
+                    phone={lead.phone}
+                    onSent={() => { setShowTemplatePicker(false); qc.invalidateQueries({ queryKey: ['crm-lead', id] }); }}
+                    onCancel={() => setShowTemplatePicker(false)}
+                  />
                 </div>
               )}
 

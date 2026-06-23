@@ -17,6 +17,8 @@ const telegramRoutes = require('./routes/telegram');
 const attendanceRoutes = require('./routes/attendance');
 const crmRoutes = require('./routes/crm');
 const whatsappRoutes = require('./routes/whatsapp');
+const automationsRoutes = require('./routes/automations');
+const formsRoutes = require('./routes/forms');
 const { authMiddleware } = require('./middleware/auth');
 const { errorHandler } = require('./middleware/errorHandler');
 
@@ -48,7 +50,7 @@ const corsMiddleware = cors({
 // Security middleware
 app.use(helmet());
 app.use(corsMiddleware);
-app.use(express.json({ limit: '10kb' }));
+app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
 
 // Routes
@@ -66,6 +68,8 @@ app.use('/api/telegram', telegramRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/crm', crmRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/automations', automationsRoutes);
+app.use('/api/forms', formsRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
