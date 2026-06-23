@@ -151,6 +151,7 @@ export default function EmployeeDashboardPage() {
   const [showForm, setShowForm] = useState(false);
   const [showReorder, setShowReorder] = useState(false);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [showComp, setShowComp] = useState(false);
 
   const { order, sortedMetrics, saveOrder, resetOrder, isCustomOrder } =
     useMetricOrder(user?.id ?? 'guest');
@@ -345,20 +346,32 @@ export default function EmployeeDashboardPage() {
 
           {/* ── Monthly Incentive Card ─────────────────────────────────────── */}
           {compData && (
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-xl border border-emerald-200 bg-white p-4 dark:border-emerald-800/40 dark:bg-slate-900">
-                <p className="text-xs text-slate-500 dark:text-slate-400">Earned This Month</p>
-                <p className="mt-1 text-xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
-                  {fmt(compData.incentiveTotal)}
-                </p>
-                <p className="text-[10px] text-slate-400">incentive</p>
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-slate-900 dark:text-white">My Earnings</h2>
+                <button
+                  onClick={() => setShowComp((v) => !v)}
+                  aria-label={showComp ? 'Hide amounts' : 'Reveal amounts'}
+                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition"
+                >
+                  {showComp ? '🙈 Hide' : '👁 Reveal'}
+                </button>
               </div>
-              <div className="rounded-xl border border-indigo-200 bg-white p-4 dark:border-indigo-800/40 dark:bg-slate-900">
-                <p className="text-xs text-slate-500 dark:text-slate-400">Projected Pay</p>
-                <p className="mt-1 text-xl font-bold text-indigo-600 dark:text-indigo-400 tabular-nums">
-                  {fmt(compData.projectedTotal)}
-                </p>
-                <p className="text-[10px] text-slate-400">if trend holds</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl border border-emerald-200 bg-white p-4 dark:border-emerald-800/40 dark:bg-slate-900">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Earned This Month</p>
+                  <p className="mt-1 text-xl font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                    {showComp ? fmt(compData.incentiveTotal) : '₹ •••••'}
+                  </p>
+                  <p className="text-[10px] text-slate-400">incentive</p>
+                </div>
+                <div className="rounded-xl border border-indigo-200 bg-white p-4 dark:border-indigo-800/40 dark:bg-slate-900">
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Projected Pay</p>
+                  <p className="mt-1 text-xl font-bold text-indigo-600 dark:text-indigo-400 tabular-nums">
+                    {showComp ? fmt(compData.projectedTotal) : '₹ •••••'}
+                  </p>
+                  <p className="text-[10px] text-slate-400">if trend holds</p>
+                </div>
               </div>
             </div>
           )}
