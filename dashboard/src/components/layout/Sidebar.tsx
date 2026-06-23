@@ -15,62 +15,79 @@ interface NavItem {
   icon: string;
   roles?: Role[];
   activeOn?: string[];
+  group: string;
 }
 
 const EMPLOYEE_ROLES: Role[] = ['telecaller', 'agent', 'intern'];
 
 const ALL_NAV: NavItem[] = [
-  // ── Admin-only ─────────────────────────────────
-  { href: '/admin/dashboard',    label: 'Admin Overview', icon: '🔑',  roles: ['admin'] },
-  { href: '/admin/employees', label: 'Team', icon: '👥', roles: ['admin'], activeOn: ['/admin/employees', '/admin/attendance', '/admin/compensation'] },
-  { href: '/admin/bulk-entry',   label: 'Bulk Entry',     icon: '📋',  roles: ['admin'] },
-  { href: '/admin/analytics',    label: 'Analytics',      icon: '📈',  roles: ['admin'] },
-  { href: '/admin/verification', label: 'Verify Metrics', icon: '✅',  roles: ['admin'] },
-  { href: '/admin/audit',        label: 'Audit Logs',     icon: '🔍',  roles: ['admin'] },
-  { href: '/admin/crm',          label: 'CRM',            icon: '🤝',  roles: ['admin'] },
-  { href: '/admin/whatsapp',     label: 'WA Inbox',       icon: '💬',  roles: ['admin'] },
-  { href: '/admin/targets',      label: 'Targets',        icon: '🎯',  roles: ['admin'] },
-  { href: '/admin/billing',      label: 'Billing & Plan', icon: '💳',  roles: ['admin'] },
-  // ── Manager (admin can see too) ─────────────────
-  { href: '/manager/dashboard',      label: 'Team Overview',  icon: '👔', roles: ['admin', 'manager'] },
-  { href: '/manager/verify-metrics', label: 'Verify Metrics', icon: '✅', roles: ['admin', 'manager'] },
-  { href: '/manager/attendance',     label: 'Attendance',     icon: '📅', roles: ['manager'] },
-  // ── Team Lead ──────────────────────────────────
-  { href: '/team-lead/dashboard',      label: 'Team Overview',  icon: '👥', roles: ['team_lead'] },
-  { href: '/team-lead/verify-metrics', label: 'Verify Metrics', icon: '✅', roles: ['team_lead'] },
-  // ── Employee ───────────────────────────────────
-  { href: '/employee/dashboard',    label: 'My Dashboard', icon: '📊', roles: EMPLOYEE_ROLES },
-  { href: '/employee/daily-entry',  label: 'Daily Entry',  icon: '✏️', roles: EMPLOYEE_ROLES },
-  { href: '/employee/achievements',  label: 'Achievements', icon: '🏅', roles: EMPLOYEE_ROLES },
-  { href: '/employee/compensation',  label: 'My Pay',       icon: '💰', roles: EMPLOYEE_ROLES },
-  { href: '/employee/crm',           label: 'My Leads',     icon: '🤝', roles: EMPLOYEE_ROLES },
-  { href: '/employee/attendance',    label: 'Attendance',   icon: '📅', roles: EMPLOYEE_ROLES },
-  // ── Shared ─────────────────────────────────────
-  { href: '/leaderboard', label: 'Leaderboard', icon: '🏆' },
-  { href: '/profile',     label: 'Profile',     icon: '👤' },
-  { href: '/settings',    label: 'Settings',    icon: '⚙️' },
+  // ── Admin ──────────────────────────────────────────────────────────────────
+  { href: '/admin/dashboard',    label: 'Dashboard',      icon: '🔑', roles: ['admin'],   group: 'overview'     },
+  { href: '/admin/crm',          label: 'CRM',            icon: '🤝', roles: ['admin'],   group: 'sales'        },
+  { href: '/admin/whatsapp',     label: 'WhatsApp',       icon: '💬', roles: ['admin'],   group: 'sales'        },
+  { href: '/admin/targets',      label: 'Targets',        icon: '🎯', roles: ['admin'],   group: 'performance'  },
+  { href: '/admin/analytics',    label: 'Analytics',      icon: '📈', roles: ['admin'],   group: 'performance'  },
+  { href: '/admin/bulk-entry',   label: 'Bulk Entry',     icon: '📋', roles: ['admin'],   group: 'performance'  },
+  { href: '/admin/verification', label: 'Verify Metrics', icon: '✅', roles: ['admin'],   group: 'performance'  },
+  { href: '/admin/employees',    label: 'Team',           icon: '👥', roles: ['admin'],   group: 'team',
+    activeOn: ['/admin/employees', '/admin/attendance', '/admin/compensation'] },
+  { href: '/admin/audit',        label: 'Audit Logs',     icon: '🔍', roles: ['admin'],   group: 'system'       },
+  { href: '/admin/billing',      label: 'Billing & Plan', icon: '💳', roles: ['admin'],   group: 'system'       },
+  // ── Manager ────────────────────────────────────────────────────────────────
+  { href: '/manager/dashboard',      label: 'Team Overview',  icon: '👔', roles: ['manager'],   group: 'overview'    },
+  { href: '/manager/verify-metrics', label: 'Verify Metrics', icon: '✅', roles: ['manager'],   group: 'operations'  },
+  { href: '/manager/attendance',     label: 'Attendance',     icon: '📅', roles: ['manager'],   group: 'operations'  },
+  // ── Team Lead ──────────────────────────────────────────────────────────────
+  { href: '/team-lead/dashboard',      label: 'Team Overview',  icon: '👥', roles: ['team_lead'], group: 'overview'   },
+  { href: '/team-lead/verify-metrics', label: 'Verify Metrics', icon: '✅', roles: ['team_lead'], group: 'operations' },
+  // ── Employee ───────────────────────────────────────────────────────────────
+  { href: '/employee/dashboard',   label: 'My Dashboard', icon: '📊', roles: EMPLOYEE_ROLES, group: 'my-work'     },
+  { href: '/employee/daily-entry', label: 'Daily Entry',  icon: '✏️', roles: EMPLOYEE_ROLES, group: 'my-work'     },
+  { href: '/employee/crm',         label: 'My Leads',     icon: '🤝', roles: EMPLOYEE_ROLES, group: 'my-work'     },
+  { href: '/employee/achievements', label: 'Achievements', icon: '🏅', roles: EMPLOYEE_ROLES, group: 'my-progress' },
+  { href: '/employee/compensation', label: 'My Pay',       icon: '💰', roles: EMPLOYEE_ROLES, group: 'my-progress' },
+  { href: '/employee/attendance',   label: 'Attendance',   icon: '📅', roles: EMPLOYEE_ROLES, group: 'my-progress' },
+  // ── Shared ─────────────────────────────────────────────────────────────────
+  { href: '/leaderboard', label: 'Leaderboard', icon: '🏆', group: 'general' },
+  { href: '/profile',     label: 'Profile',     icon: '👤', group: 'general' },
+  { href: '/settings',    label: 'Settings',    icon: '⚙️', group: 'general' },
+];
+
+const ADMIN_GROUPS    = [
+  { key: 'overview',    label: 'Overview'     },
+  { key: 'sales',       label: 'Sales'        },
+  { key: 'performance', label: 'Performance'  },
+  { key: 'team',        label: 'Team'         },
+  { key: 'system',      label: 'System'       },
+];
+const MANAGER_GROUPS   = [
+  { key: 'overview',   label: 'Overview'    },
+  { key: 'operations', label: 'Operations'  },
+];
+const TEAM_LEAD_GROUPS = [
+  { key: 'overview',   label: 'Overview'   },
+  { key: 'operations', label: 'Operations' },
+];
+const EMPLOYEE_GROUPS  = [
+  { key: 'my-work',     label: 'My Work'     },
+  { key: 'my-progress', label: 'My Progress' },
 ];
 
 function SectionLabel({ label }: { label: string }) {
   return (
-    <p className="mb-1 mt-3 px-3 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
+    <p className="mb-1 mt-4 px-3 text-[10px] font-semibold uppercase tracking-widest text-slate-400">
       {label}
     </p>
   );
 }
 
-function NavItemLink({
-  item,
-  pathname,
-  onNavigate,
-}: {
-  item: NavItem;
-  pathname: string;
-  onNavigate: () => void;
+function NavItemLink({ item, pathname, onNavigate }: {
+  item: NavItem; pathname: string; onNavigate: () => void;
 }) {
-  const active = pathname === item.href
-    || pathname.startsWith(item.href + '/')
-    || (item.activeOn ?? []).some((p) => pathname === p || pathname.startsWith(p + '/'));
+  const active =
+    pathname === item.href ||
+    pathname.startsWith(item.href + '/') ||
+    (item.activeOn ?? []).some((p) => pathname === p || pathname.startsWith(p + '/'));
   return (
     <Link
       href={item.href}
@@ -87,6 +104,30 @@ function NavItemLink({
   );
 }
 
+function GroupedNav({ items, groups, pathname, onNavigate }: {
+  items: NavItem[];
+  groups: { key: string; label: string }[];
+  pathname: string;
+  onNavigate: () => void;
+}) {
+  return (
+    <>
+      {groups.map(({ key, label }) => {
+        const groupItems = items.filter((i) => i.group === key);
+        if (!groupItems.length) return null;
+        return (
+          <div key={key}>
+            <SectionLabel label={label} />
+            {groupItems.map((item) => (
+              <NavItemLink key={item.href} item={item} pathname={pathname} onNavigate={onNavigate} />
+            ))}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 export function Sidebar({ forceMobile = false }: { forceMobile?: boolean }) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
@@ -97,13 +138,15 @@ export function Sidebar({ forceMobile = false }: { forceMobile?: boolean }) {
 
   if (!sidebarOpen && !forceMobile) return null;
 
-  const visible = ALL_NAV.filter(i => !i.roles || i.roles.includes(userRole));
+  const roleItems = ALL_NAV.filter((i) => !i.roles || i.roles.includes(userRole));
+  const ownItems  = roleItems.filter((i) => i.roles);
+  const general   = roleItems.filter((i) => !i.roles);
 
-  const adminItems    = visible.filter(i => i.roles?.includes('admin') && !i.roles?.includes('manager'));
-  const managerItems  = visible.filter(i => i.roles?.includes('manager'));
-  const teamLeadItems = visible.filter(i => i.roles?.includes('team_lead'));
-  const employeeItems = visible.filter(i => EMPLOYEE_ROLES.some(r => i.roles?.includes(r)));
-  const generalItems  = visible.filter(i => !i.roles);
+  const groups =
+    userRole === 'admin'     ? ADMIN_GROUPS    :
+    userRole === 'manager'   ? MANAGER_GROUPS  :
+    userRole === 'team_lead' ? TEAM_LEAD_GROUPS :
+    EMPLOYEE_GROUPS;
 
   return (
     <aside className="flex h-screen w-full flex-col border-r border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900 md:w-60">
@@ -115,53 +158,23 @@ export function Sidebar({ forceMobile = false }: { forceMobile?: boolean }) {
       >
         <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-xl">💼</div>
         <div>
-          <p className="text-sm font-bold text-slate-900 dark:text-white">Viir Employee Hub</p>
+          <p className="text-sm font-bold text-slate-900 dark:text-white">APForce</p>
           <p className="text-[10px] text-slate-400">v2.0 Pro</p>
         </div>
       </Link>
 
       {/* Nav */}
       <nav className="scrollbar-thin flex-1 space-y-0.5 overflow-y-auto">
-        {userRole === 'admin' && adminItems.length > 0 && (
-          <>
-            <SectionLabel label="Admin" />
-            {adminItems.map(item => (
-              <NavItemLink key={item.href} item={item} pathname={pathname} onNavigate={closeMobileSidebar} />
-            ))}
-          </>
-        )}
-
-        {(userRole === 'admin' || userRole === 'manager') && managerItems.length > 0 && (
-          <>
-            <SectionLabel label="Manager" />
-            {managerItems.map(item => (
-              <NavItemLink key={item.href} item={item} pathname={pathname} onNavigate={closeMobileSidebar} />
-            ))}
-          </>
-        )}
-
-        {userRole === 'team_lead' && teamLeadItems.length > 0 && (
-          <>
-            <SectionLabel label="Team Lead" />
-            {teamLeadItems.map(item => (
-              <NavItemLink key={item.href} item={item} pathname={pathname} onNavigate={closeMobileSidebar} />
-            ))}
-          </>
-        )}
-
-        {EMPLOYEE_ROLES.includes(userRole) && employeeItems.length > 0 && (
-          <>
-            <SectionLabel label="Employee" />
-            {employeeItems.map(item => (
-              <NavItemLink key={item.href} item={item} pathname={pathname} onNavigate={closeMobileSidebar} />
-            ))}
-          </>
-        )}
-
-        {generalItems.length > 0 && (
+        <GroupedNav
+          items={ownItems}
+          groups={groups}
+          pathname={pathname}
+          onNavigate={closeMobileSidebar}
+        />
+        {general.length > 0 && (
           <>
             <SectionLabel label="General" />
-            {generalItems.map(item => (
+            {general.map((item) => (
               <NavItemLink key={item.href} item={item} pathname={pathname} onNavigate={closeMobileSidebar} />
             ))}
           </>
