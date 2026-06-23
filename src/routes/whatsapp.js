@@ -1040,18 +1040,28 @@ router.post('/inbox/:leadId/mark-read', authMiddleware, async (req, res, next) =
   } catch (err) { next(err); }
 });
 
-// ── GET /api/whatsapp/media/:mediaId — proxy Meta media download URL ──────────
+// ── GET /api/whatsapp/media/:mediaId — proxy Meta media bytes ─────────────────
 router.get('/media/:mediaId', authMiddleware, async (req, res, next) => {
   try {
     const cfg = await getWabaConfig(req.user.companyId);
     if (!cfg?.accessToken) return res.status(403).json({ error: 'WhatsApp not configured' });
+
+    // Step 1: resolve the short-lived download URL from Meta
     const metaRes = await axios.get(`${GRAPH}/${req.params.mediaId}`, {
       params: { access_token: cfg.accessToken },
     });
     const mediaUrl = metaRes.data?.url;
     if (!mediaUrl) return res.status(404).json({ error: 'Media not found' });
-    // Redirect to the short-lived Meta URL
-    res.redirect(mediaUrl);
+
+    // Step 2: fetch the actual bytes — Meta requires Authorization header (redirect won't work)
+    const mediaStream = await axios.get(mediaUrl, {
+      headers: { Authorization: `Bearer ${cfg.accessToken}` },
+      responseType: 'stream',
+    });
+
+    res.setHeader('Content-Type', mediaStream.headers['content-type'] ?? 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    mediaStream.data.pipe(res);
   } catch (err) { next(err); }
 });
 
