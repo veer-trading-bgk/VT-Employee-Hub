@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { TeamSubNav } from '@/components/layout/TeamSubNav';
 import { Loading } from '@/components/common/Loading';
@@ -36,6 +36,26 @@ interface UserAttendanceDetail {
   attendancePct: number;
   records: { date: string; checkInTime: string; source: string }[];
 }
+
+interface LeaveRequest {
+  leaveId: string;
+  userId: string;
+  userName?: string | null;
+  userEmail?: string | null;
+  startDate: string;
+  endDate: string;
+  reason: string;
+  type: string;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt: string;
+  reviewNote?: string | null;
+}
+
+const LEAVE_STATUS_COLORS: Record<string, string> = {
+  pending:  'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+  approved: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+  rejected: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
+};
 
 function currentMonthStr() {
   const n = new Date();
@@ -75,9 +95,13 @@ function dotColor(pct: number) {
 }
 
 export default function AdminAttendancePage() {
+  const queryClient = useQueryClient();
   const [month, setMonth] = useState(currentMonthStr());
   const [search, setSearch] = useState('');
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
+  const [leaveTab, setLeaveTab] = useState<'pending' | 'all'>('pending');
+  const [reviewingLeave, setReviewingLeave] = useState<LeaveRequest | null>(null);
+  const [reviewNote, setReviewNote] = useState('');
   const isCurrentMonth = month === currentMonthStr();
   const today = new Date().toISOString().slice(0, 10);
 
@@ -98,6 +122,27 @@ export default function AdminAttendancePage() {
     queryFn: () => apiFetch<UserAttendanceDetail>(`/api/attendance/${selectedUser}?month=${month}`),
     enabled: !!selectedUser,
     staleTime: 60_000,
+  });
+
+  const { data: leavesData, isLoading: leavesLoading } = useQuery({
+    queryKey: ['admin-leaves', leaveTab],
+    queryFn: () => apiFetch<{ success: boolean; leaves: LeaveRequest[] }>(
+      `/api/attendance/leave/admin${leaveTab === 'pending' ? '?status=pending' : ''}`
+    ),
+    staleTime: 60_000,
+  });
+
+  const reviewMutation = useMutation({
+    mutationFn: ({ leave, status }: { leave: LeaveRequest; status: 'approved' | 'rejected' }) =>
+      apiFetch(`/api/attendance/leave/${leave.userId}/${leave.leaveId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ status, reviewNote: reviewNote.trim() || null }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin-leaves'] });
+      setReviewingLeave(null);
+      setReviewNote('');
+    },
   });
 
   const empMap = Object.fromEntries((empData?.data ?? []).map((e) => [e.id, e]));
@@ -334,6 +379,136 @@ export default function AdminAttendancePage() {
               </div>
             )}
           </div>
+
+          {/* ── Leave Management ────────────────────────────────────────── */}
+          <div>
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <h2 className="text-base font-semibold text-slate-900 dark:text-white">Leave Requests</h2>
+                {(leavesData?.leaves ?? []).filter((l) => l.status === 'pending').length > 0 && leaveTab === 'pending' && (
+                  <span className="rounded-full bg-amber-500 px-2.5 py-0.5 text-xs font-bold text-white">
+                    {(leavesData?.leaves ?? []).filter((l) => l.status === 'pending').length} pending
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1 dark:border-slate-700 dark:bg-slate-900">
+                {(['pending', 'all'] as const).map((tab) => (
+                  <button key={tab} onClick={() => setLeaveTab(tab)}
+                    className={`rounded px-3 py-1 text-xs font-semibold capitalize transition ${
+                      leaveTab === tab
+                        ? 'bg-indigo-600 text-white'
+                        : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    {tab === 'pending' ? 'Pending' : 'All'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {leavesLoading ? (
+              <Loading size="sm" />
+            ) : (leavesData?.leaves ?? []).length === 0 ? (
+              <div className="rounded-xl border border-slate-200 bg-white p-8 text-center dark:border-slate-800 dark:bg-slate-900">
+                <p className="text-sm text-slate-400">
+                  {leaveTab === 'pending' ? 'No pending leave requests' : 'No leave requests found'}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {(leavesData?.leaves ?? []).map((leave) => (
+                  <div key={leave.leaveId} className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                          <p className="font-semibold text-slate-900 dark:text-white">
+                            {leave.userName ?? empMap[leave.userId]?.name ?? leave.userId}
+                          </p>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold capitalize ${LEAVE_STATUS_COLORS[leave.status]}`}>
+                            {leave.status === 'pending' ? '⏳ Pending' : leave.status === 'approved' ? '✓ Approved' : '✕ Rejected'}
+                          </span>
+                        </div>
+                        <p className="text-sm text-slate-600 dark:text-slate-400">
+                          {leave.startDate === leave.endDate
+                            ? new Date(leave.startDate + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                            : `${new Date(leave.startDate + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(leave.endDate + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}`}
+                          <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500 dark:bg-slate-800 capitalize">{leave.type}</span>
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">{leave.reason}</p>
+                        {leave.reviewNote && (
+                          <p className="mt-1 text-xs text-slate-400 italic">Note: {leave.reviewNote}</p>
+                        )}
+                      </div>
+                      {leave.status === 'pending' && (
+                        <div className="flex gap-2 flex-shrink-0">
+                          <button
+                            onClick={() => { setReviewingLeave(leave); setReviewNote(''); }}
+                            className="rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"
+                          >
+                            Review
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* ── Review Modal ──────────────────────────────────────────────── */}
+          {reviewingLeave && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+              <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl dark:bg-slate-900">
+                <div className="mb-4 flex items-start justify-between">
+                  <div>
+                    <h3 className="font-semibold text-slate-900 dark:text-white">Review Leave Request</h3>
+                    <p className="mt-0.5 text-sm text-slate-500">
+                      {reviewingLeave.userName ?? reviewingLeave.userId} · {reviewingLeave.startDate === reviewingLeave.endDate
+                        ? new Date(reviewingLeave.startDate + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
+                        : `${new Date(reviewingLeave.startDate + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} – ${new Date(reviewingLeave.endDate + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`}
+                    </p>
+                  </div>
+                  <button onClick={() => setReviewingLeave(null)} className="text-slate-400 hover:text-slate-600">✕</button>
+                </div>
+
+                <div className="mb-4 rounded-lg bg-slate-50 p-3 dark:bg-slate-800">
+                  <p className="text-xs font-medium text-slate-500 mb-1">Reason</p>
+                  <p className="text-sm text-slate-700 dark:text-slate-300">{reviewingLeave.reason}</p>
+                </div>
+
+                <div className="mb-4">
+                  <label className="mb-1.5 block text-xs font-medium text-slate-600 dark:text-slate-400">
+                    Note (optional)
+                  </label>
+                  <textarea
+                    value={reviewNote}
+                    onChange={(e) => setReviewNote(e.target.value)}
+                    placeholder="Add a note for the employee…"
+                    rows={2}
+                    className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                  />
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => reviewMutation.mutate({ leave: reviewingLeave, status: 'rejected' })}
+                    disabled={reviewMutation.isPending}
+                    className="flex-1 rounded-lg border border-red-200 bg-red-50 py-2.5 text-sm font-semibold text-red-600 hover:bg-red-100 disabled:opacity-50 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400"
+                  >
+                    Reject
+                  </button>
+                  <button
+                    onClick={() => reviewMutation.mutate({ leave: reviewingLeave, status: 'approved' })}
+                    disabled={reviewMutation.isPending}
+                    className="flex-1 rounded-lg bg-emerald-600 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    {reviewMutation.isPending ? 'Saving…' : 'Approve'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
         </div>
       </div>

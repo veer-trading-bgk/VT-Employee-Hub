@@ -139,7 +139,7 @@ export default function AchievementsPage() {
                       >
                         <td className="py-2.5 pr-4 text-lg font-bold">{MEDAL[i] ?? `#${i + 1}`}</td>
                         <td className="py-2.5 pr-4 font-medium text-slate-900 dark:text-white">
-                          {row.email}{isMe && <span className="ml-2 text-xs text-indigo-500">(you)</span>}
+                          {row.name ?? row.email}{isMe && <span className="ml-2 text-xs text-indigo-500">(you)</span>}
                         </td>
                         <td className="py-2.5 pr-4">
                           <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-bold text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400">
