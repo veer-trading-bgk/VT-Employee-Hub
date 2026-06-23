@@ -258,15 +258,31 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
 
     const byUser = {};
     allItems.forEach((item) => {
-      byUser[item.userId] = (byUser[item.userId] ?? 0) + 1;
+      if (!byUser[item.userId]) byUser[item.userId] = { count: 0, dates: [], checkInTimes: [] };
+      byUser[item.userId].count++;
+      byUser[item.userId].dates.push(item.date);
+      if (item.checkInTime) byUser[item.userId].checkInTimes.push(item.checkInTime);
     });
 
-    const summary = Object.entries(byUser).map(([userId, daysPresent]) => ({
-      userId,
-      daysPresent,
-      daysInMonth,
-      attendancePct: Math.round((daysPresent / daysInMonth) * 100),
-    })).sort((a, b) => b.daysPresent - a.daysPresent);
+    const summary = Object.entries(byUser).map(([userId, { count, dates, checkInTimes }]) => {
+      let avgCheckIn = null;
+      if (checkInTimes.length > 0) {
+        const totalMins = checkInTimes.reduce((s, t) => {
+          const d = new Date(t);
+          return s + d.getHours() * 60 + d.getMinutes();
+        }, 0);
+        const avg = Math.round(totalMins / checkInTimes.length);
+        avgCheckIn = `${String(Math.floor(avg / 60)).padStart(2, '0')}:${String(avg % 60).padStart(2, '0')}`;
+      }
+      return {
+        userId,
+        daysPresent: count,
+        daysInMonth,
+        attendancePct: Math.round((count / daysInMonth) * 100),
+        presentDates: dates,
+        avgCheckIn,
+      };
+    }).sort((a, b) => b.daysPresent - a.daysPresent);
 
     res.json({ success: true, month, daysInMonth, summary });
   } catch (error) {

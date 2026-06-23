@@ -6,6 +6,7 @@ import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { toast } from 'sonner';
 
 interface AttendanceRecord {
   date: string;
@@ -130,7 +131,11 @@ export default function EmployeeAttendancePage() {
 
   const markMutation = useMutation({
     mutationFn: () => apiFetch('/api/attendance/mark', { method: 'POST', body: JSON.stringify({ source: 'manual' }) }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['emp-attendance', user?.id, month] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['emp-attendance', user?.id, month] });
+      toast.success('Attendance marked for today!');
+    },
+    onError: (e: Error) => toast.error(e.message ?? 'Failed to mark attendance'),
   });
 
   const leaveMutation = useMutation({
@@ -140,12 +145,25 @@ export default function EmployeeAttendancePage() {
       queryClient.invalidateQueries({ queryKey: ['emp-leaves', user?.id] });
       setShowLeaveForm(false);
       setLeaveForm({ startDate: today, endDate: today, type: 'casual', reason: '' });
+      toast.success('Leave request submitted successfully');
     },
+    onError: (e: Error) => toast.error(e.message ?? 'Failed to submit leave request'),
   });
 
   const presentDates = new Set((data?.records ?? []).map((r) => r.date));
   const alreadyMarkedToday = presentDates.has(today);
   const calendar = buildCalendar(month);
+
+  const avgCheckIn = (() => {
+    const times = (data?.records ?? []).filter(r => r.checkInTime);
+    if (!times.length) return null;
+    const totalMins = times.reduce((s, r) => {
+      const d = new Date(r.checkInTime);
+      return s + d.getHours() * 60 + d.getMinutes();
+    }, 0);
+    const avg = Math.round(totalMins / times.length);
+    return `${String(Math.floor(avg / 60)).padStart(2, '0')}:${String(avg % 60).padStart(2, '0')}`;
+  })();
 
   const streak = (() => {
     let count = 0;
@@ -208,7 +226,7 @@ export default function EmployeeAttendancePage() {
             <div className="flex justify-center py-12"><Loading /></div>
           ) : (
             <>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 <div className="rounded-xl border border-slate-200 bg-white p-4 text-center dark:border-slate-800 dark:bg-slate-900">
                   <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">{data?.daysPresent ?? 0}</p>
                   <p className="mt-0.5 text-xs text-slate-500">Days Present</p>
@@ -220,6 +238,10 @@ export default function EmployeeAttendancePage() {
                 <div className="rounded-xl border border-slate-200 bg-white p-4 text-center dark:border-slate-800 dark:bg-slate-900">
                   <p className="text-2xl font-bold text-amber-600 dark:text-amber-400">{streak}</p>
                   <p className="mt-0.5 text-xs text-slate-500">Day Streak</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white p-4 text-center dark:border-slate-800 dark:bg-slate-900">
+                  <p className="text-2xl font-bold tabular-nums text-slate-700 dark:text-slate-300">{avgCheckIn ?? '—'}</p>
+                  <p className="mt-0.5 text-xs text-slate-500">Avg Check-in</p>
                 </div>
               </div>
 
