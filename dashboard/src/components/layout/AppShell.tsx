@@ -5,7 +5,6 @@ import { usePathname } from 'next/navigation';
 import { Sidebar } from './Sidebar';
 import { BottomNav } from './BottomNav';
 import { RouteProgress } from './RouteProgress';
-import { SessionWarning } from './SessionWarning';
 import { ScrollToTop } from './ScrollToTop';
 import { ProtectedRoute } from './ProtectedRoute';
 import { useUIStore } from '@/store/uiStore';
@@ -85,7 +84,6 @@ export function AppShell({
       </div>
 
       <RouteProgress />
-      <SessionWarning />
       <ScrollToTop />
     </ProtectedRoute>
   );

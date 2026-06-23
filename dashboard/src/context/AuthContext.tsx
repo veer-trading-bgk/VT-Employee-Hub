@@ -1,11 +1,9 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { api, ApiClientError, UserShape, setMemoryToken } from '@/lib/api';
 import type { User } from '@/types';
-
-const SESSION_TIMEOUT_MS = Number(process.env.NEXT_PUBLIC_SESSION_TIMEOUT_MS ?? 900000);
 
 export interface TotpChallenge {
   tempToken: string;
@@ -15,13 +13,8 @@ export interface TotpChallenge {
 interface AuthContextValue {
   user: User | null;
   loading: boolean;
-  sessionWarning: boolean;
-  extendSession: () => void;
-  /** Returns a TotpChallenge if 2FA is required, otherwise navigates to dashboard. */
   login: (email: string, password: string) => Promise<TotpChallenge | null>;
-  /** Complete the 2FA step with a 6-digit TOTP code. */
   verifyTotp: (challenge: TotpChallenge, totpCode: string) => Promise<void>;
-  /** Complete the 2FA step with an 8-char backup code. */
   verifyBackupCode: (tempToken: string, email: string, backupCode: string) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -31,42 +24,14 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [sessionWarning, setSessionWarning] = useState(false);
   const router = useRouter();
-  const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const warnTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const logout = useCallback(async () => {
     try { await api.logout(); } catch { /* best-effort */ }
     setMemoryToken(null);
     setUser(null);
-    setSessionWarning(false);
     router.push('/login');
   }, [router]);
-
-  const resetIdleTimer = useCallback(() => {
-    if (idleTimer.current) clearTimeout(idleTimer.current);
-    if (warnTimer.current) clearTimeout(warnTimer.current);
-    setSessionWarning(false);
-    const warningDelay = Math.max(SESSION_TIMEOUT_MS - 60_000, 0);
-    warnTimer.current = setTimeout(() => setSessionWarning(true), warningDelay);
-    idleTimer.current = setTimeout(logout, SESSION_TIMEOUT_MS);
-  }, [logout]);
-
-  const extendSession = useCallback(() => {
-    resetIdleTimer();
-  }, [resetIdleTimer]);
-
-  useEffect(() => {
-    if (!user) return;
-    const events = ['mousemove', 'keydown', 'click', 'scroll'];
-    events.forEach((e) => window.addEventListener(e, resetIdleTimer));
-    resetIdleTimer();
-    return () => {
-      events.forEach((e) => window.removeEventListener(e, resetIdleTimer));
-      if (idleTimer.current) clearTimeout(idleTimer.current);
-    };
-  }, [user, resetIdleTimer]);
 
   // Restore session from cookie on load
   useEffect(() => {
@@ -90,11 +55,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { tempToken: res.tempToken, email };
       }
 
-      // Store token in memory so Bearer header works even if cross-origin cookies are blocked
       if ('token' in res) setMemoryToken(res.token);
       const u = res.user as User;
       setUser(u);
-      // Redirect to role-specific dashboard
       const dest = u.role === 'admin' ? '/admin/dashboard'
                  : u.role === 'manager' ? '/manager/dashboard'
                  : '/employee/dashboard';
@@ -139,7 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [router]);
 
   return (
-    <AuthContext.Provider value={{ user, loading, sessionWarning, extendSession, login, verifyTotp, verifyBackupCode, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, verifyTotp, verifyBackupCode, logout }}>
       {children}
     </AuthContext.Provider>
   );
