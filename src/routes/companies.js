@@ -99,7 +99,8 @@ router.get('/trial', async (req, res, next) => {
     const result = await dynamodb.get({
       TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
       Key: companyKey(companyId),
-      ProjectionExpression: 'plan, trialEndsAt, planStatus, companyName',
+      ProjectionExpression: '#plan, trialEndsAt, planStatus, companyName',
+      ExpressionAttributeNames: { '#plan': 'plan' },
     }).promise();
 
     if (!result.Item) return res.json({ hasTrial: false });
