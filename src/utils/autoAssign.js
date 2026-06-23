@@ -1,20 +1,8 @@
-/**
- * Auto-assign a CRM lead to the least-loaded active performer.
- *
- * Rule: each employee can hold up to CAPACITY open leads.
- * "Open" means stage is not converted or churned.
- * The employee with the fewest open leads who is still under capacity is
- * picked first. If everyone is at capacity, the absolute least-loaded is used
- * (no hard block — just a soft target).
- */
-
 const dynamodb = require('../config/dynamodb');
 
-const METRICS_TABLE = process.env.DYNAMODB_TABLE_METRICS;
-const EMP_TABLE     = process.env.DYNAMODB_TABLE_EMPLOYEES;
-
-const CAPACITY       = 5;
-const CLOSED_STAGES  = new Set(['converted', 'churned']);
+const METRICS_TABLE   = process.env.DYNAMODB_TABLE_METRICS;
+const EMP_TABLE       = process.env.DYNAMODB_TABLE_EMPLOYEES;
+const CLOSED_STAGES   = new Set(['converted', 'churned']);
 const PERFORMER_ROLES = ['telecaller', 'agent', 'intern'];
 
 async function getAutoAssignConfig(companyId) {
@@ -29,7 +17,11 @@ async function getAutoAssignConfig(companyId) {
   }
 }
 
-async function pickNextEmployee(companyId) {
+async function pickNextEmployee(companyId, source, cfg) {
+  const capacity = cfg?.capacity ?? 5;
+  const overflow = cfg?.overflow ?? 'assign';
+  const pool     = cfg?.pools?.[source] ?? [];
+
   // 1. Fetch all active performers for this company
   const empResult = await dynamodb.scan({
     TableName: EMP_TABLE,
@@ -42,10 +34,21 @@ async function pickNextEmployee(companyId) {
     },
   }).promise();
 
-  const employees = empResult.Items ?? [];
+  let employees = empResult.Items ?? [];
   if (!employees.length) return null;
 
-  // 2. Count open leads per employee (exclude converted/churned)
+  // 2. Filter out employees opted out of auto-assign
+  employees = employees.filter(e => e.autoAssignEnabled !== false);
+
+  // 3. Filter by source pool if configured (empty pool = all employees)
+  if (pool.length > 0) {
+    const poolSet = new Set(pool);
+    employees = employees.filter(e => poolSet.has(e.id));
+  }
+
+  if (!employees.length) return null;
+
+  // 4. Count open leads per employee
   const empIds = new Set(employees.map(e => e.id));
   const counts = Object.fromEntries(employees.map(e => [e.id, 0]));
 
@@ -66,15 +69,21 @@ async function pickNextEmployee(companyId) {
     lk = r.LastEvaluatedKey;
   } while (lk);
 
-  // 3. Sort: under-capacity first, then fewest leads
+  // 5. Sort weighted least-loaded: rank by openLeads / weight so higher-weight employees
+  //    receive proportionally more leads before being considered "full"
   const sorted = [...employees].sort((a, b) => {
-    const ca = counts[a.id];
-    const cb = counts[b.id];
-    if ((ca < CAPACITY) !== (cb < CAPACITY)) return ca < CAPACITY ? -1 : 1;
-    return ca - cb;
+    const wa = a.autoAssignWeight ?? 1;
+    const wb = b.autoAssignWeight ?? 1;
+    return (counts[a.id] / wa) - (counts[b.id] / wb);
   });
 
-  return sorted[0] ?? null;
+  const best = sorted[0];
+  if (!best) return null;
+
+  // 6. Overflow: if hard-cap mode and best candidate is already at/over capacity, return null
+  if (overflow === 'unassigned' && counts[best.id] >= capacity) return null;
+
+  return best;
 }
 
-module.exports = { getAutoAssignConfig, pickNextEmployee, CAPACITY };
+module.exports = { getAutoAssignConfig, pickNextEmployee };

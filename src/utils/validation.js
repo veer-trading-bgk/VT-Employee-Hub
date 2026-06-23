@@ -49,6 +49,8 @@ const updateEmployeeSchema = z.object({
   homeAddress: z.string().max(300).optional(),
   teamLeadId: z.string().nullable().optional(), // null = remove assignment
   baseSalary: z.number().min(0).max(1000000).nullable().optional(),
+  autoAssignEnabled: z.boolean().optional(),
+  autoAssignWeight: z.number().int().min(1).max(10).optional(),
 }).strict();
 
 const companySignupSchema = z.object({

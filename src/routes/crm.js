@@ -168,14 +168,16 @@ router.post('/leads', authMiddleware, async (req, res, next) => {
     // Auto-assign: if no explicit assignee, pick least-loaded performer
     let resolvedAssignedTo   = assignedTo   ?? null;
     let resolvedAssignedName = assignedToName ?? null;
+    let wasAutoAssigned      = false;
     if (!resolvedAssignedTo) {
       try {
         const cfg = await getAutoAssignConfig(companyId);
         if (cfg.enabled) {
-          const picked = await pickNextEmployee(companyId);
+          const picked = await pickNextEmployee(companyId, 'crm', cfg);
           if (picked) {
             resolvedAssignedTo   = picked.id;
             resolvedAssignedName = picked.name ?? null;
+            wasAutoAssigned      = true;
           }
         }
       } catch (e) { logger.warn('auto-assign error: ' + e.message); }
@@ -202,6 +204,7 @@ router.post('/leads', authMiddleware, async (req, res, next) => {
       closureDeadline: closureDeadline ?? null,
       assignedTo: resolvedAssignedTo,
       assignedToName: resolvedAssignedName,
+      autoAssigned: wasAutoAssigned,
       createdBy: req.user.id,
       createdAt: now,
       updatedAt: now,

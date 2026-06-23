@@ -554,21 +554,30 @@ router.get('/crm/auto-assign', async (req, res, next) => {
 
 router.put('/crm/auto-assign', async (req, res, next) => {
   try {
-    const { enabled } = req.body;
+    const { enabled, capacity, overflow, pools } = req.body;
     if (typeof enabled !== 'boolean') {
       return res.status(400).json({ error: 'enabled (boolean) required' });
+    }
+    if (capacity !== undefined && (typeof capacity !== 'number' || capacity < 1 || capacity > 50)) {
+      return res.status(400).json({ error: 'capacity must be 1–50' });
+    }
+    if (overflow !== undefined && !['assign', 'unassigned'].includes(overflow)) {
+      return res.status(400).json({ error: 'overflow must be assign or unassigned' });
     }
     await dynamodb.put({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
       Item: {
         ...autoAssignKey(req.user.companyId),
         enabled,
+        capacity: capacity ?? 5,
+        overflow: overflow ?? 'assign',
+        pools: pools ?? {},
         updatedBy: req.user.id,
         updatedAt: new Date().toISOString(),
       },
     }).promise();
-    await logAudit(req.user.id, 'crm_auto_assign_toggle', enabled ? 'enabled' : 'disabled', 'success', req.ip);
-    logger.info(`Admin ${req.user.email} ${enabled ? 'enabled' : 'disabled'} CRM auto-assign`);
+    await logAudit(req.user.id, 'crm_auto_assign_update', `enabled:${enabled}`, 'success', req.ip, { capacity, overflow });
+    logger.info(`Admin ${req.user.email} updated CRM auto-assign: enabled=${enabled}, capacity=${capacity ?? 5}`);
     res.json({ success: true });
   } catch (err) { next(err); }
 });

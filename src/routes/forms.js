@@ -139,12 +139,13 @@ router.post('/:id/submit', async (req, res, next) => {
     // Auto-assign: use form's static assignee; fall back to auto-assign if none set
     let formAssignedTo   = form.defaultAssignedTo   ?? null;
     let formAssignedName = form.defaultAssignedToName ?? null;
+    let wasAutoAssigned  = false;
     if (!formAssignedTo) {
       try {
         const cfg = await getAutoAssignConfig(companyId);
         if (cfg.enabled) {
-          const picked = await pickNextEmployee(companyId);
-          if (picked) { formAssignedTo = picked.id; formAssignedName = picked.name ?? null; }
+          const picked = await pickNextEmployee(companyId, form.source ?? 'web_form', cfg);
+          if (picked) { formAssignedTo = picked.id; formAssignedName = picked.name ?? null; wasAutoAssigned = true; }
         }
       } catch (e) { logger.warn('form auto-assign error: ' + e.message); }
     }
@@ -161,6 +162,7 @@ router.post('/:id/submit', async (req, res, next) => {
       tags: [`form:${form.name}`],
       assignedTo: formAssignedTo,
       assignedToName: formAssignedName,
+      autoAssigned: wasAutoAssigned,
       createdBy: 'form_submit',
       createdAt: now, updatedAt: now,
       convertedAt: null,
@@ -269,6 +271,20 @@ router.post('/meta-leads/webhook', async (req, res, next) => {
 
         const leadId = uuidv4();
         const now = new Date().toISOString();
+
+        let metaAssignedTo   = form.defaultAssignedTo   ?? null;
+        let metaAssignedName = form.defaultAssignedToName ?? null;
+        let metaAutoAssigned = false;
+        if (!metaAssignedTo) {
+          try {
+            const cfg = await getAutoAssignConfig(companyId);
+            if (cfg.enabled) {
+              const picked = await pickNextEmployee(companyId, 'meta_lead_ads', cfg);
+              if (picked) { metaAssignedTo = picked.id; metaAssignedName = picked.name ?? null; metaAutoAssigned = true; }
+            }
+          } catch (e) { logger.warn('meta lead auto-assign error: ' + e.message); }
+        }
+
         await dynamodb.put({
           TableName: TABLE,
           Item: {
@@ -277,8 +293,9 @@ router.post('/meta-leads/webhook', async (req, res, next) => {
             productInterest: [], source: 'meta_lead_ads',
             notes: `Meta Lead Ads: leadgen_id=${lead.leadgen_id}`,
             stage: defaultStage, tags: ['meta-ads'],
-            assignedTo: form.defaultAssignedTo ?? null,
-            assignedToName: form.defaultAssignedToName ?? null,
+            assignedTo: metaAssignedTo,
+            assignedToName: metaAssignedName,
+            autoAssigned: metaAutoAssigned,
             createdBy: 'meta_lead_ads', createdAt: now, updatedAt: now, convertedAt: null,
           },
         }).promise();
