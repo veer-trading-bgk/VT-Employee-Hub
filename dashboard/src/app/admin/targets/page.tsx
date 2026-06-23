@@ -64,6 +64,12 @@ export default function AdminTargetsPage() {
     onError: (err: Error) => toast.error(err.message),
   });
 
+  const { mutate: rebuildPoints, isPending: isRebuilding } = useMutation({
+    mutationFn: () => apiFetch<{ success: boolean; employeesUpdated: number }>('/api/admin/points-rebuild', { method: 'POST' }),
+    onSuccess: (res) => toast.success(`Points rebuilt for ${res.employeesUpdated} employees`),
+    onError: (err: Error) => toast.error(err.message),
+  });
+
   const { mutate: reset, isPending: isResetting } = useMutation({
     mutationFn: () => apiFetch('/api/admin/targets', { method: 'DELETE' }),
     onSuccess: () => {
@@ -183,7 +189,7 @@ export default function AdminTargetsPage() {
         )}
 
         {!isLoading && (
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <button
               onClick={() => save()}
               disabled={isSaving || !dirty}
@@ -194,6 +200,19 @@ export default function AdminTargetsPage() {
             {dirty && (
               <span className="text-xs text-amber-600 dark:text-amber-400">Unsaved changes</span>
             )}
+            <div className="ml-auto">
+              <button
+                onClick={() => {
+                  if (confirm('Recalculate ALL employee points from raw metric data using current point weights?\n\nThis overwrites the Achievements leaderboard totals.')) {
+                    rebuildPoints();
+                  }
+                }}
+                disabled={isRebuilding}
+                className="rounded-lg border border-violet-200 px-4 py-2 text-sm font-medium text-violet-600 hover:bg-violet-50 disabled:opacity-50 dark:border-violet-800 dark:text-violet-400 dark:hover:bg-violet-950/20"
+              >
+                {isRebuilding ? '⏳ Rebuilding…' : '🔄 Rebuild Points'}
+              </button>
+            </div>
           </div>
         )}
 

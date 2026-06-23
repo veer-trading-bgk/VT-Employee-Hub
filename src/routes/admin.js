@@ -6,7 +6,7 @@ const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const { encrypt } = require('../utils/encryption');
 const { registerSchema, updateEmployeeSchema } = require('../utils/validation');
-const { TARGET_DEFAULTS, METRIC_KEYS, toDailyTargets, toMonthlyTargets } = require('../config/metricsConfig');
+const { METRIC_CONFIG, TARGET_DEFAULTS, METRIC_KEYS, toDailyTargets, toMonthlyTargets } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
 const bot = require('../config/telegram');
 const logger = require('../config/logger');
@@ -542,6 +542,81 @@ router.delete('/targets', async (req, res, next) => {
     await logAudit(req.user.id, 'reset_targets', 'config', 'success', req.ip);
     res.json({ success: true, message: 'Targets reset to defaults' });
   } catch (error) {
+    next(error);
+  }
+});
+
+// ── Points rebuild — recalculate stored TOTAL records from raw metric data ─────
+
+router.post('/points-rebuild', adminMiddleware, async (req, res, next) => {
+  try {
+    const { companyId } = req.user;
+
+    // Fetch current target config to get any custom pointsWeights
+    const cfgResult = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: targetsKey(companyId),
+    }).promise();
+    const targetCfg = cfgResult.Item?.targets ?? TARGET_DEFAULTS;
+
+    // Scan all metric entries for this company
+    const scanParams = {
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      FilterExpression: 'attribute_exists(metric_type) AND attribute_exists(userId)',
+    };
+    if (companyId) {
+      scanParams.FilterExpression += ' AND companyId = :cid';
+      scanParams.ExpressionAttributeValues = { ':cid': companyId };
+    }
+    const allMetrics = [];
+    let lastKey;
+    do {
+      const result = await dynamodb.scan({ ...scanParams, ...(lastKey && { ExclusiveStartKey: lastKey }) }).promise();
+      allMetrics.push(...(result.Items ?? []));
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+
+    // Accumulate points per user with current weights
+    const userTotals = {};
+    allMetrics.forEach((item) => {
+      if (!item.userId || !item.metric_type) return;
+      if (item.verificationStatus === 'rejected') return;
+      const cfg = METRIC_CONFIG[item.metric_type];
+      if (!cfg) return;
+      const w = targetCfg[item.metric_type]?.pointsWeight ?? cfg.pointsWeight;
+      const pts = Math.round(cfg.isCurrency ? (item.value || 0) / w : (item.value || 0) * w);
+      userTotals[item.userId] = (userTotals[item.userId] || 0) + pts;
+    });
+
+    const BADGES_TABLE = process.env.DYNAMODB_TABLE_BADGES || 'vt-badges';
+
+    // Delete existing TOTAL records
+    const existing = await dynamodb.scan({
+      TableName: BADGES_TABLE,
+      FilterExpression: 'SK = :sk',
+      ExpressionAttributeValues: { ':sk': 'TOTAL' },
+    }).promise();
+    await Promise.all(
+      (existing.Items ?? []).map((item) =>
+        dynamodb.delete({ TableName: BADGES_TABLE, Key: { PK: item.PK, SK: 'TOTAL' } }).promise()
+      )
+    );
+
+    // Write recalculated TOTAL records
+    await Promise.all(
+      Object.entries(userTotals).map(([userId, total]) =>
+        dynamodb.put({
+          TableName: BADGES_TABLE,
+          Item: { PK: `POINTS#${userId}`, SK: 'TOTAL', userId, total, rebuiltAt: new Date().toISOString() },
+        }).promise()
+      )
+    );
+
+    await logAudit(req.user.id, 'points_rebuild', 'all', 'success', req.ip, { employees: Object.keys(userTotals).length });
+    logger.info(`Admin ${req.user.email} rebuilt points for ${Object.keys(userTotals).length} employees`);
+    res.json({ success: true, employeesUpdated: Object.keys(userTotals).length });
+  } catch (error) {
+    logger.error('points-rebuild error', error);
     next(error);
   }
 });
