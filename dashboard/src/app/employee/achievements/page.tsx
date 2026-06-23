@@ -14,7 +14,7 @@ interface BadgesResponse {
 }
 
 interface PointsLeaderboardResponse {
-  data: { rank: number; email: string; totalPoints: number; badgeCount: number }[];
+  data: { rank: number; name: string; email: string; totalPoints: number; badgeCount: number }[];
 }
 
 export default function AchievementsPage() {
