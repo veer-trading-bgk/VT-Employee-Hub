@@ -6,6 +6,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch, ApiClientError } from '@/lib/api';
+import { CrmSubNav } from '@/components/layout/CrmSubNav';
 
 export interface PipelineStage {
   key: string;
@@ -177,8 +178,9 @@ export default function AdminCrmPage() {
   return (
     <>
       <Navbar title="CRM" showBack />
-      <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
-        <div className="flex h-[calc(100vh-56px)] flex-col">
+      <CrmSubNav />
+      <div className="bg-slate-50 dark:bg-slate-950">
+        <div className="flex h-[calc(100vh-97px)] flex-col">
 
           {/* Toolbar */}
           <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
@@ -201,10 +203,6 @@ export default function AdminCrmPage() {
             </select>
 
             <div className="ml-auto flex items-center gap-2">
-              <Link href="/admin/crm/settings"
-                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800">
-                ⚙ Settings
-              </Link>
               <Link href="/admin/crm/import"
                 className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-600 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-900/20 dark:text-indigo-400">
                 ↑ Import CSV

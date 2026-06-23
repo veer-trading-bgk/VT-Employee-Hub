@@ -6,6 +6,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LineCh
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
+import { CrmSubNav } from '@/components/layout/CrmSubNav';
 
 interface FunnelStage { key: string; label: string; color: string; count: number; conversionRate: number | null; }
 interface SourceEntry { source: string; count: number; }
@@ -43,7 +44,7 @@ export default function CrmAnalyticsPage() {
     refetchInterval: 5 * 60_000,
   });
 
-  if (isLoading) return <><Navbar title="CRM Analytics" showBack /><div className="flex justify-center py-20"><Loading /></div></>;
+  if (isLoading) return <><Navbar title="CRM Analytics" showBack /><CrmSubNav /><div className="flex justify-center py-20"><Loading /></div></>;
 
   const { summary, funnel, bySource, avgDaysPerStage, trend } = data ?? {
     summary: { total: 0, newToday: 0, newThisWeek: 0, convertedThisMonth: 0 },
@@ -55,6 +56,7 @@ export default function CrmAnalyticsPage() {
   return (
     <>
       <Navbar title="CRM Analytics" showBack />
+      <CrmSubNav />
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-5xl p-4 pb-10 space-y-5">
 

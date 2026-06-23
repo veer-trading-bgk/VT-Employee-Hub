@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch } from '@/lib/api';
+import { CrmSubNav } from '@/components/layout/CrmSubNav';
 
 interface Stage { key: string; label: string; color: string; }
 interface Employee { id: string; name: string; role: string; }
@@ -98,6 +99,7 @@ export default function LeadFormsPage() {
   return (
     <>
       <Navbar title="Lead Capture Forms" showBack />
+      <CrmSubNav />
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-4xl p-4 pb-10">
 

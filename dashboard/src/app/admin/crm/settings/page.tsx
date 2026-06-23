@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
+import { CrmSubNav } from '@/components/layout/CrmSubNav';
 import type { PipelineStage } from '../page';
 
 interface WabaConnection {
@@ -120,6 +121,7 @@ export default function CrmSettingsPage() {
   return (
     <>
       <Navbar title="CRM Settings" showBack />
+      <CrmSubNav />
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-2xl space-y-6 p-4 pb-10">
 

@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch } from '@/lib/api';
+import { WhatsAppSubNav } from '@/components/layout/WhatsAppSubNav';
 
 interface Template { id: string; name: string; templateName: string; variables: string[]; bodyPreview: string; }
 interface Stage { key: string; label: string; color: string; }
@@ -71,6 +72,7 @@ export default function BroadcastPage() {
   return (
     <>
       <Navbar title="Bulk Broadcast" showBack />
+      <WhatsAppSubNav />
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-4xl p-4 pb-10">
 

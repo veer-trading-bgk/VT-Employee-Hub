@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch } from '@/lib/api';
+import { WhatsAppSubNav } from '@/components/layout/WhatsAppSubNav';
 
 interface Template {
   id: string;
@@ -67,6 +68,7 @@ export default function TemplatesPage() {
   return (
     <>
       <Navbar title="WhatsApp Templates" showBack />
+      <WhatsAppSubNav />
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-4xl p-4 pb-10">
 

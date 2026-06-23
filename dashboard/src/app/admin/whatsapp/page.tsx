@@ -6,6 +6,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch } from '@/lib/api';
 import { TemplatePicker } from '@/components/whatsapp/TemplatePicker';
+import { WhatsAppSubNav } from '@/components/layout/WhatsAppSubNav';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ChatStatus = 'open' | 'unassigned' | 'resolved';
@@ -313,7 +314,8 @@ export default function WhatsAppInboxPage() {
   return (
     <>
       <Navbar title="WhatsApp Inbox" />
-      <div className="flex h-[calc(100vh-56px)] overflow-hidden bg-slate-50 dark:bg-slate-950">
+      <WhatsAppSubNav />
+      <div className="flex h-[calc(100vh-97px)] overflow-hidden bg-slate-50 dark:bg-slate-950">
 
         {/* ══ LEFT PANEL — conversation list ══════════════════════════════════ */}
         <div className={`flex w-full flex-shrink-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:w-[288px] ${selected ? 'hidden md:flex' : 'flex'}`}>

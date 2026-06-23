@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch } from '@/lib/api';
+import { CrmSubNav } from '@/components/layout/CrmSubNav';
 
 interface Stage { key: string; label: string; color: string; }
 interface Template { id: string; name: string; templateName: string; variables: string[]; }
@@ -140,6 +141,7 @@ export default function AutomationsPage() {
   return (
     <>
       <Navbar title="Automations" showBack />
+      <CrmSubNav />
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
         <div className="mx-auto max-w-3xl p-4 pb-10">
 
