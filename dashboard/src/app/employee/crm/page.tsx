@@ -158,19 +158,19 @@ export default function EmployeeCrmPage() {
 
           {/* ── Follow-up Priority Section ── */}
           <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Follow-up Queue</h2>
-              <div className="flex gap-1.5">
+            <div className="mb-3">
+              <h2 className="mb-2 text-sm font-semibold text-slate-900 dark:text-white">Follow-up Queue</h2>
+              <div className="flex flex-wrap gap-1.5">
                 {([
                   ['all', `All (${classified.length})`],
-                  ['overdue', `🔴 ${overdueCount}`],
-                  ['today', `🟠 ${todayCount}`],
-                  ['upcoming', `🟢 ${upcomingCount}`],
+                  ['overdue', `🔴 Overdue (${overdueCount})`],
+                  ['today', `🟠 Today (${todayCount})`],
+                  ['upcoming', `🟢 Upcoming (${upcomingCount})`],
                 ] as const).map(([key, label]) => (
                   <button
                     key={key}
                     onClick={() => setFuFilter(key)}
-                    className={`rounded-full px-2.5 py-1 text-[10px] font-semibold transition ${
+                    className={`rounded-full px-3 py-1 text-[11px] font-semibold transition ${
                       fuFilter === key
                         ? 'bg-indigo-600 text-white'
                         : 'bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-400'

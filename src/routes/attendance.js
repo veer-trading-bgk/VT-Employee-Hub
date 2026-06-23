@@ -22,7 +22,7 @@ function attendancePK(companyId, userId) {
 }
 
 function leavePK(companyId, userId) {
-  return `LEAVE#${companyId}#${userId}`;
+  return companyId ? `LEAVE#${companyId}#${userId}` : `LEAVE#${userId}`;
 }
 
 // ── POST /api/attendance/mark ──────────────────────────────────────────────────
@@ -115,7 +115,7 @@ router.post('/leave', authMiddleware, async (req, res, next) => {
 // Must be before GET /leave to avoid /:userId matching "leave/admin"
 router.get('/leave/admin', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
-    const pkPrefix = `LEAVE#${req.user.companyId}#`;
+    const pkPrefix = req.user.companyId ? `LEAVE#${req.user.companyId}#` : 'LEAVE#';
     const params = {
       TableName: TABLE,
       FilterExpression: 'begins_with(PK, :prefix) AND begins_with(SK, :sk)',

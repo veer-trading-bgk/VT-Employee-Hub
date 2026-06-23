@@ -23,7 +23,7 @@ import {
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
-import { METRICS, dailyTarget, monthlyTarget, formatMetricValue } from '@/lib/metrics.config';
+import { METRICS, dailyTarget } from '@/lib/metrics.config';
 import { useAuth } from '@/context/AuthContext';
 import { daysLeftInMonth, currentMonthLabel, today } from '@/utils/date-utils';
 import { toast } from 'sonner';
@@ -104,7 +104,9 @@ function KpiBar({ label, icon, value, target, progress }: {
         }`}>{progress}%</span>
       </div>
       <p className="text-xl font-bold text-slate-900 dark:text-white tabular-nums">{value}</p>
-      <p className="text-[10px] text-slate-400 mb-2">of {target} target</p>
+      <p className="text-[10px] text-slate-400 mb-2">
+        of {target > 0 && target < 1 ? target.toFixed(1) : Math.round(target)} target
+      </p>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
         <div className={`h-full rounded-full transition-all duration-500 ${color}`}
           style={{ width: `${Math.min(progress, 100)}%`, minWidth: progress > 0 ? '4px' : '0' }} />
@@ -267,17 +269,19 @@ export default function EmployeeDashboardPage() {
           {/* ── Mission Header ─────────────────────────────────────────────── */}
           <div className="rounded-2xl bg-gradient-to-br from-indigo-600 to-indigo-700 p-5 text-white shadow-lg shadow-indigo-200 dark:shadow-indigo-900/40">
             <div className="flex items-start justify-between gap-3">
-              <div>
+              <div className="min-w-0 flex-1">
                 <p className="text-sm text-indigo-200">{greetingByTime()},</p>
-                <h1 className="text-xl font-bold">{user?.name?.split(' ')[0]} 👋</h1>
+                <h1 className="truncate text-xl font-bold">{user?.name?.split(' ')[0]} 👋</h1>
                 <p className="mt-0.5 text-xs text-indigo-300">
                   {currentMonthLabel()} · {daysLeftInMonth()} days left
                 </p>
               </div>
-              <div className={`flex-shrink-0 rounded-xl px-3 py-2 text-center ${badge.cls} bg-white/20`}>
-                <p className="text-lg leading-none">{badge.icon}</p>
-                <p className="mt-0.5 text-xs font-bold">{badge.label}</p>
-              </div>
+              {!isLoading && (
+                <div className={`flex-shrink-0 rounded-xl px-3 py-2 text-center ${badge.cls} bg-white/20`}>
+                  <p className="text-lg leading-none">{badge.icon}</p>
+                  <p className="mt-0.5 text-xs font-bold">{badge.label}</p>
+                </div>
+              )}
             </div>
 
             {/* Score bar */}
