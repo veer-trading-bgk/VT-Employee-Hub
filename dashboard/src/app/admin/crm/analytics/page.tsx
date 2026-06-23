@@ -48,7 +48,7 @@ export default function CrmAnalyticsPage() {
 
   const { summary, funnel, bySource, avgDaysPerStage, trend } = data ?? {
     summary: { total: 0, newToday: 0, newThisWeek: 0, convertedThisMonth: 0 },
-    funnel: [], bySource: [], avgDaysPerStage: {}, trend: [],
+    funnel: [], bySource: [], avgDaysPerStage: {} as Record<string, number>, trend: [],
   };
 
   const maxCount = Math.max(...(funnel.map((s) => s.count)), 1);
