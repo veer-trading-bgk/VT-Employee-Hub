@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
+import { useAuth } from '@/context/AuthContext';
 import {
   LineChart,
   Line,
@@ -70,6 +72,13 @@ function FunnelBar({ name, value, maxValue, fill }: { name: string; value: numbe
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function AdminAnalyticsPage() {
+  const { user } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (user?.role === 'superadmin') router.replace('/platform/analytics');
+  }, [user, router]);
+
   const [days, setDays] = useState<DaysOption>(30);
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>(DEFAULT_SELECTED);
 
