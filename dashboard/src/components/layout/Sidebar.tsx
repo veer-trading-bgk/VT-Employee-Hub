@@ -26,10 +26,10 @@ const ALL_NAV: NavItem[] = [
   { href: '/platform/companies',    label: 'Companies',      icon: '🏢',  roles: ['superadmin'], group: 'platform'     },
   { href: '/platform/billing',      label: 'Revenue',        icon: '💰',  roles: ['superadmin'], group: 'platform'     },
   { href: '/platform/health',       label: 'System Health',  icon: '📡',  roles: ['superadmin'], group: 'platform'     },
-  // Superadmin also gets their own CRM + WhatsApp (APForce internal workspace)
+  // Superadmin workspace — APForce's own CRM + WhatsApp (apforce_internal company)
   { href: '/admin/crm',             label: 'CRM',            icon: '🤝',  roles: ['superadmin'], group: 'workspace'    },
   { href: '/admin/whatsapp',        label: 'WhatsApp',       icon: '💬',  roles: ['superadmin'], group: 'workspace'    },
-  { href: '/admin/analytics',       label: 'Analytics',      icon: '📈',  roles: ['superadmin'], group: 'workspace'    },
+  { href: '/platform/analytics',    label: 'Analytics',      icon: '📈',  roles: ['superadmin'], group: 'workspace'    },
   // ── Admin ──────────────────────────────────────────────────────────────────
   { href: '/admin/dashboard',    label: 'Dashboard',      icon: '🔑', roles: ['admin'],   group: 'overview'     },
   { href: '/admin/crm',          label: 'CRM',            icon: '🤝', roles: ['admin'],   group: 'sales'        },
@@ -57,7 +57,8 @@ const ALL_NAV: NavItem[] = [
   { href: '/employee/compensation', label: 'My Pay',       icon: '💰', roles: EMPLOYEE_ROLES, group: 'my-progress' },
   { href: '/employee/attendance',   label: 'Attendance',   icon: '📅', roles: EMPLOYEE_ROLES, group: 'my-progress' },
   // ── Shared ─────────────────────────────────────────────────────────────────
-  { href: '/leaderboard', label: 'Leaderboard', icon: '🏆', group: 'general' },
+  // Leaderboard is telecaller-only — superadmin has no employees to rank
+  { href: '/leaderboard', label: 'Leaderboard', icon: '🏆', roles: ['admin', 'manager', 'team_lead', 'agent', 'telecaller', 'intern'], group: 'general' },
   { href: '/profile',     label: 'Profile',     icon: '👤', group: 'general' },
   { href: '/settings',    label: 'Settings',    icon: '⚙️', group: 'general' },
 ];

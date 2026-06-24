@@ -30,6 +30,7 @@ interface Conversation {
   lastMessageDirection?: 'inbound' | 'outbound';
   lastInboundAt?: string | null;
   createdAt?: string | null;
+  unreadCount?: number;
 }
 
 interface Message {
@@ -55,11 +56,13 @@ interface CannedResponse { id: string; title: string; body: string; shortcut?: s
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function timeAgo(iso: string) {
   const diff = Date.now() - new Date(iso).getTime();
-  if (diff < 60_000) return 'now';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`;
+  if (diff < 5 * 60_000) return 'Just now';
+  if (diff < 60 * 60_000) return `${Math.floor(diff / 60_000)}m ago`;
   const d = new Date(iso);
+  const yest = new Date(); yest.setDate(yest.getDate() - 1);
   if (d.toDateString() === new Date().toDateString())
     return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === yest.toDateString()) return 'Yesterday';
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 }
 
@@ -73,10 +76,11 @@ function is24hExpired(lastInboundAt?: string | null) {
   return Date.now() - new Date(lastInboundAt).getTime() > 24 * 3_600_000;
 }
 
-const STATUS_COLORS: Record<ChatStatus, string> = {
-  open: 'bg-emerald-500',
-  unassigned: 'bg-amber-400',
-  resolved: 'bg-slate-300',
+// Chat status as inline chips — NOT presence/online indicators
+const CHAT_STATUS_CHIP: Record<ChatStatus, string> = {
+  open:       'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
+  unassigned: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+  resolved:   'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400',
 };
 
 // ── Canned Response Picker ────────────────────────────────────────────────────
@@ -164,7 +168,7 @@ export default function WhatsAppInboxPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const [activeTab, setActiveTab] = useState<ChatStatus | 'all'>('open');
+  const [activeTab, setActiveTab] = useState<ChatStatus | 'all' | 'unread'>('open');
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [search, setSearch] = useState('');
   const [msgText, setMsgText] = useState('');
@@ -222,7 +226,7 @@ export default function WhatsAppInboxPage() {
   });
 
   const conversations = inboxData?.conversations ?? [];
-  const counts = inboxData?.counts ?? { open: 0, unassigned: 0, resolved: 0 };
+  const counts = inboxData?.counts ?? { open: 0, unassigned: 0, resolved: 0, unread: 0 };
   const stages = pipelineData?.stages ?? [];
   const employees = (empData?.data ?? []).filter((e) =>
     ['telecaller', 'agent', 'intern', 'team_lead', 'manager'].includes(e.role)
@@ -314,7 +318,7 @@ export default function WhatsAppInboxPage() {
     },
   });
 
-  // Mark messages as read when conversation is opened (sends read receipt to customer)
+  // Send WA read receipt (blue ticks) when new inbound messages arrive while conversation is open
   useEffect(() => {
     if (!selected?.leadId) return;
     const lastInbound = rawMessages.filter((m) => m.direction === 'inbound' && m.waMessageId).at(-1);
@@ -371,9 +375,10 @@ export default function WhatsAppInboxPage() {
   const canSend = msgText.trim().length > 0 && !isProcessing && (inputMode === 'note' || !windowExpired);
 
   // ── Tabs config ───────────────────────────────────────────────────────────
-  const TABS: { key: ChatStatus | 'all'; label: string; count?: number }[] = [
+  const TABS: { key: ChatStatus | 'all' | 'unread'; label: string; count?: number; highlight?: boolean }[] = [
     { key: 'open',       label: 'Open',       count: counts.open },
     { key: 'unassigned', label: 'Unassigned', count: counts.unassigned },
+    { key: 'unread',     label: 'Unread',     count: counts.unread, highlight: (counts.unread ?? 0) > 0 },
     { key: 'resolved',   label: 'Resolved',   count: counts.resolved },
   ];
 
@@ -441,24 +446,45 @@ export default function WhatsAppInboxPage() {
                 : false;
               const assigneeInitials = conv.assignedToName?.split(' ').map((n) => n[0]).join('').slice(0, 2) ?? '';
 
+              const unread = conv.unreadCount ?? 0;
               return (
-                <button key={key} onClick={() => { setSelected(conv); setMsgText(''); setInputMode('reply'); }}
-                  className={`relative flex w-full items-start gap-3 px-4 py-3.5 text-left transition hover:bg-slate-50 dark:hover:bg-slate-800/50 ${isActive ? 'bg-indigo-50 dark:bg-indigo-900/10' : ''}`}>
+                <button key={key} onClick={() => {
+                  setSelected({ ...conv, unreadCount: 0 });
+                  setMsgText('');
+                  setInputMode('reply');
+                  // Reset unread count in backend immediately
+                  if (conv.type === 'lead' && conv.leadId) {
+                    apiFetch(`/api/whatsapp/inbox/${conv.leadId}/mark-read`, { method: 'POST', body: JSON.stringify({ lastWaMessageId: '' }) }).catch(() => {});
+                  } else {
+                    apiFetch(`/api/whatsapp/inbox/unknown/${conv.phone}/mark-read`, { method: 'POST' }).catch(() => {});
+                  }
+                }}
+                  className={`relative flex w-full items-start gap-3 px-4 py-3.5 text-left transition hover:bg-slate-50 dark:hover:bg-slate-800/50 ${isActive ? 'bg-indigo-50 dark:bg-indigo-900/10' : ''} ${unread > 0 && !isActive ? 'bg-emerald-50/40 dark:bg-emerald-900/5' : ''}`}>
 
-                  {/* Avatar with status dot */}
-                  <div className="relative flex-shrink-0">
+                  {/* Avatar — no presence dot (WhatsApp API does not provide online status) */}
+                  <div className="flex-shrink-0">
                     <div className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-bold text-white ${conv.type === 'unknown' ? 'bg-slate-400' : 'bg-indigo-500'}`}>
                       {avatarLetters(conv.name, conv.phone)}
                     </div>
-                    <span className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white dark:border-slate-900 ${STATUS_COLORS[conv.chatStatus]}`} />
                   </div>
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-1">
-                      <p className={`truncate text-sm font-semibold ${conv.lastMessageDirection === 'inbound' ? 'text-slate-900 dark:text-white' : 'text-slate-700 dark:text-slate-200'}`}>
+                      <p className={`truncate text-sm ${unread > 0 ? 'font-bold text-slate-900 dark:text-white' : 'font-semibold text-slate-700 dark:text-slate-200'}`}>
                         {conv.name ?? conv.phone}
                       </p>
-                      <span className="flex-shrink-0 text-[10px] text-slate-400">{conv.lastMessageAt ? timeAgo(conv.lastMessageAt) : ''}</span>
+                      {/* Timestamp + unread indicator — green dot = unread messages, NOT online status */}
+                      <div className="flex flex-shrink-0 items-center gap-1">
+                        {unread > 1 && (
+                          <span title="Unread messages" className="flex min-w-[18px] items-center justify-center rounded-full bg-emerald-500 px-1.5 py-0.5 text-[9px] font-bold text-white">
+                            {unread}
+                          </span>
+                        )}
+                        {unread === 1 && (
+                          <span title="Unread message" className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                        )}
+                        <span className="text-[10px] text-slate-400">{conv.lastMessageAt ? timeAgo(conv.lastMessageAt) : ''}</span>
+                      </div>
                     </div>
 
                     <div className="mt-0.5 flex items-center gap-1.5">
@@ -487,11 +513,10 @@ export default function WhatsAppInboxPage() {
             <div className="flex flex-shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
               <button onClick={() => setSelected(null)} className="mr-1 flex-shrink-0 text-slate-400 hover:text-slate-600 md:hidden">←</button>
 
-              <div className="relative flex-shrink-0">
+              <div className="flex-shrink-0">
                 <div className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-bold text-white ${selected.type === 'unknown' ? 'bg-slate-400' : 'bg-indigo-500'}`}>
                   {avatarLetters(currentLead?.name ?? selected.name, selected.phone)}
                 </div>
-                <span className={`absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-white dark:border-slate-900 ${STATUS_COLORS[selected.chatStatus]}`} />
               </div>
 
               <div className="min-w-0 flex-1">
@@ -505,7 +530,12 @@ export default function WhatsAppInboxPage() {
                     </span>
                   )}
                 </div>
-                <p className="text-xs text-slate-400">{selected.phone}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs text-slate-400">{selected.phone}</p>
+                  <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold capitalize ${CHAT_STATUS_CHIP[selected.chatStatus]}`}>
+                    {selected.chatStatus}
+                  </span>
+                </div>
               </div>
 
               {/* Action buttons */}
@@ -825,7 +855,7 @@ export default function WhatsAppInboxPage() {
               <div className="space-y-2 text-xs">
                 {selected.source && <div className="flex justify-between"><span className="text-slate-400">Source</span><span className="font-medium capitalize text-slate-700 dark:text-slate-300">{selected.source}</span></div>}
                 <div className="flex justify-between"><span className="text-slate-400">Status</span>
-                  <span className={`font-semibold capitalize ${selected.chatStatus === 'open' ? 'text-emerald-600' : selected.chatStatus === 'resolved' ? 'text-slate-400' : 'text-amber-600'}`}>{selected.chatStatus}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold capitalize ${CHAT_STATUS_CHIP[selected.chatStatus]}`}>{selected.chatStatus}</span>
                 </div>
                 {selected.createdAt && <div className="flex justify-between"><span className="text-slate-400">Created</span><span className="text-slate-500">{new Date(selected.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span></div>}
                 <div className="flex justify-between"><span className="text-slate-400">WhatsApp</span>

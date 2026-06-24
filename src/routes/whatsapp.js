@@ -22,7 +22,13 @@ async function updateLeadLastMessage(pk, content, direction, ts) {
   try {
     let expr = 'SET lastMessageAt = :ts, lastMessagePreview = :prev, lastMessageDirection = :dir';
     const vals = { ':ts': ts, ':prev': String(content).slice(0, 100), ':dir': direction };
-    if (direction === 'inbound') { expr += ', lastInboundAt = :ts'; }
+    if (direction === 'inbound') {
+      expr += ', lastInboundAt = :ts';
+      // Increment unread counter — cleared when agent opens the conversation
+      expr += ', unreadCount = if_not_exists(unreadCount, :zero) + :one';
+      vals[':zero'] = 0;
+      vals[':one'] = 1;
+    }
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK: pk, SK: 'METADATA' },
@@ -508,8 +514,8 @@ router.post('/webhook', async (req, res) => {
         await dynamodb.update({
           TableName: TABLE,
           Key: { PK, SK: 'CONTACT' },
-          UpdateExpression: 'SET phone = if_not_exists(phone, :ph), companyId = if_not_exists(companyId, :cid), createdAt = if_not_exists(createdAt, :ts), lastMessageAt = :lma, lastMessagePreview = :prev, lastMessageDirection = :dir',
-          ExpressionAttributeValues: { ':ph': phone10, ':cid': companyId, ':ts': timestamp, ':lma': timestamp, ':prev': text.slice(0, 100), ':dir': 'inbound' },
+          UpdateExpression: 'SET phone = if_not_exists(phone, :ph), companyId = if_not_exists(companyId, :cid), createdAt = if_not_exists(createdAt, :ts), lastMessageAt = :lma, lastMessagePreview = :prev, lastMessageDirection = :dir, unreadCount = if_not_exists(unreadCount, :zero) + :one',
+          ExpressionAttributeValues: { ':ph': phone10, ':cid': companyId, ':ts': timestamp, ':lma': timestamp, ':prev': text.slice(0, 100), ':dir': 'inbound', ':zero': 0, ':one': 1 },
         }).promise();
 
         // Send welcome message on first contact
@@ -612,9 +618,16 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
     } while (lk2);
 
     // Build counts before filtering
-    const counts = { open: 0, unassigned: 0, resolved: 0 };
-    leadItems.forEach((l) => { const s = effectiveStatus(l); if (counts[s] !== undefined) counts[s]++; });
-    unknownItems.forEach(() => counts.unassigned++);
+    const counts = { open: 0, unassigned: 0, resolved: 0, unread: 0 };
+    leadItems.forEach((l) => {
+      const s = effectiveStatus(l);
+      if (counts[s] !== undefined) counts[s]++;
+      if ((l.unreadCount ?? 0) > 0) counts.unread++;
+    });
+    unknownItems.forEach((u) => {
+      counts.unassigned++;
+      if ((u.unreadCount ?? 0) > 0) counts.unread++;
+    });
 
     const allConvs = [
       ...leadItems.map((l) => ({
@@ -636,6 +649,7 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
         lastMessageDirection: l.lastMessageDirection,
         lastInboundAt: l.lastInboundAt ?? null,
         createdAt: l.createdAt,
+        unreadCount: l.unreadCount ?? 0,
       })),
       ...unknownItems.map((u) => ({
         type: 'unknown',
@@ -649,12 +663,15 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
         lastMessageDirection: u.lastMessageDirection,
         lastInboundAt: u.lastMessageAt ?? null,
         createdAt: u.createdAt ?? null,
+        unreadCount: u.unreadCount ?? 0,
       })),
     ].sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
 
     const conversations = statusFilter === 'all'
       ? allConvs
-      : allConvs.filter((c) => c.chatStatus === statusFilter);
+      : statusFilter === 'unread'
+        ? allConvs.filter((c) => c.unreadCount > 0)
+        : allConvs.filter((c) => c.chatStatus === statusFilter);
 
     res.json({ success: true, conversations, counts });
   } catch (err) {
@@ -1098,17 +1115,49 @@ router.put('/welcome-config', authMiddleware, checkRole(['admin']), async (req, 
 });
 
 // ── POST /api/whatsapp/inbox/:leadId/mark-read ────────────────────────────────
+// Resets unreadCount to 0 in DynamoDB AND sends a read receipt to Meta (blue ticks)
 router.post('/inbox/:leadId/mark-read', authMiddleware, async (req, res, next) => {
   try {
+    const { leadId } = req.params;
+    const companyId = req.user.companyId;
     const { lastWaMessageId } = req.body;
-    if (!lastWaMessageId) return res.json({ success: true }); // nothing to mark
-    const cfg = await getWabaConfig(req.user.companyId);
-    if (!cfg?.accessToken || !cfg?.phoneNumberId) return res.json({ success: true });
-    await axios.post(`${GRAPH}/${cfg.phoneNumberId}/messages`, {
-      messaging_product: 'whatsapp',
-      status: 'read',
-      message_id: lastWaMessageId,
-    }, { headers: { Authorization: `Bearer ${cfg.accessToken}` } }).catch(() => {});
+
+    // Reset unread count — fire-and-forget
+    dynamodb.update({
+      TableName: TABLE,
+      Key: { PK: `LEAD#${companyId}#${leadId}`, SK: 'METADATA' },
+      UpdateExpression: 'SET unreadCount = :zero',
+      ExpressionAttributeValues: { ':zero': 0 },
+    }).promise().catch(() => {});
+
+    // Send read receipt to Meta (shows blue ticks on customer's phone)
+    if (lastWaMessageId) {
+      const cfg = await getWabaConfig(companyId);
+      if (cfg?.accessToken && cfg?.phoneNumberId) {
+        await axios.post(`${GRAPH}/${cfg.phoneNumberId}/messages`, {
+          messaging_product: 'whatsapp',
+          status: 'read',
+          message_id: lastWaMessageId,
+        }, { headers: { Authorization: `Bearer ${cfg.accessToken}` } }).catch(() => {});
+      }
+    }
+
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/inbox/unknown/:phone/mark-read ─────────────────────────
+// Resets unreadCount to 0 for unknown (pre-CRM) contacts
+router.post('/inbox/unknown/:phone/mark-read', authMiddleware, async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+    const phone = req.params.phone.replace(/\D/g, '');
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK: `INBOX#${companyId}#${phone}`, SK: 'CONTACT' },
+      UpdateExpression: 'SET unreadCount = :zero',
+      ExpressionAttributeValues: { ':zero': 0 },
+    }).promise().catch(() => {});
     res.json({ success: true });
   } catch (err) { next(err); }
 });
