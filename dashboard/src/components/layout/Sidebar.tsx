@@ -40,6 +40,7 @@ const ALL_NAV: NavItem[] = [
   { href: '/admin/verification', label: 'Verify Metrics', icon: '✅', roles: ['admin'],   group: 'performance'  },
   { href: '/admin/employees',    label: 'Team',           icon: '👥', roles: ['admin'],   group: 'team',
     activeOn: ['/admin/employees', '/admin/attendance', '/admin/compensation'] },
+  { href: '/admin/settings/metrics', label: 'Metric Settings', icon: '⚙️', roles: ['admin'], group: 'system'    },
   { href: '/admin/audit',        label: 'Audit Logs',     icon: '🔍', roles: ['admin'],   group: 'system'       },
   { href: '/admin/billing',      label: 'Billing & Plan', icon: '💳', roles: ['admin'],   group: 'system'       },
   // ── Manager ────────────────────────────────────────────────────────────────

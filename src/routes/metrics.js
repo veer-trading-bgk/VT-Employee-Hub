@@ -345,6 +345,109 @@ router.post('/bulk-entry', checkRole(['admin', 'manager']), async (req, res, nex
   }
 });
 
+// ── Metric display config (per-company label/icon/target overrides) ───────────
+
+const DISPLAY_FIELDS = new Set(['label', 'icon', 'target', 'targetPeriod', 'color', 'pointsWeight']);
+
+router.get('/config', adminMiddleware, async (req, res, next) => {
+  try {
+    const { companyId } = req.user;
+    const pk = `CONFIG#METRICS#${companyId ?? 'global'}`;
+    const stored = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: { PK: pk, SK: 'current' },
+    }).promise();
+    const overrides = stored.Item?.overrides ?? {};
+
+    const config = METRIC_KEYS.map((key) => {
+      const base = METRIC_CONFIG[key];
+      const ov   = overrides[key] ?? {};
+      return {
+        key,
+        label:        ov.label        ?? base.label,
+        icon:         ov.icon         ?? (base.icon ?? '📊'),
+        target:       ov.target       ?? base.target,
+        targetPeriod: ov.targetPeriod ?? base.targetPeriod,
+        color:        ov.color        ?? base.color,
+        pointsWeight: ov.pointsWeight ?? base.pointsWeight,
+        isCurrency:   base.isCurrency,
+        isCustomized: Object.keys(ov).length > 0,
+      };
+    });
+
+    res.json({ success: true, config });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put('/config/:metricKey', adminMiddleware, async (req, res, next) => {
+  try {
+    const { metricKey } = req.params;
+    const { companyId } = req.user;
+    if (!METRIC_KEYS.includes(metricKey)) {
+      return res.status(400).json({ error: 'Unknown metric key' });
+    }
+
+    const override = {};
+    for (const [k, v] of Object.entries(req.body)) {
+      if (!DISPLAY_FIELDS.has(k)) continue;
+      if (k === 'label')        override.label        = String(v).trim().slice(0, 60);
+      else if (k === 'icon')    override.icon         = String(v).trim().slice(0, 8);
+      else if (k === 'color' && /^#[0-9a-fA-F]{6}$/.test(v)) override.color = v;
+      else if (k === 'targetPeriod' && ['day', 'month'].includes(v)) override.targetPeriod = v;
+      else if (k === 'target' || k === 'pointsWeight') {
+        const n = Number(v);
+        if (!isNaN(n) && n > 0) override[k] = n;
+      }
+    }
+
+    const pk = `CONFIG#METRICS#${companyId ?? 'global'}`;
+    // Read-then-write to avoid nested-attribute upsert issues
+    const stored = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: { PK: pk, SK: 'current' },
+    }).promise();
+    const allOverrides = stored.Item?.overrides ?? {};
+    allOverrides[metricKey] = { ...(allOverrides[metricKey] ?? {}), ...override };
+
+    await dynamodb.put({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Item: { PK: pk, SK: 'current', overrides: allOverrides, updatedAt: new Date().toISOString(), updatedBy: req.user.id },
+    }).promise();
+
+    await logAudit(req.user.id, 'update_metric_config', metricKey, 'success', req.ip, override);
+    res.json({ success: true, key: metricKey });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete('/config/:metricKey', adminMiddleware, async (req, res, next) => {
+  try {
+    const { metricKey } = req.params;
+    const { companyId } = req.user;
+    if (!METRIC_KEYS.includes(metricKey)) {
+      return res.status(400).json({ error: 'Unknown metric key' });
+    }
+    const pk = `CONFIG#METRICS#${companyId ?? 'global'}`;
+    const stored = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: { PK: pk, SK: 'current' },
+    }).promise();
+    const allOverrides = stored.Item?.overrides ?? {};
+    delete allOverrides[metricKey];
+    await dynamodb.put({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Item: { PK: pk, SK: 'current', overrides: allOverrides, updatedAt: new Date().toISOString(), updatedBy: req.user.id },
+    }).promise();
+    await logAudit(req.user.id, 'reset_metric_config', metricKey, 'success', req.ip, {});
+    res.json({ success: true, key: metricKey, reset: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ── Pending metrics ───────────────────────────────────────────────────────────
 
 router.get('/pending', checkRole(['admin', 'manager']), async (req, res, next) => {
