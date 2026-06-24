@@ -243,7 +243,7 @@ export default function MetricSettingsPage() {
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState<MetricDisplay | null>(null);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ['metrics-config'],
     queryFn: () => apiFetch<{ success: boolean; config: MetricDisplay[] }>('/api/metrics/config'),
   });
@@ -270,7 +270,15 @@ export default function MetricSettingsPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const metrics: MetricDisplay[] = data?.config ?? [];
+  // Static fallback — always show cards even before API responds or if it errors
+  const staticMetrics: MetricDisplay[] = METRICS.map((m) => ({
+    key: m.key, label: m.label, icon: m.icon,
+    target: m.target, targetPeriod: m.targetPeriod,
+    color: m.color, pointsWeight: m.pointsWeight,
+    isCurrency: m.unit === 'currency', isCustomized: false,
+  }));
+
+  const metrics: MetricDisplay[] = data?.config ?? staticMetrics;
   const customCount = metrics.filter((m) => m.isCustomized).length;
 
   return (
@@ -298,20 +306,19 @@ export default function MetricSettingsPage() {
             </div>
           </div>
 
-          {/* Grid */}
-          {isLoading ? (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {Array.from({ length: 9 }).map((_, i) => (
-                <div key={i} className="h-44 animate-pulse rounded-2xl bg-slate-200 dark:bg-slate-800" />
-              ))}
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {metrics.map((m) => (
-                <MetricCard key={m.key} metric={m} onEdit={() => setEditing(m)} />
-              ))}
+          {/* API error banner — shown but page still works via static fallback */}
+          {error && !isLoading && (
+            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs text-rose-700 dark:border-rose-800/40 dark:bg-rose-900/20 dark:text-rose-400">
+              Could not load saved customizations ({(error as Error).message}). Showing defaults — edits will still save.
             </div>
           )}
+
+          {/* Grid — always rendered; api data merges over static fallback */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {metrics.map((m) => (
+              <MetricCard key={m.key} metric={m} onEdit={() => setEditing(m)} />
+            ))}
+          </div>
 
           {/* Info box */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
