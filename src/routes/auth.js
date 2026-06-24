@@ -346,6 +346,7 @@ router.post('/register', authMiddleware, async (req, res, next) => {
       password: hashedPassword,
       name,
       role,
+      ...(req.user.companyId && { companyId: req.user.companyId }),
       createdAt: new Date().toISOString(),
       createdBy: req.user.id,
       status: 'active',
