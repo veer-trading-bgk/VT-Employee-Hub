@@ -349,31 +349,81 @@ router.post('/bulk-entry', checkRole(['admin', 'manager']), async (req, res, nex
 
 router.get('/pending', checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
-    const result = await dynamodb.scan({
-      TableName: process.env.DYNAMODB_TABLE_METRICS,
-      FilterExpression:
-        'attribute_exists(metric_type) AND ' +
-        '(attribute_not_exists(verificationStatus) OR verificationStatus = :pending)',
-      ExpressionAttributeValues: { ':pending': 'pending' },
-      Limit: 5000,
-    }).promise();
-    const items = (result.Items ?? []).sort((a, b) => (b.enteredAt || '').localeCompare(a.enteredAt || ''));
+    const { companyId, role } = req.user;
+
+    let filterExpr =
+      'attribute_exists(metric_type) AND ' +
+      '(attribute_not_exists(verificationStatus) OR verificationStatus = :pending)';
+    const exprValues = { ':pending': 'pending' };
+
+    // Superadmin sees all companies; everyone else sees their own company only
+    if (role !== 'superadmin' && companyId) {
+      filterExpr += ' AND companyId = :__cid';
+      exprValues[':__cid'] = companyId;
+    }
+
+    // Paginate through entire table — no Limit so we never miss items
+    let items = [];
+    let lastKey;
+    do {
+      const result = await dynamodb.scan({
+        TableName: process.env.DYNAMODB_TABLE_METRICS,
+        FilterExpression: filterExpr,
+        ExpressionAttributeValues: exprValues,
+        ...(lastKey ? { ExclusiveStartKey: lastKey } : {}),
+      }).promise();
+      items = items.concat(result.Items ?? []);
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+
+    items.sort((a, b) => (b.enteredAt || '').localeCompare(a.enteredAt || ''));
     res.json({ data: items, total: items.length });
   } catch (error) {
     next(error);
   }
 });
 
+// ── Shared helper: resolve DynamoDB key for a metric item ─────────────────────
+// Accepts either { pk, sk } (raw keys from scan) or legacy metricId string.
+// Returns null if the input cannot be resolved to a valid key.
+
+function resolveMetricKey(body) {
+  const { pk, sk, metricId } = body;
+  if (pk && sk) return { PK: pk, SK: sk };
+  if (metricId) {
+    // legacy format: userId#date#metric_type  (date is YYYY-MM-DD, has no #)
+    const idx = metricId.indexOf('#');
+    const idx2 = metricId.indexOf('#', idx + 1);
+    if (idx < 0 || idx2 < 0) return null;
+    return { PK: metricId.slice(0, idx), SK: metricId.slice(idx + 1) };
+  }
+  return null;
+}
+
 // ── Verify metric (body-based) ────────────────────────────────────────────────
 
 router.post('/verify', checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
-    const { metricId, approved, notes } = req.body;
-    if (!metricId) return res.status(400).json({ error: 'metricId required' });
-    const [userId, date, metric_type] = metricId.split('#');
+    const { approved, notes } = req.body;
+    const key = resolveMetricKey(req.body);
+    if (!key) return res.status(400).json({ error: 'pk+sk or metricId required' });
+
+    // Fetch the actual item so we update the correct record and enforce company scope
+    const existing = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: key,
+    }).promise();
+
+    if (!existing.Item) return res.status(404).json({ error: 'Metric not found' });
+
+    if (req.user.role !== 'superadmin' && existing.Item.companyId &&
+        existing.Item.companyId !== req.user.companyId) {
+      return res.status(403).json({ error: 'Not authorized to verify this metric' });
+    }
+
     await dynamodb.update({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
-      Key: { PK: userId, SK: `${date}#${metric_type}` },
+      Key: key,
       UpdateExpression:
         'SET verified = :v, verificationStatus = :vs, verifiedBy = :vb, verifiedAt = :va, verificationNotes = :vn',
       ExpressionAttributeValues: {
@@ -384,7 +434,40 @@ router.post('/verify', checkRole(['admin', 'manager']), async (req, res, next) =
         ':vn': notes || '',
       },
     }).promise();
-    await logAudit(req.user.id, 'verify_metric', metricId, approved ? 'approved' : 'rejected', req.ip);
+
+    const auditRef = req.body.metricId || `${key.PK}#${key.SK}`;
+    await logAudit(req.user.id, 'verify_metric', auditRef, approved ? 'approved' : 'rejected', req.ip);
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── Dismiss (delete) an orphaned pending metric ───────────────────────────────
+
+router.post('/pending/dismiss', checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const key = resolveMetricKey(req.body);
+    if (!key) return res.status(400).json({ error: 'pk+sk or metricId required' });
+
+    const existing = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: key,
+    }).promise();
+
+    if (!existing.Item) return res.status(404).json({ error: 'Metric not found' });
+
+    if (req.user.role !== 'superadmin' && existing.Item.companyId &&
+        existing.Item.companyId !== req.user.companyId) {
+      return res.status(403).json({ error: 'Not authorized to dismiss this metric' });
+    }
+
+    await dynamodb.delete({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: key,
+    }).promise();
+
+    await logAudit(req.user.id, 'dismiss_metric', `${key.PK}#${key.SK}`, 'deleted', req.ip);
     res.json({ success: true });
   } catch (error) {
     next(error);
@@ -397,14 +480,18 @@ router.post('/verify/:metricId', adminMiddleware, async (req, res, next) => {
   try {
     const { metricId } = req.params;
     const { approved, notes } = req.body;
-    const parts = metricId.split('#');
-    if (parts.length < 3) {
-      return res.status(400).json({ error: 'Invalid metricId format (expected userId#date#metric_type)' });
-    }
-    const [userId, date, metric_type] = parts;
+    const key = resolveMetricKey({ metricId });
+    if (!key) return res.status(400).json({ error: 'Invalid metricId format (expected userId#date#metric_type)' });
+
+    const existing = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: key,
+    }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'Metric not found' });
+
     await dynamodb.update({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
-      Key: { PK: userId, SK: `${date}#${metric_type}` },
+      Key: key,
       UpdateExpression:
         'SET verified = :v, verificationStatus = :vs, verifiedBy = :vb, verifiedAt = :va, verificationNotes = :vn',
       ExpressionAttributeValues: {

@@ -33,9 +33,15 @@ interface PendingResponse {
 }
 
 interface VerifyPayload {
-  metricId: string;
+  pk: string;
+  sk: string;
   approved: boolean;
   notes?: string;
+}
+
+interface DismissPayload {
+  pk: string;
+  sk: string;
 }
 
 const STATUS_BADGE: Record<string, string> = {
@@ -146,20 +152,34 @@ export default function VerificationPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  const dismissMutation = useMutation({
+    mutationFn: (payload: DismissPayload) =>
+      apiFetch('/api/metrics/pending/dismiss', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        retries: 0,
+      }),
+    onSuccess: () => {
+      toast.success('Entry dismissed');
+      queryClient.invalidateQueries({ queryKey: ['pending-metrics'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const bulkVerifyMutation = useMutation({
-    mutationFn: async ({ ids, approved }: { ids: string[]; approved: boolean }) => {
+    mutationFn: async ({ keys, approved }: { keys: { pk: string; sk: string }[]; approved: boolean }) => {
       await Promise.all(
-        ids.map((metricId) =>
+        keys.map(({ pk, sk }) =>
           apiFetch('/api/metrics/verify', {
             method: 'POST',
-            body: JSON.stringify({ metricId, approved }),
+            body: JSON.stringify({ pk, sk, approved }),
             retries: 0,
           })
         )
       );
     },
-    onSuccess: (_, { approved, ids }) => {
-      toast.success(`${ids.length} metrics ${approved ? 'approved' : 'rejected'}`);
+    onSuccess: (_, { approved, keys }) => {
+      toast.success(`${keys.length} metrics ${approved ? 'approved' : 'rejected'}`);
       setSelected(new Set());
       queryClient.invalidateQueries({ queryKey: ['pending-metrics'] });
       queryClient.invalidateQueries({ queryKey: ['admin-team-summary'] });
@@ -177,7 +197,9 @@ export default function VerificationPage() {
   });
 
   const flaggedCount = items.filter((i) => i.flagged).length;
-  const allIds = filtered.map((i) => i.metricId || `${i.PK}#${i.SK}`);
+  // Key is "pk||sk" — double pipe won't appear in DynamoDB keys
+  const itemKey = (i: PendingMetric) => `${i.PK}||${i.SK}`;
+  const allIds = filtered.map(itemKey);
   const allSelected = allIds.length > 0 && allIds.every((id) => selected.has(id));
 
   const toggleSelect = (id: string) => {
@@ -195,6 +217,8 @@ export default function VerificationPage() {
       setSelected(new Set(allIds));
     }
   };
+
+  const selectedItems = filtered.filter((i) => selected.has(itemKey(i)));
 
   return (
     <>
@@ -264,14 +288,14 @@ export default function VerificationPage() {
                 {selected.size} selected
               </span>
               <button
-                onClick={() => bulkVerifyMutation.mutate({ ids: [...selected], approved: true })}
+                onClick={() => bulkVerifyMutation.mutate({ keys: selectedItems.map((i) => ({ pk: i.PK, sk: i.SK })), approved: true })}
                 disabled={bulkVerifyMutation.isPending}
                 className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
               >
                 ✅ Approve all
               </button>
               <button
-                onClick={() => bulkVerifyMutation.mutate({ ids: [...selected], approved: false })}
+                onClick={() => bulkVerifyMutation.mutate({ keys: selectedItems.map((i) => ({ pk: i.PK, sk: i.SK })), approved: false })}
                 disabled={bulkVerifyMutation.isPending}
                 className="rounded bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-50"
               >
@@ -324,11 +348,11 @@ export default function VerificationPage() {
                   <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
                     {filtered.map((item) => {
                       const cfg = getMetricConfig(item.metric_type);
-                      const itemId = item.metricId || `${item.PK}#${item.SK}`;
-                      const isSelected = selected.has(itemId);
+                      const id = itemKey(item);
+                      const isSelected = selected.has(id);
                       return (
                         <tr
-                          key={itemId}
+                          key={id}
                           className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 ${
                             item.flagged ? 'bg-rose-50/40 dark:bg-rose-900/10' : ''
                           }`}
@@ -337,7 +361,7 @@ export default function VerificationPage() {
                             <input
                               type="checkbox"
                               checked={isSelected}
-                              onChange={() => toggleSelect(itemId)}
+                              onChange={() => toggleSelect(id)}
                               className="h-3.5 w-3.5 accent-indigo-600"
                             />
                           </td>
@@ -386,6 +410,18 @@ export default function VerificationPage() {
                               >
                                 Reject
                               </button>
+                              <button
+                                onClick={() => {
+                                  if (confirm('Delete this entry permanently?')) {
+                                    dismissMutation.mutate({ pk: item.PK, sk: item.SK });
+                                  }
+                                }}
+                                disabled={dismissMutation.isPending}
+                                title="Delete orphaned entry"
+                                className="rounded border border-slate-200 px-2.5 py-1 text-xs text-slate-400 hover:border-rose-200 hover:text-rose-500 disabled:opacity-40 dark:border-slate-700"
+                              >
+                                🗑
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -409,8 +445,12 @@ export default function VerificationPage() {
           isPending={verifyMutation.isPending}
           onClose={() => setModal(null)}
           onConfirm={(notes) => {
-            const metricId = modal.item.metricId || `${modal.item.userId}#${modal.item.date}#${modal.item.metric_type}`;
-            verifyMutation.mutate({ metricId, approved: modal.action === 'approve', notes });
+            verifyMutation.mutate({
+              pk: modal.item.PK,
+              sk: modal.item.SK,
+              approved: modal.action === 'approve',
+              notes,
+            });
           }}
         />
       )}
