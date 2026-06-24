@@ -1,7 +1,7 @@
 const express = require('express');
 const { addMetricSchema } = require('../utils/validation');
 const { logAudit } = require('../utils/audit');
-const { adminMiddleware, checkRole } = require('../middleware/auth');
+const { authMiddleware, adminMiddleware, checkRole } = require('../middleware/auth');
 const { METRIC_CONFIG, TARGET_DEFAULTS, METRIC_KEYS, toDailyTargets, toMonthlyTargets, calcPoints } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
 const bot = require('../config/telegram');
@@ -349,7 +349,7 @@ router.post('/bulk-entry', checkRole(['admin', 'manager']), async (req, res, nex
 
 const DISPLAY_FIELDS = new Set(['label', 'icon', 'target', 'targetPeriod', 'color', 'pointsWeight']);
 
-router.get('/config', adminMiddleware, async (req, res, next) => {
+router.get('/config', authMiddleware, async (req, res, next) => {
   try {
     const { companyId } = req.user;
     const pk = `CONFIG#METRICS#${companyId ?? 'global'}`;
