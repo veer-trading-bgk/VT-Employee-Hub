@@ -69,17 +69,19 @@ function CalendarIcon() {
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type Plan        = 'trial' | 'paid' | 'enterprise';
+type Plan        = 'trial' | 'paid' | 'enterprise' | 'internal';
 type PlanStatus  = 'active' | 'suspended' | 'expired';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function planColor(planStatus: string, plan: string) {
+  if (plan === 'internal') return 'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-950/40 dark:text-violet-400 dark:ring-violet-800';
   if (planStatus === 'suspended') return 'bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-950/40 dark:text-rose-400 dark:ring-rose-800';
   if (plan === 'paid' || plan === 'enterprise') return 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:ring-emerald-800';
   return 'bg-sky-50 text-sky-700 ring-1 ring-sky-200 dark:bg-sky-950/40 dark:text-sky-400 dark:ring-sky-800';
 }
 
 function planLabel(planStatus: string, plan: string, daysLeft: number | null | undefined) {
+  if (plan === 'internal') return '🏠 Internal';
   if (planStatus === 'suspended') return 'Suspended';
   if (plan === 'enterprise') return 'Enterprise';
   if (plan === 'paid') return 'Paid';
@@ -155,6 +157,7 @@ function PlanModal({ companyId, current, onClose, onSaved }: {
               <option value="trial">Trial</option>
               <option value="paid">Paid</option>
               <option value="enterprise">Enterprise</option>
+              <option value="internal">🏠 Internal (Owner-owned — never expires)</option>
             </select>
           </div>
 
@@ -176,7 +179,13 @@ function PlanModal({ companyId, current, onClose, onSaved }: {
             </div>
           )}
 
-          {status === 'suspended' && (
+          {plan === 'internal' && (
+            <div className="rounded-xl bg-violet-50 px-4 py-3 text-sm text-violet-700 dark:bg-violet-950/40 dark:text-violet-400">
+              🏠 Internal plan: never expires, never blocked, cannot be suspended. Use only for owner-operated companies.
+            </div>
+          )}
+
+          {status === 'suspended' && plan !== 'internal' && (
             <div className="rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-400">
               ⚠️ Suspending will block all API writes for this company. Their data is preserved.
             </div>
@@ -338,7 +347,8 @@ export default function CompanyDetailPage() {
     : null;
 
   const isSuspended = company?.planStatus === 'suspended';
-  const isPaid      = company?.plan === 'paid' || company?.plan === 'enterprise';
+  const isInternal  = company?.plan === 'internal';
+  const isPaid      = isInternal || company?.plan === 'paid' || company?.plan === 'enterprise';
 
   const btnPrimary = 'inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:opacity-40';
   const btnGhost   = 'inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:bg-transparent dark:text-slate-300 dark:hover:bg-slate-800';
@@ -409,14 +419,16 @@ export default function CompanyDetailPage() {
                     <CalendarIcon /> Extend Trial
                   </button>
                 )}
-                {isSuspended ? (
-                  <button onClick={() => setUnsuspendModalOpen(true)} className={btnSuccess}>
-                    <UnlockIcon /> Unsuspend
-                  </button>
-                ) : (
-                  <button onClick={() => setSuspendModalOpen(true)} className={btnDanger}>
-                    <LockIcon /> Suspend
-                  </button>
+                {!isInternal && (
+                  isSuspended ? (
+                    <button onClick={() => setUnsuspendModalOpen(true)} className={btnSuccess}>
+                      <UnlockIcon /> Unsuspend
+                    </button>
+                  ) : (
+                    <button onClick={() => setSuspendModalOpen(true)} className={btnDanger}>
+                      <LockIcon /> Suspend
+                    </button>
+                  )
                 )}
               </div>
             </div>
@@ -478,6 +490,11 @@ export default function CompanyDetailPage() {
               </div>
 
               {/* Plan action hint */}
+              {isInternal && (
+                <div className="mt-3 rounded-xl bg-violet-50 px-4 py-3 text-xs text-violet-700 dark:bg-violet-950/40 dark:text-violet-400">
+                  🏠 Owner-operated company — permanently free, never expires, cannot be suspended.
+                </div>
+              )}
               {!isPaid && !isSuspended && (daysLeft ?? 99) <= 7 && (
                 <div className="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:bg-amber-950/40 dark:text-amber-400">
                   ⚠️ Trial ending soon — follow up to convert to paid.
@@ -495,32 +512,41 @@ export default function CompanyDetailPage() {
           <OnboardingCard companyId={id} />
 
           {/* Danger Zone */}
-          <div className="rounded-2xl border border-rose-200 bg-white p-5 dark:border-rose-900/40 dark:bg-slate-900">
-            <h2 className="mb-3 text-sm font-semibold text-rose-600 dark:text-rose-400">Danger Zone</h2>
-            <div className="flex flex-col gap-3 sm:flex-row">
-              {isSuspended ? (
+          {isInternal ? (
+            <div className="rounded-2xl border border-violet-200 bg-violet-50 p-5 dark:border-violet-900/40 dark:bg-violet-950/10">
+              <h2 className="mb-1 text-sm font-semibold text-violet-700 dark:text-violet-400">🏠 Owner-Protected Company</h2>
+              <p className="text-xs text-violet-600 dark:text-violet-500">
+                This is an internal (owner-owned) company. It cannot be suspended, billed, or blocked. Use the Change Plan button above to adjust the plan type if needed.
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-rose-200 bg-white p-5 dark:border-rose-900/40 dark:bg-slate-900">
+              <h2 className="mb-3 text-sm font-semibold text-rose-600 dark:text-rose-400">Danger Zone</h2>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                {isSuspended ? (
+                  <div className="flex-1">
+                    <p className="mb-1 text-xs text-slate-500">Company is currently suspended.</p>
+                    <button onClick={() => setUnsuspendModalOpen(true)} className={`${btnSuccess} w-full justify-center`}>
+                      <UnlockIcon /> Restore Access
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex-1">
+                    <p className="mb-1 text-xs text-slate-500">Block all writes immediately. Data is preserved.</p>
+                    <button onClick={() => setSuspendModalOpen(true)} className={`${btnDanger} w-full justify-center`}>
+                      <LockIcon /> Suspend Company
+                    </button>
+                  </div>
+                )}
                 <div className="flex-1">
-                  <p className="mb-1 text-xs text-slate-500">Company is currently suspended.</p>
-                  <button onClick={() => setUnsuspendModalOpen(true)} className={`${btnSuccess} w-full justify-center`}>
-                    <UnlockIcon /> Restore Access
+                  <p className="mb-1 text-xs text-slate-500">Upgrade to paid — removes all trial limits.</p>
+                  <button onClick={() => setPlanModalOpen(true)} className={`${btnPrimary} w-full justify-center`}>
+                    ⬆️ Upgrade to Paid
                   </button>
                 </div>
-              ) : (
-                <div className="flex-1">
-                  <p className="mb-1 text-xs text-slate-500">Block all writes immediately. Data is preserved.</p>
-                  <button onClick={() => setSuspendModalOpen(true)} className={`${btnDanger} w-full justify-center`}>
-                    <LockIcon /> Suspend Company
-                  </button>
-                </div>
-              )}
-              <div className="flex-1">
-                <p className="mb-1 text-xs text-slate-500">Upgrade to paid — removes all trial limits.</p>
-                <button onClick={() => setPlanModalOpen(true)} className={`${btnPrimary} w-full justify-center`}>
-                  ⬆️ Upgrade to Paid
-                </button>
               </div>
             </div>
-          </div>
+          )}
 
         </div>
       </div>

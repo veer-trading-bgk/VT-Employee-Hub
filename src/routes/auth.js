@@ -47,6 +47,7 @@ function issueTokens(user, res) {
       role: user.role,
       name: user.name || '',
       companyId: user.companyId || null,
+      plan: user.plan || null,
       planStatus: user.planStatus || null,
       trialEndsAt: user.trialEndsAt || null,
     },
@@ -68,8 +69,8 @@ function issueTokens(user, res) {
 
 async function attachPlan(user) {
   if (!user.companyId) return user;
-  const plan = await fetchCompanyPlan(user.companyId);
-  return { ...user, planStatus: plan.planStatus, trialEndsAt: plan.trialEndsAt };
+  const planData = await fetchCompanyPlan(user.companyId);
+  return { ...user, plan: planData.plan, planStatus: planData.planStatus, trialEndsAt: planData.trialEndsAt };
 }
 
 async function findUserByEmail(email) {
@@ -493,7 +494,7 @@ router.post('/company-signup', async (req, res, next) => {
 
     const user = {
       id: adminId, email: data.adminEmail, role: 'admin', name: data.adminName, companyId,
-      planStatus: 'active', trialEndsAt,
+      plan: 'trial', planStatus: 'active', trialEndsAt,
     };
     const { accessToken } = issueTokens(user, res);
 

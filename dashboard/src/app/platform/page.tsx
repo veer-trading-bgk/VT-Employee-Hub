@@ -51,6 +51,7 @@ function ArrowRightIcon() {
 function planBadge(company: PlatformCompany) {
   const status = company.planStatus;
   const plan   = company.plan;
+  if (plan === 'internal') return { label: 'Internal', cls: 'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-950/40 dark:text-violet-400 dark:ring-violet-800' };
   if (status === 'suspended') return { label: 'Suspended', cls: 'bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-950/40 dark:text-rose-400 dark:ring-rose-800' };
   if (plan === 'paid' || plan === 'enterprise') return { label: plan === 'enterprise' ? 'Enterprise' : 'Paid', cls: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:ring-emerald-800' };
   const daysLeft = company.daysLeftInTrial ?? 0;
@@ -110,14 +111,17 @@ export default function PlatformPage() {
     .slice(0, 8);
 
   const chartData = [
+    { name: 'Internal', value: stats?.internal ?? 0, fill: '#8b5cf6' },
     { name: 'Paid', value: stats?.active ?? 0, fill: '#10b981' },
     { name: 'Trial', value: stats?.onTrial ?? 0, fill: '#38bdf8' },
     { name: 'Expired', value: stats?.trialExpired ?? 0, fill: '#f59e0b' },
     { name: 'Suspended', value: stats?.suspended ?? 0, fill: '#f43f5e' },
-  ];
+  ].filter((d) => d.value > 0 || d.name !== 'Internal');
 
   const needsAttention = companies.filter(
-    (c) => c.planStatus === 'suspended' || (c.plan === 'trial' && (c.daysLeftInTrial ?? 99) <= 3 && (c.daysLeftInTrial ?? 99) >= 0)
+    (c) => c.plan !== 'internal' && (
+      c.planStatus === 'suspended' || (c.plan === 'trial' && (c.daysLeftInTrial ?? 99) <= 3 && (c.daysLeftInTrial ?? 99) >= 0)
+    )
   );
 
   return (
@@ -143,14 +147,15 @@ export default function PlatformPage() {
           </div>
 
           {/* KPI Cards */}
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-6">
             {statsLoading ? (
-              Array.from({ length: 5 }).map((_, i) => (
+              Array.from({ length: 6 }).map((_, i) => (
                 <div key={i} className="h-28 animate-pulse rounded-2xl bg-slate-200 dark:bg-slate-800" />
               ))
             ) : (
               <>
                 <KpiCard label="Total Companies" value={stats?.totalCompanies ?? 0} icon={<BuildingIcon />} color="text-slate-700 dark:text-slate-200" />
+                <KpiCard label="Internal" value={stats?.internal ?? 0} icon={<BuildingIcon />} color="text-violet-600 dark:text-violet-400" sub="Owner-owned" />
                 <KpiCard label="Paying Clients" value={stats?.active ?? 0} icon={<TrendUpIcon />} color="text-emerald-600 dark:text-emerald-400" sub="Paid / Enterprise" />
                 <KpiCard label="On Trial" value={stats?.onTrial ?? 0} icon={<BuildingIcon />} color="text-sky-600 dark:text-sky-400" sub="Active trials" />
                 <KpiCard label="Trial Expired" value={stats?.trialExpired ?? 0} icon={<AlertIcon />} color="text-amber-600 dark:text-amber-400" sub="Convert opportunity" />

@@ -355,6 +355,7 @@ export interface PlatformCompany {
 
 export interface PlatformStats {
   totalCompanies: number;
+  internal: number;
   active: number;
   onTrial: number;
   trialExpired: number;

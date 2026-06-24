@@ -60,6 +60,9 @@ const subscriptionMiddleware = (req, res, next) => {
   // Platform admins and unauthenticated paths bypass
   if (!req.user || req.user.role === 'superadmin') return next();
 
+  // Internal plan (owner-owned companies) never expire and can never be blocked
+  if (req.user.plan === 'internal') return next();
+
   const { planStatus, trialEndsAt } = req.user;
 
   if (planStatus === 'suspended') {

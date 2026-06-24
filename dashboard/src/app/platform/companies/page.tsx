@@ -38,10 +38,11 @@ function ChevronDownIcon() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-type StatusFilter = 'all' | 'paid' | 'trial' | 'expired' | 'suspended';
+type StatusFilter = 'all' | 'internal' | 'paid' | 'trial' | 'expired' | 'suspended';
 type SortKey = 'companyName' | 'createdAt' | 'daysLeftInTrial' | 'planStatus';
 
 function getStatusFilter(c: PlatformCompany): StatusFilter {
+  if (c.plan === 'internal') return 'internal';
   if (c.planStatus === 'suspended') return 'suspended';
   if (c.plan === 'paid' || c.plan === 'enterprise') return 'paid';
   if ((c.daysLeftInTrial ?? 0) <= 0) return 'expired';
@@ -52,13 +53,15 @@ function PlanBadge({ company }: { company: PlatformCompany }) {
   const f = getStatusFilter(company);
   const map: Record<StatusFilter, string> = {
     all:       '',
+    internal:  'bg-violet-50 text-violet-700 ring-1 ring-violet-200 dark:bg-violet-950/40 dark:text-violet-400 dark:ring-violet-800',
     paid:      'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:ring-emerald-800',
     trial:     'bg-sky-50 text-sky-700 ring-1 ring-sky-200 dark:bg-sky-950/40 dark:text-sky-400 dark:ring-sky-800',
     expired:   'bg-amber-50 text-amber-700 ring-1 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:ring-amber-800',
     suspended: 'bg-rose-50 text-rose-700 ring-1 ring-rose-200 dark:bg-rose-950/40 dark:text-rose-400 dark:ring-rose-800',
   };
   const labels: Record<StatusFilter, string> = {
-    all: '', paid: company.plan === 'enterprise' ? 'Enterprise' : 'Paid',
+    all: '', internal: '🏠 Internal',
+    paid: company.plan === 'enterprise' ? 'Enterprise' : 'Paid',
     trial: `Trial · ${company.daysLeftInTrial ?? 0}d left`,
     expired: 'Trial Expired', suspended: 'Suspended',
   };
@@ -71,6 +74,7 @@ function PlanBadge({ company }: { company: PlatformCompany }) {
 
 const TABS: { key: StatusFilter; label: string }[] = [
   { key: 'all',       label: 'All'       },
+  { key: 'internal',  label: 'Internal'  },
   { key: 'paid',      label: 'Paid'      },
   { key: 'trial',     label: 'On Trial'  },
   { key: 'expired',   label: 'Expired'   },
@@ -95,7 +99,7 @@ export default function PlatformCompaniesPage() {
   const companies = data?.companies ?? [];
 
   const tabCounts = useMemo(() => {
-    const counts: Record<StatusFilter, number> = { all: companies.length, paid: 0, trial: 0, expired: 0, suspended: 0 };
+    const counts: Record<StatusFilter, number> = { all: companies.length, internal: 0, paid: 0, trial: 0, expired: 0, suspended: 0 };
     companies.forEach((c) => { counts[getStatusFilter(c)]++; });
     return counts;
   }, [companies]);

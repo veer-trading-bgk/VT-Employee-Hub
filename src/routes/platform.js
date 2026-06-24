@@ -92,7 +92,7 @@ router.put('/companies/:companyId/plan', async (req, res, next) => {
     const { companyId } = req.params;
     const { plan, planStatus, trialEndsAt } = req.body;
 
-    const allowed = { plan: ['trial', 'paid', 'enterprise'], planStatus: ['active', 'suspended', 'expired'] };
+    const allowed = { plan: ['trial', 'paid', 'enterprise', 'internal'], planStatus: ['active', 'suspended', 'expired'] };
     if (plan && !allowed.plan.includes(plan)) {
       return res.status(400).json({ error: `plan must be one of: ${allowed.plan.join(', ')}` });
     }
@@ -105,6 +105,11 @@ router.put('/companies/:companyId/plan', async (req, res, next) => {
       Key: { id: `COMPANY#${companyId}` },
     }).promise();
     if (!profile.Item) return res.status(404).json({ error: 'Company not found' });
+
+    // Internal plan companies cannot be suspended — they are owner-owned
+    if (profile.Item.plan === 'internal' && planStatus === 'suspended') {
+      return res.status(403).json({ error: 'Internal (owner-owned) companies cannot be suspended.' });
+    }
 
     const setClauses = ['updatedAt = :updatedAt', 'updatedBy = :updatedBy'];
     const attrValues = {
@@ -204,7 +209,8 @@ router.get('/stats', async (req, res, next) => {
 
     const stats = {
       totalCompanies: companies.length,
-      active: companies.filter((c) => c.planStatus === 'active' && c.plan !== 'trial').length,
+      internal: companies.filter((c) => c.plan === 'internal').length,
+      active: companies.filter((c) => c.planStatus === 'active' && c.plan !== 'trial' && c.plan !== 'internal').length,
       onTrial: companies.filter((c) => c.plan === 'trial' && c.planStatus === 'active').length,
       trialExpired: companies.filter((c) => {
         if (c.plan !== 'trial') return false;

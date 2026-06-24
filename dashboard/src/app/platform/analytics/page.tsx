@@ -10,6 +10,7 @@ import {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const STATUS_COLORS: Record<string, string> = {
+  internal:  '#8b5cf6',
   paid:      '#10b981',
   trial:     '#38bdf8',
   expired:   '#f59e0b',
@@ -17,6 +18,7 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 function getStatus(c: { plan: string; planStatus: string; daysLeftInTrial?: number | null }) {
+  if (c.plan === 'internal') return 'internal';
   if (c.planStatus === 'suspended') return 'suspended';
   if (c.plan === 'paid' || c.plan === 'enterprise') return 'paid';
   if ((c.daysLeftInTrial ?? 0) <= 0) return 'expired';
@@ -67,7 +69,7 @@ export default function PlatformAnalyticsPage() {
     }));
 
   // Status breakdown for pie
-  const statusCounts: Record<string, number> = { paid: 0, trial: 0, expired: 0, suspended: 0 };
+  const statusCounts: Record<string, number> = { internal: 0, paid: 0, trial: 0, expired: 0, suspended: 0 };
   companies.forEach((c) => { statusCounts[getStatus(c)]++; });
   const pieData = Object.entries(statusCounts)
     .filter(([, v]) => v > 0)
@@ -96,7 +98,7 @@ export default function PlatformAnalyticsPage() {
 
   // Trials expiring in next 7 days
   const expiringSoon = companies.filter((c) => {
-    if (c.plan !== 'trial' || c.planStatus !== 'active') return false;
+    if (c.plan === 'internal' || c.plan !== 'trial' || c.planStatus !== 'active') return false;
     return (c.daysLeftInTrial ?? 99) <= 7 && (c.daysLeftInTrial ?? 99) >= 0;
   });
 
