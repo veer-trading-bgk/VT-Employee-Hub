@@ -7,7 +7,8 @@ import { useAuth } from '@/context/AuthContext';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
-import { METRICS, formatMetricValue } from '@/lib/metrics.config';
+import { formatMetricValue } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import { MonthlyTeamProgress } from '@/components/charts/MonthlyTeamProgress';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { daysLeftInMonth, currentMonthLabel } from '@/utils/date-utils';
@@ -107,6 +108,7 @@ function SectionHeader({ title, icon, href, linkLabel }: {
 export default function AdminDashboardPage() {
   const qc = useQueryClient();
   const { user } = useAuth();
+  const { metrics } = useMetricsConfig();
 
   // ── Queries ────────────────────────────────────────────────────────────────
   const { data: trialData } = useQuery<TrialStatus>({
@@ -163,12 +165,12 @@ export default function AdminDashboardPage() {
   const lbEntries = useMemo(() => lbData?.data ?? [], [lbData]);
   const teamSize = lbData?.activeHeadcount || lbEntries.length || teamEntries.length || 1;
 
-  const metricTotals = useMemo(() => METRICS.map((m) => {
+  const metricTotals = useMemo(() => metrics.map((m) => {
     const total = teamEntries.reduce((sum, [, entry]) => sum + (entry.metrics?.[m.key] ?? 0), 0);
     const target = (dailyTargets[m.key] ?? 0) * teamSize;
     const pct = target > 0 ? Math.round((total / target) * 100) : 0;
     return { ...m, total, target, pct };
-  }), [teamEntries, dailyTargets, teamSize]);
+  }), [metrics, teamEntries, dailyTargets, teamSize]);
 
   const overallPct = useMemo(() =>
     metricTotals.length > 0
@@ -176,21 +178,21 @@ export default function AdminDashboardPage() {
       : 0,
   [metricTotals]);
 
-  const monthlyChartData = useMemo(() => METRICS.map((m) => {
+  const monthlyChartData = useMemo(() => metrics.map((m) => {
     const total = lbEntries.reduce((sum, e) => sum + (e.metrics[m.key] ?? 0), 0);
     const mTarget = (monthlyTargets[m.key] ?? lbData?.monthlyTargets?.[m.key] ?? 0) * (lbEntries.length || 1);
     const pct = mTarget > 0 ? Math.min(Math.round((total / mTarget) * 100), 999) : 0;
     return { label: m.label, icon: m.icon, value: total, target: mTarget, progress: pct, color: m.color, unit: m.unit };
-  }), [lbEntries, monthlyTargets, lbData]);
+  }), [metrics, lbEntries, monthlyTargets, lbData]);
 
   const todayTop5 = useMemo(() => teamEntries
     .map(([userId, entry]) => {
       const avgScore = Math.round(
-        METRICS.reduce((sum, m) => {
+        metrics.reduce((sum, m) => {
           const v = entry.metrics?.[m.key] ?? 0;
           const t = dailyTargets[m.key] || 1;
           return sum + (v / t) * 100;
-        }, 0) / METRICS.length
+        }, 0) / metrics.length
       );
       return {
         userId,
@@ -201,7 +203,7 @@ export default function AdminDashboardPage() {
     })
     .sort((a, b) => b.avgScore - a.avgScore)
     .slice(0, 5),
-  [teamEntries, dailyTargets]);
+  [metrics, teamEntries, dailyTargets]);
 
   const barData = useMemo(() => metricTotals.map((m) => ({
     name: m.key.toUpperCase(),

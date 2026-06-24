@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { METRICS, METRIC_KEYS } from '@/lib/metrics.config';
+import { METRIC_KEYS } from '@/lib/metrics.config';
 import type { MetricConfig } from '@/lib/metrics.config';
+import { useMetricsConfig } from './useMetricsConfig';
 
 const storageKey = (userId: string) => `apforce_metric_order_${userId}`;
 
@@ -23,12 +24,13 @@ function loadOrder(userId: string): string[] {
 }
 
 export function useMetricOrder(userId: string) {
+  const { metrics } = useMetricsConfig();
   const [order, setOrder] = useState<string[]>(() => loadOrder(userId));
 
   const isCustomOrder = order.join(',') !== METRIC_KEYS.join(',');
 
   const sortedMetrics: MetricConfig[] = order
-    .map((key) => METRICS.find((m) => m.key === key))
+    .map((key) => metrics.find((m) => m.key === key))
     .filter((m): m is MetricConfig => m !== undefined);
 
   const saveOrder = useCallback(

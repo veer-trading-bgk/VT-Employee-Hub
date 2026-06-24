@@ -5,7 +5,7 @@ import { AppShell } from '@/components/layout/AppShell';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
-import { METRICS } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import { useAuth } from '@/context/AuthContext';
 import { currentMonthLabel } from '@/utils/date-utils';
 
@@ -27,15 +27,16 @@ interface LeaderboardResponse {
 
 const MEDAL = ['🥇', '🥈', '🥉'];
 
-function avgProgress(metrics: Record<string, number>, targets: Record<string, number>): number {
-  const vals = METRICS.map((m) => {
+function avgProgress(metricsData: Record<string, number>, targets: Record<string, number>, metricsArr: { key: string }[]): number {
+  const vals = metricsArr.map((m) => {
     const t = targets[m.key] ?? 1;
-    return Math.min(((metrics[m.key] ?? 0) / t) * 100, 100);
+    return Math.min(((metricsData[m.key] ?? 0) / t) * 100, 100);
   });
   return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
 }
 
 export default function LeaderboardPage() {
+  const { metrics } = useMetricsConfig();
   const { user } = useAuth();
 
   const { data, isLoading } = useQuery({
@@ -74,7 +75,7 @@ export default function LeaderboardPage() {
           <div className="space-y-3">
             {entries.map((entry) => {
               const isMe = entry.userId === user?.id;
-              const avg = avgProgress(entry.metrics, targets);
+              const avg = avgProgress(entry.metrics, targets, metrics);
               const pctColor =
                 avg >= 100 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400'
                 : avg >= 70 ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400'
@@ -148,7 +149,7 @@ export default function LeaderboardPage() {
 
                   {/* Key metric snapshot — first 4 metrics */}
                   <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1">
-                    {METRICS.slice(0, 4).map((m) => (
+                    {metrics.slice(0, 4).map((m) => (
                       <span key={m.key} className="text-[11px] text-slate-500 dark:text-slate-400">
                         {m.icon}{' '}
                         <span className="font-medium text-slate-700 dark:text-slate-300">

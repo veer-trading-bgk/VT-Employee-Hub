@@ -2,7 +2,8 @@
 
 import { exportToCsv } from '@/lib/csv';
 import type { MetricRecord } from '@/types';
-import { getMetricConfig, formatMetricValue } from '@/lib/metrics.config';
+import { formatMetricValue } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 
 interface DataTableProps {
   records: MetricRecord[];
@@ -10,6 +11,7 @@ interface DataTableProps {
 }
 
 export function DataTable({ records, filename = 'metrics_export.csv' }: DataTableProps) {
+  const { getMetricConfig } = useMetricsConfig();
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
       <div className="mb-4 flex items-center justify-between">

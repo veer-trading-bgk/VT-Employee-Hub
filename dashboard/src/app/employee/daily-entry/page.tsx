@@ -7,7 +7,8 @@ import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { MetricCard } from '@/components/ui/MetricCard';
 import { apiFetch } from '@/lib/api';
-import { METRICS, dailyTarget } from '@/lib/metrics.config';
+import { dailyTarget } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import { useAuth } from '@/context/AuthContext';
 import { useMetricOrder } from '@/hooks/useMetricOrder';
 import type { MyMetricsResponse, VerificationStatus } from '@/types';
@@ -27,6 +28,7 @@ export default function DailyEntryPage() {
   const [values, setValues] = useState<Record<string, string>>({});
   const [correcting, setCorrecting] = useState<Record<string, string | null>>({});
 
+  const { metrics } = useMetricsConfig();
   // Reads the same order the user set on their dashboard
   const { sortedMetrics, isCustomOrder } = useMetricOrder(user?.id ?? 'guest');
 
@@ -48,7 +50,7 @@ export default function DailyEntryPage() {
 
   const { mutate: save, isPending } = useMutation({
     mutationFn: async () => {
-      const toSave = METRICS.filter((m) => parseInt(values[m.key] ?? '0') > 0);
+      const toSave = metrics.filter((m) => parseInt(values[m.key] ?? '0') > 0);
       if (toSave.length === 0) throw new Error('Enter at least one value');
       await Promise.all(
         toSave.map((m) =>
@@ -65,7 +67,7 @@ export default function DailyEntryPage() {
       qc.setQueryData<MyMetricsResponse>(['my-metrics-entry'], (old) => {
         if (!old) return old;
         const today = { ...(old.data[TODAY] ?? {}) };
-        METRICS.forEach((m) => {
+        metrics.forEach((m) => {
           const v = parseInt(values[m.key] ?? '0');
           if (v > 0) today[m.key] = (today[m.key] ?? 0) + v;
         });
@@ -114,10 +116,10 @@ export default function DailyEntryPage() {
     },
   });
 
-  const hasAnyValue = METRICS.some((m) => parseInt(values[m.key] ?? '0') > 0);
+  const hasAnyValue = metrics.some((m) => parseInt(values[m.key] ?? '0') > 0);
 
   // Renders a single MetricCard with all entry/correction wiring
-  const renderCard = (m: typeof METRICS[number]) => {
+  const renderCard = (m: (typeof metrics)[number]) => {
     const logged         = todayData[m.key]     ?? 0;
     const yest           = yesterdayData[m.key] ?? 0;
     const target         = (apiTargets[m.key] as number) ?? dailyTarget(m);
@@ -188,7 +190,7 @@ export default function DailyEntryPage() {
                     {group.label}
                   </h2>
                   <div className={`grid gap-2 ${group.keys.length === 3 ? 'grid-cols-3' : 'grid-cols-2 sm:grid-cols-3'}`}>
-                    {METRICS.filter((m) => group.keys.includes(m.key)).map((m) => renderCard(m))}
+                    {metrics.filter((m) => group.keys.includes(m.key)).map((m) => renderCard(m))}
                   </div>
                 </section>
               ))

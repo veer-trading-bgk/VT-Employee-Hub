@@ -4,7 +4,6 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { useMyMetrics } from '@/hooks/useMetrics';
-import { METRICS } from '@/lib/metrics.config';
 import { Loading } from '@/components/common/Loading';
 
 interface Insight {

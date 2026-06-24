@@ -6,7 +6,8 @@ import { Navbar } from '@/components/layout/Navbar';
 import { TeamSubNav } from '@/components/layout/TeamSubNav';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
-import { METRICS, formatMetricValue, getMetricConfig } from '@/lib/metrics.config';
+import { formatMetricValue } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -103,9 +104,9 @@ function statusLabel(status: string) {
   return { draft: 'Draft', reviewing: 'Under Review', approved: 'Approved', locked: 'Locked' }[status] ?? status;
 }
 
-function exportCSV(payroll: PayrollEntry[], empMap: EmployeeMap, month: string, rates: Record<string, RateEntry>) {
+function exportCSV(payroll: PayrollEntry[], empMap: EmployeeMap, month: string, rates: Record<string, RateEntry>, getLabel: (k: string) => string) {
   const metricKeys = Object.keys(rates);
-  const header = ['Name', 'Email', ...metricKeys.map((k) => getMetricConfig(k)?.label ?? k), 'Base (₹)', 'Bonus (₹)', 'Adjustments (₹)', 'Total (₹)'];
+  const header = ['Name', 'Email', ...metricKeys.map((k) => getLabel(k)), 'Base (₹)', 'Bonus (₹)', 'Adjustments (₹)', 'Total (₹)'];
   const rows = payroll.map((entry) => {
     const emp = empMap[entry.userId] ?? {};
     return [
@@ -130,6 +131,7 @@ function exportCSV(payroll: PayrollEntry[], empMap: EmployeeMap, month: string, 
 
 export default function CompensationPage() {
   const queryClient = useQueryClient();
+  const { metrics, getMetricConfig } = useMetricsConfig();
   const [month, setMonth] = useState(currentMonthStr());
   const [search, setSearch] = useState('');
   const [sortBy, setSortBy] = useState<'total' | 'base' | 'bonus'>('total');
@@ -226,7 +228,7 @@ export default function CompensationPage() {
   const totalAdj = payrollData?.totalAdjustments ?? payroll.reduce((s, e) => s + (e.adjustments ?? 0), 0);
   const totalPayout = payrollData?.totalPayout ?? payroll.reduce((s, e) => s + (e.finalTotal ?? e.total), 0);
 
-  const rateKeys = Object.keys(rates).length > 0 ? Object.keys(rates) : METRICS.map((m) => m.key);
+  const rateKeys = Object.keys(rates).length > 0 ? Object.keys(rates) : metrics.map((m) => m.key);
 
   function openEditor() {
     setDraftRates(Object.fromEntries(Object.entries(rates).map(([k, v]) => [k, { ...v }])));
@@ -317,7 +319,7 @@ export default function CompensationPage() {
                 🔄 Refresh
               </button>
               <button
-                onClick={() => payrollData && exportCSV(filtered, empMap, month, rates)}
+                onClick={() => payrollData && exportCSV(filtered, empMap, month, rates, (k) => getMetricConfig(k)?.label ?? k)}
                 disabled={!payrollData || filtered.length === 0}
                 className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
               >

@@ -9,12 +9,13 @@ import { DateRangeFilter } from '@/components/ui/DateRangeFilter';
 import { ErrorMessage } from '@/components/ui/ErrorMessage';
 import { ChartSkeleton, TableSkeleton } from '@/components/ui/Skeleton';
 import { useMyMetrics, useRoleScopedMetrics } from '@/hooks/useMetrics';
-import { METRICS } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import { Navbar } from '@/components/layout/Navbar';
 
 export default function AnalyticsPage() {
+  const { metrics } = useMetricsConfig();
   const [days, setDays] = useState(30);
-  const [metricKey, setMetricKey] = useState(METRICS[0].key);
+  const [metricKey, setMetricKey] = useState(metrics[0]?.key ?? 'kyc');
   const { summary, raw, error, loading, refetch } = useMyMetrics(days);
   const { team } = useRoleScopedMetrics();
 
@@ -66,7 +67,7 @@ export default function AnalyticsPage() {
           onChange={(e) => setMetricKey(e.target.value)}
           className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
         >
-          {METRICS.map((m) => (
+          {metrics.map((m) => (
             <option key={m.key} value={m.key}>
               {m.label}
             </option>

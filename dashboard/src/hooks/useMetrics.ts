@@ -4,10 +4,12 @@ import { useMemo } from 'react';
 import { api } from '@/lib/api';
 import { useFetch } from './useFetch';
 import { useAuth } from '@/context/AuthContext';
-import { METRICS, dailyTarget } from '@/lib/metrics.config';
+import { dailyTarget } from '@/lib/metrics.config';
+import { useMetricsConfig } from './useMetricsConfig';
 import type { MyMetricsResponse, AllMetricsResponse, TeamSummaryResponse } from '@/types';
 
 export function useMyMetrics(days = 30) {
+  const { metrics } = useMetricsConfig();
   const { data, error, loading, refetch } = useFetch<MyMetricsResponse>(
     () => api.myMetrics(days) as Promise<MyMetricsResponse>
   );
@@ -25,7 +27,7 @@ export function useMyMetrics(days = 30) {
     }
     const today = dateRange[dateRange.length - 1];
 
-    return METRICS.map((metric) => {
+    return metrics.map((metric) => {
       // Gap-filled: every date in range, 0 for days with no entry
       const history = dateRange.map((date) => ({
         date,
@@ -46,7 +48,7 @@ export function useMyMetrics(days = 30) {
         history,
       };
     });
-  }, [data, days]);
+  }, [data, days, metrics]);
 
   return { summary, raw: data, error, loading, refetch };
 }

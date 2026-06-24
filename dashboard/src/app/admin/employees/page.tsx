@@ -12,7 +12,8 @@ import { formatDate } from '@/utils/formatters';
 import { EditEmployeeModal } from '@/components/EditEmployeeModal';
 import { DeleteEmployeeDialog } from '@/components/DeleteEmployeeDialog';
 import { EmployeeActionMenu } from '@/components/EmployeeActionMenu';
-import { METRICS, formatMetricValue, getMetricConfig } from '@/lib/metrics.config';
+import { formatMetricValue } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import type { Role } from '@/types';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -477,6 +478,7 @@ function Reset2FADialog({ employee, onClose }: { employee: Employee; onClose: ()
 // ── Performance Report Modal ──────────────────────────────────────────────────
 function PerformanceReportModal({ employee, onClose }: { employee: Employee; onClose: () => void }) {
   useEscape(onClose);
+  const { metrics, getMetricConfig } = useMetricsConfig();
   const [days, setDays] = useState(30);
 
   const { data, isLoading } = useQuery({
@@ -487,17 +489,17 @@ function PerformanceReportModal({ employee, onClose }: { employee: Employee; onC
 
   const byDate = data?.data ?? {};
   const sortedDates = Object.keys(byDate).sort((a, b) => b.localeCompare(a));
-  const metricTotals = METRICS.reduce<Record<string, number>>((acc, m) => {
+  const metricTotals = metrics.reduce<Record<string, number>>((acc, m) => {
     acc[m.key] = sortedDates.reduce((s, d) => s + (byDate[d]?.[m.key] ?? 0), 0);
     return acc;
   }, {});
 
   const exportCSV = useCallback(() => {
-    const header = ['Date', ...METRICS.map((m) => m.label)].join(',');
+    const header = ['Date', ...metrics.map((m) => m.label)].join(',');
     const rows = sortedDates.map((d) =>
-      [d, ...METRICS.map((m) => byDate[d]?.[m.key] ?? 0)].join(',')
+      [d, ...metrics.map((m) => byDate[d]?.[m.key] ?? 0)].join(',')
     );
-    const totalsRow = ['TOTAL', ...METRICS.map((m) => metricTotals[m.key])].join(',');
+    const totalsRow = ['TOTAL', ...metrics.map((m) => metricTotals[m.key])].join(',');
     const csv = [header, ...rows, totalsRow].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -506,7 +508,7 @@ function PerformanceReportModal({ employee, onClose }: { employee: Employee; onC
     a.download = `performance_${employee.name.replace(/\s+/g, '_')}_${days}d.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [byDate, sortedDates, employee.name, days, metricTotals]);
+  }, [metrics, byDate, sortedDates, employee.name, days, metricTotals]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
@@ -543,7 +545,7 @@ function PerformanceReportModal({ employee, onClose }: { employee: Employee; onC
           ) : (
             <div className="space-y-5">
               <div className="grid grid-cols-3 gap-3">
-                {METRICS.map((m) => {
+                {metrics.map((m) => {
                   const cfg = getMetricConfig(m.key);
                   return (
                     <div key={m.key} className="rounded-lg border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-800/50">
@@ -565,7 +567,7 @@ function PerformanceReportModal({ employee, onClose }: { employee: Employee; onC
                     <thead>
                       <tr className="border-b border-slate-100 dark:border-slate-800">
                         <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">Date</th>
-                        {METRICS.map((m) => (
+                        {metrics.map((m) => (
                           <th key={m.key} className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">{m.icon}</th>
                         ))}
                       </tr>
@@ -574,7 +576,7 @@ function PerformanceReportModal({ employee, onClose }: { employee: Employee; onC
                       {sortedDates.map((date) => (
                         <tr key={date} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                           <td className="px-4 py-2.5 font-medium text-slate-700 dark:text-slate-300">{date}</td>
-                          {METRICS.map((m) => {
+                          {metrics.map((m) => {
                             const cfg = getMetricConfig(m.key);
                             const val = byDate[date]?.[m.key] ?? 0;
                             return (

@@ -23,7 +23,7 @@ import {
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
-import { METRICS, dailyTarget } from '@/lib/metrics.config';
+import { dailyTarget } from '@/lib/metrics.config';
 import { useAuth } from '@/context/AuthContext';
 import { daysLeftInMonth, currentMonthLabel, today } from '@/utils/date-utils';
 import { toast } from 'sonner';
@@ -285,7 +285,7 @@ export default function EmployeeDashboardPage() {
                 />
               </div>
               <p className="mt-1.5 text-[10px] text-indigo-300">
-                {metricsHit} of {METRICS.length} targets hit today
+                {metricsHit} of {sortedMetrics.length} targets hit today
               </p>
             </div>
 

@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
-import { METRICS } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 
 type TargetPeriod = 'day' | 'month';
 
@@ -24,6 +24,7 @@ interface TargetsResponse {
 
 export default function AdminTargetsPage() {
   const qc = useQueryClient();
+  const { metrics } = useMetricsConfig();
 
   const { data, isLoading } = useQuery({
     queryKey: ['admin-targets'],
@@ -37,7 +38,7 @@ export default function AdminTargetsPage() {
   useEffect(() => {
     if (data?.data) {
       const merged: Record<string, TargetEntry> = {};
-      METRICS.forEach((m) => {
+      metrics.forEach((m) => {
         const stored = data.data[m.key];
         merged[m.key] = {
           target: stored?.target ?? m.target,
@@ -125,7 +126,7 @@ export default function AdminTargetsPage() {
           <Loading />
         ) : (
           <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800">
-            {METRICS.map((m) => {
+            {metrics.map((m) => {
               const entry = form[m.key];
               if (!entry) return null; // Should never happen after merge, but keeps TS happy
               return (

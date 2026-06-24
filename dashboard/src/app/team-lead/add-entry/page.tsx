@@ -6,7 +6,8 @@ import { toast } from 'sonner';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
-import { METRICS, dailyTarget, formatMetricValue } from '@/lib/metrics.config';
+import { dailyTarget, formatMetricValue } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 
 interface TeamMember {
   id: string;
@@ -33,6 +34,7 @@ const inputCls =
 
 export default function TLAddEntryPage() {
   const qc = useQueryClient();
+  const { metrics } = useMetricsConfig();
   const [selectedMember, setSelectedMember] = useState<TeamMember | null>(null);
   const [entryDate, setEntryDate] = useState(TODAY);
   const [values, setValues] = useState<Record<string, string>>({});
@@ -45,12 +47,12 @@ export default function TLAddEntryPage() {
   });
 
   const teamMembers = teamData?.data ?? [];
-  const hasAnyValue = METRICS.some((m) => parseInt(values[m.key] ?? '0') > 0);
+  const hasAnyValue = metrics.some((m) => parseInt(values[m.key] ?? '0') > 0);
 
   const { mutate: submit, isPending } = useMutation({
     mutationFn: async () => {
       if (!selectedMember) throw new Error('Select a team member first');
-      const toSave = METRICS.filter((m) => parseInt(values[m.key] ?? '0') > 0);
+      const toSave = metrics.filter((m) => parseInt(values[m.key] ?? '0') > 0);
       if (toSave.length === 0) throw new Error('Enter at least one value');
 
       await Promise.all(
@@ -170,7 +172,7 @@ export default function TLAddEntryPage() {
 
                   <div className="space-y-4">
                     {GROUPS.map((group) => {
-                      const groupMetrics = METRICS.filter((m) => group.keys.includes(m.key));
+                      const groupMetrics = metrics.filter((m) => group.keys.includes(m.key));
                       return (
                         <section key={group.label}>
                           <h2 className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-400 dark:text-slate-500">

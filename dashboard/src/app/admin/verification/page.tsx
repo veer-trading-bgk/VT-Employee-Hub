@@ -6,7 +6,8 @@ import { toast } from 'sonner';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
-import { METRICS, formatMetricValue, getMetricConfig } from '@/lib/metrics.config';
+import { formatMetricValue } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import type { VerificationStatus } from '@/types';
 
 interface PendingMetric {
@@ -71,6 +72,7 @@ function NoteModal({
   isPending: boolean;
 }) {
   const [notes, setNotes] = useState('');
+  const { getMetricConfig } = useMetricsConfig();
   const cfg = getMetricConfig(item.metric_type);
 
   return (
@@ -124,6 +126,7 @@ function NoteModal({
 
 export default function VerificationPage() {
   const queryClient = useQueryClient();
+  const { metrics, getMetricConfig } = useMetricsConfig();
   const [filterMetric, setFilterMetric] = useState('all');
   const [filterSource, setFilterSource] = useState('all');
   const [filterFlagged, setFilterFlagged] = useState(false);
@@ -255,7 +258,7 @@ export default function VerificationPage() {
               className="rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
             >
               <option value="all">All Metrics</option>
-              {METRICS.map((m) => (
+              {metrics.map((m) => (
                 <option key={m.key} value={m.key}>{m.icon} {m.label}</option>
               ))}
             </select>

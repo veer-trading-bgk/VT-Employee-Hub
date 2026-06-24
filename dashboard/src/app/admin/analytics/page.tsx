@@ -21,7 +21,8 @@ import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Loading } from '@/components/common/Loading';
 import { EmptyState } from '@/components/common/EmptyState';
 import { apiFetch } from '@/lib/api';
-import { METRICS, calcPoints, formatMetricValue } from '@/lib/metrics.config';
+import { calcPoints, formatMetricValue } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import { exportTableToCsv, printToPdf } from '@/utils/export';
 import { currentMonthLabel, daysLeftInMonth } from '@/utils/date-utils';
 import { formatCurrency } from '@/utils/formatters';
@@ -48,8 +49,8 @@ interface Employee {
 const DAYS_OPTIONS = [7, 14, 30, 60, 90] as const;
 type DaysOption = (typeof DAYS_OPTIONS)[number];
 
-// Default to first 3 metrics for a readable line chart
-const DEFAULT_SELECTED = METRICS.slice(0, 3).map((m) => m.key);
+// Default to first 3 metric keys for the line chart
+const DEFAULT_SELECTED = ['kyc', 'demat', 'mf'];
 
 // ── Custom funnel bar ─────────────────────────────────────────────────────────
 function FunnelBar({ name, value, maxValue, fill }: { name: string; value: number; maxValue: number; fill: string }) {
@@ -74,6 +75,7 @@ function FunnelBar({ name, value, maxValue, fill }: { name: string; value: numbe
 export default function AdminAnalyticsPage() {
   const { user } = useAuth();
   const router = useRouter();
+  const { metrics } = useMetricsConfig();
 
   useEffect(() => {
     if (user?.role === 'superadmin') router.replace('/platform/analytics');
@@ -215,7 +217,7 @@ export default function AdminAnalyticsPage() {
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
           <StatsCard title="Records Analysed" value={totalRecords.toLocaleString()} icon="📊" accent="indigo" loading={isLoading} />
           <StatsCard title="Overall Progress" value={`${overallPct}%`} icon="🎯" accent={overallPct >= 80 ? 'emerald' : overallPct >= 50 ? 'amber' : 'rose'} loading={isLoading} />
-          <StatsCard title="Active Metrics" value={METRICS.length} icon="📈" accent="blue" loading={isLoading} />
+          <StatsCard title="Active Metrics" value={metrics.length} icon="📈" accent="blue" loading={isLoading} />
           <StatsCard title="Period" value={`${days} days`} icon="📅" accent="purple" loading={isLoading} />
         </div>
 
@@ -240,7 +242,7 @@ export default function AdminAnalyticsPage() {
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {metricTotals.map((m) => {
-                    const cfg = METRICS.find((mx) => mx.label === m.metric || mx.key === m.key);
+                    const cfg = metrics.find((mx) => mx.label === m.metric || mx.key === m.key);
                     return (
                       <tr key={m.metric} className="hover:bg-slate-50 dark:hover:bg-slate-800/50">
                         <td className="py-3 pr-6 font-medium text-slate-900 dark:text-white">
@@ -285,7 +287,7 @@ export default function AdminAnalyticsPage() {
             <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
               <h2 className="font-semibold text-slate-900 dark:text-white">{days}-Day Trend</h2>
               <div className="flex flex-wrap gap-1">
-                {METRICS.map((m) => (
+                {metrics.map((m) => (
                   <button
                     key={m.key}
                     onClick={() => toggleMetric(m.key)}
@@ -312,7 +314,7 @@ export default function AdminAnalyticsPage() {
                   <YAxis tick={{ fontSize: 10 }} />
                   <Tooltip labelFormatter={(l) => `Date: ${l}`} contentStyle={{ fontSize: 12 }} />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
-                  {METRICS.filter((m) => selectedMetrics.includes(m.key)).map((m) => (
+                  {metrics.filter((m) => selectedMetrics.includes(m.key)).map((m) => (
                     <Line key={m.key} type="monotone" dataKey={m.key} stroke={m.color} strokeWidth={2} dot={false} name={m.label} />
                   ))}
                 </LineChart>
@@ -438,7 +440,7 @@ export default function AdminAnalyticsPage() {
                   <tr className="border-b border-slate-100 dark:border-slate-800 text-left text-xs font-semibold uppercase text-slate-500">
                     <th className="pb-3 pr-4">Rank</th>
                     <th className="pb-3 pr-4">Employee</th>
-                    {METRICS.map((m) => (
+                    {metrics.map((m) => (
                       <th key={m.key} className="pb-3 pr-4">{m.icon} {m.label}</th>
                     ))}
                     <th className="pb-3">Points</th>
@@ -455,7 +457,7 @@ export default function AdminAnalyticsPage() {
                         <p className="font-medium text-slate-900 dark:text-white">{row.name}</p>
                         {row.email && <p className="text-xs text-slate-400">{row.email}</p>}
                       </td>
-                      {METRICS.map((m) => (
+                      {metrics.map((m) => (
                         <td key={m.key} className="py-2.5 pr-4 tabular-nums text-slate-700 dark:text-slate-300">
                           {formatMetricValue(m, (row as unknown as Record<string, number>)[m.key] ?? 0)}
                         </td>
@@ -470,7 +472,7 @@ export default function AdminAnalyticsPage() {
                 </tbody>
               </table>
               <p className="mt-2 px-1 text-xs text-slate-400">
-                Points: {METRICS.map((m) => `${m.label}×${m.unit === 'currency' ? `÷${m.pointsWeight.toLocaleString()}` : m.pointsWeight}`).join(' + ')}
+                Points: {metrics.map((m) => `${m.label}×${m.unit === 'currency' ? `÷${m.pointsWeight.toLocaleString()}` : m.pointsWeight}`).join(' + ')}
               </p>
             </div>
           )}

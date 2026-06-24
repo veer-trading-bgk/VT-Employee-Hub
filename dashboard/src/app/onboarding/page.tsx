@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { METRICS } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -47,6 +48,7 @@ function Background() {
 export default function OnboardingPage() {
   const router = useRouter();
   const { user } = useAuth();
+  const { metrics } = useMetricsConfig();
   const [step, setStep] = useState(0);
 
   // ── Step 0: Set targets ───────────────────────────────────────────────────────
@@ -145,7 +147,7 @@ export default function OnboardingPage() {
             </p>
 
             <div className="space-y-3">
-              {METRICS.map((m) => (
+              {metrics.map((m) => (
                 <div
                   key={m.key}
                   className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3"

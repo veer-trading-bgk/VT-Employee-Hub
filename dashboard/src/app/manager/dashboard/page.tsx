@@ -7,11 +7,12 @@ import { StatsCard } from '@/components/dashboard/StatsCard';
 import { Loading } from '@/components/common/Loading';
 import { EmptyState } from '@/components/common/EmptyState';
 import { apiFetch } from '@/lib/api';
-import { METRICS } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import { daysLeftInMonth, currentMonthLabel } from '@/utils/date-utils';
 import type { TeamSummaryResponse } from '@/types';
 
 export default function ManagerDashboardPage() {
+  const { metrics } = useMetricsConfig();
   const { data: teamData, isLoading } = useQuery({
     queryKey: ['manager-team-summary'],
     queryFn: () => apiFetch<TeamSummaryResponse>('/api/metrics/team-summary'),
@@ -21,7 +22,7 @@ export default function ManagerDashboardPage() {
   const teamEntries = teamData ? Object.entries(teamData.data) : [];
   const targets = teamData?.targets ?? {};
 
-  const metricTotals = METRICS.map((m) => {
+  const metricTotals = metrics.map((m) => {
     const total = teamEntries.reduce((sum, [, e]) => sum + (e.metrics?.[m.key] ?? 0), 0);
     const target = (targets[m.key] ?? 0) * teamEntries.length;
     const pct = target > 0 ? Math.round((total / target) * 100) : 0;
@@ -48,7 +49,7 @@ export default function ManagerDashboardPage() {
   const leaderboard = teamEntries
     .map(([userId, entry]) => {
       const avgScore = Math.round(
-        METRICS.reduce((s, m) => s + ((entry.metrics?.[m.key] ?? 0) / (targets[m.key] ?? 1)) * 100, 0) / METRICS.length
+        metrics.reduce((s, m) => s + ((entry.metrics?.[m.key] ?? 0) / (targets[m.key] ?? 1)) * 100, 0) / metrics.length
       );
       return { userId, name: (entry as unknown as { name?: string }).name ?? entry.email ?? userId, email: entry.email ?? userId, avgScore, metrics: entry.metrics ?? {} };
     })

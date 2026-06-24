@@ -1,7 +1,8 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { METRICS, formatMetricValue } from '@/lib/metrics.config';
+import { formatMetricValue } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import type { TeamSummaryEntry } from '@/types';
 
 interface LeaderboardProps {
@@ -9,7 +10,8 @@ interface LeaderboardProps {
 }
 
 export function Leaderboard({ data }: LeaderboardProps) {
-  const [sortBy, setSortBy] = useState(METRICS[0].key);
+  const { metrics } = useMetricsConfig();
+  const [sortBy, setSortBy] = useState(metrics[0]?.key ?? 'kyc');
 
   const rows = useMemo(() => {
     return Object.entries(data)
@@ -22,7 +24,7 @@ export function Leaderboard({ data }: LeaderboardProps) {
       .slice(0, 5);
   }, [data, sortBy]);
 
-  const metric = METRICS.find((m) => m.key === sortBy)!;
+  const metric = metrics.find((m) => m.key === sortBy) ?? metrics[0];
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
@@ -33,7 +35,7 @@ export function Leaderboard({ data }: LeaderboardProps) {
           onChange={(e) => setSortBy(e.target.value)}
           className="rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-white"
         >
-          {METRICS.map((m) => (
+          {metrics.map((m) => (
             <option key={m.key} value={m.key}>
               {m.label}
             </option>

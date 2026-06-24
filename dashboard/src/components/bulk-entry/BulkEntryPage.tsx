@@ -7,8 +7,9 @@ import Papa from 'papaparse';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch } from '@/lib/api';
 import { METRICS, formatMetricValue } from '@/lib/metrics.config';
+import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 
-const BULK_METRICS = METRICS.filter((m) => m.unit === 'count');
+const BULK_METRIC_KEYS = METRICS.filter((m) => m.unit === 'count').map((m) => m.key);
 
 interface Performer {
   id: string;
@@ -35,13 +36,13 @@ interface Props {
 }
 
 const TODAY = new Date().toISOString().split('T')[0];
-const CSV_HEADER = ['employeeId', 'name', ...BULK_METRICS.map((m) => m.key), 'date', 'notes'].join(',');
+const CSV_HEADER = ['employeeId', 'name', ...BULK_METRIC_KEYS, 'date', 'notes'].join(',');
 
 function emptyRow(): MetricRow {
   return {
     employeeId: '',
     name: '',
-    metrics: Object.fromEntries(BULK_METRICS.map((m) => [m.key, 0])),
+    metrics: Object.fromEntries(BULK_METRIC_KEYS.map((k) => [k, 0])),
     date: TODAY,
     notes: '',
   };
@@ -53,6 +54,8 @@ const inputCls =
   'dark:border-slate-700 dark:bg-slate-800 dark:text-white';
 
 export function BulkEntryPage({ performersUrl, directoryHref, title = 'Bulk Metrics Entry' }: Props) {
+  const { metrics } = useMetricsConfig();
+  const bulkMetrics = useMemo(() => metrics.filter((m) => BULK_METRIC_KEYS.includes(m.key)), [metrics]);
   const [mode, setMode] = useState<'form' | 'csv'>('form');
   const [form, setForm] = useState<MetricRow>(emptyRow());
   const [empSearch, setEmpSearch] = useState('');
@@ -140,7 +143,7 @@ export function BulkEntryPage({ performersUrl, directoryHref, title = 'Bulk Metr
       }
 
       const metrics: Record<string, number> = {};
-      BULK_METRICS.forEach((m) => {
+      bulkMetrics.forEach((m) => {
         const raw = row[m.key] ?? row[m.label.toLowerCase().replace(/\s+/g, '_')] ?? '0';
         const val = parseFloat(raw) || 0;
         if (val < 0) errors.push(`Row ${rowNum}: ${m.key} cannot be negative`);
@@ -161,10 +164,10 @@ export function BulkEntryPage({ performersUrl, directoryHref, title = 'Bulk Metr
 
   const totals = entries.reduce<Record<string, number>>(
     (acc, row) => {
-      BULK_METRICS.forEach((m) => { acc[m.key] = (acc[m.key] ?? 0) + (row.metrics[m.key] ?? 0); });
+      bulkMetrics.forEach((m) => { acc[m.key] = (acc[m.key] ?? 0) + (row.metrics[m.key] ?? 0); });
       return acc;
     },
-    Object.fromEntries(BULK_METRICS.map((m) => [m.key, 0]))
+    Object.fromEntries(bulkMetrics.map((m) => [m.key, 0]))
   );
 
   return (
@@ -176,7 +179,7 @@ export function BulkEntryPage({ performersUrl, directoryHref, title = 'Bulk Metr
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">{title}</h1>
           <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Log metrics for performers — {BULK_METRICS.map((m) => m.label).join(', ')}
+            Log metrics for performers — {bulkMetrics.map((m) => m.label).join(', ')}
           </p>
         </div>
 
@@ -270,7 +273,7 @@ export function BulkEntryPage({ performersUrl, directoryHref, title = 'Bulk Metr
               </div>
 
               {/* Metric fields */}
-              {BULK_METRICS.map((m) => (
+              {bulkMetrics.map((m) => (
                 <div key={m.key}>
                   <label className="mb-1 block text-xs font-medium text-slate-500">
                     {m.icon} {m.label}
@@ -382,7 +385,7 @@ export function BulkEntryPage({ performersUrl, directoryHref, title = 'Bulk Metr
                     <p className="text-sm font-medium text-slate-900 dark:text-white">{row.name || row.employeeId}</p>
                     <p className="text-xs text-slate-400">{row.date}</p>
                     <div className="mt-1 flex flex-wrap gap-1.5">
-                      {BULK_METRICS.filter(m => (row.metrics[m.key] ?? 0) > 0).map((m) => (
+                      {bulkMetrics.filter(m => (row.metrics[m.key] ?? 0) > 0).map((m) => (
                         <span key={m.key} className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400">
                           {m.icon} {m.key.toUpperCase()}: {row.metrics[m.key]}
                         </span>
@@ -406,7 +409,7 @@ export function BulkEntryPage({ performersUrl, directoryHref, title = 'Bulk Metr
                 <thead>
                   <tr className="border-b border-slate-100 text-left text-xs font-semibold uppercase text-slate-500 dark:border-slate-800">
                     <th className="pb-2 pr-4">Employee</th>
-                    {BULK_METRICS.map((m) => (
+                    {bulkMetrics.map((m) => (
                       <th key={m.key} className="pb-2 pr-3 whitespace-nowrap">{m.icon} {m.label}</th>
                     ))}
                     <th className="pb-2 pr-4">Date</th>
@@ -420,7 +423,7 @@ export function BulkEntryPage({ performersUrl, directoryHref, title = 'Bulk Metr
                         <p className="font-medium text-slate-900 dark:text-white">{row.name || row.employeeId}</p>
                         <p className="text-xs text-slate-400">{row.employeeId.slice(0, 14)}…</p>
                       </td>
-                      {BULK_METRICS.map((m) => (
+                      {bulkMetrics.map((m) => (
                         <td key={m.key} className="py-2.5 pr-3 tabular-nums text-slate-700 dark:text-slate-300">
                           {row.metrics[m.key] ?? 0}
                         </td>
@@ -443,8 +446,8 @@ export function BulkEntryPage({ performersUrl, directoryHref, title = 'Bulk Metr
 
             {/* Totals summary */}
             <div className="mt-4 grid gap-3 rounded-xl bg-slate-50 p-4 dark:bg-slate-800/50"
-              style={{ gridTemplateColumns: `repeat(${Math.min(BULK_METRICS.length, 6)}, minmax(0, 1fr))` }}>
-              {BULK_METRICS.map((m) => (
+              style={{ gridTemplateColumns: `repeat(${Math.min(bulkMetrics.length, 6)}, minmax(0, 1fr))` }}>
+              {bulkMetrics.map((m) => (
                 <div key={m.key} className="text-center">
                   <p className="text-[11px] text-slate-400">{m.icon} {m.key.toUpperCase()}</p>
                   <p className="text-lg font-bold" style={{ color: m.color }}>
