@@ -120,7 +120,12 @@ router.put('/companies/:companyId/plan', async (req, res, next) => {
 
     if (plan) { setClauses.push('#plan = :plan'); attrNames['#plan'] = 'plan'; attrValues[':plan'] = plan; }
     if (planStatus) { setClauses.push('planStatus = :planStatus'); attrValues[':planStatus'] = planStatus; }
-    if (trialEndsAt) { setClauses.push('trialEndsAt = :trialEndsAt'); attrValues[':trialEndsAt'] = trialEndsAt; }
+    // Switching to internal automatically clears trialEndsAt — internal companies never expire
+    if (plan === 'internal') {
+      setClauses.push('trialEndsAt = :trialEndsAt'); attrValues[':trialEndsAt'] = null;
+    } else if (trialEndsAt) {
+      setClauses.push('trialEndsAt = :trialEndsAt'); attrValues[':trialEndsAt'] = trialEndsAt;
+    }
 
     await dynamodb.update({
       TableName: EMP_TABLE,
