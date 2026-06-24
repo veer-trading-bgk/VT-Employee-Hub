@@ -6,7 +6,7 @@ const { loginSchema, registerSchema, verifyTotpSchema, verifyBackupSchema, compa
 const { logAudit } = require('../utils/audit');
 const { encrypt, decrypt } = require('../utils/encryption');
 const { loginRateLimiter } = require('../middleware/rateLimiter');
-const { authMiddleware } = require('../middleware/auth');
+const { authMiddleware, fetchCompanyPlan } = require('../middleware/auth');
 const { totpRateLimitCheck, recordTotpFailure, clearTotpAttempts } = require('../middleware/totpRateLimiter');
 const dynamodb = require('../config/dynamodb');
 const bot = require('../config/telegram');
@@ -37,9 +37,19 @@ function cookieAttrs() {
   return isProd ? 'Secure; SameSite=None' : 'SameSite=Strict';
 }
 
+// FIX 4: planStatus + trialEndsAt are embedded in the JWT so subscriptionMiddleware
+// can gate writes without a DB round-trip on every request.
 function issueTokens(user, res) {
   const accessToken = jwt.sign(
-    { id: user.id, email: user.email, role: user.role, name: user.name || '', companyId: user.companyId || null },
+    {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      name: user.name || '',
+      companyId: user.companyId || null,
+      planStatus: user.planStatus || null,
+      trialEndsAt: user.trialEndsAt || null,
+    },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRE || '1h' }
   );
@@ -54,6 +64,12 @@ function issueTokens(user, res) {
     `refreshToken=${refreshToken}; HttpOnly; ${attrs}; Path=/; Max-Age=2592000`,
   ]);
   return { accessToken, refreshToken };
+}
+
+async function attachPlan(user) {
+  if (!user.companyId) return user;
+  const plan = await fetchCompanyPlan(user.companyId);
+  return { ...user, planStatus: plan.planStatus, trialEndsAt: plan.trialEndsAt };
 }
 
 async function findUserByEmail(email) {
@@ -118,16 +134,22 @@ router.post('/login', async (req, res, next) => {
 
     // ── No 2FA: issue full JWT ─────────────────────────────────────────────────
     loginRateLimiter.reset(email);
-    const { accessToken } = issueTokens(user, res);
+    const userWithPlan = await attachPlan(user);
+    const { accessToken } = issueTokens(userWithPlan, res);
     markAttendance(user);
-    await logAudit(user.id, 'successful_login', email, 'success', req.ip);
+    await logAudit(user.id, 'successful_login', email, 'success', req.ip, {}, user.companyId);
     logger.info(`User ${email} logged in from ${req.ip}`);
 
     res.json({
       success: true,
       message: 'Login successful',
       token: accessToken,
-      user: { id: user.id, email: user.email, role: user.role, name: user.name, companyId: user.companyId || null },
+      user: {
+        id: user.id, email: user.email, role: user.role, name: user.name,
+        companyId: user.companyId || null,
+        planStatus: userWithPlan.planStatus,
+        trialEndsAt: userWithPlan.trialEndsAt,
+      },
     });
   } catch (error) {
     next(error);
@@ -191,16 +213,22 @@ router.post('/verify-totp', async (req, res, next) => {
     }
 
     await clearTotpAttempts(user.email);
-    const { accessToken } = issueTokens(user, res);
+    const userWithPlan = await attachPlan(user);
+    const { accessToken } = issueTokens(userWithPlan, res);
     markAttendance(user);
-    await logAudit(user.id, 'totp_verified', user.email, 'success', req.ip);
+    await logAudit(user.id, 'totp_verified', user.email, 'success', req.ip, {}, user.companyId);
     logger.info(`User ${user.email} completed 2FA from ${req.ip}`);
 
     res.json({
       success: true,
       message: 'Login successful',
       token: accessToken,
-      user: { id: user.id, email: user.email, role: user.role, name: user.name, companyId: user.companyId || null },
+      user: {
+        id: user.id, email: user.email, role: user.role, name: user.name,
+        companyId: user.companyId || null,
+        planStatus: userWithPlan.planStatus,
+        trialEndsAt: userWithPlan.trialEndsAt,
+      },
     });
   } catch (error) {
     next(error);
@@ -271,15 +299,21 @@ router.post('/verify-totp-backup', async (req, res, next) => {
     }).promise();
 
     await clearTotpAttempts(user.email);
-    const { accessToken } = issueTokens(user, res);
-    await logAudit(user.id, 'backup_code_used', user.email, 'success', req.ip, { unusedCount });
+    const userWithPlan = await attachPlan(user);
+    const { accessToken } = issueTokens(userWithPlan, res);
+    await logAudit(user.id, 'backup_code_used', user.email, 'success', req.ip, { unusedCount }, user.companyId);
     logger.info(`User ${user.email} used a backup code from ${req.ip}. ${unusedCount} codes remaining.`);
 
     res.json({
       success: true,
       message: 'Login successful via backup code.',
       token: accessToken,
-      user: { id: user.id, email: user.email, role: user.role, name: user.name, companyId: user.companyId || null },
+      user: {
+        id: user.id, email: user.email, role: user.role, name: user.name,
+        companyId: user.companyId || null,
+        planStatus: userWithPlan.planStatus,
+        trialEndsAt: userWithPlan.trialEndsAt,
+      },
       backupCodesRemaining: unusedCount,
       warning: unusedCount <= 2 ? 'You have very few backup codes left. Ask your admin to regenerate them.' : undefined,
     });
@@ -312,11 +346,17 @@ router.post('/refresh', async (req, res) => {
     }
 
     const user = result.Item;
-    const { accessToken } = issueTokens(user, res);
+    const userWithPlan = await attachPlan(user);
+    const { accessToken } = issueTokens(userWithPlan, res);
     res.json({
       success: true,
       token: accessToken,
-      user: { id: user.id, email: user.email, role: user.role, name: user.name, companyId: user.companyId || null },
+      user: {
+        id: user.id, email: user.email, role: user.role, name: user.name,
+        companyId: user.companyId || null,
+        planStatus: userWithPlan.planStatus,
+        trialEndsAt: userWithPlan.trialEndsAt,
+      },
     });
   } catch {
     res.status(500).json({ error: 'Failed to refresh token' });
@@ -327,15 +367,24 @@ router.post('/refresh', async (req, res) => {
 
 router.post('/register', authMiddleware, async (req, res, next) => {
   try {
-    if (req.user.role !== 'admin') {
-      await logAudit(req.user.id, 'unauthorized_register', 'new_user', 'failed', req.ip);
+    if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
+      await logAudit(req.user.id, 'unauthorized_register', 'new_user', 'failed', req.ip, {}, req.user.companyId);
       return res.status(403).json({ error: 'Only admins can register users' });
     }
 
     const { email, password, name, role, mobileNumber, panNumber, aadhaarNumber, homeAddress } = registerSchema.parse(req.body);
 
-    const existing = await findUserByEmail(email);
-    if (existing) return res.status(400).json({ error: 'User already exists' });
+    // FIX 3: email uniqueness is per-company — same email is allowed across different companies
+    const existing = await dynamodb.query({
+      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+      IndexName: 'emailIndex',
+      KeyConditionExpression: 'email = :email',
+      ExpressionAttributeValues: { ':email': email },
+    }).promise();
+    const sameCompanyDupe = existing.Items.find((e) => e.companyId === req.user.companyId);
+    if (sameCompanyDupe) {
+      return res.status(400).json({ error: 'Email already registered in this company' });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const userId = `emp_${Date.now()}`;
@@ -364,7 +413,7 @@ router.post('/register', authMiddleware, async (req, res, next) => {
       Item: item,
     }).promise();
 
-    await logAudit(req.user.id, 'user_registered', email, 'success', req.ip, { role, name });
+    await logAudit(req.user.id, 'user_registered', email, 'success', req.ip, { role, name }, req.user.companyId);
     logger.info(`New user registered: ${email} (${role})`);
 
     res.status(201).json({ success: true, message: 'User registered successfully', user: { id: userId, email, name, role } });
@@ -376,7 +425,7 @@ router.post('/register', authMiddleware, async (req, res, next) => {
 // ── POST /api/auth/logout ─────────────────────────────────────────────────────
 
 router.post('/logout', authMiddleware, async (req, res) => {
-  await logAudit(req.user.id, 'logout', req.user.email, 'success', req.ip);
+  await logAudit(req.user.id, 'logout', req.user.email, 'success', req.ip, {}, req.user.companyId);
   const attrs = cookieAttrs();
   res.setHeader('Set-Cookie', [
     `accessToken=; HttpOnly; ${attrs}; Max-Age=0; Path=/`,
@@ -442,7 +491,10 @@ router.post('/company-signup', async (req, res, next) => {
       },
     }).promise();
 
-    const user = { id: adminId, email: data.adminEmail, role: 'admin', name: data.adminName, companyId };
+    const user = {
+      id: adminId, email: data.adminEmail, role: 'admin', name: data.adminName, companyId,
+      planStatus: 'active', trialEndsAt,
+    };
     const { accessToken } = issueTokens(user, res);
 
     await logAudit(adminId, 'company_signup', data.adminEmail, 'success', req.ip, {

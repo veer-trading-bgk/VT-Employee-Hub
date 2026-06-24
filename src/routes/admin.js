@@ -32,7 +32,7 @@ router.get('/employees', async (req, res, next) => {
     }
     const result = await dynamodb.scan(scanParams).promise();
 
-    logAudit(req.user.id, 'list_employees', 'employees_table', 'success', req.ip)
+    logAudit(req.user.id, 'list_employees', 'employees_table', 'success', req.ip, {}, req.user.companyId)
       .catch((err) => logger.error('Audit log failed for list_employees', err));
 
     res.json({ success: true, data: result.Items ?? [] });
@@ -52,6 +52,10 @@ router.get('/employees/:id', async (req, res, next) => {
     }).promise();
 
     if (!result.Item) return res.status(404).json({ error: 'Employee not found' });
+
+    if (req.user.role !== 'superadmin' && result.Item.companyId !== req.user.companyId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
 
     const { password, totpSecret, backupCodes, ...safe } = result.Item;
     res.json({ success: true, employee: safe });
@@ -73,8 +77,10 @@ router.post('/employees', async (req, res, next) => {
       ExpressionAttributeValues: { ':email': email },
     }).promise();
 
-    if (existing.Items.length > 0) {
-      return res.status(409).json({ success: false, error: 'Email already registered' });
+    // FIX 2: email uniqueness is per-company — same email allowed in different companies
+    const sameCompanyDupe = existing.Items.find((e) => e.companyId === req.user.companyId);
+    if (sameCompanyDupe) {
+      return res.status(409).json({ success: false, error: 'Email already registered in this company' });
     }
 
     const id = `emp_${Date.now()}`;
@@ -102,7 +108,7 @@ router.post('/employees', async (req, res, next) => {
       },
     }).promise();
 
-    logAudit(req.user.id, 'create_employee', email, 'success', req.ip, { name, role })
+    logAudit(req.user.id, 'create_employee', email, 'success', req.ip, { name, role }, req.user.companyId)
       .catch((err) => logger.error('Audit log failed for create_employee', err));
 
     res.status(201).json({ success: true, user: { id, email, name, role } });
@@ -134,6 +140,10 @@ router.put('/employees/:id', async (req, res, next) => {
     const employee = existing.Item;
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
 
+    if (req.user.role !== 'superadmin' && employee.companyId !== req.user.companyId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
     if (updates.email && updates.email !== employee.email) {
       const dupe = await dynamodb.query({
         TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
@@ -141,8 +151,10 @@ router.put('/employees/:id', async (req, res, next) => {
         KeyConditionExpression: 'email = :email',
         ExpressionAttributeValues: { ':email': updates.email },
       }).promise();
-      if (dupe.Items.length > 0) {
-        return res.status(409).json({ error: 'Email already exists' });
+      // FIX 2: email uniqueness is per-company
+      const sameCompanyDupe = dupe.Items.find((e) => e.companyId === req.user.companyId && e.id !== id);
+      if (sameCompanyDupe) {
+        return res.status(409).json({ error: 'Email already exists in this company' });
       }
     }
 
@@ -182,7 +194,7 @@ router.put('/employees/:id', async (req, res, next) => {
     await logAudit(req.user.id, 'employee_updated', employee.email, 'success', req.ip, {
       targetId: id,
       changes: Object.keys(updates),
-    });
+    }, req.user.companyId);
     logger.info(`Admin ${req.user.email} updated employee ${employee.email}: ${Object.keys(updates).join(', ')}`);
 
     bot.sendMessage(
@@ -215,6 +227,10 @@ router.put('/employees/:id/reset-password', async (req, res, next) => {
     const employee = existing.Item;
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
 
+    if (req.user.role !== 'superadmin' && employee.companyId !== req.user.companyId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
     const hashed = await bcrypt.hash(newPassword, 10);
 
     await dynamodb.update({
@@ -228,7 +244,7 @@ router.put('/employees/:id/reset-password', async (req, res, next) => {
       },
     }).promise();
 
-    await logAudit(req.user.id, 'password_reset', employee.email, 'success', req.ip, { targetId: id });
+    await logAudit(req.user.id, 'password_reset', employee.email, 'success', req.ip, { targetId: id }, req.user.companyId);
 
     bot.sendMessage(
       process.env.TELEGRAM_ADMIN_CHAT_ID,
@@ -258,6 +274,10 @@ router.delete('/employees/:id', async (req, res, next) => {
 
     const employee = existing.Item;
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
+
+    if (req.user.role !== 'superadmin' && employee.companyId !== req.user.companyId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
 
     // Cascade: delete all metric records for this employee
     let metricsDeleted = 0;
@@ -296,7 +316,7 @@ router.delete('/employees/:id', async (req, res, next) => {
     await logAudit(req.user.id, 'employee_permanently_deleted', employee.email, 'success', req.ip, {
       targetId: id,
       metricsDeleted,
-    });
+    }, req.user.companyId);
     logger.info(`Admin ${req.user.email} permanently deleted employee ${employee.email} + ${metricsDeleted} metric records`);
 
     bot.sendMessage(
@@ -328,6 +348,10 @@ router.post('/employees/:id/setup-2fa', async (req, res, next) => {
 
     const employee = result.Item;
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
+
+    if (req.user.role !== 'superadmin' && employee.companyId !== req.user.companyId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
 
     const secret = speakeasy.generateSecret({
       name: `VT Trading (${employee.email})`,
@@ -361,7 +385,7 @@ router.post('/employees/:id/setup-2fa', async (req, res, next) => {
       },
     }).promise();
 
-    await logAudit(req.user.id, 'setup_2fa', employee.email, 'success', req.ip, { targetId: id });
+    await logAudit(req.user.id, 'setup_2fa', employee.email, 'success', req.ip, { targetId: id }, req.user.companyId);
     logger.info(`2FA enabled for ${employee.email} by admin ${req.user.email}`);
 
     bot.sendMessage(
@@ -396,6 +420,10 @@ router.delete('/employees/:id/2fa', async (req, res, next) => {
     const employee = result.Item;
     if (!employee) return res.status(404).json({ error: 'Employee not found' });
 
+    if (req.user.role !== 'superadmin' && employee.companyId !== req.user.companyId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
     await dynamodb.update({
       TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
       Key: { id },
@@ -409,7 +437,7 @@ router.delete('/employees/:id/2fa', async (req, res, next) => {
       },
     }).promise();
 
-    await logAudit(req.user.id, 'reset_2fa', employee.email, 'success', req.ip, { targetId: id });
+    await logAudit(req.user.id, 'reset_2fa', employee.email, 'success', req.ip, { targetId: id }, req.user.companyId);
     logger.info(`2FA reset for ${employee.email} by admin ${req.user.email}`);
 
     bot.sendMessage(
@@ -466,7 +494,7 @@ router.put('/metrics/:userId/:date/:metricType', async (req, res, next) => {
 
     await logAudit(req.user.id, 'admin_edit_metric', `${userId}#${date}#${metricType}`, 'success', req.ip, {
       from: originalValue, to: Number(value),
-    });
+    }, req.user.companyId);
     logger.info(`Admin ${req.user.email} edited ${metricType} for ${userId} on ${date}: ${originalValue} → ${Number(value)}`);
 
     res.json({ success: true });
@@ -525,7 +553,7 @@ router.put('/targets', async (req, res, next) => {
       TableName: process.env.DYNAMODB_TABLE_METRICS,
       Item: { ...key, targets: mergedTargets, updatedBy: req.user.id, updatedAt: new Date().toISOString() },
     }).promise();
-    await logAudit(req.user.id, 'update_targets', 'config', 'success', req.ip, { targets });
+    await logAudit(req.user.id, 'update_targets', 'config', 'success', req.ip, { targets }, req.user.companyId);
     logger.info(`Admin ${req.user.email} updated metric targets`);
     res.json({ success: true });
   } catch (error) {
@@ -539,7 +567,7 @@ router.delete('/targets', async (req, res, next) => {
       TableName: process.env.DYNAMODB_TABLE_METRICS,
       Key: targetsKey(req.user.companyId),
     }).promise();
-    await logAudit(req.user.id, 'reset_targets', 'config', 'success', req.ip);
+    await logAudit(req.user.id, 'reset_targets', 'config', 'success', req.ip, {}, req.user.companyId);
     res.json({ success: true, message: 'Targets reset to defaults' });
   } catch (error) {
     next(error);
@@ -612,7 +640,7 @@ router.post('/points-rebuild', adminMiddleware, async (req, res, next) => {
       )
     );
 
-    await logAudit(req.user.id, 'points_rebuild', 'all', 'success', req.ip, { employees: Object.keys(userTotals).length });
+    await logAudit(req.user.id, 'points_rebuild', 'all', 'success', req.ip, { employees: Object.keys(userTotals).length }, req.user.companyId);
     logger.info(`Admin ${req.user.email} rebuilt points for ${Object.keys(userTotals).length} employees`);
     res.json({ success: true, employeesUpdated: Object.keys(userTotals).length });
   } catch (error) {
@@ -661,7 +689,7 @@ router.put('/crm/auto-assign', async (req, res, next) => {
         updatedAt: new Date().toISOString(),
       },
     }).promise();
-    await logAudit(req.user.id, 'crm_auto_assign_update', `enabled:${enabled}`, 'success', req.ip, { capacity, overflow });
+    await logAudit(req.user.id, 'crm_auto_assign_update', `enabled:${enabled}`, 'success', req.ip, { capacity, overflow }, req.user.companyId);
     logger.info(`Admin ${req.user.email} updated CRM auto-assign: enabled=${enabled}, capacity=${capacity ?? 5}`);
     res.json({ success: true });
   } catch (err) { next(err); }
@@ -681,6 +709,10 @@ router.get('/employees/:id/metrics', async (req, res, next) => {
       Key: { id },
     }).promise();
     if (!employee.Item) return res.status(404).json({ error: 'Employee not found' });
+
+    if (req.user.role !== 'superadmin' && employee.Item.companyId !== req.user.companyId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
 
     const result = await dynamodb.query({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
@@ -745,7 +777,7 @@ router.post('/employees/bulk-status', async (req, res, next) => {
 
     await logAudit(req.user.id, 'bulk_status_update', `${ids.length}_employees`, 'success', req.ip, {
       status, succeeded, failed,
-    });
+    }, req.user.companyId);
 
     res.json({ success: true, succeeded, failed, total: ids.length });
   } catch (error) {
@@ -818,7 +850,7 @@ router.delete('/employees/bulk', async (req, res, next) => {
 
     await logAudit(req.user.id, 'bulk_delete_employees', `${deleted.length}_employees`, 'success', req.ip, {
       deleted, totalMetricsDeleted,
-    });
+    }, req.user.companyId);
 
     res.json({ success: true, deleted: deleted.length, errors, totalMetricsDeleted });
   } catch (error) {

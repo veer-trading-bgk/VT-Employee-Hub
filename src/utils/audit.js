@@ -2,10 +2,13 @@ const dynamodb = require('../config/dynamodb');
 const bot = require('../config/telegram');
 const logger = require('../config/logger');
 
-const logAudit = async (userId, action, target, result, ip, details = {}) => {
+// FIX 1: companyId is now stored on every audit record so reads can be scoped per-tenant.
+// Signature: logAudit(userId, action, target, result, ip, details, companyId)
+// companyId is optional (null for platform-level events like company-signup).
+const logAudit = async (userId, action, target, result, ip, details = {}, companyId = null) => {
   try {
     const timestamp = new Date().toISOString();
-    
+
     await dynamodb.put({
       TableName: process.env.DYNAMODB_TABLE_AUDIT,
       Item: {
@@ -17,15 +20,16 @@ const logAudit = async (userId, action, target, result, ip, details = {}) => {
         result,
         ip,
         timestamp,
-        details
-      }
+        details,
+        ...(companyId && { companyId }),
+      },
     }).promise();
 
     logger.info(`Audit log: ${action} by ${userId} - ${result}`);
 
-    if (['delete_employee', 'change_incentive', 'export_data'].includes(action)) {
+    if (['delete_employee', 'change_incentive', 'export_data', 'suspend_company'].includes(action)) {
       const message = `🔐 Admin Action Alert\n\nAction: ${action}\nTarget: ${target}\nResult: ${result}\nIP: ${ip}\nTime: ${timestamp}`;
-      bot.sendMessage(process.env.TELEGRAM_ADMIN_CHAT_ID, message).catch(err => {
+      bot.sendMessage(process.env.TELEGRAM_ADMIN_CHAT_ID, message).catch((err) => {
         logger.error('Failed to send Telegram alert', err);
       });
     }
@@ -43,9 +47,7 @@ const getAuditLogs = async (userId = null, hoursBack = 24) => {
 
     const params = {
       TableName: process.env.DYNAMODB_TABLE_AUDIT,
-      FilterExpression: userId
-        ? 'PK > :pk AND SK = :sk'
-        : 'PK > :pk',
+      FilterExpression: userId ? 'PK > :pk AND SK = :sk' : 'PK > :pk',
       ExpressionAttributeValues: userId
         ? { ':pk': startPK, ':sk': `user#${userId}` }
         : { ':pk': startPK },

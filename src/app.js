@@ -13,13 +13,14 @@ const pointsRoutes = require('./routes/points');
 const compensationRoutes = require('./routes/compensation');
 const adminRoutes = require('./routes/admin');
 const companiesRoutes = require('./routes/companies');
+const platformRoutes = require('./routes/platform');
 const telegramRoutes = require('./routes/telegram');
 const attendanceRoutes = require('./routes/attendance');
 const crmRoutes = require('./routes/crm');
 const whatsappRoutes = require('./routes/whatsapp');
 const automationsRoutes = require('./routes/automations');
 const formsRoutes = require('./routes/forms');
-const { authMiddleware } = require('./middleware/auth');
+const { authMiddleware, subscriptionMiddleware } = require('./middleware/auth');
 const { errorHandler } = require('./middleware/errorHandler');
 
 const app = express();
@@ -54,21 +55,26 @@ app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
 
 // Routes
+// FIX 4: subscriptionMiddleware blocks writes for suspended/expired-trial accounts.
+// Applied to routes that accept writes. Read-only routes (analytics, audit) are left open
+// so users can still view their data even if the trial lapsed.
+// The WhatsApp webhook POST is intentionally excluded (it's inbound, not a user write).
 app.use('/api/auth', authRoutes);
-app.use('/api/metrics', authMiddleware, metricsRoutes);
+app.use('/api/metrics', authMiddleware, subscriptionMiddleware, metricsRoutes);
 app.use('/api/audit', authMiddleware, auditRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/badges', badgesRoutes);
 app.use('/api/points', pointsRoutes);
 app.use('/api/compensation', compensationRoutes);
-app.use('/api/admin', adminRoutes);
+app.use('/api/admin', subscriptionMiddleware, adminRoutes);
 app.use('/api/companies', companiesRoutes);
+app.use('/api/platform', platformRoutes);
 app.use('/api/telegram', telegramRoutes);
 app.use('/api/attendance', attendanceRoutes);
-app.use('/api/crm', crmRoutes);
+app.use('/api/crm', subscriptionMiddleware, crmRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
-app.use('/api/automations', automationsRoutes);
+app.use('/api/automations', subscriptionMiddleware, automationsRoutes);
 app.use('/api/forms', formsRoutes);
 
 // Health check

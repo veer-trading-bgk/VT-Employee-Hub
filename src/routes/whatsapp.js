@@ -34,8 +34,36 @@ async function updateLeadLastMessage(pk, content, direction, ts) {
   }
 }
 
-// Find which company owns a given phoneNumberId (used in webhook routing)
+// FIX 7: In-memory cache + DDB reverse-index to avoid full table scan on every webhook message.
+// When a company connects WABA, a CONFIG#PHONEID# item is also written (see callbacks below).
+// Lookup order: memory cache → DDB reverse-index → full scan fallback (old data migration).
+const _phoneIdCache = new Map(); // phoneNumberId → { companyId, data, ts }
+const PHONEID_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
 async function getCompanyByPhoneNumberId(phoneNumberId) {
+  // 1. memory cache
+  const cached = _phoneIdCache.get(phoneNumberId);
+  if (cached && Date.now() - cached.ts < PHONEID_CACHE_TTL) return cached.data;
+
+  // 2. O(1) DDB reverse-index lookup
+  const fast = await dynamodb.get({
+    TableName: TABLE,
+    Key: { PK: `CONFIG#PHONEID#${phoneNumberId}`, SK: 'CURRENT' },
+  }).promise();
+
+  if (fast.Item) {
+    // The reverse-index stores { companyId }; fetch the full WABA config for that company
+    const full = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#WABA#${fast.Item.companyId}`, SK: 'CURRENT' },
+    }).promise();
+    const result = full.Item ?? null;
+    _phoneIdCache.set(phoneNumberId, { ts: Date.now(), data: result });
+    return result;
+  }
+
+  // 3. Fallback full scan (for data written before Fix 7 went live)
+  logger.warn(`getCompanyByPhoneNumberId: no reverse-index for ${phoneNumberId} — falling back to full scan`);
   const items = [];
   let lastKey;
   do {
@@ -48,7 +76,21 @@ async function getCompanyByPhoneNumberId(phoneNumberId) {
     items.push(...(result.Items ?? []));
     lastKey = result.LastEvaluatedKey;
   } while (lastKey);
-  return items[0] ?? null;
+
+  const found = items[0] ?? null;
+  if (found) {
+    // Write the reverse-index so next call is fast
+    dynamodb.put({
+      TableName: TABLE,
+      Item: { PK: `CONFIG#PHONEID#${phoneNumberId}`, SK: 'CURRENT', companyId: found.companyId, phoneNumberId },
+    }).promise().catch(() => {});
+    _phoneIdCache.set(phoneNumberId, { ts: Date.now(), data: found });
+  }
+  return found;
+}
+
+function invalidatePhoneIdCache(phoneNumberId) {
+  _phoneIdCache.delete(phoneNumberId);
 }
 
 // Strip non-digits and ensure Indian numbers have country code for Meta E.164
@@ -202,6 +244,8 @@ router.get('/auth/callback', async (req, res) => {
       phoneNumber = phone?.display_phone_number ?? null;
     }
 
+    const connectedAt = new Date().toISOString();
+
     // Store credentials per company
     await dynamodb.put({
       TableName: TABLE,
@@ -214,9 +258,18 @@ router.get('/auth/callback', async (req, res) => {
         phoneNumberId,
         phoneNumber,
         connectedBy: userId,
-        connectedAt: new Date().toISOString(),
+        connectedAt,
       },
     }).promise();
+
+    // FIX 7: write reverse-index so webhook routing is O(1) instead of a full scan
+    if (phoneNumberId) {
+      await dynamodb.put({
+        TableName: TABLE,
+        Item: { PK: `CONFIG#PHONEID#${phoneNumberId}`, SK: 'CURRENT', companyId, phoneNumberId },
+      }).promise();
+      invalidatePhoneIdCache(phoneNumberId);
+    }
 
     logger.info(`WABA connected for company ${companyId}: ${phoneNumber}`);
     res.send(popupHtml(true, `Connected: ${phoneNumber ?? 'WhatsApp Business'}`));
@@ -262,6 +315,18 @@ router.post('/manual-connect', authMiddleware, checkRole(['admin']), async (req,
         setupMethod: 'manual',
       },
     }).promise();
+
+    // FIX 7: write reverse-index so webhook routing is O(1)
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: `CONFIG#PHONEID#${phoneNumberId.trim()}`,
+        SK: 'CURRENT',
+        companyId: req.user.companyId,
+        phoneNumberId: phoneNumberId.trim(),
+      },
+    }).promise();
+    invalidatePhoneIdCache(phoneNumberId.trim());
 
     logger.info(`WABA manually connected for company ${req.user.companyId}: ${phoneNumber}`);
     res.json({ success: true, phoneNumber });
