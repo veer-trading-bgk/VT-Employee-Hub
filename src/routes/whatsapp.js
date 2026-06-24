@@ -318,6 +318,10 @@ router.post('/webhook', async (req, res) => {
     const phoneNumberId = change.value?.metadata?.phone_number_id;
     const messages = change.value?.messages ?? [];
 
+    // Resolve company once per webhook entry — scopes all lead lookups and inbox writes
+    const wabaConfig = phoneNumberId ? await getCompanyByPhoneNumberId(phoneNumberId) : null;
+    const webhookCompanyId = wabaConfig?.companyId ?? null;
+
     // ── Handle message status updates (delivered / read) ──────────────────────
     const statuses = change.value?.statuses ?? [];
     for (const statusUpdate of statuses) {
@@ -381,12 +385,15 @@ router.post('/webhook', async (req, res) => {
         text = m.caption ?? `[${type}]`;
       }
 
-      // Find lead — try all common formats; no Limit (Limit restricts items read, not returned)
+      // Skip message if we can't determine which company owns this WhatsApp number
+      if (!webhookCompanyId) continue;
+
+      // Find lead — scoped to this company only (prevents cross-company lead contamination)
       const scanResult = await dynamodb.scan({
         TableName: TABLE,
         FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND (phone = :p1 OR phone = :p2 OR phone = :p3)',
         ExpressionAttributeValues: {
-          ':prefix': 'LEAD#', ':meta': 'METADATA',
+          ':prefix': `LEAD#${webhookCompanyId}#`, ':meta': 'METADATA',
           ':p1': phone10,
           ':p2': fromPhone,
           ':p3': '+91' + phone10,
@@ -416,10 +423,8 @@ router.post('/webhook', async (req, res) => {
             ExpressionAttributeValues: { ':s': 'open' },
           }).promise().catch(() => {});
         }
-      } else if (phoneNumberId) {
-        const config = await getCompanyByPhoneNumberId(phoneNumberId);
-        if (!config) continue;
-        const companyId = config.companyId;
+      } else {
+        const companyId = webhookCompanyId; // already resolved above
         const PK = `INBOX#${companyId}#${phone10}`;
 
         // Is this the first message from this contact?
