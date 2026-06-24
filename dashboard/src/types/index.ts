@@ -24,6 +24,21 @@ export interface MetricRecord {
   enteredFrom: string;
   verified: boolean;
   verificationStatus?: VerificationStatus;
+  // Correction fields
+  isCorrection?: boolean;
+  correctionNumber?: number;
+  parentRecordId?: string;
+  // Audit timeline fields
+  createdAt?: string;
+  submittedAt?: string;
+  approvedAt?: string;
+  approvedBy?: string;
+  rejectedAt?: string;
+  rejectedBy?: string;
+  rejectionReason?: string;
+  verificationNotes?: string;
+  verifiedBy?: string;
+  verifiedAt?: string;
 }
 
 export interface MyMetricsResponse {

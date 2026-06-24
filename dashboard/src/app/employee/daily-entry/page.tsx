@@ -27,6 +27,8 @@ export default function DailyEntryPage() {
   const qc = useQueryClient();
   const [values, setValues] = useState<Record<string, string>>({});
   const [correcting, setCorrecting] = useState<Record<string, string | null>>({});
+  // Separate state for locked-record corrections (POST /correction)
+  const [addingCorrection, setAddingCorrection] = useState<Record<string, string | null>>({});
 
   const { metrics } = useMetricsConfig();
   // Reads the same order the user set on their dashboard
@@ -36,6 +38,10 @@ export default function DailyEntryPage() {
     setCorrecting((prev) => ({ ...prev, [key]: String(currentValue) }));
   const cancelCorrection = (key: string) =>
     setCorrecting((prev) => ({ ...prev, [key]: null }));
+  const enterAddCorrection = (key: string) =>
+    setAddingCorrection((prev) => ({ ...prev, [key]: '' }));
+  const cancelAddCorrection = (key: string) =>
+    setAddingCorrection((prev) => ({ ...prev, [key]: null }));
 
   const { data, isLoading } = useQuery({
     queryKey: ['my-metrics-entry'],
@@ -116,15 +122,38 @@ export default function DailyEntryPage() {
     },
   });
 
+  // Mutation for POST /correction — adds additional value to an approved/rejected record
+  const { mutate: addCorrection, isPending: isAddingCorrection } = useMutation({
+    mutationFn: ({ key, value }: { key: string; value: number }) =>
+      apiFetch('/api/metrics/correction', {
+        method: 'POST',
+        body: JSON.stringify({ metric_type: key, value, date: TODAY }),
+      }),
+    onSuccess: (_res, { key }) => {
+      toast.success('Correction submitted for approval!');
+      setAddingCorrection((prev) => ({ ...prev, [key]: null }));
+    },
+    onError: (err: Error) => toast.error(err.message),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ['my-metrics-entry'] });
+      qc.invalidateQueries({ queryKey: ['my-metrics-month'] });
+    },
+  });
+
   const hasAnyValue = metrics.some((m) => parseInt(values[m.key] ?? '0') > 0);
 
   // Renders a single MetricCard with all entry/correction wiring
   const renderCard = (m: (typeof metrics)[number]) => {
-    const logged         = todayData[m.key]     ?? 0;
-    const yest           = yesterdayData[m.key] ?? 0;
-    const target         = (apiTargets[m.key] as number) ?? dailyTarget(m);
-    const progress       = target > 0 ? Math.min(Math.round((logged / target) * 100), 999) : 0;
-    const inCorrection   = correcting[m.key] !== undefined && correcting[m.key] !== null;
+    const logged           = todayData[m.key]     ?? 0;
+    const yest             = yesterdayData[m.key] ?? 0;
+    const target           = (apiTargets[m.key] as number) ?? dailyTarget(m);
+    const progress         = target > 0 ? Math.min(Math.round((logged / target) * 100), 999) : 0;
+    const metricStatus     = todayStatus[m.key] as VerificationStatus | undefined;
+    const isLocked         = metricStatus === 'approved' || metricStatus === 'rejected';
+    const inCorrection     = !isLocked && correcting[m.key] !== undefined && correcting[m.key] !== null;
+    const inAddCorrection  = isLocked && addingCorrection[m.key] !== undefined && addingCorrection[m.key] !== null;
+    const inAnyCorrection  = inCorrection || inAddCorrection;
+
     return (
       <MetricCard
         key={m.key}
@@ -133,19 +162,36 @@ export default function DailyEntryPage() {
         target={target}
         progress={progress}
         yesterday={yest}
-        verificationStatus={todayStatus[m.key] as VerificationStatus | undefined}
-        inputValue={inCorrection ? undefined : (values[m.key] ?? '')}
-        onInputChange={inCorrection ? undefined : (v) => setValues((prev) => ({ ...prev, [m.key]: v }))}
-        onFixClick={inCorrection ? undefined : () => enterCorrection(m.key, logged)}
-        correctionValue={inCorrection ? (correcting[m.key] ?? '') : undefined}
-        onCorrectionChange={inCorrection ? (v) => setCorrecting((prev) => ({ ...prev, [m.key]: v })) : undefined}
-        onCorrectionSave={inCorrection ? () => {
-          const v = parseFloat(correcting[m.key] ?? '');
-          if (isNaN(v) || v < 0) { toast.error('Enter a valid number'); return; }
-          correct({ key: m.key, newValue: v });
+        verificationStatus={metricStatus}
+        isLocked={isLocked}
+        // Add mode: only when not locked and not in fix mode
+        inputValue={!isLocked && !inCorrection ? (values[m.key] ?? '') : undefined}
+        onInputChange={!isLocked && !inCorrection ? (v) => setValues((prev) => ({ ...prev, [m.key]: v })) : undefined}
+        // Fix button: pending records → enter fix mode; locked records → enter add-correction mode
+        onFixClick={
+          isLocked && !inAddCorrection ? () => enterAddCorrection(m.key) :
+          !isLocked && !inCorrection   ? () => enterCorrection(m.key, logged) :
+          undefined
+        }
+        // Correction input (shared between fix mode and add-correction mode)
+        correctionValue={inAnyCorrection
+          ? (inCorrection ? (correcting[m.key] ?? '') : (addingCorrection[m.key] ?? ''))
+          : undefined}
+        onCorrectionChange={inAnyCorrection ? (v) => {
+          if (inCorrection) setCorrecting((prev) => ({ ...prev, [m.key]: v }));
+          else setAddingCorrection((prev) => ({ ...prev, [m.key]: v }));
         } : undefined}
-        onCorrectionCancel={inCorrection ? () => cancelCorrection(m.key) : undefined}
-        disabled={isPending || isCorrecting}
+        onCorrectionSave={inAnyCorrection ? () => {
+          const rawVal = inCorrection ? correcting[m.key] : addingCorrection[m.key];
+          const v = parseFloat(rawVal ?? '');
+          if (isNaN(v) || v < 0) { toast.error('Enter a valid number'); return; }
+          if (inCorrection) correct({ key: m.key, newValue: v });
+          else addCorrection({ key: m.key, value: v });
+        } : undefined}
+        onCorrectionCancel={inAnyCorrection
+          ? () => { inCorrection ? cancelCorrection(m.key) : cancelAddCorrection(m.key); }
+          : undefined}
+        disabled={isPending || isCorrecting || isAddingCorrection}
       />
     );
   };

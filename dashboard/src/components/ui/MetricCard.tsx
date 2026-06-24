@@ -12,12 +12,14 @@ export interface MetricCardProps {
   inputValue?: string;
   onInputChange?: (v: string) => void;
   disabled?: boolean;
-  // Correction mode
+  // Correction / fix mode (also used for Add Additional on locked records)
   correctionValue?: string;
   onCorrectionChange?: (v: string) => void;
   onCorrectionSave?: () => void;
   onCorrectionCancel?: () => void;
   onFixClick?: () => void;
+  // Locked state — approved or rejected original record
+  isLocked?: boolean;
 }
 
 const STATUS_CHIP: Record<VerificationStatus, { label: string; cls: string }> = {
@@ -41,6 +43,7 @@ export function MetricCard({
   onCorrectionSave,
   onCorrectionCancel,
   onFixClick,
+  isLocked = false,
 }: MetricCardProps) {
   const isEntry      = onInputChange !== undefined;
   const isCorrection = onCorrectionChange !== undefined;
@@ -105,8 +108,8 @@ export function MetricCard({
           </div>
 
           <div className="flex items-center gap-1.5">
-            {/* Fix button */}
-            {onFixClick && !isCorrection && (
+            {/* Fix button — only for non-locked, pending records */}
+            {onFixClick && !isCorrection && !isLocked && (
               <button
                 onClick={onFixClick}
                 title="Fix wrong value"
@@ -184,18 +187,38 @@ export function MetricCard({
           </p>
         )}
 
-        {/* ── Rejected notice ── */}
-        {isRejected && !isCorrection && (
+        {/* ── Rejected notice (only for non-locked records) ── */}
+        {isRejected && !isCorrection && !isLocked && (
           <p className="mt-1.5 text-[11px] font-semibold text-rose-500 dark:text-rose-400">
             Entry rejected — use Fix ✏️ to resubmit
           </p>
+        )}
+
+        {/* ── Locked banner (approved/rejected original) ── */}
+        {isLocked && !isCorrection && (
+          <div className="mt-2">
+            <p className="text-[10px] font-semibold text-slate-400 dark:text-slate-500">
+              🔒 {verificationStatus === 'approved' ? 'Approved & locked' : 'Rejected & locked'}
+            </p>
+            {onFixClick && (
+              <button
+                onClick={onFixClick}
+                disabled={disabled}
+                className="mt-1.5 w-full rounded-lg border border-slate-200 py-1.5 text-[11px] font-semibold text-slate-600 transition
+                  hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 disabled:opacity-40
+                  dark:border-slate-700 dark:text-slate-400 dark:hover:border-indigo-700 dark:hover:bg-indigo-950/30 dark:hover:text-indigo-400"
+              >
+                ➕ Add Additional
+              </button>
+            )}
+          </div>
         )}
 
         {/* ── Correction mode ── */}
         {isCorrection ? (
           <div className="mt-3 space-y-2">
             <p className="text-[11px] font-semibold text-amber-600 dark:text-amber-400">
-              {isRejected ? '🔄 Resubmit corrected value:' : value > 0 ? '✏️ Set correct total:' : '✏️ Set exact value:'}
+              {isLocked ? '➕ Enter additional value:' : isRejected ? '🔄 Resubmit corrected value:' : value > 0 ? '✏️ Set correct total:' : '✏️ Set exact value:'}
             </p>
             <input
               type="number"

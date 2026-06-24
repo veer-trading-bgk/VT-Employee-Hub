@@ -38,6 +38,17 @@ function addCompanyFilter(params, companyId, existingFilterExpr) {
   };
 }
 
+// ── Shared: check if a metric record is locked (approved/rejected) ────────────
+
+async function checkLocked(userId, sk) {
+  const result = await dynamodb.get({
+    TableName: process.env.DYNAMODB_TABLE_METRICS,
+    Key: { PK: userId, SK: sk },
+  }).promise();
+  const vs = result.Item?.verificationStatus;
+  return { locked: vs === 'approved' || vs === 'rejected', status: vs, item: result.Item };
+}
+
 // ── Add metric (any authenticated user) ──────────────────────────────────────
 
 router.post('/add', async (req, res, next) => {
@@ -45,6 +56,16 @@ router.post('/add', async (req, res, next) => {
     const { metric_type, value, date, notes } = addMetricSchema.parse(req.body);
     const userId = req.user.id;
     const metricDate = date ? new Date(date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+
+    // 409 if record is already approved/rejected
+    const { locked, status: lockedStatus } = await checkLocked(userId, `${metricDate}#${metric_type}`);
+    if (locked) {
+      return res.status(409).json({
+        error: `This entry has already been ${lockedStatus} and is locked. Use "Add Additional" to submit a correction.`,
+        locked: true,
+        verificationStatus: lockedStatus,
+      });
+    }
 
     if (value > 100 && metric_type === 'kyc') {
       await logAudit(userId, 'suspicious_metric_entry', metric_type, 'flagged', req.ip, { value });
@@ -127,6 +148,17 @@ router.put('/set', async (req, res, next) => {
     }
 
     const userId = req.user.id;
+
+    // 409 if record is already approved/rejected
+    const { locked, status: lockedStatus } = await checkLocked(userId, `${today}#${metric_type}`);
+    if (locked) {
+      return res.status(409).json({
+        error: `This entry has been ${lockedStatus} and is locked. Use "Add Additional" to submit a correction.`,
+        locked: true,
+        verificationStatus: lockedStatus,
+      });
+    }
+
     const v = Number(value);
 
     if (v === 0) {
@@ -164,6 +196,84 @@ router.put('/set', async (req, res, next) => {
   }
 });
 
+// ── Add correction to an approved/rejected record ────────────────────────────
+// Creates a new record: SK = date#metric_type#CORR#N
+// Parent must be approved or rejected — cannot correct a pending record.
+
+router.post('/correction', async (req, res, next) => {
+  try {
+    const { metric_type, value, date, notes } = addMetricSchema.parse(req.body);
+    const userId = req.user.id;
+    const metricDate = date ? new Date(date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+    const parentSK = `${metricDate}#${metric_type}`;
+
+    // Parent record must exist and be approved or rejected
+    const parentResult = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Key: { PK: userId, SK: parentSK },
+    }).promise();
+
+    if (!parentResult.Item) {
+      return res.status(404).json({ error: 'Original record not found for this date and metric' });
+    }
+
+    const parentStatus = parentResult.Item.verificationStatus;
+    if (!parentStatus || parentStatus === 'pending') {
+      return res.status(409).json({
+        error: 'Original record is still pending — edit it directly instead of creating a correction',
+      });
+    }
+
+    // Count existing corrections to determine next number
+    const existingCorr = await dynamodb.query({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      KeyConditionExpression: 'PK = :uid AND begins_with(SK, :prefix)',
+      ExpressionAttributeValues: { ':uid': userId, ':prefix': `${parentSK}#CORR#` },
+    }).promise();
+    const correctionNumber = (existingCorr.Items?.length ?? 0) + 1;
+    const corrSK = `${parentSK}#CORR#${correctionNumber}`;
+    const now = new Date().toISOString();
+
+    await dynamodb.put({
+      TableName: process.env.DYNAMODB_TABLE_METRICS,
+      Item: {
+        PK: userId,
+        SK: corrSK,
+        metricId: `${userId}#${corrSK}`,
+        userId,
+        email: req.user.email,
+        name: req.user.name || req.user.email || '',
+        metric_type,
+        value,
+        date: metricDate,
+        notes: notes || '',
+        isCorrection: true,
+        correctionNumber,
+        parentRecordId: parentSK,
+        verified: false,
+        verificationStatus: 'pending',
+        enteredAt: now,
+        createdAt: now,
+        submittedAt: now,
+        enteredFrom: 'web_correction',
+        ipAddress: req.ip,
+        ...(req.user.companyId && { companyId: req.user.companyId }),
+      },
+    }).promise();
+
+    await logAudit(userId, 'correction_added', `${metric_type}+${value} corr#${correctionNumber}`, 'success', req.ip);
+    logger.info(`Correction #${correctionNumber} added: ${metric_type}+${value} for user ${userId}`);
+
+    res.json({
+      success: true,
+      message: `Correction #${correctionNumber} submitted for ${metric_type}: +${value}`,
+      data: { metric_type, value, correctionNumber, parentRecordId: parentSK, date: metricDate },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ── Get metrics for current user ──────────────────────────────────────────────
 
 router.get('/my', async (req, res, next) => {
@@ -190,13 +300,18 @@ router.get('/my', async (req, res, next) => {
       const d = item.date || item.SK?.split('#')[0] || '';
       if (!byDate[d]) byDate[d] = {};
       if (!byStatus[d]) byStatus[d] = {};
+      // Corrections have SK like date#metric_type#CORR#N — only original records set status
+      const isCorrectionRecord = item.SK?.includes('#CORR#');
       const status = item.verificationStatus || (item.verified === true ? 'approved' : 'pending');
       if (status !== 'rejected') {
         byDate[d][item.metric_type] = (byDate[d][item.metric_type] || 0) + (item.value || 0);
       } else if (byDate[d][item.metric_type] === undefined) {
         byDate[d][item.metric_type] = 0;
       }
-      byStatus[d][item.metric_type] = status;
+      // Status map reflects only the original record so frontend can detect the lock state
+      if (!isCorrectionRecord) {
+        byStatus[d][item.metric_type] = status;
+      }
     });
 
     await logAudit(userId, 'view_own_metrics', 'metrics_list', 'success', req.ip);
@@ -524,17 +639,23 @@ router.post('/verify', checkRole(['admin', 'manager']), async (req, res, next) =
       return res.status(403).json({ error: 'Not authorized to verify this metric' });
     }
 
+    const vNow = new Date().toISOString();
+    const auditFields = approved
+      ? ', approvedAt = :ts, approvedBy = :actor'
+      : ', rejectedAt = :ts, rejectedBy = :actor, rejectionReason = :vn';
     await dynamodb.update({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
       Key: key,
       UpdateExpression:
-        'SET verified = :v, verificationStatus = :vs, verifiedBy = :vb, verifiedAt = :va, verificationNotes = :vn',
+        `SET verified = :v, verificationStatus = :vs, verifiedBy = :vb, verifiedAt = :va, verificationNotes = :vn${auditFields}`,
       ExpressionAttributeValues: {
         ':v': !!approved,
         ':vs': approved ? 'approved' : 'rejected',
         ':vb': req.user.id,
-        ':va': new Date().toISOString(),
+        ':va': vNow,
         ':vn': notes || '',
+        ':ts': vNow,
+        ':actor': req.user.id,
       },
     }).promise();
 
@@ -592,17 +713,23 @@ router.post('/verify/:metricId', adminMiddleware, async (req, res, next) => {
     }).promise();
     if (!existing.Item) return res.status(404).json({ error: 'Metric not found' });
 
+    const vNow2 = new Date().toISOString();
+    const auditFields2 = approved
+      ? ', approvedAt = :ts, approvedBy = :actor'
+      : ', rejectedAt = :ts, rejectedBy = :actor, rejectionReason = :vn';
     await dynamodb.update({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
       Key: key,
       UpdateExpression:
-        'SET verified = :v, verificationStatus = :vs, verifiedBy = :vb, verifiedAt = :va, verificationNotes = :vn',
+        `SET verified = :v, verificationStatus = :vs, verifiedBy = :vb, verifiedAt = :va, verificationNotes = :vn${auditFields2}`,
       ExpressionAttributeValues: {
         ':v': !!approved,
         ':vs': approved ? 'approved' : 'rejected',
         ':vb': req.user.id,
-        ':va': new Date().toISOString(),
+        ':va': vNow2,
         ':vn': notes || '',
+        ':ts': vNow2,
+        ':actor': req.user.id,
       },
     }).promise();
     await logAudit(req.user.id, 'verify_metric', metricId, approved ? 'approved' : 'rejected', req.ip);
@@ -770,6 +897,18 @@ router.post('/add-for-member', checkRole(['team_lead', 'manager', 'admin']), asy
     // TL can only add for employees assigned to them
     if (req.user.role === 'team_lead' && target.teamLeadId !== req.user.id) {
       return res.status(403).json({ error: 'This employee is not assigned to your team' });
+    }
+
+    // 409 if target employee's record is already approved/rejected
+    const { locked: proxyLocked, status: proxyLockedStatus } = await checkLocked(
+      targetUserId, `${metricDate}#${validated.metric_type}`
+    );
+    if (proxyLocked) {
+      return res.status(409).json({
+        error: `This entry for ${target.name} has been ${proxyLockedStatus} and is locked.`,
+        locked: true,
+        verificationStatus: proxyLockedStatus,
+      });
     }
 
     const metricId = `${targetUserId}#${metricDate}#${validated.metric_type}`;

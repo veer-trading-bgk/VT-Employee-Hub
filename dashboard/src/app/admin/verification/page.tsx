@@ -26,6 +26,9 @@ interface PendingMetric {
   verified: boolean;
   flagged?: boolean;
   notes?: string;
+  isCorrection?: boolean;
+  correctionNumber?: number;
+  parentRecordId?: string;
 }
 
 interface PendingResponse {
@@ -56,6 +59,7 @@ const SOURCE_LABEL: Record<string, string> = {
   bulk_web:       'Bulk',
   telegram:       'Telegram',
   web_correction: 'Correction',
+  proxy:          'Proxy',
 };
 
 function NoteModal({
@@ -383,6 +387,18 @@ export default function VerificationPage() {
                             <span className="font-medium text-slate-800 dark:text-slate-200">
                               {cfg?.icon} {cfg?.label ?? item.metric_type}
                             </span>
+                            {item.isCorrection && (
+                              <div className="mt-0.5 flex items-center gap-1">
+                                <span className="rounded-full bg-indigo-100 px-1.5 py-0.5 text-[10px] font-bold text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300">
+                                  Correction #{item.correctionNumber}
+                                </span>
+                                {item.parentRecordId && (
+                                  <span className="text-[10px] text-slate-400" title={`Parent: ${item.parentRecordId}`}>
+                                    ↳ orig
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </td>
                           <td className="px-4 py-3 tabular-nums font-semibold text-slate-900 dark:text-white">
                             {cfg ? formatMetricValue(cfg, item.value) : item.value}
