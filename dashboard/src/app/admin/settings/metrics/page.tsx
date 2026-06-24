@@ -25,6 +25,33 @@ interface MetricDisplay {
 
 const DEFAULT_MAP = Object.fromEntries(METRICS.map((m) => [m.key, m]));
 
+const EMOJI_RULES: [RegExp, string][] = [
+  [/call|kyc|tele|dial|phone|ring/i,              '📞'],
+  [/demat|account|bank|open/i,                     '🏦'],
+  [/mutual.?fund|mf\b|sip|invest/i,               '📈'],
+  [/insurance|premium|policy|cover|protect/i,      '🛡️'],
+  [/algo|robot|automat|bot|quant/i,                '🤖'],
+  [/coach|train|stud|learn|teach|mentor|educat/i,  '🎓'],
+  [/pms|portfolio|manage/i,                        '💼'],
+  [/insight|research|analy|report|intel/i,         '💡'],
+  [/ltpp|long.?term|plan/i,                        '📋'],
+  [/lead|prospect|crm|client|customer/i,           '🎯'],
+  [/revenue|sale|earn|income|profit|business/i,    '💰'],
+  [/gold|commodity|metal/i,                        '🪙'],
+  [/stock|equity|share|nse|bse/i,                  '📊'],
+  [/loan|credit|debt|emi/i,                        '🏧'],
+  [/meeting|visit|appointment/i,                   '🤝'],
+  [/target|goal|achiev/i,                          '🎯'],
+  [/referral|refer|network/i,                      '🔗'],
+];
+
+function suggestEmoji(label: string): string | null {
+  for (const [re, emoji] of EMOJI_RULES) {
+    if (re.test(label)) return emoji;
+  }
+  return null;
+}
+
 function targetLabel(m: MetricDisplay) {
   return `${m.target.toLocaleString('en-IN')}${m.isCurrency ? ' ₹' : ''}/${m.targetPeriod === 'day' ? 'day' : 'mo'}`;
 }
@@ -57,6 +84,9 @@ function EditModal({
   });
 
   const set = (k: string, v: string) => setForm((p) => ({ ...p, [k]: v }));
+
+  const suggestedIcon = suggestEmoji(form.label);
+  const showSuggestion = suggestedIcon !== null && suggestedIcon !== form.icon;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
@@ -99,6 +129,20 @@ function EditModal({
               />
             </div>
           </div>
+
+          {showSuggestion && (
+            <div className="flex items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-2 dark:border-indigo-800/40 dark:bg-indigo-900/20">
+              <span className="text-xs text-indigo-600 dark:text-indigo-400">Suggested icon:</span>
+              <span className="text-lg leading-none">{suggestedIcon}</span>
+              <button
+                type="button"
+                onClick={() => set('icon', suggestedIcon!)}
+                className="ml-auto rounded-md bg-indigo-600 px-2.5 py-0.5 text-xs font-semibold text-white hover:bg-indigo-700"
+              >
+                Apply
+              </button>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
