@@ -21,6 +21,11 @@ interface NavItem {
 const EMPLOYEE_ROLES: Role[] = ['telecaller', 'agent', 'intern'];
 
 const ALL_NAV: NavItem[] = [
+  // ── Superadmin / Platform ──────────────────────────────────────────────────
+  { href: '/platform',              label: 'Control Center', icon: '🛰️',  roles: ['superadmin'], group: 'platform'     },
+  { href: '/platform/companies',    label: 'Companies',      icon: '🏢',  roles: ['superadmin'], group: 'platform'     },
+  { href: '/platform/billing',      label: 'Revenue',        icon: '💰',  roles: ['superadmin'], group: 'platform'     },
+  { href: '/platform/health',       label: 'System Health',  icon: '📡',  roles: ['superadmin'], group: 'platform'     },
   // ── Admin ──────────────────────────────────────────────────────────────────
   { href: '/admin/dashboard',    label: 'Dashboard',      icon: '🔑', roles: ['admin'],   group: 'overview'     },
   { href: '/admin/crm',          label: 'CRM',            icon: '🤝', roles: ['admin'],   group: 'sales'        },
@@ -53,6 +58,9 @@ const ALL_NAV: NavItem[] = [
   { href: '/settings',    label: 'Settings',    icon: '⚙️', group: 'general' },
 ];
 
+const SUPERADMIN_GROUPS = [
+  { key: 'platform', label: 'Platform' },
+];
 const ADMIN_GROUPS    = [
   { key: 'overview',    label: 'Overview'     },
   { key: 'sales',       label: 'Sales'        },
@@ -143,9 +151,10 @@ export function Sidebar({ forceMobile = false }: { forceMobile?: boolean }) {
   const general   = roleItems.filter((i) => !i.roles);
 
   const groups =
-    userRole === 'admin'     ? ADMIN_GROUPS    :
-    userRole === 'manager'   ? MANAGER_GROUPS  :
-    userRole === 'team_lead' ? TEAM_LEAD_GROUPS :
+    userRole === 'superadmin' ? SUPERADMIN_GROUPS :
+    userRole === 'admin'      ? ADMIN_GROUPS    :
+    userRole === 'manager'    ? MANAGER_GROUPS  :
+    userRole === 'team_lead'  ? TEAM_LEAD_GROUPS :
     EMPLOYEE_GROUPS;
 
   return (

@@ -58,7 +58,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if ('token' in res) setMemoryToken(res.token);
       const u = res.user as User;
       setUser(u);
-      const dest = u.role === 'admin' ? '/admin/dashboard'
+      const dest = u.role === 'superadmin' ? '/platform'
+                 : u.role === 'admin' ? '/admin/dashboard'
                  : u.role === 'manager' ? '/manager/dashboard'
                  : '/employee/dashboard';
       router.push(dest);
@@ -75,7 +76,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setMemoryToken(res.token);
       const u = res.user as User;
       setUser(u);
-      const dest = u.role === 'admin' ? '/admin/dashboard'
+      const dest = u.role === 'superadmin' ? '/platform'
+                 : u.role === 'admin' ? '/admin/dashboard'
                  : u.role === 'manager' ? '/manager/dashboard'
                  : '/employee/dashboard';
       router.push(dest);
@@ -91,7 +93,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setMemoryToken(res.token);
       const u = res.user as User;
       setUser(u);
-      const dest = u.role === 'admin' ? '/admin/dashboard'
+      const dest = u.role === 'superadmin' ? '/platform'
+                 : u.role === 'admin' ? '/admin/dashboard'
                  : u.role === 'manager' ? '/manager/dashboard'
                  : '/employee/dashboard';
       router.push(dest);

@@ -1,4 +1,4 @@
-export type Role = 'admin' | 'manager' | 'team_lead' | 'agent' | 'telecaller' | 'intern';
+export type Role = 'superadmin' | 'admin' | 'manager' | 'team_lead' | 'agent' | 'telecaller' | 'intern';
 
 export interface User {
   id: string;
@@ -6,6 +6,8 @@ export interface User {
   name: string;
   role: Role;
   companyId?: string | null;
+  planStatus?: string | null;
+  trialEndsAt?: string | null;
 }
 
 export type VerificationStatus = 'pending' | 'approved' | 'rejected';

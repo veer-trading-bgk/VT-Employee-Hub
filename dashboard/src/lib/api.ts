@@ -207,6 +207,34 @@ export const api = {
   // ── Per-employee metrics ─────────────────────────────────────────────────────
   employeeMetrics: (userId: string, days = 30) =>
     apiFetch<EmployeeMetricsResponse>(`/api/admin/employees/${userId}/metrics?days=${days}`),
+
+  // ── Platform (superadmin) ─────────────────────────────────────────────────
+  platformStats: () =>
+    apiFetch<PlatformStatsResponse>('/api/platform/stats'),
+
+  platformCompanies: () =>
+    apiFetch<PlatformCompaniesResponse>('/api/platform/companies'),
+
+  platformCompany: (companyId: string) =>
+    apiFetch<PlatformCompanyDetailResponse>(`/api/platform/companies/${companyId}`),
+
+  platformUpdatePlan: (companyId: string, data: { plan?: string; planStatus?: string; trialEndsAt?: string }) =>
+    apiFetch<{ success: boolean; companyId: string; plan?: string; planStatus?: string; trialEndsAt?: string }>(
+      `/api/platform/companies/${companyId}/plan`,
+      { method: 'PUT', body: JSON.stringify(data), retries: 0 }
+    ),
+
+  platformUnsuspend: (companyId: string) =>
+    apiFetch<{ success: boolean; companyId: string; planStatus: string }>(
+      `/api/platform/companies/${companyId}/unsuspend`,
+      { method: 'POST', retries: 0 }
+    ),
+
+  companyOnboarding: () =>
+    apiFetch<OnboardingResponse>('/api/companies/onboarding'),
+
+  companyExport: () =>
+    apiFetch<Record<string, unknown>>('/api/companies/export'),
 };
 
 // ── Response types for new endpoints ─────────────────────────────────────────
@@ -309,4 +337,58 @@ export interface EmployeeMetricsResponse {
   employee: { id: string; name: string; email: string };
   data: Record<string, Record<string, number>>;
   totalRecords: number;
+}
+
+export interface PlatformCompany {
+  id: string;
+  companyId: string;
+  companyName: string;
+  broker?: string;
+  city?: string;
+  adminEmail?: string;
+  plan: string;
+  planStatus: string;
+  trialEndsAt?: string | null;
+  createdAt?: string;
+  daysLeftInTrial?: number | null;
+}
+
+export interface PlatformStats {
+  totalCompanies: number;
+  active: number;
+  onTrial: number;
+  trialExpired: number;
+  suspended: number;
+}
+
+export interface PlatformStatsResponse {
+  success: boolean;
+  stats: PlatformStats;
+  generatedAt: string;
+}
+
+export interface PlatformCompaniesResponse {
+  success: boolean;
+  total: number;
+  companies: PlatformCompany[];
+}
+
+export interface PlatformCompanyDetailResponse {
+  success: boolean;
+  company: PlatformCompany & Record<string, unknown>;
+  stats: { employeeCount: number; leadCount: number };
+}
+
+export interface OnboardingStep {
+  id: string;
+  label: string;
+  complete: boolean;
+}
+
+export interface OnboardingResponse {
+  success: boolean;
+  progress: { completed: number; total: number; percent: number };
+  steps: OnboardingStep[];
+  allDone: boolean;
+  company?: { companyName: string; plan: string; planStatus: string; trialEndsAt?: string };
 }

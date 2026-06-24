@@ -1,6 +1,7 @@
 import type { Role } from '@/types';
 
 const ROLE_HIERARCHY: Record<Role, number> = {
+  superadmin: 10,
   admin: 5,
   manager: 4,
   team_lead: 3,
@@ -31,27 +32,30 @@ export function isEmployee(role: Role): boolean {
 
 export function getHomePath(role: Role): string {
   switch (role) {
-    case 'admin':     return '/admin/dashboard';
-    case 'manager':   return '/manager/dashboard';
-    case 'team_lead': return '/team-lead/dashboard';
-    default:          return '/employee/dashboard';
+    case 'superadmin': return '/platform';
+    case 'admin':      return '/admin/dashboard';
+    case 'manager':    return '/manager/dashboard';
+    case 'team_lead':  return '/team-lead/dashboard';
+    default:           return '/employee/dashboard';
   }
 }
 
 export const ROLE_LABELS: Record<Role, string> = {
-  admin:     'Administrator',
-  manager:   'Manager',
-  team_lead: 'Team Lead',
-  agent:     'Agent',
+  superadmin: 'Platform Admin',
+  admin:      'Administrator',
+  manager:    'Manager',
+  team_lead:  'Team Lead',
+  agent:      'Agent',
   telecaller: 'Telecaller',
-  intern:    'Intern',
+  intern:     'Intern',
 };
 
 export const ROLE_COLORS: Record<Role, string> = {
-  admin:     'bg-purple-500/10 text-purple-600 dark:text-purple-400',
-  manager:   'bg-blue-500/10 text-blue-600 dark:text-blue-400',
-  team_lead: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400',
-  agent:     'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+  superadmin: 'bg-rose-500/10 text-rose-600 dark:text-rose-400',
+  admin:      'bg-purple-500/10 text-purple-600 dark:text-purple-400',
+  manager:    'bg-blue-500/10 text-blue-600 dark:text-blue-400',
+  team_lead:  'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400',
+  agent:      'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
   telecaller: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
-  intern:    'bg-slate-500/10 text-slate-600 dark:text-slate-400',
+  intern:     'bg-slate-500/10 text-slate-600 dark:text-slate-400',
 };
