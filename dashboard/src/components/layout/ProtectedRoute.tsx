@@ -20,12 +20,15 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
       router.replace('/login');
       return;
     }
+    // superadmin bypasses all role gates — can access any company-level route
+    if (user.role === 'superadmin') return;
     if (allowedRoles && !allowedRoles.includes(user.role)) {
       router.replace('/dashboard');
     }
   }, [user, loading, allowedRoles, router]);
 
-  if (loading || !user || (allowedRoles && !allowedRoles.includes(user.role))) {
+  const roleBlocked = !!allowedRoles && user?.role !== 'superadmin' && !!user && !allowedRoles.includes(user.role);
+  if (loading || !user || roleBlocked) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
