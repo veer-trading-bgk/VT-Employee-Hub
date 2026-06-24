@@ -26,6 +26,10 @@ const ALL_NAV: NavItem[] = [
   { href: '/platform/companies',    label: 'Companies',      icon: '🏢',  roles: ['superadmin'], group: 'platform'     },
   { href: '/platform/billing',      label: 'Revenue',        icon: '💰',  roles: ['superadmin'], group: 'platform'     },
   { href: '/platform/health',       label: 'System Health',  icon: '📡',  roles: ['superadmin'], group: 'platform'     },
+  // Superadmin also gets their own CRM + WhatsApp (APForce internal workspace)
+  { href: '/admin/crm',             label: 'CRM',            icon: '🤝',  roles: ['superadmin'], group: 'workspace'    },
+  { href: '/admin/whatsapp',        label: 'WhatsApp',       icon: '💬',  roles: ['superadmin'], group: 'workspace'    },
+  { href: '/admin/analytics',       label: 'Analytics',      icon: '📈',  roles: ['superadmin'], group: 'workspace'    },
   // ── Admin ──────────────────────────────────────────────────────────────────
   { href: '/admin/dashboard',    label: 'Dashboard',      icon: '🔑', roles: ['admin'],   group: 'overview'     },
   { href: '/admin/crm',          label: 'CRM',            icon: '🤝', roles: ['admin'],   group: 'sales'        },
@@ -59,7 +63,8 @@ const ALL_NAV: NavItem[] = [
 ];
 
 const SUPERADMIN_GROUPS = [
-  { key: 'platform', label: 'Platform' },
+  { key: 'platform',  label: 'Platform'         },
+  { key: 'workspace', label: 'APForce Workspace' },
 ];
 const ADMIN_GROUPS    = [
   { key: 'overview',    label: 'Overview'     },
