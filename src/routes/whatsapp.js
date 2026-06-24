@@ -321,6 +321,9 @@ router.post('/webhook', async (req, res) => {
     // Resolve company once per webhook entry — scopes all lead lookups and inbox writes
     const wabaConfig = phoneNumberId ? await getCompanyByPhoneNumberId(phoneNumberId) : null;
     const webhookCompanyId = wabaConfig?.companyId ?? null;
+    if (!webhookCompanyId) {
+      logger.warn(`Webhook received for unrecognised phoneNumberId: ${phoneNumberId ?? '(none)'} — no company configured for this number`);
+    }
 
     // ── Handle message status updates (delivered / read) ──────────────────────
     const statuses = change.value?.statuses ?? [];
