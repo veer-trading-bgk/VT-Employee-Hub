@@ -6,6 +6,7 @@
 const METRIC_CONFIG = {
   kyc: {
     label: 'Telecalling (KYC)',
+    icon: '📞',
     target: 4,
     targetPeriod: 'day',
     dailyTarget: 4,
@@ -15,6 +16,7 @@ const METRIC_CONFIG = {
   },
   demat: {
     label: 'Demat Accounts',
+    icon: '🏦',
     target: 50,
     targetPeriod: 'month',
     dailyTarget: 50 / 30,
@@ -24,6 +26,7 @@ const METRIC_CONFIG = {
   },
   mf: {
     label: 'MF Sales',
+    icon: '📈',
     target: 40,
     targetPeriod: 'month',
     dailyTarget: 40 / 30,
@@ -33,6 +36,7 @@ const METRIC_CONFIG = {
   },
   insurance: {
     label: 'Insurance Premium',
+    icon: '🛡️',
     target: 100000,
     targetPeriod: 'month',
     dailyTarget: 100000 / 30,
@@ -42,6 +46,7 @@ const METRIC_CONFIG = {
   },
   algo: {
     label: 'Algo Trading P&L',
+    icon: '🤖',
     target: 10,
     targetPeriod: 'month',
     dailyTarget: 10 / 30,
@@ -51,6 +56,7 @@ const METRIC_CONFIG = {
   },
   coaching: {
     label: 'Coaching Students',
+    icon: '🎓',
     target: 20000,
     targetPeriod: 'month',
     dailyTarget: 20000 / 30,
@@ -60,6 +66,7 @@ const METRIC_CONFIG = {
   },
   pms: {
     label: 'PMS',
+    icon: '💼',
     target: 10,
     targetPeriod: 'month',
     dailyTarget: 10 / 30,
@@ -69,6 +76,7 @@ const METRIC_CONFIG = {
   },
   pro_insight: {
     label: 'Pro Insight',
+    icon: '💡',
     target: 15,
     targetPeriod: 'month',
     dailyTarget: 15 / 30,
@@ -78,6 +86,7 @@ const METRIC_CONFIG = {
   },
   ltpp: {
     label: 'LTPP',
+    icon: '📋',
     target: 10,
     targetPeriod: 'month',
     dailyTarget: 10 / 30,
