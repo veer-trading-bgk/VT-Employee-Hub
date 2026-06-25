@@ -34,6 +34,7 @@ export interface Lead {
   createdAt: string;
   updatedAt: string;
   convertedAt?: string;
+  messageCount?: number;
 }
 
 interface EmployeeRecord {
@@ -47,7 +48,15 @@ const PRODUCT_LABELS: Record<string, string> = {
   kyc: 'KYC', demat: 'Demat', mf: 'MF', insurance: 'Insurance', pms: 'PMS', algo: 'Algo',
 };
 
-const SOURCES = ['manual', 'referral', 'whatsapp', 'walk_in', 'social', 'webinar'];
+const SOURCES = ['manual', 'referral', 'whatsapp', 'walk_in', 'social', 'webinar', 'whatsapp_ai'];
+
+const AVATAR_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316'];
+function avatarColor(name?: string) {
+  if (!name) return '#94a3b8';
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) % AVATAR_COLORS.length;
+  return AVATAR_COLORS[h];
+}
 
 function deadlineLabel(d?: string | null) {
   if (!d) return null;
@@ -222,10 +231,13 @@ export default function AdminCrmPage() {
             <div className="flex flex-1 gap-0 overflow-x-auto p-4">
               {stages.map((stage) => {
                 const colLeads = byStage[stage.key] ?? [];
+                const todayStr = new Date().toISOString().slice(0, 10);
+                const overdueCount = colLeads.filter((l) => l.closureDeadline && l.closureDeadline < todayStr).length;
+                const stageIdx = stages.findIndex((s) => s.key === stage.key);
                 return (
                   <div
                     key={stage.key}
-                    className={`mr-3 flex w-[220px] flex-shrink-0 flex-col rounded-xl border bg-white transition-colors dark:bg-slate-900 ${dragOverStage === stage.key ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/10' : 'border-slate-200 dark:border-slate-800'}`}
+                    className={`mr-3 flex w-[280px] flex-shrink-0 flex-col rounded-xl border bg-white transition-colors dark:bg-slate-900 ${dragOverStage === stage.key ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/10' : 'border-slate-200 dark:border-slate-800'}`}
                     onDragOver={(e) => { e.preventDefault(); setDragOverStage(stage.key); }}
                     onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverStage(null); }}
                     onDrop={(e) => {
@@ -241,11 +253,18 @@ export default function AdminCrmPage() {
                     {/* Column header */}
                     <div className="flex items-center justify-between rounded-t-xl px-3 py-2.5" style={{ borderTop: `3px solid ${stage.color}` }}>
                       <div>
-                        <p className="text-xs font-semibold text-slate-800 dark:text-white">{stage.label}</p>
-                        <p className="text-[10px] text-slate-400">{colLeads.length} contacts</p>
+                        <p className="text-xs font-semibold text-slate-800 dark:text-white">{stage.label}
+                          <span className="ml-1.5 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                            {colLeads.length}
+                          </span>
+                        </p>
+                        {overdueCount > 0
+                          ? <p className="text-[10px] font-semibold text-red-500">{overdueCount} overdue</p>
+                          : <p className="text-[10px] text-slate-400">0 overdue</p>
+                        }
                       </div>
                       <button onClick={() => openAdd(stage.key)}
-                        className="rounded-md px-1.5 py-0.5 text-[10px] font-semibold text-slate-400 hover:bg-slate-100 hover:text-indigo-600 dark:hover:bg-slate-800">
+                        className="rounded-md px-2 py-1 text-[10px] font-semibold text-slate-400 hover:bg-slate-100 hover:text-indigo-600 dark:hover:bg-slate-800">
                         + Add
                       </button>
                     </div>
@@ -254,55 +273,131 @@ export default function AdminCrmPage() {
                     <div className="flex flex-col gap-2 overflow-y-auto p-2" style={{ maxHeight: 'calc(100vh - 200px)' }}>
                       {colLeads.map((lead) => {
                         const dl = deadlineLabel(lead.closureDeadline);
+                        const score = calculateScore(lead, stages);
+                        const scoreColor = score >= 70 ? '#10b981' : score >= 40 ? '#f59e0b' : '#3b82f6';
+                        const scoreEmoji = score >= 70 ? '🔥' : score >= 40 ? '☀' : '❄';
+                        const isAI = lead.source === 'whatsapp_ai';
+                        const prevStage = stageIdx > 0 ? stages[stageIdx - 1] : null;
+                        const nextStage = stageIdx < stages.length - 1 ? stages[stageIdx + 1] : null;
+                        const waPhone = lead.phone.replace(/\D/g, '');
+
                         return (
-                          <Link
+                          <div
                             key={lead.leadId}
-                            href={`/admin/crm/${lead.leadId}`}
+                            className="cursor-grab rounded-xl border border-slate-100 bg-slate-50 shadow-sm transition active:cursor-grabbing hover:border-indigo-200 hover:shadow-md dark:border-slate-800 dark:bg-slate-800/60 dark:hover:border-indigo-700"
                             draggable
                             onDragStart={(e) => { dragLeadId.current = lead.leadId; e.dataTransfer.effectAllowed = 'move'; }}
                             onDragEnd={() => { dragLeadId.current = null; setDragOverStage(null); }}
-                            className="block cursor-grab rounded-lg border border-slate-100 bg-slate-50 p-2.5 transition active:cursor-grabbing hover:border-indigo-200 hover:shadow-sm dark:border-slate-800 dark:bg-slate-800/50">
-                            <div className="flex items-start justify-between gap-1">
-                              <p className="text-xs font-semibold leading-tight text-slate-900 dark:text-white line-clamp-1">{lead.name}</p>
-                              <div className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full bg-indigo-100 text-[8px] font-bold text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400">
-                                {initials(lead.assignedToName)}
-                              </div>
-                            </div>
-                            <p className="mt-0.5 text-[10px] text-slate-400">{lead.phone}</p>
-                            {(() => { const s = scoreBadge(calculateScore(lead, stages)); return <span className={`mt-1 inline-block rounded-full px-1.5 py-0.5 text-[9px] font-bold ${s.cls}`}>{s.label}</span>; })()}
+                          >
+                            {/* Card body — clickable to open lead */}
+                            <Link href={`/admin/crm/${lead.leadId}`} className="block p-3">
 
-                            {lead.tags?.length > 0 && (
-                              <div className="mt-1.5 flex flex-wrap gap-1">
-                                {lead.tags.slice(0, 2).map((t) => (
+                              {/* Name + avatar */}
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="text-sm font-semibold leading-tight text-slate-900 dark:text-white line-clamp-1">{lead.name}</p>
+                                <div
+                                  className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
+                                  style={{ backgroundColor: avatarColor(lead.assignedToName) }}
+                                >
+                                  {initials(lead.assignedToName)}
+                                </div>
+                              </div>
+
+                              {/* Phone */}
+                              <p className="mt-0.5 text-[11px] text-slate-400 tabular-nums">{lead.phone}</p>
+
+                              {/* Tags + AI badge */}
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {isAI && (
+                                  <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[9px] font-bold text-violet-600 dark:bg-violet-900/30 dark:text-violet-400">
+                                    🤖 AI
+                                  </span>
+                                )}
+                                {lead.productInterest?.slice(0, 1).map((p) => (
+                                  <span key={p} className="rounded-full bg-sky-50 px-1.5 py-0.5 text-[9px] font-semibold text-sky-600 dark:bg-sky-900/20 dark:text-sky-400">
+                                    {PRODUCT_LABELS[p] ?? p}
+                                  </span>
+                                ))}
+                                {lead.tags?.slice(0, 2).map((t) => (
                                   <span key={t} className="rounded-full bg-indigo-50 px-1.5 py-0.5 text-[9px] font-medium text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">{t}</span>
                                 ))}
-                                {lead.tags.length > 2 && <span className="text-[9px] text-slate-400">+{lead.tags.length - 2}</span>}
+                                {(lead.tags?.length ?? 0) > 2 && (
+                                  <span className="text-[9px] text-slate-400">+{(lead.tags?.length ?? 0) - 2}</span>
+                                )}
                               </div>
-                            )}
 
-                            <div className="mt-1.5 flex items-center justify-between">
-                              {dl ? (
-                                <span className={`rounded px-1.5 py-0.5 text-[9px] font-medium ${dl.cls}`}>{dl.text}</span>
-                              ) : (
-                                <span className="text-[9px] text-slate-300">{timeSince(lead.updatedAt)}</span>
-                              )}
-                              <div className="flex gap-1">
-                                <button
-                                  onClick={(e) => { e.preventDefault(); /* navigate to chat */ }}
-                                  className="rounded p-0.5 text-[10px] text-slate-400 hover:text-indigo-500">💬</button>
+                              {/* Score bar */}
+                              <div className="mt-2.5 flex items-center gap-2">
+                                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                                  <div
+                                    className="h-full rounded-full transition-all duration-500"
+                                    style={{ width: `${score}%`, backgroundColor: scoreColor }}
+                                  />
+                                </div>
+                                <span className="text-[10px] font-bold tabular-nums" style={{ color: scoreColor }}>
+                                  {scoreEmoji} {score}
+                                </span>
                               </div>
+
+                              {/* Footer: time + deadline + msg count */}
+                              <div className="mt-2 flex items-center gap-2 text-[10px] text-slate-400">
+                                <span>{timeSince(lead.updatedAt)}</span>
+                                {lead.messageCount != null && (
+                                  <span className="flex items-center gap-0.5">
+                                    <span>💬</span>{lead.messageCount}
+                                  </span>
+                                )}
+                                {dl && <span className={`ml-auto rounded px-1.5 py-0.5 font-semibold ${dl.cls}`}>{dl.text}</span>}
+                              </div>
+                            </Link>
+
+                            {/* Action bar — stays outside Link */}
+                            <div className="flex items-center gap-1 border-t border-slate-100 px-2 py-1.5 dark:border-slate-800">
+                              {/* ← Prev stage */}
+                              <button
+                                onClick={() => prevStage && stageMutation.mutate({ leadId: lead.leadId, stage: prevStage.key })}
+                                disabled={!prevStage || stageMutation.isPending}
+                                title={prevStage ? `← ${prevStage.label}` : undefined}
+                                className="flex h-7 w-7 items-center justify-center rounded-lg text-sm text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 disabled:opacity-25 dark:hover:bg-slate-700"
+                              >
+                                ←
+                              </button>
+
+                              {/* WhatsApp */}
+                              <a
+                                href={`https://wa.me/${waPhone}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#25D366] py-1.5 text-[11px] font-bold text-white transition hover:bg-[#1ebe5d]"
+                              >
+                                <svg className="h-3 w-3 fill-white flex-shrink-0" viewBox="0 0 24 24">
+                                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                                </svg>
+                                WhatsApp
+                              </a>
+
+                              {/* Call */}
+                              <a
+                                href={`tel:${lead.phone}`}
+                                onClick={(e) => e.stopPropagation()}
+                                title="Call"
+                                className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 transition hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-900/20"
+                              >
+                                📞
+                              </a>
+
+                              {/* → Next stage */}
+                              <button
+                                onClick={() => nextStage && stageMutation.mutate({ leadId: lead.leadId, stage: nextStage.key })}
+                                disabled={!nextStage || stageMutation.isPending}
+                                title={nextStage ? `${nextStage.label} →` : undefined}
+                                className="flex h-7 w-7 items-center justify-center rounded-lg text-sm text-slate-400 transition hover:bg-slate-100 hover:text-slate-600 disabled:opacity-25 dark:hover:bg-slate-700"
+                              >
+                                →
+                              </button>
                             </div>
-
-                            {/* Quick assign */}
-                            <select
-                              value={lead.assignedTo}
-                              onClick={(e) => e.preventDefault()}
-                              onChange={(e) => { e.preventDefault(); assignMutation.mutate({ leadId: lead.leadId, assignedTo: e.target.value }); }}
-                              className="mt-1.5 w-full rounded border border-slate-200 bg-white py-0.5 text-[9px] text-slate-500 outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
-                              <option value="">Unassigned</option>
-                              {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-                            </select>
-                          </Link>
+                          </div>
                         );
                       })}
                     </div>
