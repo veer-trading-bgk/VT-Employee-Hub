@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch } from '@/lib/api';
@@ -168,6 +169,9 @@ export default function WhatsAppInboxPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const searchParams = useSearchParams();
+  const deepLinkLeadId = searchParams.get('leadId');
+
   const [activeTab, setActiveTab] = useState<ChatStatus | 'all' | 'unread'>('open');
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [search, setSearch] = useState('');
@@ -247,6 +251,19 @@ export default function WhatsAppInboxPage() {
   const liveTags: string[] = currentLead?.tags ?? selected?.tags ?? [];
   const stageObj = stages.find((s) => s.key === liveStage);
   const windowExpired = is24hExpired(selected?.lastInboundAt ?? currentLead?.lastInboundAt);
+
+  // Deep-link: ?leadId=xxx opens that conversation automatically.
+  // Runs once per leadId when conversations load. If not found in current tab,
+  // switches to 'all' tab so it's always reachable.
+  useEffect(() => {
+    if (!deepLinkLeadId || !conversations.length || selected?.leadId === deepLinkLeadId) return;
+    const match = conversations.find((c) => c.leadId === deepLinkLeadId);
+    if (match) {
+      setSelected(match);
+    } else if (activeTab !== 'all') {
+      setActiveTab('all');
+    }
+  }, [deepLinkLeadId, conversations, selected, activeTab]);
 
   const filtered = conversations.filter(
     (c) => !search || c.name?.toLowerCase().includes(search.toLowerCase()) || c.phone.includes(search)
