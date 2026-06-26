@@ -202,7 +202,50 @@ function useMediaBlobUrl(mediaId: string | null) {
   return { blobUrl, error };
 }
 
+// ── Lightbox ──────────────────────────────────────────────────────────────────
+function Lightbox({ src, filename, onClose }: { src: string; filename?: string; onClose: () => void }) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  function download() {
+    const a = document.createElement('a');
+    a.href = src;
+    a.download = filename ?? 'media';
+    a.click();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/90"
+      onClick={onClose}>
+      {/* toolbar */}
+      <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-3"
+        onClick={(e) => e.stopPropagation()}>
+        <span className="text-sm text-white/70 truncate max-w-xs">{filename ?? 'Image'}</span>
+        <div className="flex items-center gap-2">
+          <button onClick={download}
+            className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20">
+            ⬇ Download
+          </button>
+          <button onClick={onClose}
+            className="flex items-center justify-center h-8 w-8 rounded-lg bg-white/10 text-white hover:bg-white/20 text-lg leading-none">
+            ✕
+          </button>
+        </div>
+      </div>
+      {/* image */}
+      <img src={src} alt={filename ?? 'media'}
+        className="max-h-[85vh] max-w-[90vw] rounded-xl object-contain shadow-2xl"
+        onClick={(e) => e.stopPropagation()} />
+    </div>
+  );
+}
+
 function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; outbound: boolean }) {
+  const [lightbox, setLightbox] = useState(false);
+
   // For outbound send-media messages the public URL is stored directly; use it.
   const staticUrl = item.mediaUrl ?? null;
   const needsFetch = !staticUrl && !!item.mediaId;
@@ -210,7 +253,6 @@ function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; ou
   const src = staticUrl ?? blobUrl;
 
   if (!src && !error) {
-    // Still loading
     return (
       <div className="mb-1.5 flex h-24 w-40 items-center justify-center rounded-xl bg-slate-200 dark:bg-slate-700">
         <span className="text-xs text-slate-400">Loading…</span>
@@ -228,13 +270,15 @@ function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; ou
 
   if (item.type === 'image' || item.type === 'sticker') {
     return (
-      <a href={src!} target="_blank" rel="noreferrer">
+      <>
         <img
           src={src!}
           alt={item.type === 'sticker' ? 'sticker' : 'photo'}
-          className={`mb-1.5 rounded-xl object-cover ${item.type === 'sticker' ? 'h-20 w-20' : 'max-h-48 w-full'}`}
+          onClick={() => setLightbox(true)}
+          className={`mb-1.5 cursor-pointer rounded-xl object-cover ${item.type === 'sticker' ? 'h-20 w-20' : 'max-h-48 w-full'}`}
         />
-      </a>
+        {lightbox && <Lightbox src={src!} onClose={() => setLightbox(false)} />}
+      </>
     );
   }
   if (item.type === 'video') {
@@ -245,7 +289,7 @@ function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; ou
   }
   if (item.type === 'document') {
     return (
-      <a href={src!} target="_blank" rel="noreferrer" download={item.filename ?? true}
+      <a href={src!} download={item.filename ?? true}
         className={`mb-1.5 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium ${outbound ? 'border-indigo-400/40 bg-indigo-500/30 text-indigo-100' : 'border-slate-200 bg-slate-50 text-indigo-600 dark:border-slate-700 dark:bg-slate-700 dark:text-indigo-400'}`}>
         📄 {item.filename ?? 'Document'}
       </a>
