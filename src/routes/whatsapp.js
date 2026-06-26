@@ -1272,6 +1272,26 @@ router.get('/upload-url', authMiddleware, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// ── GET /api/whatsapp/s3-url — presigned GET URL for outbound S3 media ────────
+// Browser streams directly from S3 — no Lambda in the path, no 6 MB limit.
+// Only works for media uploaded via the S3 flow (has s3Key stored in message).
+router.get('/s3-url', authMiddleware, async (req, res, next) => {
+  try {
+    const { key } = req.query;
+    if (!key) return res.status(400).json({ error: 'key required' });
+    if (!MEDIA_BUCKET) return res.status(500).json({ error: 'WA_MEDIA_BUCKET not configured' });
+    if (!key.startsWith(`uploads/${req.user.companyId}/`)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    const url = s3Client.getSignedUrl('getObject', {
+      Bucket: MEDIA_BUCKET,
+      Key: key,
+      Expires: 3600, // 1 hour — browser can cache + stream range requests
+    });
+    res.json({ success: true, url });
+  } catch (err) { next(err); }
+});
+
 // ── GET /api/whatsapp/media/:mediaId — proxy Meta media bytes ─────────────────
 router.get('/media/:mediaId', authMiddleware, async (req, res, next) => {
   try {
@@ -1437,8 +1457,8 @@ router.post('/upload-send', authMiddleware, async (req, res, next) => {
       }
     }
 
-    // Delete S3 temp object (fire-and-forget; lifecycle is the safety net)
-    s3Client.deleteObject({ Bucket: MEDIA_BUCKET, Key: s3Key }).promise().catch(() => {});
+    // Do NOT delete S3 object — kept for direct presigned GET streaming (video/large files).
+    // Lifecycle rule handles cleanup after 30 days (matches Meta's media_id expiry).
 
     // Send via media_id — no public hosting required
     const phoneE164 = toE164(phone);

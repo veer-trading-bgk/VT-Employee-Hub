@@ -43,6 +43,7 @@ interface Message {
   type?: string;
   mediaId?: string;
   mediaUrl?: string;
+  s3Key?: string;
   mimeType?: string;
   filename?: string;
   authorName?: string;
@@ -163,43 +164,51 @@ function MsgTick({ status }: { status?: Message['msgStatus'] }) {
   return null;
 }
 
-// ── Authenticated media loader ─────────────────────────────────────────────────
-// Browser <img>/<video> tags cannot send Authorization headers, so we fetch the
-// media bytes with the Bearer token and create a temporary blob URL instead.
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
-function useMediaBlobUrl(mediaId: string | null) {
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+// ── Unified media source resolver ──────────────────────────────────────────────
+// Outbound media (s3Key): presigned S3 GET URL — browser streams directly,
+//   no Lambda in the path, no 6 MB limit, full range-request support for video.
+// Inbound media (mediaId only): proxy through Lambda with Bearer token → blob URL.
+function useMediaSrc(mediaId: string | null, s3Key: string | null) {
+  const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState(false);
 
   useEffect(() => {
-    if (!mediaId) return;
+    setSrc(null);
+    setError(false);
     let objectUrl: string | null = null;
     let cancelled = false;
-
     const token = getMemoryToken();
-    fetch(`${API_BASE}/api/whatsapp/media/${mediaId}`, {
-      credentials: 'include',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-      .then((r) => {
-        if (!r.ok) throw new Error(`${r.status}`);
-        return r.blob();
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+    if (s3Key) {
+      // Outbound S3 media — get a presigned URL and hand it directly to the browser
+      fetch(`${API_BASE}/api/whatsapp/s3-url?key=${encodeURIComponent(s3Key)}`, {
+        credentials: 'include', headers,
       })
-      .then((blob) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setBlobUrl(objectUrl);
-      })
-      .catch(() => { if (!cancelled) setError(true); });
+        .then((r) => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); })
+        .then((data) => { if (!cancelled) setSrc(data.url ?? null); if (!data.url) setError(true); })
+        .catch(() => { if (!cancelled) setError(true); });
+    } else if (mediaId) {
+      // Inbound Meta media — fetch bytes via Lambda proxy, create blob URL
+      fetch(`${API_BASE}/api/whatsapp/media/${mediaId}`, { credentials: 'include', headers })
+        .then((r) => { if (!r.ok) throw new Error(`${r.status}`); return r.blob(); })
+        .then((blob) => {
+          if (cancelled) return;
+          objectUrl = URL.createObjectURL(blob);
+          setSrc(objectUrl);
+        })
+        .catch(() => { if (!cancelled) setError(true); });
+    }
 
     return () => {
       cancelled = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [mediaId]);
+  }, [mediaId, s3Key]);
 
-  return { blobUrl, error };
+  return { src, error };
 }
 
 // ── Lightbox ──────────────────────────────────────────────────────────────────
@@ -246,11 +255,13 @@ function Lightbox({ src, filename, onClose }: { src: string; filename?: string; 
 function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; outbound: boolean }) {
   const [lightbox, setLightbox] = useState(false);
 
-  // For outbound send-media messages the public URL is stored directly; use it.
+  // mediaUrl = old URL-based sends (legacy); s3Key = new S3 flow; mediaId = inbound Meta
   const staticUrl = item.mediaUrl ?? null;
-  const needsFetch = !staticUrl && !!item.mediaId;
-  const { blobUrl, error } = useMediaBlobUrl(needsFetch ? (item.mediaId ?? null) : null);
-  const src = staticUrl ?? blobUrl;
+  const { src: resolvedSrc, error } = useMediaSrc(
+    staticUrl ? null : (item.mediaId ?? null),
+    staticUrl ? null : (item.s3Key ?? null),
+  );
+  const src = staticUrl ?? resolvedSrc;
 
   if (!src && !error) {
     return (
@@ -282,7 +293,7 @@ function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; ou
     );
   }
   if (item.type === 'video') {
-    return <video controls src={src!} className="mb-1.5 max-h-48 w-full rounded-xl" />;
+    return <video controls preload="metadata" src={src!} className="mb-1.5 max-h-48 w-full rounded-xl" />;
   }
   if (item.type === 'audio') {
     return <audio controls src={src!} className="mb-1.5 w-full max-w-[220px]" />;
