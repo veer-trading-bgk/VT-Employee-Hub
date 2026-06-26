@@ -17,6 +17,9 @@ interface Conversation {
   leadId?: string;
   PK?: string;
   name?: string;
+  waName?: string | null;
+  agentName?: string | null;
+  displayName?: string;
   phone: string;
   email?: string | null;
   source?: string | null;
@@ -570,6 +573,10 @@ export default function WhatsAppInboxPage() {
   const [isDragging, setIsDragging] = useState(false);
   const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
 
+  // Contact name inline edit
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState('');
+
   // Reply-to state
   const [replyTo, setReplyTo] = useState<{
     waMessageId: string; content: string;
@@ -724,8 +731,12 @@ export default function WhatsAppInboxPage() {
   }, [qc, convKey]);
 
   const filtered = conversations.filter(
-    (c) => !search || c.name?.toLowerCase().includes(search.toLowerCase()) || c.phone.includes(search)
+    (c) => !search || c.displayName?.toLowerCase().includes(search.toLowerCase()) || c.phone.includes(search)
   );
+
+  useEffect(() => {
+    setEditingName(false);
+  }, [convKey]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -784,11 +795,26 @@ export default function WhatsAppInboxPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['wa-availability'] }),
   });
 
+  const nameMutation = useMutation({
+    mutationFn: ({ leadId, phone, name }: { leadId?: string; phone?: string; name: string }) =>
+      apiFetch('/api/whatsapp/contact/name', { method: 'PUT', body: JSON.stringify({ leadId, phone, name }) }),
+    onSuccess: (_, vars) => {
+      setEditingName(false);
+      setSelected((s) => s ? {
+        ...s,
+        displayName: vars.name,
+        name: vars.leadId ? vars.name : s.name,
+        agentName: vars.phone ? vars.name : s.agentName,
+      } : s);
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+    },
+  });
+
   const addLeadMutation = useMutation({
     mutationFn: () => apiFetch('/api/crm/leads', {
       method: 'POST',
       body: JSON.stringify({
-        name: addLeadForm.name.trim() || selected?.phone,
+        name: addLeadForm.name.trim() || selected?.displayName || selected?.phone,
         phone: selected?.phone,
         stage: addLeadForm.stage || stages[0]?.key || 'new',
         assignedTo: addLeadForm.assignedTo || undefined,
@@ -1161,14 +1187,14 @@ export default function WhatsAppInboxPage() {
                   {/* Avatar — no presence dot (WhatsApp API does not provide online status) */}
                   <div className="flex-shrink-0">
                     <div className={`flex h-10 w-10 items-center justify-center rounded-full text-sm font-bold text-white ${conv.type === 'unknown' ? 'bg-slate-400' : 'bg-indigo-500'}`}>
-                      {avatarLetters(conv.name, conv.phone)}
+                      {avatarLetters(conv.displayName, conv.phone)}
                     </div>
                   </div>
 
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-1">
                       <p className={`truncate text-sm ${unread > 0 ? 'font-bold text-slate-900 dark:text-white' : 'font-semibold text-slate-700 dark:text-slate-200'}`}>
-                        {conv.name ?? conv.phone}
+                        {conv.displayName ?? conv.phone}
                       </p>
                       {/* Timestamp + unread indicator — green dot = unread messages, NOT online status */}
                       <div className="flex flex-shrink-0 items-center gap-1">
@@ -1213,17 +1239,41 @@ export default function WhatsAppInboxPage() {
 
               <div className="flex-shrink-0">
                 <div className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-bold text-white ${selected.type === 'unknown' ? 'bg-slate-400' : 'bg-indigo-500'}`}>
-                  {avatarLetters(currentLead?.name ?? selected.name, selected.phone)}
+                  {avatarLetters(currentLead?.name ?? selected.displayName, selected.phone)}
                 </div>
               </div>
 
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <p className="truncate text-sm font-bold text-slate-900 dark:text-white">
-                    {currentLead?.name ?? selected.name ?? selected.phone}
-                  </p>
-                  {stageObj && (
-                    <span className="rounded-full px-2 py-0.5 text-[10px] font-bold text-white" style={{ backgroundColor: stageObj.color }}>
+                  {editingName ? (
+                    <input
+                      autoFocus
+                      value={nameInput}
+                      onChange={(e) => setNameInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && nameInput.trim()) {
+                          nameMutation.mutate({ leadId: selected.leadId, phone: selected.type === 'unknown' ? selected.phone : undefined, name: nameInput.trim() });
+                        } else if (e.key === 'Escape') {
+                          setEditingName(false);
+                        }
+                      }}
+                      onBlur={() => setEditingName(false)}
+                      className="min-w-0 rounded border border-indigo-300 px-2 py-0.5 text-sm font-bold text-slate-900 outline-none focus:border-indigo-500 dark:border-indigo-700 dark:bg-slate-800 dark:text-white"
+                    />
+                  ) : (
+                    <button
+                      className="group flex min-w-0 items-center gap-1.5 text-left"
+                      onClick={() => { setNameInput(currentLead?.name ?? selected.displayName ?? selected.phone); setEditingName(true); }}
+                      title="Click to edit name"
+                    >
+                      <span className="truncate text-sm font-bold text-slate-900 dark:text-white">
+                        {currentLead?.name ?? selected.displayName ?? selected.phone}
+                      </span>
+                      <span className="flex-shrink-0 text-[10px] text-slate-300 opacity-0 transition-opacity group-hover:opacity-100 dark:text-slate-600">✏</span>
+                    </button>
+                  )}
+                  {stageObj && !editingName && (
+                    <span className="flex-shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold text-white" style={{ backgroundColor: stageObj.color }}>
                       {stageObj.label}
                     </span>
                   )}
@@ -1498,10 +1548,34 @@ export default function WhatsAppInboxPage() {
             <div className="border-b border-slate-100 p-4 dark:border-slate-800">
               <div className="mb-3 flex items-center gap-3">
                 <div className={`flex h-12 w-12 items-center justify-center rounded-full text-lg font-bold text-white ${selected.type === 'unknown' ? 'bg-slate-400' : 'bg-indigo-500'}`}>
-                  {avatarLetters(currentLead?.name ?? selected.name, selected.phone)}
+                  {avatarLetters(currentLead?.name ?? selected.displayName, selected.phone)}
                 </div>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-bold text-slate-900 dark:text-white">{currentLead?.name ?? selected.name ?? selected.phone}</p>
+                <div className="min-w-0 flex-1">
+                  {editingName ? (
+                    <input
+                      autoFocus
+                      value={nameInput}
+                      onChange={(e) => setNameInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && nameInput.trim()) {
+                          nameMutation.mutate({ leadId: selected.leadId, phone: selected.type === 'unknown' ? selected.phone : undefined, name: nameInput.trim() });
+                        } else if (e.key === 'Escape') {
+                          setEditingName(false);
+                        }
+                      }}
+                      onBlur={() => setEditingName(false)}
+                      className="w-full rounded border border-indigo-300 px-2 py-0.5 text-sm font-bold text-slate-900 outline-none focus:border-indigo-500 dark:border-indigo-700 dark:bg-slate-800 dark:text-white"
+                    />
+                  ) : (
+                    <button
+                      className="group flex w-full items-center gap-1.5 text-left"
+                      onClick={() => { setNameInput(currentLead?.name ?? selected.displayName ?? selected.phone); setEditingName(true); }}
+                      title="Click to edit name"
+                    >
+                      <span className="truncate text-sm font-bold text-slate-900 dark:text-white">{currentLead?.name ?? selected.displayName ?? selected.phone}</span>
+                      <span className="flex-shrink-0 text-[10px] text-slate-300 opacity-0 transition-opacity group-hover:opacity-100 dark:text-slate-600">✏</span>
+                    </button>
+                  )}
                   <p className="text-xs text-slate-400">{selected.phone}</p>
                   {selected.email && <p className="truncate text-xs text-slate-400">{selected.email}</p>}
                 </div>

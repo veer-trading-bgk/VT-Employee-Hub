@@ -491,6 +491,12 @@ router.post('/webhook', async (req, res) => {
 
     const phoneNumberId = change.value?.metadata?.phone_number_id;
     const messages = change.value?.messages ?? [];
+    // Meta includes contacts[].profile.name alongside messages — build a lookup by phone
+    const waNameByPhone = Object.fromEntries(
+      (change.value?.contacts ?? [])
+        .filter((c) => c.wa_id && c.profile?.name)
+        .flatMap((c) => [[c.wa_id, c.profile.name], [to10Digit(c.wa_id), c.profile.name]])
+    );
 
     // Resolve company once per webhook entry — scopes all lead lookups and inbox writes
     const wabaConfig = phoneNumberId ? await getCompanyByPhoneNumberId(phoneNumberId) : null;
@@ -559,6 +565,7 @@ router.post('/webhook', async (req, res) => {
 
       const timestamp = new Date(Number(ts) * 1000).toISOString();
       const phone10 = to10Digit(fromPhone);
+      const waName = waNameByPhone[phone10] ?? waNameByPhone[fromPhone] ?? null;
 
       // Extract content + media metadata
       let text = '';
@@ -619,6 +626,14 @@ router.post('/webhook', async (req, res) => {
         }
         if (isNewMsg) {
           await updateLeadLastMessage(lead.PK, text, 'inbound', timestamp);
+          if (waName) {
+            dynamodb.update({
+              TableName: TABLE,
+              Key: { PK: lead.PK, SK: 'METADATA' },
+              UpdateExpression: 'SET waName = :wn',
+              ExpressionAttributeValues: { ':wn': waName },
+            }).promise().catch(() => {});
+          }
           if (mediaId) writeMediaIndex(webhookCompanyId, lead.PK.split('#')[2], { leadPK: lead.PK, mediaId, mimeType, filename: filename ?? null, direction: 'inbound', timestamp });
           if (lead.chatStatus === 'resolved') {
             await dynamodb.update({
@@ -650,8 +665,13 @@ router.post('/webhook', async (req, res) => {
           await dynamodb.update({
             TableName: TABLE,
             Key: { PK, SK: 'CONTACT' },
-            UpdateExpression: 'SET phone = if_not_exists(phone, :ph), companyId = if_not_exists(companyId, :cid), createdAt = if_not_exists(createdAt, :ts), lastMessageAt = :lma, lastMessagePreview = :prev, lastMessageDirection = :dir, unreadCount = if_not_exists(unreadCount, :zero) + :one',
-            ExpressionAttributeValues: { ':ph': phone10, ':cid': companyId, ':ts': timestamp, ':lma': timestamp, ':prev': text.slice(0, 100), ':dir': 'inbound', ':zero': 0, ':one': 1 },
+            UpdateExpression: 'SET phone = if_not_exists(phone, :ph), companyId = if_not_exists(companyId, :cid), createdAt = if_not_exists(createdAt, :ts), lastMessageAt = :lma, lastMessagePreview = :prev, lastMessageDirection = :dir, unreadCount = if_not_exists(unreadCount, :zero) + :one'
+              + (waName ? ', waName = :wn' : ''),
+            ExpressionAttributeValues: {
+              ':ph': phone10, ':cid': companyId, ':ts': timestamp, ':lma': timestamp,
+              ':prev': text.slice(0, 100), ':dir': 'inbound', ':zero': 0, ':one': 1,
+              ...(waName && { ':wn': waName }),
+            },
           }).promise();
           // Keep ACTIVITY# current (use server time to stay ahead of WhatsApp ts).
           await dynamodb.update({
@@ -785,6 +805,8 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
         leadId: l.leadId,
         PK: l.PK,
         name: l.name,
+        waName: l.waName ?? null,
+        displayName: l.name ?? l.waName ?? l.phone,
         phone: l.phone,
         email: l.email ?? null,
         source: l.source ?? null,
@@ -805,7 +827,10 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
       ...unknownItems.map((u) => ({
         type: 'unknown',
         phone: u.phone,
-        name: u.name ?? null,
+        name: u.agentName ?? u.waName ?? null,
+        waName: u.waName ?? null,
+        agentName: u.agentName ?? null,
+        displayName: u.agentName ?? u.waName ?? u.phone,
         email: null, source: null, stage: null, tags: [], notes: '',
         assignedTo: null, assignedToName: null,
         chatStatus: 'unassigned',
@@ -942,6 +967,36 @@ router.put('/inbox/:leadId/pin', authMiddleware, checkRole(['admin', 'manager'])
       ExpressionAttributeValues: { ':p': pinned },
     }).promise();
     res.json({ success: true, pinned });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /api/whatsapp/contact/name — set/edit contact display name ────────────
+router.put('/contact/name', authMiddleware, async (req, res, next) => {
+  try {
+    const { leadId, phone, name } = req.body;
+    const companyId = req.user.companyId;
+    if (!name?.trim()) return res.status(400).json({ error: 'name required' });
+
+    if (leadId) {
+      await dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: `LEAD#${companyId}#${leadId}`, SK: 'METADATA' },
+        UpdateExpression: 'SET #n = :n',
+        ExpressionAttributeNames: { '#n': 'name' },
+        ExpressionAttributeValues: { ':n': name.trim() },
+      }).promise();
+    } else if (phone) {
+      await dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: `INBOX#${companyId}#${to10Digit(phone)}`, SK: 'CONTACT' },
+        UpdateExpression: 'SET agentName = :n',
+        ExpressionAttributeValues: { ':n': name.trim() },
+      }).promise();
+    } else {
+      return res.status(400).json({ error: 'leadId or phone required' });
+    }
+
+    res.json({ success: true, name: name.trim() });
   } catch (err) { next(err); }
 });
 
