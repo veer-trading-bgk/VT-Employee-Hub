@@ -28,11 +28,13 @@ const ALL_NAV: NavItem[] = [
   { href: '/platform/health',       label: 'System Health',  icon: '📡',  roles: ['superadmin'], group: 'platform'     },
   // Superadmin workspace — APForce's own CRM + WhatsApp (apforce_internal company)
   { href: '/admin/crm',             label: 'CRM',            icon: '🤝',  roles: ['superadmin'], group: 'workspace'    },
+  { href: '/admin/contacts',        label: 'Contact Hub',    icon: '👥',  roles: ['superadmin'], group: 'workspace'    },
   { href: '/admin/whatsapp',        label: 'WhatsApp',       icon: '💬',  roles: ['superadmin'], group: 'workspace'    },
   { href: '/platform/analytics',    label: 'Analytics',      icon: '📈',  roles: ['superadmin'], group: 'workspace'    },
   // ── Admin ──────────────────────────────────────────────────────────────────
   { href: '/admin/dashboard',    label: 'Dashboard',      icon: '🔑', roles: ['admin'],   group: 'overview'     },
   { href: '/admin/crm',          label: 'CRM',            icon: '🤝', roles: ['admin'],   group: 'sales'        },
+  { href: '/admin/contacts',     label: 'Contact Hub',    icon: '👥', roles: ['admin'],   group: 'sales'        },
   { href: '/admin/whatsapp',     label: 'WhatsApp',       icon: '💬', roles: ['admin'],   group: 'sales'        },
   { href: '/admin/targets',      label: 'Targets',        icon: '🎯', roles: ['admin'],   group: 'performance'  },
   { href: '/admin/analytics',    label: 'Analytics',      icon: '📈', roles: ['admin'],   group: 'performance'  },
