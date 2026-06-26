@@ -344,7 +344,9 @@ function MediaPreviewModal({
 }
 
 // ── Lightbox ──────────────────────────────────────────────────────────────────
-function Lightbox({ src, filename, onClose }: { src: string; filename?: string; onClose: () => void }) {
+function Lightbox({ src, filename, mediaType = 'image', onClose }: {
+  src: string; filename?: string; mediaType?: 'image' | 'video'; onClose: () => void;
+}) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
     document.addEventListener('keydown', onKey);
@@ -354,7 +356,7 @@ function Lightbox({ src, filename, onClose }: { src: string; filename?: string; 
   function download() {
     const a = document.createElement('a');
     a.href = src;
-    a.download = filename ?? 'media';
+    a.download = filename ?? (mediaType === 'video' ? 'video' : 'media');
     a.click();
   }
 
@@ -364,7 +366,7 @@ function Lightbox({ src, filename, onClose }: { src: string; filename?: string; 
       {/* toolbar */}
       <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 py-3"
         onClick={(e) => e.stopPropagation()}>
-        <span className="text-sm text-white/70 truncate max-w-xs">{filename ?? 'Image'}</span>
+        <span className="text-sm text-white/70 truncate max-w-xs">{filename ?? (mediaType === 'video' ? 'Video' : 'Image')}</span>
         <div className="flex items-center gap-2">
           <button onClick={download}
             className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20">
@@ -376,10 +378,18 @@ function Lightbox({ src, filename, onClose }: { src: string; filename?: string; 
           </button>
         </div>
       </div>
-      {/* image */}
-      <img src={src} alt={filename ?? 'media'}
-        className="max-h-[85vh] max-w-[90vw] rounded-xl object-contain shadow-2xl"
-        onClick={(e) => e.stopPropagation()} />
+      {/* media */}
+      {mediaType === 'video' ? (
+        <video
+          src={src} controls autoPlay
+          className="max-h-[85vh] max-w-[90vw] rounded-xl shadow-2xl"
+          onClick={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <img src={src} alt={filename ?? 'media'}
+          className="max-h-[85vh] max-w-[90vw] rounded-xl object-contain shadow-2xl"
+          onClick={(e) => e.stopPropagation()} />
+      )}
     </div>
   );
 }
@@ -425,7 +435,23 @@ function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; ou
     );
   }
   if (item.type === 'video') {
-    return <video controls preload="metadata" src={src!} className="mb-1.5 max-h-48 w-full rounded-xl" />;
+    return (
+      <>
+        <div
+          className="relative mb-1.5 w-full max-h-48 overflow-hidden rounded-xl cursor-pointer"
+          onClick={() => setLightbox(true)}>
+          <video preload="metadata" src={src!} className="w-full max-h-48 object-cover rounded-xl" />
+          <div className="absolute inset-0 flex items-center justify-center bg-black/20 hover:bg-black/35 transition-colors">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/85 shadow-lg">
+              <span className="ml-1 text-xl text-slate-800">▶</span>
+            </div>
+          </div>
+        </div>
+        {lightbox && (
+          <Lightbox src={src!} mediaType="video" filename={item.filename} onClose={() => setLightbox(false)} />
+        )}
+      </>
+    );
   }
   if (item.type === 'audio') {
     return <audio controls src={src!} className="mb-1.5 w-full max-w-[220px]" />;
