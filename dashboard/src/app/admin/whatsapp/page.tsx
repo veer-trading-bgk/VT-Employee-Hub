@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch, getMemoryToken } from '@/lib/api';
@@ -474,11 +474,24 @@ export default function WhatsAppInboxPage() {
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const router = useRouter();
   const searchParams = useSearchParams();
   const deepLinkLeadId = searchParams.get('leadId');
+  const deepLinkPhone = searchParams.get('phone');
 
   const [activeTab, setActiveTab] = useState<ChatStatus | 'all' | 'unread'>('open');
   const [selected, setSelected] = useState<Conversation | null>(null);
+
+  // Sync selected conversation to URL so page refresh restores position
+  const selectConv = useCallback((conv: Conversation | null) => {
+    setSelected(conv);
+    if (conv) {
+      const param = conv.type === 'lead' && conv.leadId ? `?leadId=${conv.leadId}` : `?phone=${encodeURIComponent(conv.phone)}`;
+      router.replace(param, { scroll: false });
+    } else {
+      router.replace('?', { scroll: false });
+    }
+  }, [router]);
   const [search, setSearch] = useState('');
   const [msgText, setMsgText] = useState('');
   const [inputMode, setInputMode] = useState<'reply' | 'note'>('reply');
@@ -571,18 +584,20 @@ export default function WhatsAppInboxPage() {
   const stageObj = stages.find((s) => s.key === liveStage);
   const windowExpired = is24hExpired(selected?.lastInboundAt ?? currentLead?.lastInboundAt);
 
-  // Deep-link: ?leadId=xxx opens that conversation automatically.
-  // Runs once per leadId when conversations load. If not found in current tab,
-  // switches to 'all' tab so it's always reachable.
+  // Deep-link: ?leadId=xxx or ?phone=xxx opens that conversation automatically.
+  // Handles both fresh deep-links and page-refresh state restoration.
   useEffect(() => {
-    if (!deepLinkLeadId || !conversations.length || selected?.leadId === deepLinkLeadId) return;
-    const match = conversations.find((c) => c.leadId === deepLinkLeadId);
-    if (match) {
-      setSelected(match);
-    } else if (activeTab !== 'all') {
-      setActiveTab('all');
+    if (!conversations.length) return;
+    if (deepLinkLeadId && selected?.leadId !== deepLinkLeadId) {
+      const match = conversations.find((c) => c.leadId === deepLinkLeadId);
+      if (match) { setSelected(match); }
+      else if (activeTab !== 'all') { setActiveTab('all'); }
+    } else if (deepLinkPhone && selected?.phone !== deepLinkPhone) {
+      const match = conversations.find((c) => c.phone === deepLinkPhone);
+      if (match) { setSelected(match); }
+      else if (activeTab !== 'all') { setActiveTab('all'); }
     }
-  }, [deepLinkLeadId, conversations, selected, activeTab]);
+  }, [deepLinkLeadId, deepLinkPhone, conversations, selected, activeTab]);
 
   // Keep lastActivityRef in sync with the most recent message we've seen from the server.
   // This is the "high watermark" that the ping uses to detect new messages.
@@ -611,6 +626,7 @@ export default function WhatsAppInboxPage() {
         if (data.hasNew) {
           if (data.latestAt) lastActivityRef.current = data.latestAt;
           qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+          qc.invalidateQueries({ queryKey: ['wa-conv'] }); // refresh open chat immediately
         }
       } catch {
         // ignore transient network errors — next ping will retry
@@ -977,7 +993,7 @@ export default function WhatsAppInboxPage() {
               const unread = conv.unreadCount ?? 0;
               return (
                 <button key={key} onClick={() => {
-                  setSelected({ ...conv, unreadCount: 0 });
+                  selectConv({ ...conv, unreadCount: 0 });
                   setMsgText('');
                   setInputMode('reply');
                   setShowMediaInput(false);
@@ -1044,7 +1060,7 @@ export default function WhatsAppInboxPage() {
 
             {/* Chat header */}
             <div className="flex flex-shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
-              <button onClick={() => setSelected(null)} className="mr-1 flex-shrink-0 text-slate-400 hover:text-slate-600 md:hidden">←</button>
+              <button onClick={() => selectConv(null)} className="mr-1 flex-shrink-0 text-slate-400 hover:text-slate-600 md:hidden">←</button>
 
               <div className="flex-shrink-0">
                 <div className={`flex h-9 w-9 items-center justify-center rounded-full text-sm font-bold text-white ${selected.type === 'unknown' ? 'bg-slate-400' : 'bg-indigo-500'}`}>
