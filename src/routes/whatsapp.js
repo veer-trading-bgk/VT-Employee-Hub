@@ -1329,7 +1329,8 @@ router.get('/s3-url', authMiddleware, async (req, res, next) => {
     const { key } = req.query;
     if (!key) return res.status(400).json({ error: 'key required' });
     if (!MEDIA_BUCKET) return res.status(500).json({ error: 'WA_MEDIA_BUCKET not configured' });
-    if (!key.startsWith(`uploads/${req.user.companyId}/`)) {
+    const cid = req.user.companyId;
+    if (!key.startsWith(`uploads/${cid}/`) && !key.startsWith(`inbound/${cid}/`)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
     const url = s3Client.getSignedUrl('getObject', {
