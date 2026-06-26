@@ -35,6 +35,16 @@ async function updateLeadLastMessage(pk, content, direction, ts) {
       UpdateExpression: expr,
       ExpressionAttributeValues: vals,
     }).promise();
+    // Bump company-level activity timestamp so /inbox/ping can detect new messages in O(1)
+    const cid = pk.split('#')[1]; // LEAD#companyId#leadId
+    if (cid) {
+      dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: `ACTIVITY#${cid}`, SK: 'WA' },
+        UpdateExpression: 'SET lastActivityAt = :ts',
+        ExpressionAttributeValues: { ':ts': ts },
+      }).promise().catch(() => {});
+    }
   } catch (e) {
     logger.warn('updateLeadLastMessage failed', e.message);
   }
@@ -517,6 +527,13 @@ router.post('/webhook', async (req, res) => {
           UpdateExpression: 'SET phone = if_not_exists(phone, :ph), companyId = if_not_exists(companyId, :cid), createdAt = if_not_exists(createdAt, :ts), lastMessageAt = :lma, lastMessagePreview = :prev, lastMessageDirection = :dir, unreadCount = if_not_exists(unreadCount, :zero) + :one',
           ExpressionAttributeValues: { ':ph': phone10, ':cid': companyId, ':ts': timestamp, ':lma': timestamp, ':prev': text.slice(0, 100), ':dir': 'inbound', ':zero': 0, ':one': 1 },
         }).promise();
+        // Bump company-level activity tracker for unknown contacts too
+        dynamodb.update({
+          TableName: TABLE,
+          Key: { PK: `ACTIVITY#${companyId}`, SK: 'WA' },
+          UpdateExpression: 'SET lastActivityAt = :ts',
+          ExpressionAttributeValues: { ':ts': timestamp },
+        }).promise().catch(() => {});
 
         // Send welcome message on first contact
         if (isFirstContact) {
@@ -674,6 +691,25 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
         : allConvs.filter((c) => c.chatStatus === statusFilter);
 
     res.json({ success: true, conversations, counts });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /api/whatsapp/inbox/ping — lightweight activity check for real-time updates ──
+// Returns {hasNew, latestAt} from a single DDB GET so the browser can poll every 2s
+// without hammering the full inbox scan. Full inbox refetch only when hasNew=true.
+router.get('/inbox/ping', authMiddleware, async (req, res, next) => {
+  try {
+    const { since } = req.query;
+    const companyId = req.user.companyId;
+    const r = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `ACTIVITY#${companyId}`, SK: 'WA' },
+    }).promise();
+    const latestAt = r.Item?.lastActivityAt ?? null;
+    const hasNew = latestAt && since ? new Date(latestAt) > new Date(since) : !!latestAt;
+    res.json({ hasNew, latestAt });
   } catch (err) {
     next(err);
   }
@@ -1175,15 +1211,15 @@ router.get('/media/:mediaId', authMiddleware, async (req, res, next) => {
     const mediaUrl = metaRes.data?.url;
     if (!mediaUrl) return res.status(404).json({ error: 'Media not found' });
 
-    // Step 2: fetch the actual bytes — Meta requires Authorization header (redirect won't work)
-    const mediaStream = await axios.get(mediaUrl, {
+    // Step 2: fetch the actual bytes — buffer fully (streaming breaks on Lambda)
+    const mediaRes = await axios.get(mediaUrl, {
       headers: { Authorization: `Bearer ${cfg.accessToken}` },
-      responseType: 'stream',
+      responseType: 'arraybuffer',
     });
 
-    res.setHeader('Content-Type', mediaStream.headers['content-type'] ?? 'application/octet-stream');
+    res.setHeader('Content-Type', mediaRes.headers['content-type'] ?? 'application/octet-stream');
     res.setHeader('Cache-Control', 'private, max-age=300');
-    mediaStream.data.pipe(res);
+    res.send(Buffer.from(mediaRes.data));
   } catch (err) { next(err); }
 });
 
