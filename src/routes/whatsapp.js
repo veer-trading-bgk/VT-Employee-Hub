@@ -456,8 +456,13 @@ async function storeInboundMedia(accessToken, mediaId, mimeType, companyId) {
 
     return s3Key;
   } catch (err) {
-    logger.error('storeInboundMedia failed', err?.message);
-    return null; // fall back to proxy — graceful degradation
+    const msg = err?.message ?? String(err);
+    logger.error('storeInboundMedia failed', msg);
+    // Surface S3 permission errors immediately — these cause silent media loss
+    if (msg.includes('Access Denied') || msg.includes('AccessDenied') || msg.includes('403')) {
+      logger.alert(`S3 inbound write denied for company <b>${companyId}</b> — check IAM policy on apforce-wa-media/inbound/*`);
+    }
+    return null;
   }
 }
 
@@ -598,7 +603,9 @@ router.post('/webhook', async (req, res) => {
           }).promise();
           isNewMsg = true;
         } catch (e) {
-          if (e.code !== 'ConditionalCheckFailedException') {
+          if (e.code === 'ConditionalCheckFailedException') {
+            logger.warn(`Duplicate webhook ignored: ${waMessageId}`);
+          } else {
             logger.error('MSG# put failed (lead)', e.message);
           }
         }
@@ -631,7 +638,9 @@ router.post('/webhook', async (req, res) => {
           }).promise();
           isNewMsg = true;
         } catch (e) {
-          if (e.code !== 'ConditionalCheckFailedException') {
+          if (e.code === 'ConditionalCheckFailedException') {
+            logger.warn(`Duplicate webhook ignored: ${waMessageId}`);
+          } else {
             logger.error('MSG# put failed (inbox)', e.message);
           }
         }
