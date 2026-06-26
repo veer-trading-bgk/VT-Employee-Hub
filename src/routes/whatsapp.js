@@ -1,4 +1,5 @@
 const express = require('express');
+const { dedupPut } = require('../utils/dedupPut');
 const axios = require('axios');
 const S3 = require('aws-sdk/clients/s3');
 const { authMiddleware, checkRole } = require('../middleware/auth');
@@ -596,18 +597,10 @@ router.post('/webhook', async (req, res) => {
         // counter, re-open resolved chat) for a duplicate delivery.
         let isNewMsg = false;
         try {
-          await dynamodb.put({
-            TableName: TABLE,
-            Item: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
-            ConditionExpression: 'attribute_not_exists(SK)',
-          }).promise();
-          isNewMsg = true;
+          isNewMsg = await dedupPut(dynamodb, TABLE, { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem });
+          if (!isNewMsg) logger.warn(`Duplicate webhook ignored: ${waMessageId}`);
         } catch (e) {
-          if (e.code === 'ConditionalCheckFailedException') {
-            logger.warn(`Duplicate webhook ignored: ${waMessageId}`);
-          } else {
-            logger.error('MSG# put failed (lead)', e.message);
-          }
+          logger.error('MSG# put failed (lead)', e.message);
         }
         if (isNewMsg) {
           await updateLeadLastMessage(lead.PK, text, 'inbound', timestamp);
@@ -631,18 +624,10 @@ router.post('/webhook', async (req, res) => {
 
         let isNewMsg = false;
         try {
-          await dynamodb.put({
-            TableName: TABLE,
-            Item: { PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
-            ConditionExpression: 'attribute_not_exists(SK)',
-          }).promise();
-          isNewMsg = true;
+          isNewMsg = await dedupPut(dynamodb, TABLE, { PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem });
+          if (!isNewMsg) logger.warn(`Duplicate webhook ignored: ${waMessageId}`);
         } catch (e) {
-          if (e.code === 'ConditionalCheckFailedException') {
-            logger.warn(`Duplicate webhook ignored: ${waMessageId}`);
-          } else {
-            logger.error('MSG# put failed (inbox)', e.message);
-          }
+          logger.error('MSG# put failed (inbox)', e.message);
         }
         if (isNewMsg) {
           if (mediaId) writeMediaIndex(companyId, phone10, { leadPK: PK, mediaId, mimeType, filename: filename ?? null, direction: 'inbound', timestamp });
@@ -1620,3 +1605,4 @@ ${success ? 'Done — Close Window' : 'Close & Retry'}</button></div></body></ht
 module.exports = router;
 module.exports.sendTextMessage = sendTextMessage;
 module.exports.sendTemplateMessage = sendTemplateMessage;
+module.exports.storeInboundMedia = storeInboundMedia;
