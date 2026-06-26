@@ -180,7 +180,7 @@ function useMediaSrc(mediaId: string | null, s3Key: string | null) {
     let objectUrl: string | null = null;
     let cancelled = false;
     const token = getMemoryToken();
-    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
     if (s3Key) {
       // Outbound S3 media — get a presigned URL and hand it directly to the browser
@@ -209,6 +209,138 @@ function useMediaSrc(mediaId: string | null, s3Key: string | null) {
   }, [mediaId, s3Key]);
 
   return { src, error };
+}
+
+// ── Media Preview Modal (send flow) ───────────────────────────────────────────
+function MediaPreviewModal({
+  file,
+  previewUrl,
+  caption,
+  onCaptionChange,
+  onSend,
+  onClose,
+  uploadStage,
+  uploadProgress,
+  uploadError,
+  recipientName,
+}: {
+  file: File;
+  previewUrl: string | null;
+  caption: string;
+  onCaptionChange: (v: string) => void;
+  onSend: () => void;
+  onClose: () => void;
+  uploadStage: 'idle' | 'uploading' | 'sending';
+  uploadProgress: number;
+  uploadError: string;
+  recipientName: string;
+}) {
+  const isImage = file.type.startsWith('image/');
+  const isVideo = file.type.startsWith('video/');
+  const isAudio = file.type.startsWith('audio/');
+  const isBusy = uploadStage !== 'idle';
+
+  // Local video/audio blob URL for preview
+  const [mediaPreviewUrl] = useState(() =>
+    (isVideo || isAudio) ? URL.createObjectURL(file) : null
+  );
+  useEffect(() => () => { if (mediaPreviewUrl) URL.revokeObjectURL(mediaPreviewUrl); }, [mediaPreviewUrl]);
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape' && !isBusy) onClose(); }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose, isBusy]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-black/90">
+      {/* Header */}
+      <div className="flex flex-shrink-0 items-center justify-between px-5 py-4">
+        <div>
+          <p className="text-sm font-semibold text-white flex items-center gap-2">
+            <span className="text-base">👁</span> File Preview
+          </p>
+          <p className="text-xs text-white/50 mt-0.5">Sending to {recipientName}</p>
+        </div>
+        {!isBusy && (
+          <button onClick={onClose}
+            className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 text-lg leading-none">
+            ✕
+          </button>
+        )}
+      </div>
+
+      {/* Preview area */}
+      <div className="flex flex-1 items-center justify-center overflow-hidden px-4">
+        {isImage && previewUrl && (
+          <img src={previewUrl} alt={file.name}
+            className="max-h-full max-w-full rounded-xl object-contain shadow-2xl" />
+        )}
+        {isVideo && mediaPreviewUrl && (
+          <video src={mediaPreviewUrl} controls preload="metadata"
+            className="max-h-full max-w-full rounded-xl shadow-2xl" />
+        )}
+        {isAudio && mediaPreviewUrl && (
+          <div className="flex flex-col items-center gap-4">
+            <span className="text-7xl">🎵</span>
+            <p className="text-sm text-white/70 max-w-xs text-center truncate">{file.name}</p>
+            <audio src={mediaPreviewUrl} controls className="w-72" />
+          </div>
+        )}
+        {!isImage && !isVideo && !isAudio && (
+          <div className="flex flex-col items-center gap-4">
+            <span className="text-7xl">📄</span>
+            <p className="text-base font-medium text-white max-w-xs text-center">{file.name}</p>
+            <p className="text-sm text-white/50">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
+          </div>
+        )}
+      </div>
+
+      {/* Bottom bar */}
+      <div className="flex-shrink-0 bg-black/60 backdrop-blur-sm px-4 pb-6 pt-3 space-y-3">
+        {uploadError && (
+          <p className="text-xs text-red-400 text-center">{uploadError}</p>
+        )}
+
+        {isBusy ? (
+          <div className="space-y-2">
+            <p className="text-center text-xs text-white/70">
+              {uploadStage === 'uploading' ? `Uploading… ${uploadProgress}%` : 'Sending to WhatsApp…'}
+            </p>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/20">
+              <div
+                className="h-full rounded-full bg-indigo-400 transition-all duration-200"
+                style={{ width: uploadStage === 'sending' ? '100%' : `${uploadProgress}%` }} />
+            </div>
+          </div>
+        ) : (
+          <>
+            <input
+              value={caption}
+              onChange={(e) => onCaptionChange(e.target.value)}
+              placeholder="Add a caption…"
+              className="w-full rounded-xl bg-white/10 px-4 py-2.5 text-sm text-white placeholder:text-white/40 outline-none focus:bg-white/15 focus:ring-1 focus:ring-white/30"
+              onKeyDown={(e) => { if (e.key === 'Enter') onSend(); }}
+            />
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="h-12 w-12 flex-shrink-0 rounded-lg bg-white/10 flex items-center justify-center overflow-hidden">
+                  {isImage && previewUrl
+                    ? <img src={previewUrl} alt="" className="h-full w-full object-cover" />
+                    : <span className="text-xl">{isVideo ? '🎬' : isAudio ? '🎵' : '📄'}</span>}
+                </div>
+                <p className="truncate text-xs text-white/60">{file.name}</p>
+              </div>
+              <button onClick={onSend}
+                className="flex-shrink-0 flex items-center gap-2 rounded-full bg-indigo-600 px-5 py-2.5 text-sm font-bold text-white hover:bg-indigo-700 active:scale-95 transition-transform">
+                Send <span className="text-base">➤</span>
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ── Lightbox ──────────────────────────────────────────────────────────────────
@@ -625,8 +757,12 @@ export default function WhatsAppInboxPage() {
       setUploadError(`${kind} files must be under ${limit / 1024 / 1024} MB (Meta limit)`);
       return;
     }
+    if (uploadPreview) URL.revokeObjectURL(uploadPreview);
     setUploadFile(file);
     setUploadPreview(file.type.startsWith('image/') ? URL.createObjectURL(file) : null);
+    setUploadStage('idle');
+    setUploadProgress(0);
+    setUploadCaption('');
     setShowMediaInput(true);
   }
 
@@ -690,7 +826,7 @@ export default function WhatsAppInboxPage() {
         }),
       });
     },
-    onSuccess: () => { resetUpload(); setShowMediaInput(false); invalidate(); },
+    onSuccess: () => { setShowMediaInput(false); resetUpload(); invalidate(); },
     onError: (err: any) => {
       if (err?.message === 'Upload cancelled') return;
       setUploadError(err?.message ?? 'Upload failed');
@@ -1050,92 +1186,28 @@ export default function WhatsAppInboxPage() {
                   />
                 )}
 
-                {/* File upload panel */}
-                {showMediaInput && inputMode === 'reply' && (
-                  <div
-                    className={`mb-2 rounded-xl border p-3 transition-colors ${isDragging ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/20' : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800'}`}
-                    onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                    onDragLeave={() => setIsDragging(false)}
-                    onDrop={(e) => { e.preventDefault(); setIsDragging(false); const f = e.dataTransfer.files[0]; if (f) applyFile(f); }}>
-                    <input ref={fileRef} type="file"
-                      accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xlsx,.xls,.csv,.txt"
-                      onChange={handleFileSelect} className="hidden" />
+                {/* Hidden file input — opened by 📎 button or drag-drop */}
+                <input ref={fileRef} type="file"
+                  accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xlsx,.xls,.csv,.txt"
+                  onChange={handleFileSelect} className="hidden" />
 
-                    {!uploadFile ? (
-                      <>
-                        <button onClick={() => fileRef.current?.click()}
-                          className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 py-5 text-sm text-slate-400 hover:border-indigo-400 hover:text-indigo-500 dark:border-slate-600 dark:hover:border-indigo-500">
-                          📎 Click to choose or drop a file
-                        </button>
-                        <p className="mt-1.5 text-center text-[10px] text-slate-400">
-                          Images 5 MB · Video 16 MB · Audio 16 MB · Documents 100 MB · Or paste a screenshot (Ctrl+V)
-                        </p>
-                      </>
-                    ) : uploadStage !== 'idle' ? (
-                      /* Progress view */
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
-                          <span>{uploadStage === 'uploading' ? `Uploading… ${uploadProgress}%` : 'Sending to WhatsApp…'}</span>
-                          <button onClick={cancelUpload} className="text-slate-400 hover:text-red-500">✕ Cancel</button>
-                        </div>
-                        <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-                          <div
-                            className="h-full rounded-full bg-indigo-600 transition-all duration-200"
-                            style={{ width: uploadStage === 'sending' ? '100%' : `${uploadProgress}%` }} />
-                        </div>
-                      </div>
-                    ) : (
-                      /* File selected view */
-                      <div className="space-y-2">
-                        {uploadPreview && (
-                          <img src={uploadPreview} alt="preview"
-                            className="max-h-36 w-full rounded-lg object-contain bg-slate-100 dark:bg-slate-900" />
-                        )}
-                        <div className="flex items-center gap-2 rounded-lg bg-white px-3 py-2 dark:bg-slate-900">
-                          <span className="text-base">
-                            {uploadFile.type.startsWith('image/') ? '🖼' : uploadFile.type.startsWith('video/') ? '🎬' : uploadFile.type.startsWith('audio/') ? '🎵' : '📄'}
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-xs font-medium text-slate-700 dark:text-white">{uploadFile.name}</p>
-                            <p className="text-[10px] text-slate-400">{(uploadFile.size / 1024 / 1024).toFixed(2)} MB</p>
-                          </div>
-                          <button onClick={resetUpload} className="text-slate-400 hover:text-red-500 text-lg leading-none">✕</button>
-                        </div>
-                        <input value={uploadCaption} onChange={(e) => setUploadCaption(e.target.value)}
-                          placeholder="Caption (optional)"
-                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white" />
-                        {uploadFile.type.startsWith('image/') && (
-                          <label className="flex cursor-pointer items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-                            <input type="checkbox" checked={compressImage} onChange={(e) => setCompressImage(e.target.checked)}
-                              className="rounded" />
-                            Auto-compress image before sending (saves bandwidth)
-                          </label>
-                        )}
-                      </div>
-                    )}
+                {/* Drag-drop target overlay on the input row */}
+                <div
+                  className={`${isDragging ? 'mb-2 flex items-center justify-center rounded-xl border-2 border-dashed border-indigo-400 bg-indigo-50 py-4 text-sm text-indigo-500 dark:bg-indigo-900/20' : 'hidden'}`}
+                  onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={(e) => { e.preventDefault(); setIsDragging(false); const f = e.dataTransfer.files[0]; if (f) applyFile(f); }}>
+                  Drop file here
+                </div>
 
-                    {uploadError && <p className="mt-1.5 text-xs text-red-500">{uploadError}</p>}
-
-                    {uploadStage === 'idle' && (
-                      <div className="mt-2 flex gap-2">
-                        <button onClick={() => { setShowMediaInput(false); resetUpload(); }}
-                          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-500 dark:border-slate-700">Cancel</button>
-                        {uploadFile && (
-                          <button onClick={() => uploadMutation.mutate()}
-                            className="flex-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700">
-                            Send
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <div className="flex gap-2">
+                <div className="flex gap-2"
+                  onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={(e) => { e.preventDefault(); setIsDragging(false); const f = e.dataTransfer.files[0]; if (f) applyFile(f); }}>
                   {inputMode === 'reply' && !windowExpired && (
-                    <button onClick={() => setShowMediaInput((v) => !v)}
-                      title="Send image or document"
-                      className={`flex-shrink-0 rounded-xl border px-3 py-2.5 text-sm transition ${showMediaInput ? 'border-indigo-300 bg-indigo-50 text-indigo-600 dark:border-indigo-700 dark:bg-indigo-900/20' : 'border-slate-200 text-slate-400 hover:text-indigo-600 dark:border-slate-700'}`}>
+                    <button onClick={() => fileRef.current?.click()}
+                      title="Send image, video or document"
+                      className="flex-shrink-0 rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-400 hover:text-indigo-600 dark:border-slate-700 transition">
                       📎
                     </button>
                   )}
@@ -1282,6 +1354,22 @@ export default function WhatsAppInboxPage() {
           </div>
         )}
       </div>
+
+      {/* Media preview modal — Interakt/WhatsApp-Web style full-screen preview before send */}
+      {showMediaInput && uploadFile && (
+        <MediaPreviewModal
+          file={uploadFile}
+          previewUrl={uploadPreview}
+          caption={uploadCaption}
+          onCaptionChange={setUploadCaption}
+          onSend={() => uploadMutation.mutate()}
+          onClose={() => { cancelUpload(); setShowMediaInput(false); }}
+          uploadStage={uploadStage}
+          uploadProgress={uploadProgress}
+          uploadError={uploadError}
+          recipientName={currentLead?.name ?? selected?.name ?? selected?.phone ?? 'contact'}
+        />
+      )}
 
       {showCannedModal && (
         <CannedModal
