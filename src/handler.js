@@ -4,7 +4,9 @@ const serverless = require('serverless-http');
 const { loadSecrets } = require('./config/secrets');
 const app = require('./app');
 
-const handler = serverless(app);
+const handler = serverless(app, {
+  binary: ['image/*', 'video/*', 'audio/*', 'application/octet-stream', 'application/pdf'],
+});
 
 exports.handler = async (event, context) => {
   // loadSecrets() is a no-op after the first cold start (cached in module scope)
