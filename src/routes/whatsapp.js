@@ -1279,8 +1279,9 @@ router.get('/media/:mediaId', authMiddleware, async (req, res, next) => {
     if (!cfg?.accessToken) return res.status(403).json({ error: 'WhatsApp not configured' });
 
     // Step 1: resolve the short-lived download URL from Meta
+    // phone_number_id is required for media uploaded by us (outbound); harmless for inbound
     const metaRes = await axios.get(`${GRAPH}/${req.params.mediaId}`, {
-      params: { access_token: cfg.accessToken },
+      params: { access_token: cfg.accessToken, phone_number_id: cfg.phoneNumberId },
     });
     const mediaUrl = metaRes.data?.url;
     if (!mediaUrl) return res.status(404).json({ error: 'Media not found' });
