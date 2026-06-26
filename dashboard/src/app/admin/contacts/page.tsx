@@ -1,9 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
+import { TagBadge } from '@/components/tags/TagBadge';
+import { TagSelector } from '@/components/tags/TagSelector';
+import type { Tag } from '@/components/tags/TagBadge';
 import { apiFetch } from '@/lib/api';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -19,7 +22,7 @@ interface Contact {
   email: string | null;
   stage: string | null;
   source: string | null;
-  tags: string[];
+  tags: string[]; // tag IDs — resolved via tag catalog
   createdAt: string | null;
   lastMessageAt: string | null;
   assignedTo: string | null;
@@ -92,27 +95,6 @@ function SourceBadge({ source }: { source: string | null }) {
   );
 }
 
-// ── Tag chips ─────────────────────────────────────────────────────────────────
-function TagChips({ tags }: { tags: string[] }) {
-  if (!tags.length) return <span className="text-slate-400">—</span>;
-  const visible = tags.slice(0, 2);
-  const rest = tags.length - 2;
-  return (
-    <div className="flex flex-wrap gap-1">
-      {visible.map((t) => (
-        <span key={t} className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-          {t}
-        </span>
-      ))}
-      {rest > 0 && (
-        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-800">
-          +{rest}
-        </span>
-      )}
-    </div>
-  );
-}
-
 // ── Pagination ────────────────────────────────────────────────────────────────
 function Pagination({ page, pages, total, pageSize, onChange }: {
   page: number; pages: number; total: number; pageSize: number;
@@ -174,10 +156,18 @@ export default function ContactHubPage() {
 
   // Filter state
   const [searchInput, setSearchInput] = useState('');
-  const [search, setSearch] = useState('');
+  const [search, setSearch]           = useState('');
   const [sourceFilter, setSourceFilter] = useState('');
-  const [stageFilter, setStageFilter] = useState('');
-  const [page, setPage] = useState(1);
+  const [stageFilter, setStageFilter]   = useState('');
+  const [tagFilter, setTagFilter]       = useState('');
+  const [page, setPage]               = useState(1);
+
+  // Tag selector state — which contact's tag selector is open + screen position
+  const [selectorState, setSelectorState] = useState<{
+    contact: Contact;
+    top: number;
+    left: number;
+  } | null>(null);
 
   // Debounce search
   useEffect(() => {
@@ -186,14 +176,17 @@ export default function ContactHubPage() {
   }, [searchInput]);
 
   // Reset page on filter change
-  useEffect(() => { setPage(1); }, [sourceFilter, stageFilter]);
+  useEffect(() => { setPage(1); }, [sourceFilter, stageFilter, tagFilter]);
+
+  // Build the query key used everywhere for this contacts list
+  const contactsQKey = ['contacts', { search, sourceFilter, stageFilter, tagFilter, page }] as const;
 
   // ── Queries ──────────────────────────────────────────────────────────────
   const { data, isLoading } = useQuery({
-    queryKey: ['contacts', { search, sourceFilter, stageFilter, page }],
+    queryKey: contactsQKey,
     queryFn: () =>
       apiFetch<ContactsResponse>(
-        `/api/contacts?q=${encodeURIComponent(search)}&source=${sourceFilter}&stage=${stageFilter}&page=${page}&pageSize=50`
+        `/api/contacts?q=${encodeURIComponent(search)}&source=${sourceFilter}&stage=${stageFilter}&tag=${tagFilter}&page=${page}&pageSize=50`
       ),
     staleTime: 30_000,
     placeholderData: (prev) => prev,
@@ -205,22 +198,110 @@ export default function ContactHubPage() {
     staleTime: 5 * 60_000,
   });
 
-  const contacts = data?.contacts ?? [];
-  const total    = data?.total ?? 0;
-  const pages    = data?.pages ?? 1;
-  const stages   = pipelineData?.stages ?? [];
+  const { data: tagCatalogData, isLoading: tagsLoading } = useQuery({
+    queryKey: ['tag-catalog'],
+    queryFn: () => apiFetch<{ success: boolean; tags: Tag[] }>('/api/tags'),
+    staleTime: 2 * 60_000,
+  });
+
+  const contacts     = data?.contacts ?? [];
+  const total        = data?.total ?? 0;
+  const pages        = data?.pages ?? 1;
+  const stages       = pipelineData?.stages ?? [];
+  const tagCatalog   = tagCatalogData?.tags ?? [];
 
   // ── Stage mutation ────────────────────────────────────────────────────────
   const stageMutation = useMutation({
     mutationFn: ({ leadId, phone, stage }: { leadId: string | null; phone: string; stage: string }) =>
-      apiFetch('/api/contacts/stage', {
-        method: 'PUT',
-        body: JSON.stringify({ leadId, phone, stage }),
-      }),
+      apiFetch('/api/contacts/stage', { method: 'PUT', body: JSON.stringify({ leadId, phone, stage }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['contacts'] }),
   });
 
-  // ── Navigate to WhatsApp chat ─────────────────────────────────────────────
+  // ── Tag mutation (optimistic) ─────────────────────────────────────────────
+  const tagMutation = useMutation({
+    mutationFn: ({ leadId, phone, add, remove }: {
+      leadId: string | null; phone: string; add: string[]; remove: string[];
+    }) =>
+      apiFetch('/api/tags/contacts', { method: 'PUT', body: JSON.stringify({ leadId, phone, add, remove }) }),
+
+    onMutate: async ({ leadId, phone, add, remove }) => {
+      await qc.cancelQueries({ queryKey: contactsQKey });
+      const prev = qc.getQueryData<ContactsResponse>(contactsQKey);
+      if (prev) {
+        qc.setQueryData(contactsQKey, {
+          ...prev,
+          contacts: prev.contacts.map((c) => {
+            const match = leadId ? c.leadId === leadId : c.phone === phone;
+            if (!match) return c;
+            const updated = [
+              ...c.tags.filter((t) => !remove.includes(t)),
+              ...add.filter((t) => !c.tags.includes(t)),
+            ];
+            return { ...c, tags: updated };
+          }),
+        });
+      }
+      return { prev };
+    },
+    onError: (_, __, ctx) => {
+      if (ctx?.prev) qc.setQueryData(contactsQKey, ctx.prev);
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['contacts'] }),
+  });
+
+  // ── Create tag mutation ───────────────────────────────────────────────────
+  const createTagMutation = useMutation({
+    mutationFn: ({ label, color }: { label: string; color: string }) =>
+      apiFetch<{ success: boolean; tag: Tag }>('/api/tags', {
+        method: 'POST',
+        body: JSON.stringify({ label, color }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tag-catalog'] }),
+  });
+
+  // ── Handlers ──────────────────────────────────────────────────────────────
+  function openTagSelector(contact: Contact, e: React.MouseEvent<HTMLElement>) {
+    e.stopPropagation();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    setSelectorState({
+      contact,
+      top: rect.bottom + 4,
+      left: Math.min(rect.left, window.innerWidth - 240),
+    });
+  }
+
+  function handleToggleTag(contact: Contact, tagId: string) {
+    const isApplied = contact.tags.includes(tagId);
+    // Update selector state optimistically so checkboxes respond instantly
+    setSelectorState((s) =>
+      s && s.contact.id === contact.id && s.contact.type === contact.type
+        ? {
+            ...s,
+            contact: {
+              ...s.contact,
+              tags: isApplied
+                ? s.contact.tags.filter((t) => t !== tagId)
+                : [...s.contact.tags, tagId],
+            },
+          }
+        : s
+    );
+    tagMutation.mutate({
+      leadId: contact.leadId,
+      phone: contact.phone,
+      add: isApplied ? [] : [tagId],
+      remove: isApplied ? [tagId] : [],
+    });
+  }
+
+  async function handleCreateTag(contact: Contact, label: string, color: string) {
+    const res = await createTagMutation.mutateAsync({ label, color });
+    if (res?.tag) {
+      // Immediately apply the newly created tag to the triggering contact
+      handleToggleTag({ ...contact, tags: contact.tags }, res.tag.id);
+    }
+  }
+
   const openChat = useCallback((c: Contact) => {
     if (c.type === 'lead' && c.leadId) {
       router.push(`/admin/whatsapp?leadId=${c.leadId}`);
@@ -229,9 +310,7 @@ export default function ContactHubPage() {
     }
   }, [router]);
 
-  const uniqueSources = Array.from(
-    new Set(contacts.map((c) => c.source).filter(Boolean))
-  ) as string[];
+  const anyFilter = !!(searchInput || sourceFilter || stageFilter || tagFilter);
 
   return (
     <div className="flex h-screen flex-col bg-slate-50 dark:bg-slate-950">
@@ -247,7 +326,6 @@ export default function ContactHubPage() {
                 Unified view of all leads and WhatsApp contacts
               </p>
             </div>
-            {/* Future: + Create Contact button goes here */}
             <div className="flex items-center gap-2">
               <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400">
                 {total} total
@@ -255,11 +333,11 @@ export default function ContactHubPage() {
             </div>
           </div>
 
-          {/* ── Filters bar ──────────────────────────────────────────── */}
+          {/* ── Filters bar ──────────────────────────────────────────────── */}
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {/* Search */}
-            <div className="relative flex-1 min-w-[180px] max-w-xs">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">🔍</span>
+            <div className="relative min-w-[180px] flex-1 max-w-xs">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-400">🔍</span>
               <input
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
@@ -275,11 +353,8 @@ export default function ContactHubPage() {
             </div>
 
             {/* Source filter */}
-            <select
-              value={sourceFilter}
-              onChange={(e) => setSourceFilter(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-            >
+            <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
               <option value="">All Sources</option>
               {Object.entries(SOURCE_CONFIG).map(([k, v]) => (
                 <option key={k} value={k}>{v.label}</option>
@@ -287,27 +362,50 @@ export default function ContactHubPage() {
             </select>
 
             {/* Status filter */}
-            <select
-              value={stageFilter}
-              onChange={(e) => setStageFilter(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-            >
+            <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
               <option value="">All Statuses</option>
               {stages.map((s) => (
                 <option key={s.key} value={s.key}>{s.label}</option>
               ))}
             </select>
 
+            {/* Tag filter */}
+            <select value={tagFilter} onChange={(e) => setTagFilter(e.target.value)}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+              <option value="">All Tags</option>
+              {tagCatalog.map((t) => (
+                <option key={t.id} value={t.id}>{t.label}</option>
+              ))}
+            </select>
+
             {/* Clear filters */}
-            {(searchInput || sourceFilter || stageFilter) && (
+            {anyFilter && (
               <button
-                onClick={() => { setSearchInput(''); setSourceFilter(''); setStageFilter(''); }}
+                onClick={() => { setSearchInput(''); setSourceFilter(''); setStageFilter(''); setTagFilter(''); }}
                 className="text-xs text-slate-400 underline hover:text-slate-600 dark:hover:text-slate-200"
               >
                 Clear all
               </button>
             )}
           </div>
+
+          {/* Active tag filter chip */}
+          {tagFilter && (() => {
+            const tag = tagCatalog.find((t) => t.id === tagFilter);
+            return tag ? (
+              <div className="mt-2 flex items-center gap-2">
+                <span className="text-xs text-slate-500 dark:text-slate-400">Filtered by tag:</span>
+                <span
+                  className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold"
+                  style={{ backgroundColor: tag.color + '20', color: tag.color, borderColor: tag.color + '50' }}
+                >
+                  {tag.label}
+                  <button onClick={() => setTagFilter('')} className="opacity-60 hover:opacity-100">×</button>
+                </span>
+              </div>
+            ) : null;
+          })()}
         </div>
 
         {/* ── Table ────────────────────────────────────────────────────────── */}
@@ -315,10 +413,8 @@ export default function ContactHubPage() {
           <table className="w-full min-w-[900px] border-collapse text-sm">
             <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900">
               <tr>
-                {/* Future: checkbox column for bulk actions */}
                 <th className="w-8 px-4 py-3">
-                  <input type="checkbox" disabled
-                    className="rounded border-slate-300 text-indigo-600 opacity-40" />
+                  <input type="checkbox" disabled className="rounded border-slate-300 text-indigo-600 opacity-40" />
                 </th>
                 {COLUMNS.map((col) => (
                   <th key={col.key}
@@ -326,7 +422,6 @@ export default function ContactHubPage() {
                     {col.label}
                   </th>
                 ))}
-                {/* Actions column */}
                 <th className="border-b border-slate-200 px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:text-slate-400">
                   Message
                 </th>
@@ -349,17 +444,21 @@ export default function ContactHubPage() {
               ) : contacts.length === 0 ? (
                 <tr>
                   <td colSpan={COLUMNS.length + 2} className="py-16 text-center text-slate-400">
-                    <p className="text-4xl mb-2">📭</p>
+                    <p className="mb-2 text-4xl">📭</p>
                     <p className="text-sm font-medium">No contacts found</p>
-                    {(search || sourceFilter || stageFilter) && (
-                      <p className="mt-1 text-xs">Try clearing the filters</p>
-                    )}
+                    {anyFilter && <p className="mt-1 text-xs">Try clearing the filters</p>}
                   </td>
                 </tr>
               ) : (
                 contacts.map((c) => {
-                  const stageObj = stages.find((s) => s.key === c.stage);
-                  const color = avatarColor(c.displayName);
+                  const stageObj  = stages.find((s) => s.key === c.stage);
+                  const color     = avatarColor(c.displayName);
+                  const resolvedTags = c.tags
+                    .map((id) => tagCatalog.find((t) => t.id === id))
+                    .filter((t): t is Tag => !!t);
+                  const isOpen =
+                    selectorState?.contact.id === c.id &&
+                    selectorState?.contact.type === c.type;
 
                   return (
                     <tr key={`${c.type}-${c.id}`}
@@ -373,18 +472,16 @@ export default function ContactHubPage() {
                       {/* Contact Name */}
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-2.5">
-                          <div
-                            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
-                            style={{ backgroundColor: color }}
-                          >
+                          <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
+                            style={{ backgroundColor: color }}>
                             {avatarLetters(c.displayName, c.phone)}
                           </div>
                           <div className="min-w-0">
-                            <p className="truncate font-medium text-slate-900 dark:text-white max-w-[160px]">
+                            <p className="max-w-[160px] truncate font-medium text-slate-900 dark:text-white">
                               {c.displayName || '—'}
                             </p>
                             {c.waName && c.waName !== c.displayName && (
-                              <p className="truncate text-[10px] text-slate-400 max-w-[160px]">
+                              <p className="max-w-[160px] truncate text-[10px] text-slate-400">
                                 WA: {c.waName}
                               </p>
                             )}
@@ -401,7 +498,7 @@ export default function ContactHubPage() {
 
                       {/* Email */}
                       <td className="px-3 py-3">
-                        <span className="truncate text-xs text-slate-600 dark:text-slate-400 max-w-[150px] block">
+                        <span className="block max-w-[150px] truncate text-xs text-slate-600 dark:text-slate-400">
                           {c.email ?? '—'}
                         </span>
                       </td>
@@ -419,7 +516,7 @@ export default function ContactHubPage() {
                           value={c.stage ?? ''}
                           onChange={(e) => stageMutation.mutate({ leadId: c.leadId, phone: c.phone, stage: e.target.value })}
                           onClick={(e) => e.stopPropagation()}
-                          className="rounded-lg border px-2 py-1 text-xs font-medium outline-none transition cursor-pointer"
+                          className="cursor-pointer rounded-lg border px-2 py-1 text-xs font-medium outline-none transition"
                           style={
                             stageObj
                               ? { borderColor: stageObj.color + '80', color: stageObj.color, backgroundColor: stageObj.color + '18' }
@@ -438,9 +535,31 @@ export default function ContactHubPage() {
                         <SourceBadge source={c.source} />
                       </td>
 
-                      {/* Tags */}
+                      {/* Tags — click to open selector */}
                       <td className="px-3 py-3">
-                        <TagChips tags={c.tags} />
+                        <button
+                          type="button"
+                          onClick={(e) => openTagSelector(c, e)}
+                          className={`group/tags flex min-h-[28px] min-w-[60px] flex-wrap items-center gap-1 rounded-lg px-1 py-0.5 text-left transition hover:bg-slate-100 dark:hover:bg-slate-800 ${isOpen ? 'bg-slate-100 dark:bg-slate-800' : ''}`}
+                          title="Click to edit tags"
+                        >
+                          {resolvedTags.length === 0 ? (
+                            <span className="text-[10px] text-slate-300 group-hover/tags:text-slate-400 dark:text-slate-600 dark:group-hover/tags:text-slate-500">
+                              + Add tag
+                            </span>
+                          ) : (
+                            <>
+                              {resolvedTags.slice(0, 2).map((tag) => (
+                                <TagBadge key={tag.id} tag={tag} />
+                              ))}
+                              {resolvedTags.length > 2 && (
+                                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-800">
+                                  +{resolvedTags.length - 2}
+                                </span>
+                              )}
+                            </>
+                          )}
+                        </button>
                       </td>
 
                       {/* Send Message */}
@@ -466,15 +585,30 @@ export default function ContactHubPage() {
 
         {/* ── Pagination ────────────────────────────────────────────────────── */}
         <div className="bg-white dark:bg-slate-900">
-          <Pagination
-            page={page}
-            pages={pages}
-            total={total}
-            pageSize={50}
-            onChange={setPage}
-          />
+          <Pagination page={page} pages={pages} total={total} pageSize={50} onChange={setPage} />
         </div>
       </div>
+
+      {/* ── Tag Selector — rendered outside table to avoid overflow clip ─── */}
+      {selectorState && (
+        <div
+          style={{
+            position: 'fixed',
+            top: selectorState.top,
+            left: selectorState.left,
+            zIndex: 9999,
+          }}
+        >
+          <TagSelector
+            catalogTags={tagCatalog}
+            selectedIds={selectorState.contact.tags}
+            loading={tagsLoading}
+            onToggle={(tagId) => handleToggleTag(selectorState.contact, tagId)}
+            onCreate={(label, color) => handleCreateTag(selectorState.contact, label, color)}
+            onClose={() => setSelectorState(null)}
+          />
+        </div>
+      )}
     </div>
   );
 }

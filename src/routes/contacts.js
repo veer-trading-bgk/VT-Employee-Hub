@@ -65,7 +65,7 @@ function normaliseInbox(u) {
 router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
-    const { q = '', source = '', stage = '', page = '1', pageSize = '50' } = req.query;
+    const { q = '', source = '', stage = '', tag = '', page = '1', pageSize = '50' } = req.query;
 
     // Full scan of LEAD# METADATA records for this company
     const leadItems = [];
@@ -123,6 +123,9 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
 
     // Stage filter
     if (stage) contacts = contacts.filter((c) => c.stage === stage);
+
+    // Tag filter — contact must include the tag ID
+    if (tag) contacts = contacts.filter((c) => (c.tags ?? []).includes(tag));
 
     const total = contacts.length;
     const pg = Math.max(1, parseInt(page, 10));

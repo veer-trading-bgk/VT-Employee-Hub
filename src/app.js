@@ -19,6 +19,7 @@ const attendanceRoutes = require('./routes/attendance');
 const crmRoutes = require('./routes/crm');
 const whatsappRoutes = require('./routes/whatsapp');
 const contactsRoutes = require('./routes/contacts');
+const tagsRoutes = require('./routes/tags');
 const automationsRoutes = require('./routes/automations');
 const formsRoutes = require('./routes/forms');
 const { authMiddleware, subscriptionMiddleware } = require('./middleware/auth');
@@ -76,6 +77,7 @@ app.use('/api/attendance', authMiddleware, attendanceRoutes);
 app.use('/api/crm', authMiddleware, subscriptionMiddleware, crmRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/contacts', contactsRoutes);
+app.use('/api/tags', tagsRoutes);
 app.use('/api/automations', authMiddleware, subscriptionMiddleware, automationsRoutes);
 app.use('/api/forms', formsRoutes);
 
