@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const S3 = require('aws-sdk/clients/s3');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
@@ -7,6 +8,36 @@ const logger = require('../config/logger');
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 const GRAPH = 'https://graph.facebook.com/v19.0';
+const MEDIA_BUCKET = process.env.WA_MEDIA_BUCKET ?? '';
+const s3Client = new S3({ region: process.env.AWS_REGION ?? 'ap-south-1' });
+
+// Meta-supported MIME types
+const ALLOWED_MIME = new Set([
+  'image/jpeg','image/png','image/gif','image/webp',
+  'video/mp4','video/3gpp',
+  'audio/mpeg','audio/ogg','audio/aac','audio/mp4','audio/amr',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain','text/csv',
+]);
+
+// Meta per-type upload limits
+const META_SIZE_LIMITS = {
+  image: 5 * 1024 * 1024,
+  video: 16 * 1024 * 1024,
+  audio: 16 * 1024 * 1024,
+  document: 100 * 1024 * 1024,
+};
+
+function mediaTypeFromMime(mimeType) {
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('video/')) return 'video';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  return 'document';
+}
 
 // ── Per-company WABA credentials ───────────────────────────────────────────────
 async function getWabaConfig(companyId) {
@@ -388,6 +419,18 @@ async function storeWamidLookup(wamid, leadPK, msgSK, companyId, extras = {}) {
   } catch { /* ignore duplicate */ }
 }
 
+// Write a MEDIA# index item for per-contact gallery queries
+function writeMediaIndex(companyId, contactKey, item) {
+  dynamodb.put({
+    TableName: TABLE,
+    Item: {
+      PK: `MEDIA#${companyId}#${contactKey}`,
+      SK: `${item.timestamp}#${item.mediaId ?? item.waMessageId ?? Date.now()}`,
+      ...item,
+    },
+  }).promise().catch(() => {});
+}
+
 // ── POST /api/whatsapp/webhook — inbound messages + delivery/read statuses ────
 router.post('/webhook', async (req, res) => {
   res.sendStatus(200);
@@ -499,6 +542,7 @@ router.post('/webhook', async (req, res) => {
           ConditionExpression: 'attribute_not_exists(SK)',
         }).promise().catch(() => {});
         await updateLeadLastMessage(lead.PK, text, 'inbound', timestamp);
+        if (mediaId) writeMediaIndex(webhookCompanyId, lead.PK.split('#')[2], { leadPK: lead.PK, mediaId, mimeType, filename: filename ?? null, direction: 'inbound', timestamp });
         if (lead.chatStatus === 'resolved') {
           await dynamodb.update({
             TableName: TABLE,
@@ -520,6 +564,7 @@ router.post('/webhook', async (req, res) => {
           Item: { PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
           ConditionExpression: 'attribute_not_exists(SK)',
         }).promise().catch(() => {});
+        if (mediaId) writeMediaIndex(companyId, phone10, { leadPK: PK, mediaId, mimeType, filename: filename ?? null, direction: 'inbound', timestamp });
 
         await dynamodb.update({
           TableName: TABLE,
@@ -1198,6 +1243,35 @@ router.post('/inbox/unknown/:phone/mark-read', authMiddleware, async (req, res, 
   } catch (err) { next(err); }
 });
 
+// ── GET /api/whatsapp/upload-url — generate presigned S3 PUT URL ──────────────
+// Browser uploads directly to S3 — Lambda is never in the file path.
+router.get('/upload-url', authMiddleware, async (req, res, next) => {
+  try {
+    const { mimeType, filename, fileSize } = req.query;
+    if (!mimeType || !filename) return res.status(400).json({ error: 'mimeType and filename required' });
+    if (!MEDIA_BUCKET) return res.status(500).json({ error: 'WA_MEDIA_BUCKET env var not set' });
+    if (!ALLOWED_MIME.has(mimeType)) return res.status(400).json({ error: `Unsupported file type: ${mimeType}` });
+
+    const mediaType = mediaTypeFromMime(mimeType);
+    const limit = META_SIZE_LIMITS[mediaType];
+    if (fileSize && Number(fileSize) > limit) {
+      return res.status(400).json({ error: `${mediaType} files must be under ${limit / 1024 / 1024} MB (Meta limit)` });
+    }
+
+    const ext = filename.split('.').pop()?.toLowerCase() ?? 'bin';
+    const key = `uploads/${req.user.companyId}/${require('crypto').randomUUID()}.${ext}`;
+
+    const uploadUrl = s3Client.getSignedUrl('putObject', {
+      Bucket: MEDIA_BUCKET,
+      Key: key,
+      ContentType: mimeType,
+      Expires: 300,
+    });
+
+    res.json({ success: true, uploadUrl, key });
+  } catch (err) { next(err); }
+});
+
 // ── GET /api/whatsapp/media/:mediaId — proxy Meta media bytes ─────────────────
 router.get('/media/:mediaId', authMiddleware, async (req, res, next) => {
   try {
@@ -1275,56 +1349,98 @@ router.post('/send-media', authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── POST /api/whatsapp/upload-send — upload file bytes then send via media_id ──
-// No public hosting required: file is uploaded to Meta's media storage,
-// Meta returns a media_id, and we send that id in the message.
+// ── POST /api/whatsapp/upload-send — read from S3, upload to Meta, send ───────
+// Called after the browser has PUT the file directly to S3 via presigned URL.
+// Works for both known leads (leadPK) and unknown contacts (phone).
 router.post('/upload-send', authMiddleware, async (req, res, next) => {
   try {
-    const { leadPK: pk, base64Data, mimeType, filename, caption } = req.body;
-    if (!pk || !base64Data || !mimeType) {
-      return res.status(400).json({ error: 'leadPK, base64Data, and mimeType are required' });
+    const { leadPK, phone: rawPhone, s3Key, mimeType, filename, caption, fileHash } = req.body;
+    if ((!leadPK && !rawPhone) || !s3Key || !mimeType) {
+      return res.status(400).json({ error: 'leadPK or phone, s3Key, and mimeType required' });
     }
-    // base64 strings inflate by ~33%; reject before attempting Meta upload
-    if (base64Data.length > 4.5 * 1024 * 1024) {
-      return res.status(413).json({ error: 'File too large — max 3 MB per upload' });
+    if (!MEDIA_BUCKET) return res.status(500).json({ error: 'WA_MEDIA_BUCKET env var not set' });
+
+    const companyId = req.user.companyId;
+
+    // Security: key must be scoped to this company
+    if (!s3Key.startsWith(`uploads/${companyId}/`)) {
+      return res.status(403).json({ error: 'Invalid S3 key' });
     }
 
-    const result = await dynamodb.get({ TableName: TABLE, Key: { PK: pk, SK: 'METADATA' } }).promise();
-    const lead = result.Item;
-    if (!lead) return res.status(404).json({ error: 'Lead not found' });
-    if (lead.companyId !== req.user.companyId) return res.status(403).json({ error: 'Forbidden' });
-
-    const cfg = await getWabaConfig(req.user.companyId);
+    const cfg = await getWabaConfig(companyId);
     if (!cfg?.accessToken || !cfg?.phoneNumberId) return res.status(400).json({ error: 'WhatsApp not configured' });
 
-    const mediaType = mimeType.startsWith('image/') ? 'image'
-      : mimeType.startsWith('video/') ? 'video'
-      : mimeType.startsWith('audio/') ? 'audio'
-      : 'document';
+    const mediaType = mediaTypeFromMime(mimeType);
+    const safeFilename = filename ?? s3Key.split('/').pop() ?? 'file';
 
-    // Upload file bytes to Meta's media storage (uses Node 18+ native fetch + FormData)
-    const buffer = Buffer.from(base64Data, 'base64');
-    const safeFilename = filename ?? `upload.${mimeType.split('/')[1] ?? 'bin'}`;
-    const formData = new FormData();
-    formData.append('messaging_product', 'whatsapp');
-    formData.append('type', mimeType);
-    formData.append('file', new Blob([buffer], { type: mimeType }), safeFilename);
-
-    const uploadRes = await fetch(`${GRAPH}/${cfg.phoneNumberId}/media`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${cfg.accessToken}` },
-      body: formData,
-    });
-    if (!uploadRes.ok) {
-      const errBody = await uploadRes.json().catch(() => ({}));
-      logger.error('Meta media upload failed', errBody);
-      return res.status(400).json({ error: 'Media upload to Meta failed', details: errBody });
+    // Resolve contact — lead or unknown
+    let pk, phone, leadItem = null;
+    if (leadPK) {
+      const r = await dynamodb.get({ TableName: TABLE, Key: { PK: leadPK, SK: 'METADATA' } }).promise();
+      leadItem = r.Item;
+      if (!leadItem) return res.status(404).json({ error: 'Lead not found' });
+      if (leadItem.companyId !== companyId) return res.status(403).json({ error: 'Forbidden' });
+      pk = leadPK;
+      phone = leadItem.phone;
+    } else {
+      phone = rawPhone.replace(/\D/g, '');
+      pk = `INBOX#${companyId}#${phone}`;
     }
-    const { id: mediaId } = await uploadRes.json();
-    if (!mediaId) return res.status(500).json({ error: 'Meta did not return a media_id' });
 
-    // Send message using the media_id
-    const phone = toE164(lead.phone);
+    // Dedup: if we've uploaded this exact file to Meta recently, reuse the media_id
+    let mediaId = null;
+    if (fileHash) {
+      const cached = await dynamodb.get({
+        TableName: TABLE,
+        Key: { PK: `MEDIACACHE#${companyId}`, SK: fileHash },
+      }).promise();
+      if (cached.Item?.mediaId) {
+        mediaId = cached.Item.mediaId;
+        logger.info(`Media dedup hit: reusing mediaId ${mediaId}`);
+      }
+    }
+
+    if (!mediaId) {
+      // Download from S3 (internal AWS network — fast, no Lambda payload limit)
+      const s3Obj = await s3Client.getObject({ Bucket: MEDIA_BUCKET, Key: s3Key }).promise();
+
+      // Upload bytes to Meta's media storage
+      const formData = new FormData();
+      formData.append('messaging_product', 'whatsapp');
+      formData.append('type', mimeType);
+      formData.append('file', new Blob([s3Obj.Body], { type: mimeType }), safeFilename);
+
+      const uploadRes = await fetch(`${GRAPH}/${cfg.phoneNumberId}/media`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${cfg.accessToken}` },
+        body: formData,
+      });
+      if (!uploadRes.ok) {
+        const errBody = await uploadRes.json().catch(() => ({}));
+        logger.error('Meta media upload failed', errBody);
+        return res.status(400).json({ error: 'Media upload to Meta failed', details: errBody });
+      }
+      ({ id: mediaId } = await uploadRes.json());
+      if (!mediaId) return res.status(500).json({ error: 'Meta did not return a media_id' });
+
+      // Cache for 29 days (Meta media_id valid 30 days)
+      if (fileHash) {
+        dynamodb.put({
+          TableName: TABLE,
+          Item: {
+            PK: `MEDIACACHE#${companyId}`, SK: fileHash,
+            mediaId, mimeType, filename: safeFilename,
+            ttl: Math.floor(Date.now() / 1000) + 29 * 24 * 3600,
+          },
+        }).promise().catch(() => {});
+      }
+    }
+
+    // Delete S3 temp object (fire-and-forget; lifecycle is the safety net)
+    s3Client.deleteObject({ Bucket: MEDIA_BUCKET, Key: s3Key }).promise().catch(() => {});
+
+    // Send via media_id — no public hosting required
+    const phoneE164 = toE164(phone);
     const mediaPayload = { id: mediaId };
     if (caption) mediaPayload.caption = caption;
     if (mediaType === 'document') mediaPayload.filename = safeFilename;
@@ -1332,7 +1448,7 @@ router.post('/upload-send', authMiddleware, async (req, res, next) => {
     const sendRes = await axios.post(`${GRAPH}/${cfg.phoneNumberId}/messages`, {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
-      to: phone,
+      to: phoneE164,
       type: mediaType,
       [mediaType]: mediaPayload,
     }, { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } });
@@ -1348,14 +1464,34 @@ router.post('/upload-send', authMiddleware, async (req, res, next) => {
         messageId: waMessageId, waMessageId,
         direction: 'outbound', type: mediaType,
         content: caption ?? `[${mediaType}]`,
-        mediaId, filename: safeFilename,
+        mediaId, filename: safeFilename, mimeType,
         sentBy: req.user.id, sentByName: req.user.name,
         timestamp, msgStatus: 'sent',
       },
     }).promise();
 
-    await storeWamidLookup(waMessageId, pk, msgSK, req.user.companyId);
-    await updateLeadLastMessage(pk, caption ?? `[${mediaType}]`, 'outbound', timestamp);
+    await storeWamidLookup(waMessageId, pk, msgSK, companyId);
+
+    // MEDIA# index — enables per-contact media gallery
+    const contactKey = leadItem ? pk.split('#')[2] : phone;
+    writeMediaIndex(companyId, contactKey, {
+      leadPK: pk, mediaId, mimeType,
+      filename: safeFilename, caption: caption ?? null,
+      direction: 'outbound', sentBy: req.user.id, timestamp,
+    });
+
+    // Update last message preview
+    if (leadItem) {
+      await updateLeadLastMessage(pk, caption ?? `[${mediaType}]`, 'outbound', timestamp);
+    } else {
+      dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: pk, SK: 'CONTACT' },
+        UpdateExpression: 'SET lastMessageAt = :ts, lastMessagePreview = :prev, lastMessageDirection = :dir',
+        ExpressionAttributeValues: { ':ts': timestamp, ':prev': (caption ?? `[${mediaType}]`).slice(0, 100), ':dir': 'outbound' },
+      }).promise().catch(() => {});
+    }
+
     res.json({ success: true, messageId: waMessageId, timestamp });
   } catch (err) {
     logger.error('upload-send error', err?.response?.data ?? err.message);

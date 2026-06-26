@@ -327,6 +327,11 @@ export default function WhatsAppInboxPage() {
   const [uploadPreview, setUploadPreview] = useState<string | null>(null);
   const [uploadCaption, setUploadCaption] = useState('');
   const [uploadError, setUploadError] = useState('');
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStage, setUploadStage] = useState<'idle' | 'uploading' | 'sending'>('idle');
+  const [compressImage, setCompressImage] = useState(true);
+  const [isDragging, setIsDragging] = useState(false);
+  const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
 
   // Tracks the most recent message timestamp we've seen — used by the ping poll
   // to detect new activity without a full inbox scan on every tick.
@@ -542,50 +547,146 @@ export default function WhatsAppInboxPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convKey, rawMessages.length]);
 
-  const uploadMutation = useMutation({
-    mutationFn: async () => {
-      if (!uploadFile || !selected?.PK) throw new Error('No file or conversation selected');
-      const base64Data = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve((reader.result as string).split(',')[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(uploadFile);
-      });
-      return apiFetch('/api/whatsapp/upload-send', {
-        method: 'POST',
-        body: JSON.stringify({
-          leadPK: selected!.PK,
-          base64Data,
-          mimeType: uploadFile.type,
-          filename: uploadFile.name,
-          caption: uploadCaption || undefined,
-        }),
-      });
-    },
-    onSuccess: () => {
-      setUploadFile(null);
-      setUploadPreview(null);
-      setUploadCaption('');
-      setUploadError('');
-      setShowMediaInput(false);
-      if (fileRef.current) fileRef.current.value = '';
-      invalidate();
-    },
-    onError: (err: any) => { setUploadError(err?.message ?? 'Upload failed'); },
-  });
+  // Per-type size limits matching Meta's actual limits
+  const META_SIZE_LIMITS: Record<string, number> = {
+    image: 5 * 1024 * 1024,
+    video: 16 * 1024 * 1024,
+    audio: 16 * 1024 * 1024,
+    document: 100 * 1024 * 1024,
+  };
+  function mediaKind(mimeType: string) {
+    if (mimeType.startsWith('image/')) return 'image';
+    if (mimeType.startsWith('video/')) return 'video';
+    if (mimeType.startsWith('audio/')) return 'audio';
+    return 'document';
+  }
 
-  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // SHA-256 hash for dedup cache on backend
+  async function computeHash(file: File): Promise<string> {
+    const buf = await file.arrayBuffer();
+    const digest = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  // Canvas-based image compression (images only, quality 0.82)
+  async function compressImageFile(file: File): Promise<File> {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        // Cap at 1920px wide to keep WhatsApp quality good
+        const scale = Math.min(1, 1920 / img.width);
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob((blob) => {
+          URL.revokeObjectURL(url);
+          if (!blob || blob.size >= file.size) { resolve(file); return; }
+          resolve(new File([blob], file.name.replace(/\.\w+$/, '.jpg'), { type: 'image/jpeg' }));
+        }, 'image/jpeg', 0.82);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+
+  function resetUpload() {
+    setUploadFile(null);
+    setUploadPreview(null);
+    setUploadCaption('');
     setUploadError('');
-    if (file.size > 3 * 1024 * 1024) {
-      setUploadError('File too large — max 3 MB (Lambda payload limit). For larger files, upload to Google Drive / S3 and share the link via the text box.');
-      if (fileRef.current) fileRef.current.value = '';
+    setUploadProgress(0);
+    setUploadStage('idle');
+    if (fileRef.current) fileRef.current.value = '';
+  }
+
+  function cancelUpload() {
+    uploadXhrRef.current?.abort();
+    resetUpload();
+  }
+
+  function applyFile(file: File) {
+    setUploadError('');
+    const kind = mediaKind(file.type);
+    const limit = META_SIZE_LIMITS[kind];
+    if (file.size > limit) {
+      setUploadError(`${kind} files must be under ${limit / 1024 / 1024} MB (Meta limit)`);
       return;
     }
     setUploadFile(file);
     setUploadPreview(file.type.startsWith('image/') ? URL.createObjectURL(file) : null);
+    setShowMediaInput(true);
   }
+
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) applyFile(file);
+  }
+
+  const uploadMutation = useMutation({
+    mutationFn: async () => {
+      if (!uploadFile) throw new Error('No file selected');
+      const hasLead = selected?.type === 'lead';
+      const hasPhone = selected?.phone;
+      if (!hasLead && !hasPhone) throw new Error('No conversation selected');
+
+      setUploadStage('uploading');
+      setUploadProgress(0);
+
+      // Optionally compress image before uploading
+      let file = uploadFile;
+      if (compressImage && file.type.startsWith('image/') && file.size > 500 * 1024) {
+        file = await compressImageFile(file);
+      }
+
+      // Compute hash for dedup (runs in parallel with presigned URL fetch)
+      const [hashHex, urlData] = await Promise.all([
+        computeHash(file),
+        apiFetch<{ uploadUrl: string; key: string }>(`/api/whatsapp/upload-url?mimeType=${encodeURIComponent(file.type)}&filename=${encodeURIComponent(file.name)}&fileSize=${file.size}`),
+      ]);
+
+      const { uploadUrl, key } = urlData;
+
+      // XHR PUT to S3 — supports progress + cancel
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        uploadXhrRef.current = xhr;
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+        };
+        xhr.onload = () => xhr.status < 300 ? resolve() : reject(new Error(`S3 upload failed (${xhr.status})`));
+        xhr.onerror = () => reject(new Error('Network error during upload'));
+        xhr.onabort = () => reject(new Error('Upload cancelled'));
+        xhr.open('PUT', uploadUrl);
+        xhr.setRequestHeader('Content-Type', file.type);
+        xhr.send(file);
+      });
+      uploadXhrRef.current = null;
+
+      setUploadStage('sending');
+
+      // Tell backend: file is in S3, upload to Meta and send
+      return apiFetch('/api/whatsapp/upload-send', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...(selected!.type === 'lead' ? { leadPK: selected!.PK } : { phone: selected!.phone }),
+          s3Key: key,
+          mimeType: file.type,
+          filename: file.name,
+          caption: uploadCaption || undefined,
+          fileHash: hashHex,
+        }),
+      });
+    },
+    onSuccess: () => { resetUpload(); setShowMediaInput(false); invalidate(); },
+    onError: (err: any) => {
+      if (err?.message === 'Upload cancelled') return;
+      setUploadError(err?.message ?? 'Upload failed');
+      setUploadStage('idle');
+      setUploadProgress(0);
+    },
+  });
 
   const sendMutation = useMutation({
     mutationFn: () =>
@@ -594,6 +695,18 @@ export default function WhatsAppInboxPage() {
         : apiFetch(`/api/whatsapp/inbox/unknown/${selected!.phone}/send`, { method: 'POST', body: JSON.stringify({ message: msgText }) }),
     onSuccess: () => { setMsgText(''); setShowCanned(false); invalidate(); },
   });
+
+  // Paste screenshot from clipboard (Ctrl+V anywhere in the chat)
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      if (!selected || inputMode !== 'reply') return;
+      const file = Array.from(e.clipboardData?.files ?? []).find((f) => f.type.startsWith('image/'));
+      if (file) { e.preventDefault(); applyFile(file); }
+    }
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, inputMode]);
 
   function handleSend() {
     if (!msgText.trim()) return;
@@ -697,6 +810,8 @@ export default function WhatsAppInboxPage() {
                   setShowMediaInput(false);
                   setUploadFile(null);
                   setUploadPreview(null);
+                  setUploadStage('idle');
+                  setUploadProgress(0);
                   // Reset unread count in backend immediately
                   if (conv.type === 'lead' && conv.leadId) {
                     apiFetch(`/api/whatsapp/inbox/${conv.leadId}/mark-read`, { method: 'POST', body: JSON.stringify({ lastWaMessageId: '' }) }).catch(() => {});
@@ -925,24 +1040,45 @@ export default function WhatsAppInboxPage() {
                 )}
 
                 {/* File upload panel */}
-                {showMediaInput && inputMode === 'reply' && selected?.type === 'lead' && (
-                  <div className="mb-2 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800">
+                {showMediaInput && inputMode === 'reply' && (
+                  <div
+                    className={`mb-2 rounded-xl border p-3 transition-colors ${isDragging ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/20' : 'border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800'}`}
+                    onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                    onDragLeave={() => setIsDragging(false)}
+                    onDrop={(e) => { e.preventDefault(); setIsDragging(false); const f = e.dataTransfer.files[0]; if (f) applyFile(f); }}>
                     <input ref={fileRef} type="file"
                       accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xlsx,.xls,.csv,.txt"
                       onChange={handleFileSelect} className="hidden" />
+
                     {!uploadFile ? (
                       <>
                         <button onClick={() => fileRef.current?.click()}
                           className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 py-5 text-sm text-slate-400 hover:border-indigo-400 hover:text-indigo-500 dark:border-slate-600 dark:hover:border-indigo-500">
-                          📎 Click to choose a file
+                          📎 Click to choose or drop a file
                         </button>
-                        <p className="mt-1.5 text-center text-[10px] text-slate-400">Images, audio, PDF, doc — max 3 MB</p>
+                        <p className="mt-1.5 text-center text-[10px] text-slate-400">
+                          Images 5 MB · Video 16 MB · Audio 16 MB · Documents 100 MB · Or paste a screenshot (Ctrl+V)
+                        </p>
                       </>
+                    ) : uploadStage !== 'idle' ? (
+                      /* Progress view */
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-300">
+                          <span>{uploadStage === 'uploading' ? `Uploading… ${uploadProgress}%` : 'Sending to WhatsApp…'}</span>
+                          <button onClick={cancelUpload} className="text-slate-400 hover:text-red-500">✕ Cancel</button>
+                        </div>
+                        <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                          <div
+                            className="h-full rounded-full bg-indigo-600 transition-all duration-200"
+                            style={{ width: uploadStage === 'sending' ? '100%' : `${uploadProgress}%` }} />
+                        </div>
+                      </div>
                     ) : (
+                      /* File selected view */
                       <div className="space-y-2">
                         {uploadPreview && (
                           <img src={uploadPreview} alt="preview"
-                            className="max-h-32 w-full rounded-lg object-contain bg-slate-100 dark:bg-slate-900" />
+                            className="max-h-36 w-full rounded-lg object-contain bg-slate-100 dark:bg-slate-900" />
                         )}
                         <div className="flex items-center gap-2 rounded-lg bg-white px-3 py-2 dark:bg-slate-900">
                           <span className="text-base">
@@ -950,32 +1086,42 @@ export default function WhatsAppInboxPage() {
                           </span>
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-xs font-medium text-slate-700 dark:text-white">{uploadFile.name}</p>
-                            <p className="text-[10px] text-slate-400">{(uploadFile.size / 1024).toFixed(0)} KB</p>
+                            <p className="text-[10px] text-slate-400">{(uploadFile.size / 1024 / 1024).toFixed(2)} MB</p>
                           </div>
-                          <button onClick={() => { setUploadFile(null); setUploadPreview(null); setUploadError(''); if (fileRef.current) fileRef.current.value = ''; }}
-                            className="text-slate-400 hover:text-red-500 text-lg leading-none">✕</button>
+                          <button onClick={resetUpload} className="text-slate-400 hover:text-red-500 text-lg leading-none">✕</button>
                         </div>
                         <input value={uploadCaption} onChange={(e) => setUploadCaption(e.target.value)}
                           placeholder="Caption (optional)"
                           className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white" />
+                        {uploadFile.type.startsWith('image/') && (
+                          <label className="flex cursor-pointer items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                            <input type="checkbox" checked={compressImage} onChange={(e) => setCompressImage(e.target.checked)}
+                              className="rounded" />
+                            Auto-compress image before sending (saves bandwidth)
+                          </label>
+                        )}
                       </div>
                     )}
+
                     {uploadError && <p className="mt-1.5 text-xs text-red-500">{uploadError}</p>}
-                    <div className="mt-2 flex gap-2">
-                      <button onClick={() => { setShowMediaInput(false); setUploadFile(null); setUploadPreview(null); setUploadError(''); }}
-                        className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-500 dark:border-slate-700">Cancel</button>
-                      {uploadFile && (
-                        <button onClick={() => uploadMutation.mutate()} disabled={uploadMutation.isPending}
-                          className="flex-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40">
-                          {uploadMutation.isPending ? 'Uploading & Sending…' : 'Send'}
-                        </button>
-                      )}
-                    </div>
+
+                    {uploadStage === 'idle' && (
+                      <div className="mt-2 flex gap-2">
+                        <button onClick={() => { setShowMediaInput(false); resetUpload(); }}
+                          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-500 dark:border-slate-700">Cancel</button>
+                        {uploadFile && (
+                          <button onClick={() => uploadMutation.mutate()}
+                            className="flex-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700">
+                            Send
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
                 <div className="flex gap-2">
-                  {inputMode === 'reply' && selected?.type === 'lead' && !windowExpired && (
+                  {inputMode === 'reply' && !windowExpired && (
                     <button onClick={() => setShowMediaInput((v) => !v)}
                       title="Send image or document"
                       className={`flex-shrink-0 rounded-xl border px-3 py-2.5 text-sm transition ${showMediaInput ? 'border-indigo-300 bg-indigo-50 text-indigo-600 dark:border-indigo-700 dark:bg-indigo-900/20' : 'border-slate-200 text-slate-400 hover:text-indigo-600 dark:border-slate-700'}`}>
