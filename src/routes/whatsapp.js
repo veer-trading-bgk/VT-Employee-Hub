@@ -69,8 +69,8 @@ async function updateLeadLastMessage(pk, content, direction, ts) {
     }).promise();
     // Bump company-level activity timestamp so /inbox/ping can detect new messages in O(1)
     const cid = pk.split('#')[1]; // LEAD#companyId#leadId
-    if (cid) {
-      dynamodb.update({
+    if (cid && direction === 'inbound') {
+      await dynamodb.update({
         TableName: TABLE,
         Key: { PK: `ACTIVITY#${cid}`, SK: 'WA' },
         UpdateExpression: 'SET lastActivityAt = :ts',
@@ -539,6 +539,19 @@ router.post('/webhook', async (req, res) => {
       }
     }
 
+    // Eagerly write ACTIVITY# with server-time BEFORE the slow lead-scan +
+    // media-download chain.  The 2 s ping detects new messages in ≤2 s instead
+    // of the previous 15–20 s that storeInboundMedia was adding to the delay.
+    const INBOUND_MSG_TYPES = ['text', 'image', 'document', 'audio', 'video', 'sticker'];
+    if (webhookCompanyId && messages.some((m) => INBOUND_MSG_TYPES.includes(m.type))) {
+      await dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: `ACTIVITY#${webhookCompanyId}`, SK: 'WA' },
+        UpdateExpression: 'SET lastActivityAt = :now',
+        ExpressionAttributeValues: { ':now': new Date().toISOString() },
+      }).promise().catch(() => {});
+    }
+
     for (const msg of messages) {
       const { type, from: fromPhone, id: waMessageId, timestamp: ts } = msg;
       const MEDIA_TYPES = ['image', 'document', 'audio', 'video', 'sticker'];
@@ -640,12 +653,12 @@ router.post('/webhook', async (req, res) => {
             UpdateExpression: 'SET phone = if_not_exists(phone, :ph), companyId = if_not_exists(companyId, :cid), createdAt = if_not_exists(createdAt, :ts), lastMessageAt = :lma, lastMessagePreview = :prev, lastMessageDirection = :dir, unreadCount = if_not_exists(unreadCount, :zero) + :one',
             ExpressionAttributeValues: { ':ph': phone10, ':cid': companyId, ':ts': timestamp, ':lma': timestamp, ':prev': text.slice(0, 100), ':dir': 'inbound', ':zero': 0, ':one': 1 },
           }).promise();
-          // Bump company-level activity tracker for unknown contacts too
-          dynamodb.update({
+          // Keep ACTIVITY# current (use server time to stay ahead of WhatsApp ts).
+          await dynamodb.update({
             TableName: TABLE,
             Key: { PK: `ACTIVITY#${companyId}`, SK: 'WA' },
-            UpdateExpression: 'SET lastActivityAt = :ts',
-            ExpressionAttributeValues: { ':ts': timestamp },
+            UpdateExpression: 'SET lastActivityAt = :now',
+            ExpressionAttributeValues: { ':now': new Date().toISOString() },
           }).promise().catch(() => {});
         }
 
