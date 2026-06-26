@@ -396,6 +396,7 @@ function Lightbox({ src, filename, mediaType = 'image', onClose }: {
 
 function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; outbound: boolean }) {
   const [lightbox, setLightbox] = useState(false);
+  const [nativeError, setNativeError] = useState(false);
 
   // mediaUrl = old URL-based sends (legacy); s3Key = new S3 flow; mediaId = inbound Meta
   const staticUrl = item.mediaUrl ?? null;
@@ -412,7 +413,7 @@ function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; ou
       </div>
     );
   }
-  if (error || (!src && !item.mediaId)) {
+  if (error || nativeError || (!src && !item.mediaId)) {
     return (
       <div className="mb-1.5 flex h-12 items-center gap-1.5 rounded-xl bg-slate-100 px-3 dark:bg-slate-700">
         <span className="text-lg">🖼</span>
@@ -428,6 +429,7 @@ function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; ou
           src={src!}
           alt={item.type === 'sticker' ? 'sticker' : 'photo'}
           onClick={() => setLightbox(true)}
+          onError={() => setNativeError(true)}
           className={`mb-1.5 cursor-pointer rounded-xl object-cover ${item.type === 'sticker' ? 'h-20 w-20' : 'max-h-48 w-full'}`}
         />
         {lightbox && <Lightbox src={src!} onClose={() => setLightbox(false)} />}
@@ -440,7 +442,7 @@ function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; ou
         <div
           className="relative mb-1.5 w-full max-h-48 overflow-hidden rounded-xl cursor-pointer"
           onClick={() => setLightbox(true)}>
-          <video preload="metadata" src={src!} className="w-full max-h-48 object-cover rounded-xl" />
+          <video preload="metadata" src={src!} onError={() => setNativeError(true)} className="w-full max-h-48 object-cover rounded-xl" />
           <div className="absolute inset-0 flex items-center justify-center bg-black/20 hover:bg-black/35 transition-colors">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/85 shadow-lg">
               <span className="ml-1 text-xl text-slate-800">▶</span>

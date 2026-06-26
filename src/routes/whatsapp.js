@@ -585,20 +585,34 @@ router.post('/webhook', async (req, res) => {
       };
 
       if (lead) {
-        await dynamodb.put({
-          TableName: TABLE,
-          Item: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
-          ConditionExpression: 'attribute_not_exists(SK)',
-        }).promise().catch(() => {});
-        await updateLeadLastMessage(lead.PK, text, 'inbound', timestamp);
-        if (mediaId) writeMediaIndex(webhookCompanyId, lead.PK.split('#')[2], { leadPK: lead.PK, mediaId, mimeType, filename: filename ?? null, direction: 'inbound', timestamp });
-        if (lead.chatStatus === 'resolved') {
-          await dynamodb.update({
+        // Guard all post-write side-effects on whether the MSG# was actually new.
+        // Meta sometimes re-delivers webhooks; the ConditionExpression deduplicates the
+        // DynamoDB write, but we must not re-run side-effects (preview update, unread
+        // counter, re-open resolved chat) for a duplicate delivery.
+        let isNewMsg = false;
+        try {
+          await dynamodb.put({
             TableName: TABLE,
-            Key: { PK: lead.PK, SK: 'METADATA' },
-            UpdateExpression: 'SET chatStatus = :s',
-            ExpressionAttributeValues: { ':s': 'open' },
-          }).promise().catch(() => {});
+            Item: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
+            ConditionExpression: 'attribute_not_exists(SK)',
+          }).promise();
+          isNewMsg = true;
+        } catch (e) {
+          if (e.code !== 'ConditionalCheckFailedException') {
+            logger.error('MSG# put failed (lead)', e.message);
+          }
+        }
+        if (isNewMsg) {
+          await updateLeadLastMessage(lead.PK, text, 'inbound', timestamp);
+          if (mediaId) writeMediaIndex(webhookCompanyId, lead.PK.split('#')[2], { leadPK: lead.PK, mediaId, mimeType, filename: filename ?? null, direction: 'inbound', timestamp });
+          if (lead.chatStatus === 'resolved') {
+            await dynamodb.update({
+              TableName: TABLE,
+              Key: { PK: lead.PK, SK: 'METADATA' },
+              UpdateExpression: 'SET chatStatus = :s',
+              ExpressionAttributeValues: { ':s': 'open' },
+            }).promise().catch(() => {});
+          }
         }
       } else {
         const companyId = webhookCompanyId; // already resolved above
@@ -608,29 +622,39 @@ router.post('/webhook', async (req, res) => {
         const existingContact = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'CONTACT' } }).promise();
         const isFirstContact = !existingContact.Item;
 
-        await dynamodb.put({
-          TableName: TABLE,
-          Item: { PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
-          ConditionExpression: 'attribute_not_exists(SK)',
-        }).promise().catch(() => {});
-        if (mediaId) writeMediaIndex(companyId, phone10, { leadPK: PK, mediaId, mimeType, filename: filename ?? null, direction: 'inbound', timestamp });
+        let isNewMsg = false;
+        try {
+          await dynamodb.put({
+            TableName: TABLE,
+            Item: { PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
+            ConditionExpression: 'attribute_not_exists(SK)',
+          }).promise();
+          isNewMsg = true;
+        } catch (e) {
+          if (e.code !== 'ConditionalCheckFailedException') {
+            logger.error('MSG# put failed (inbox)', e.message);
+          }
+        }
+        if (isNewMsg) {
+          if (mediaId) writeMediaIndex(companyId, phone10, { leadPK: PK, mediaId, mimeType, filename: filename ?? null, direction: 'inbound', timestamp });
 
-        await dynamodb.update({
-          TableName: TABLE,
-          Key: { PK, SK: 'CONTACT' },
-          UpdateExpression: 'SET phone = if_not_exists(phone, :ph), companyId = if_not_exists(companyId, :cid), createdAt = if_not_exists(createdAt, :ts), lastMessageAt = :lma, lastMessagePreview = :prev, lastMessageDirection = :dir, unreadCount = if_not_exists(unreadCount, :zero) + :one',
-          ExpressionAttributeValues: { ':ph': phone10, ':cid': companyId, ':ts': timestamp, ':lma': timestamp, ':prev': text.slice(0, 100), ':dir': 'inbound', ':zero': 0, ':one': 1 },
-        }).promise();
-        // Bump company-level activity tracker for unknown contacts too
-        dynamodb.update({
-          TableName: TABLE,
-          Key: { PK: `ACTIVITY#${companyId}`, SK: 'WA' },
-          UpdateExpression: 'SET lastActivityAt = :ts',
-          ExpressionAttributeValues: { ':ts': timestamp },
-        }).promise().catch(() => {});
+          await dynamodb.update({
+            TableName: TABLE,
+            Key: { PK, SK: 'CONTACT' },
+            UpdateExpression: 'SET phone = if_not_exists(phone, :ph), companyId = if_not_exists(companyId, :cid), createdAt = if_not_exists(createdAt, :ts), lastMessageAt = :lma, lastMessagePreview = :prev, lastMessageDirection = :dir, unreadCount = if_not_exists(unreadCount, :zero) + :one',
+            ExpressionAttributeValues: { ':ph': phone10, ':cid': companyId, ':ts': timestamp, ':lma': timestamp, ':prev': text.slice(0, 100), ':dir': 'inbound', ':zero': 0, ':one': 1 },
+          }).promise();
+          // Bump company-level activity tracker for unknown contacts too
+          dynamodb.update({
+            TableName: TABLE,
+            Key: { PK: `ACTIVITY#${companyId}`, SK: 'WA' },
+            UpdateExpression: 'SET lastActivityAt = :ts',
+            ExpressionAttributeValues: { ':ts': timestamp },
+          }).promise().catch(() => {});
+        }
 
-        // Send welcome message on first contact
-        if (isFirstContact) {
+        // Send welcome message on first contact (only for genuinely new messages)
+        if (isNewMsg && isFirstContact) {
           try {
             const wc = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#WELCOME#${companyId}`, SK: 'CURRENT' } }).promise();
             if (wc.Item?.enabled && wc.Item?.templateName) {
