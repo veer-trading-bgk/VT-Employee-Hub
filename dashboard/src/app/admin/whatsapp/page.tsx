@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, getMemoryToken } from '@/lib/api';
 import { TemplatePicker } from '@/components/whatsapp/TemplatePicker';
 import { WhatsAppSubNav } from '@/components/layout/WhatsAppSubNav';
 
@@ -163,6 +163,97 @@ function MsgTick({ status }: { status?: Message['msgStatus'] }) {
   return null;
 }
 
+// ── Authenticated media loader ─────────────────────────────────────────────────
+// Browser <img>/<video> tags cannot send Authorization headers, so we fetch the
+// media bytes with the Bearer token and create a temporary blob URL instead.
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+
+function useMediaBlobUrl(mediaId: string | null) {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    if (!mediaId) return;
+    let objectUrl: string | null = null;
+    let cancelled = false;
+
+    const token = getMemoryToken();
+    fetch(`${API_BASE}/api/whatsapp/media/${mediaId}`, {
+      credentials: 'include',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setBlobUrl(objectUrl);
+      })
+      .catch(() => { if (!cancelled) setError(true); });
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [mediaId]);
+
+  return { blobUrl, error };
+}
+
+function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; outbound: boolean }) {
+  // For outbound send-media messages the public URL is stored directly; use it.
+  const staticUrl = item.mediaUrl ?? null;
+  const needsFetch = !staticUrl && !!item.mediaId;
+  const { blobUrl, error } = useMediaBlobUrl(needsFetch ? (item.mediaId ?? null) : null);
+  const src = staticUrl ?? blobUrl;
+
+  if (!src && !error) {
+    // Still loading
+    return (
+      <div className="mb-1.5 flex h-24 w-40 items-center justify-center rounded-xl bg-slate-200 dark:bg-slate-700">
+        <span className="text-xs text-slate-400">Loading…</span>
+      </div>
+    );
+  }
+  if (error || (!src && !item.mediaId)) {
+    return (
+      <div className="mb-1.5 flex h-12 items-center gap-1.5 rounded-xl bg-slate-100 px-3 dark:bg-slate-700">
+        <span className="text-lg">🖼</span>
+        <span className="text-xs text-slate-400">Media unavailable</span>
+      </div>
+    );
+  }
+
+  if (item.type === 'image' || item.type === 'sticker') {
+    return (
+      <a href={src!} target="_blank" rel="noreferrer">
+        <img
+          src={src!}
+          alt={item.type === 'sticker' ? 'sticker' : 'photo'}
+          className={`mb-1.5 rounded-xl object-cover ${item.type === 'sticker' ? 'h-20 w-20' : 'max-h-48 w-full'}`}
+        />
+      </a>
+    );
+  }
+  if (item.type === 'video') {
+    return <video controls src={src!} className="mb-1.5 max-h-48 w-full rounded-xl" />;
+  }
+  if (item.type === 'audio') {
+    return <audio controls src={src!} className="mb-1.5 w-full max-w-[220px]" />;
+  }
+  if (item.type === 'document') {
+    return (
+      <a href={src!} target="_blank" rel="noreferrer" download={item.filename ?? true}
+        className={`mb-1.5 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium ${outbound ? 'border-indigo-400/40 bg-indigo-500/30 text-indigo-100' : 'border-slate-200 bg-slate-50 text-indigo-600 dark:border-slate-700 dark:bg-slate-700 dark:text-indigo-400'}`}>
+        📄 {item.filename ?? 'Document'}
+      </a>
+    );
+  }
+  return null;
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function WhatsAppInboxPage() {
   const qc = useQueryClient();
@@ -190,13 +281,19 @@ export default function WhatsAppInboxPage() {
   const [mediaUrl, setMediaUrl] = useState('');
   const [mediaCaption, setMediaCaption] = useState('');
 
+  // Tracks the most recent message timestamp we've seen — used by the ping poll
+  // to detect new activity without a full inbox scan on every tick.
+  const lastActivityRef = useRef<string>(new Date(Date.now() - 60_000).toISOString());
+
   // ── Queries ──────────────────────────────────────────────────────────────
   const { data: inboxData, isLoading: inboxLoading } = useQuery({
     queryKey: ['wa-inbox', activeTab],
     queryFn: () => apiFetch<{ success: boolean; conversations: Conversation[]; counts: Record<string, number> }>(
       `/api/whatsapp/inbox?status=${activeTab === 'all' ? 'all' : activeTab}`
     ),
-    refetchInterval: 12_000,
+    refetchInterval: 30_000,           // fallback safety net; main updates via ping below
+    refetchIntervalInBackground: true, // don't let browser throttle this in background tabs
+    refetchOnWindowFocus: true,
   });
 
   const { data: pipelineData } = useQuery({
@@ -220,6 +317,7 @@ export default function WhatsAppInboxPage() {
         : apiFetch<{ messages: Message[] }>(`/api/whatsapp/inbox/unknown/${selected!.phone}/messages`),
     enabled: !!selected,
     refetchInterval: 3_000,
+    refetchIntervalInBackground: true, // keep messages live even in background tabs
     staleTime: 0,
   });
 
@@ -264,6 +362,56 @@ export default function WhatsAppInboxPage() {
       setActiveTab('all');
     }
   }, [deepLinkLeadId, conversations, selected, activeTab]);
+
+  // Keep lastActivityRef in sync with the most recent message we've seen from the server.
+  // This is the "high watermark" that the ping uses to detect new messages.
+  useEffect(() => {
+    if (conversations.length === 0) return;
+    const latest = conversations[0]?.lastMessageAt;
+    if (latest && latest > lastActivityRef.current) {
+      lastActivityRef.current = latest;
+    }
+  }, [conversations]);
+
+  // Smart ping: polls /inbox/ping every 2s (a single DDB GET instead of a full scan).
+  // Only triggers a full inbox refetch when the server confirms something changed.
+  // Uses setTimeout chain so the next ping always waits for the previous one to finish —
+  // preventing concurrent requests from piling up on a slow connection.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    let cancelled = false;
+
+    async function ping() {
+      if (cancelled) return;
+      try {
+        const data = await apiFetch<{ hasNew: boolean; latestAt: string | null }>(
+          `/api/whatsapp/inbox/ping?since=${encodeURIComponent(lastActivityRef.current)}`
+        );
+        if (data.hasNew) {
+          if (data.latestAt) lastActivityRef.current = data.latestAt;
+          qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+        }
+      } catch {
+        // ignore transient network errors — next ping will retry
+      }
+      if (!cancelled) timer = setTimeout(ping, 2_000);
+    }
+
+    timer = setTimeout(ping, 2_000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [qc]);
+
+  // Immediately refresh both inbox and open conversation when the tab regains focus.
+  // Handles the case where the OS or browser suspended background tabs entirely.
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState !== 'visible') return;
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+      if (convKey) qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [qc, convKey]);
 
   const filtered = conversations.filter(
     (c) => !search || c.name?.toLowerCase().includes(search.toLowerCase()) || c.phone.includes(search)
@@ -628,7 +776,8 @@ export default function WhatsAppInboxPage() {
                     </div>
                   );
                 }
-                const mediaUrl_ = item.mediaUrl ?? (item.mediaId ? `/api/whatsapp/media/${item.mediaId}` : null);
+                const MEDIA_TYPES = ['image', 'video', 'audio', 'document', 'sticker'];
+                const isMedia = MEDIA_TYPES.includes(item.type ?? '');
                 return (
                   <div key={item.SK} className={`flex ${item.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}>
                     <div className={`max-w-xs rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
@@ -636,30 +785,13 @@ export default function WhatsAppInboxPage() {
                         ? 'rounded-br-sm bg-indigo-600 text-white'
                         : 'rounded-bl-sm bg-white text-slate-900 shadow-none ring-1 ring-slate-100 dark:bg-slate-800 dark:text-white dark:ring-slate-700'
                     }`}>
-                      {item.type === 'image' && mediaUrl_ && (
-                        <a href={mediaUrl_} target="_blank" rel="noreferrer">
-                          <img src={mediaUrl_} alt="photo" className="mb-1.5 max-h-48 w-full rounded-xl object-cover" />
-                        </a>
-                      )}
-                      {item.type === 'document' && mediaUrl_ && (
-                        <a href={mediaUrl_} target="_blank" rel="noreferrer"
-                          className={`mb-1.5 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium ${item.direction === 'outbound' ? 'border-indigo-400/40 bg-indigo-500/30 text-indigo-100' : 'border-slate-200 bg-slate-50 text-indigo-600 dark:border-slate-700 dark:bg-slate-700 dark:text-indigo-400'}`}>
-                          📄 {item.filename ?? 'Document'}
-                        </a>
-                      )}
-                      {item.type === 'audio' && mediaUrl_ && (
-                        <audio controls src={mediaUrl_} className="mb-1.5 w-full max-w-[220px]" />
-                      )}
-                      {item.type === 'video' && mediaUrl_ && (
-                        <video controls src={mediaUrl_} className="mb-1.5 max-h-48 w-full rounded-xl" />
-                      )}
-                      {item.type === 'sticker' && mediaUrl_ && (
-                        <img src={mediaUrl_} alt="sticker" className="mb-1.5 h-20 w-20 object-contain" />
+                      {isMedia && (item.mediaId || item.mediaUrl) && (
+                        <MediaBubble item={item} outbound={item.direction === 'outbound'} />
                       )}
                       {(item.content && item.content !== `[${item.type}]`) && (
                         <p className="whitespace-pre-wrap break-words">{item.content}</p>
                       )}
-                      {item.content === `[${item.type}]` && !mediaUrl_ && (
+                      {item.content === `[${item.type}]` && isMedia && !item.mediaId && !item.mediaUrl && (
                         <p className="italic text-xs opacity-60">{item.content}</p>
                       )}
                       <p className={`mt-1 flex items-center gap-0.5 text-[10px] ${item.direction === 'outbound' ? 'text-indigo-200' : 'text-slate-400'}`}>
