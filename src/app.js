@@ -51,7 +51,7 @@ const corsMiddleware = cors({
 // Security middleware
 app.use(helmet());
 app.use(corsMiddleware);
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 
 // Routes

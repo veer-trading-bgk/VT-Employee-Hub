@@ -303,6 +303,7 @@ export default function WhatsAppInboxPage() {
   const qc = useQueryClient();
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   const searchParams = useSearchParams();
   const deepLinkLeadId = searchParams.get('leadId');
@@ -322,8 +323,10 @@ export default function WhatsAppInboxPage() {
   const [showAddLeadModal, setShowAddLeadModal] = useState(false);
   const [addLeadForm, setAddLeadForm] = useState({ name: '', stage: '', assignedTo: '' });
   const [showMediaInput, setShowMediaInput] = useState(false);
-  const [mediaUrl, setMediaUrl] = useState('');
-  const [mediaCaption, setMediaCaption] = useState('');
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadPreview, setUploadPreview] = useState<string | null>(null);
+  const [uploadCaption, setUploadCaption] = useState('');
+  const [uploadError, setUploadError] = useState('');
 
   // Tracks the most recent message timestamp we've seen — used by the ping poll
   // to detect new activity without a full inbox scan on every tick.
@@ -539,20 +542,50 @@ export default function WhatsAppInboxPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convKey, rawMessages.length]);
 
-  const mediaMutation = useMutation({
-    mutationFn: () => {
-      const ext = mediaUrl.split('.').pop()?.toLowerCase() ?? '';
-      const mediaType = ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext) ? 'image'
-        : ['mp4', 'mov', '3gp'].includes(ext) ? 'video'
-        : ['mp3', 'ogg', 'aac', 'm4a'].includes(ext) ? 'audio'
-        : 'document';
-      return apiFetch('/api/whatsapp/send-media', {
+  const uploadMutation = useMutation({
+    mutationFn: async () => {
+      if (!uploadFile || !selected?.PK) throw new Error('No file or conversation selected');
+      const base64Data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve((reader.result as string).split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(uploadFile);
+      });
+      return apiFetch('/api/whatsapp/upload-send', {
         method: 'POST',
-        body: JSON.stringify({ leadPK: selected!.PK, mediaType, mediaUrl, caption: mediaCaption || undefined }),
+        body: JSON.stringify({
+          leadPK: selected!.PK,
+          base64Data,
+          mimeType: uploadFile.type,
+          filename: uploadFile.name,
+          caption: uploadCaption || undefined,
+        }),
       });
     },
-    onSuccess: () => { setMediaUrl(''); setMediaCaption(''); setShowMediaInput(false); invalidate(); },
+    onSuccess: () => {
+      setUploadFile(null);
+      setUploadPreview(null);
+      setUploadCaption('');
+      setUploadError('');
+      setShowMediaInput(false);
+      if (fileRef.current) fileRef.current.value = '';
+      invalidate();
+    },
+    onError: (err: any) => { setUploadError(err?.message ?? 'Upload failed'); },
   });
+
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadError('');
+    if (file.size > 7 * 1024 * 1024) {
+      setUploadError('File too large — max 7 MB for direct upload');
+      if (fileRef.current) fileRef.current.value = '';
+      return;
+    }
+    setUploadFile(file);
+    setUploadPreview(file.type.startsWith('image/') ? URL.createObjectURL(file) : null);
+  }
 
   const sendMutation = useMutation({
     mutationFn: () =>
@@ -661,6 +694,9 @@ export default function WhatsAppInboxPage() {
                   setSelected({ ...conv, unreadCount: 0 });
                   setMsgText('');
                   setInputMode('reply');
+                  setShowMediaInput(false);
+                  setUploadFile(null);
+                  setUploadPreview(null);
                   // Reset unread count in backend immediately
                   if (conv.type === 'lead' && conv.leadId) {
                     apiFetch(`/api/whatsapp/inbox/${conv.leadId}/mark-read`, { method: 'POST', body: JSON.stringify({ lastWaMessageId: '' }) }).catch(() => {});
@@ -888,22 +924,52 @@ export default function WhatsAppInboxPage() {
                   />
                 )}
 
-                {/* Media URL input panel */}
+                {/* File upload panel */}
                 {showMediaInput && inputMode === 'reply' && selected?.type === 'lead' && (
                   <div className="mb-2 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800">
-                    <p className="mb-2 text-xs font-semibold text-slate-500">Send Media (paste public URL)</p>
-                    <input value={mediaUrl} onChange={(e) => setMediaUrl(e.target.value)}
-                      placeholder="https://example.com/image.jpg or file.pdf"
-                      className="mb-1.5 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white" />
-                    <input value={mediaCaption} onChange={(e) => setMediaCaption(e.target.value)}
-                      placeholder="Caption (optional)"
-                      className="mb-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white" />
-                    <div className="flex gap-2">
-                      <button onClick={() => setShowMediaInput(false)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-500 dark:border-slate-700">Cancel</button>
-                      <button onClick={() => mediaMutation.mutate()} disabled={!mediaUrl.trim() || mediaMutation.isPending}
-                        className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40">
-                        {mediaMutation.isPending ? 'Sending…' : 'Send'}
-                      </button>
+                    <input ref={fileRef} type="file"
+                      accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xlsx,.xls,.csv,.txt"
+                      onChange={handleFileSelect} className="hidden" />
+                    {!uploadFile ? (
+                      <>
+                        <button onClick={() => fileRef.current?.click()}
+                          className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 py-5 text-sm text-slate-400 hover:border-indigo-400 hover:text-indigo-500 dark:border-slate-600 dark:hover:border-indigo-500">
+                          📎 Click to choose a file
+                        </button>
+                        <p className="mt-1.5 text-center text-[10px] text-slate-400">Images, video, audio, PDF, doc — max 7 MB</p>
+                      </>
+                    ) : (
+                      <div className="space-y-2">
+                        {uploadPreview && (
+                          <img src={uploadPreview} alt="preview"
+                            className="max-h-32 w-full rounded-lg object-contain bg-slate-100 dark:bg-slate-900" />
+                        )}
+                        <div className="flex items-center gap-2 rounded-lg bg-white px-3 py-2 dark:bg-slate-900">
+                          <span className="text-base">
+                            {uploadFile.type.startsWith('image/') ? '🖼' : uploadFile.type.startsWith('video/') ? '🎬' : uploadFile.type.startsWith('audio/') ? '🎵' : '📄'}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-xs font-medium text-slate-700 dark:text-white">{uploadFile.name}</p>
+                            <p className="text-[10px] text-slate-400">{(uploadFile.size / 1024).toFixed(0)} KB</p>
+                          </div>
+                          <button onClick={() => { setUploadFile(null); setUploadPreview(null); setUploadError(''); if (fileRef.current) fileRef.current.value = ''; }}
+                            className="text-slate-400 hover:text-red-500 text-lg leading-none">✕</button>
+                        </div>
+                        <input value={uploadCaption} onChange={(e) => setUploadCaption(e.target.value)}
+                          placeholder="Caption (optional)"
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-900 dark:text-white" />
+                      </div>
+                    )}
+                    {uploadError && <p className="mt-1.5 text-xs text-red-500">{uploadError}</p>}
+                    <div className="mt-2 flex gap-2">
+                      <button onClick={() => { setShowMediaInput(false); setUploadFile(null); setUploadPreview(null); setUploadError(''); }}
+                        className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs text-slate-500 dark:border-slate-700">Cancel</button>
+                      {uploadFile && (
+                        <button onClick={() => uploadMutation.mutate()} disabled={uploadMutation.isPending}
+                          className="flex-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40">
+                          {uploadMutation.isPending ? 'Uploading & Sending…' : 'Send'}
+                        </button>
+                      )}
                     </div>
                   </div>
                 )}

@@ -1275,6 +1275,90 @@ router.post('/send-media', authMiddleware, async (req, res, next) => {
   }
 });
 
+// ── POST /api/whatsapp/upload-send — upload file bytes then send via media_id ──
+// No public hosting required: file is uploaded to Meta's media storage,
+// Meta returns a media_id, and we send that id in the message.
+router.post('/upload-send', authMiddleware, async (req, res, next) => {
+  try {
+    const { leadPK: pk, base64Data, mimeType, filename, caption } = req.body;
+    if (!pk || !base64Data || !mimeType) {
+      return res.status(400).json({ error: 'leadPK, base64Data, and mimeType are required' });
+    }
+
+    const result = await dynamodb.get({ TableName: TABLE, Key: { PK: pk, SK: 'METADATA' } }).promise();
+    const lead = result.Item;
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    if (lead.companyId !== req.user.companyId) return res.status(403).json({ error: 'Forbidden' });
+
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg?.accessToken || !cfg?.phoneNumberId) return res.status(400).json({ error: 'WhatsApp not configured' });
+
+    const mediaType = mimeType.startsWith('image/') ? 'image'
+      : mimeType.startsWith('video/') ? 'video'
+      : mimeType.startsWith('audio/') ? 'audio'
+      : 'document';
+
+    // Upload file bytes to Meta's media storage (uses Node 18+ native fetch + FormData)
+    const buffer = Buffer.from(base64Data, 'base64');
+    const safeFilename = filename ?? `upload.${mimeType.split('/')[1] ?? 'bin'}`;
+    const formData = new FormData();
+    formData.append('messaging_product', 'whatsapp');
+    formData.append('type', mimeType);
+    formData.append('file', new Blob([buffer], { type: mimeType }), safeFilename);
+
+    const uploadRes = await fetch(`${GRAPH}/${cfg.phoneNumberId}/media`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.accessToken}` },
+      body: formData,
+    });
+    if (!uploadRes.ok) {
+      const errBody = await uploadRes.json().catch(() => ({}));
+      logger.error('Meta media upload failed', errBody);
+      return res.status(400).json({ error: 'Media upload to Meta failed', details: errBody });
+    }
+    const { id: mediaId } = await uploadRes.json();
+    if (!mediaId) return res.status(500).json({ error: 'Meta did not return a media_id' });
+
+    // Send message using the media_id
+    const phone = toE164(lead.phone);
+    const mediaPayload = { id: mediaId };
+    if (caption) mediaPayload.caption = caption;
+    if (mediaType === 'document') mediaPayload.filename = safeFilename;
+
+    const sendRes = await axios.post(`${GRAPH}/${cfg.phoneNumberId}/messages`, {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: phone,
+      type: mediaType,
+      [mediaType]: mediaPayload,
+    }, { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } });
+
+    const waMessageId = sendRes.data?.messages?.[0]?.id ?? null;
+    const timestamp = new Date().toISOString();
+    const msgSK = `MSG#${timestamp}#${waMessageId ?? Date.now()}`;
+
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: pk, SK: msgSK,
+        messageId: waMessageId, waMessageId,
+        direction: 'outbound', type: mediaType,
+        content: caption ?? `[${mediaType}]`,
+        mediaId, filename: safeFilename,
+        sentBy: req.user.id, sentByName: req.user.name,
+        timestamp, msgStatus: 'sent',
+      },
+    }).promise();
+
+    await storeWamidLookup(waMessageId, pk, msgSK, req.user.companyId);
+    await updateLeadLastMessage(pk, caption ?? `[${mediaType}]`, 'outbound', timestamp);
+    res.json({ success: true, messageId: waMessageId, timestamp });
+  } catch (err) {
+    logger.error('upload-send error', err?.response?.data ?? err.message);
+    next(err);
+  }
+});
+
 // HTML page returned to popup after OAuth completes
 function popupHtml(success, message) {
   const color = success ? '#10b981' : '#ef4444';
