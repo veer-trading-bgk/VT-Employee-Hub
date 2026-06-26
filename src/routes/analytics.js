@@ -3,6 +3,7 @@ const { authMiddleware, checkRole } = require('../middleware/auth');
 const { logAudit } = require('../utils/audit');
 const { METRIC_CONFIG, METRIC_KEYS, calcPoints, emptyTotals, toDailyTargets, TARGET_DEFAULTS } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
+const { queryAll } = require('../utils/db');
 const logger = require('../config/logger');
 
 const TEAM_EXCLUDED_ROLES = new Set(['admin', 'manager', 'team_lead']);
@@ -18,43 +19,61 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
     const { companyId } = req.user;
     const targetsPK = companyId ? `CONFIG#TARGETS#${companyId}` : 'CONFIG#TARGETS';
 
-    // Build metric scan — add companyId filter for multi-tenancy
-    const metricsScanBase = {
-      TableName: process.env.DYNAMODB_TABLE_METRICS,
-      ExpressionAttributeNames: { '#date': 'date' },
-      ExpressionAttributeValues: { ':startDate': startDate },
-      Limit: 5000,
-    };
-    if (companyId) {
-      metricsScanBase.FilterExpression = '#date >= :startDate AND attribute_exists(metric_type) AND companyId = :__cid';
-      metricsScanBase.ExpressionAttributeValues[':__cid'] = companyId;
-    } else {
-      metricsScanBase.FilterExpression = '#date >= :startDate AND attribute_exists(metric_type)';
-    }
+    const METRICS_TABLE = process.env.DYNAMODB_TABLE_METRICS;
+    const EMP_TABLE = process.env.DYNAMODB_TABLE_EMPLOYEES;
 
-    const empScanBase = companyId
-      ? { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status', '#type': 'type' }, FilterExpression: 'companyId = :__cid AND attribute_not_exists(#type)', ExpressionAttributeValues: { ':__cid': companyId } }
-      : { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status' } };
+    const metricsPromise = companyId
+      ? queryAll({
+          TableName: METRICS_TABLE,
+          IndexName: 'companyIdIndex',
+          KeyConditionExpression: 'companyId = :__cid',
+          FilterExpression: '#date >= :startDate AND attribute_exists(metric_type)',
+          ExpressionAttributeNames: { '#date': 'date' },
+          ExpressionAttributeValues: { ':__cid': companyId, ':startDate': startDate },
+        })
+      : dynamodb.scan({
+          TableName: METRICS_TABLE,
+          FilterExpression: '#date >= :startDate AND attribute_exists(metric_type)',
+          ExpressionAttributeNames: { '#date': 'date' },
+          ExpressionAttributeValues: { ':startDate': startDate },
+          Limit: 5000,
+        }).promise().then((r) => r.Items ?? []);
+
+    const empPromise = companyId
+      ? queryAll({
+          TableName: EMP_TABLE,
+          IndexName: 'companyIdIndex',
+          KeyConditionExpression: 'companyId = :__cid',
+          FilterExpression: 'attribute_not_exists(#type)',
+          ProjectionExpression: 'id, #r, #s',
+          ExpressionAttributeNames: { '#r': 'role', '#s': 'status', '#type': 'type' },
+          ExpressionAttributeValues: { ':__cid': companyId },
+        })
+      : dynamodb.scan({
+          TableName: EMP_TABLE,
+          ProjectionExpression: 'id, #r, #s',
+          ExpressionAttributeNames: { '#r': 'role', '#s': 'status' },
+        }).promise().then((r) => r.Items ?? []);
 
     // Fetch targets, metrics, and employees in parallel
-    const [targetCfgRow, metricsResult, empResult] = await Promise.all([
-      dynamodb.get({ TableName: process.env.DYNAMODB_TABLE_METRICS, Key: { PK: targetsPK, SK: 'current' } }).promise(),
-      dynamodb.scan(metricsScanBase).promise(),
-      dynamodb.scan(empScanBase).promise(),
+    const [targetCfgRow, metricsItems, empItems] = await Promise.all([
+      dynamodb.get({ TableName: METRICS_TABLE, Key: { PK: targetsPK, SK: 'current' } }).promise(),
+      metricsPromise,
+      empPromise,
     ]);
 
     const liveTargets = toDailyTargets(targetCfgRow.Item?.targets ?? TARGET_DEFAULTS);
 
     // Active performers only (agent/telecaller/intern) — same filter as leaderboard
     const allowedIds = new Set(
-      (empResult.Items ?? [])
+      empItems
         .filter(e => !TEAM_EXCLUDED_ROLES.has(e.role) && e.status !== 'inactive')
         .map(e => e.id)
     );
     const activePerformerCount = Math.max(allowedIds.size, 1);
 
     // Exclude rejected metrics and non-performer entries from all calculations
-    const items = (metricsResult.Items ?? [])
+    const items = metricsItems
       .filter(item => item.verificationStatus !== 'rejected')
       .filter(item => allowedIds.has(item.userId ?? item.PK));
 

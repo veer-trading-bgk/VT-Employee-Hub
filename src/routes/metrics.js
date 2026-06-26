@@ -4,6 +4,7 @@ const { logAudit } = require('../utils/audit');
 const { authMiddleware, adminMiddleware, checkRole } = require('../middleware/auth');
 const { METRIC_CONFIG, TARGET_DEFAULTS, METRIC_KEYS, toDailyTargets, toMonthlyTargets, calcPoints } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
+const { queryAll } = require('../utils/db');
 const bot = require('../config/telegram');
 const logger = require('../config/logger');
 
@@ -358,25 +359,50 @@ router.get('/team-summary', checkRole(['admin', 'manager']), async (req, res, ne
     const today = new Date().toISOString().split('T')[0];
 
     const { companyId } = req.user;
-    const metricsScanParams = addCompanyFilter({
-      TableName: process.env.DYNAMODB_TABLE_METRICS,
-      FilterExpression: '#date = :today AND attribute_exists(metric_type)',
-      ExpressionAttributeNames: { '#date': 'date' },
-      ExpressionAttributeValues: { ':today': today },
-    }, companyId, '#date = :today AND attribute_exists(metric_type)');
-    const empScanParams = companyId
-      ? { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status', '#type': 'type' }, FilterExpression: 'companyId = :__cid AND attribute_not_exists(#type)', ExpressionAttributeValues: { ':__cid': companyId } }
-      : { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status' } };
+    const METRICS_TABLE = process.env.DYNAMODB_TABLE_METRICS;
+    const EMP_TABLE = process.env.DYNAMODB_TABLE_EMPLOYEES;
 
-    const [result, targetCfg, empResult] = await Promise.all([
-      dynamodb.scan(metricsScanParams).promise(),
+    const metricsPromise = companyId
+      ? queryAll({
+          TableName: METRICS_TABLE,
+          IndexName: 'companyIdIndex',
+          KeyConditionExpression: 'companyId = :__cid',
+          FilterExpression: '#date = :today AND attribute_exists(metric_type)',
+          ExpressionAttributeNames: { '#date': 'date' },
+          ExpressionAttributeValues: { ':__cid': companyId, ':today': today },
+        })
+      : dynamodb.scan({
+          TableName: METRICS_TABLE,
+          FilterExpression: '#date = :today AND attribute_exists(metric_type)',
+          ExpressionAttributeNames: { '#date': 'date' },
+          ExpressionAttributeValues: { ':today': today },
+        }).promise().then((r) => r.Items ?? []);
+
+    const empPromise = companyId
+      ? queryAll({
+          TableName: EMP_TABLE,
+          IndexName: 'companyIdIndex',
+          KeyConditionExpression: 'companyId = :__cid',
+          FilterExpression: 'attribute_not_exists(#type)',
+          ProjectionExpression: 'id, #r, #s',
+          ExpressionAttributeNames: { '#r': 'role', '#s': 'status', '#type': 'type' },
+          ExpressionAttributeValues: { ':__cid': companyId },
+        })
+      : dynamodb.scan({
+          TableName: EMP_TABLE,
+          ProjectionExpression: 'id, #r, #s',
+          ExpressionAttributeNames: { '#r': 'role', '#s': 'status' },
+        }).promise().then((r) => r.Items ?? []);
+
+    const [metricsItems, targetCfg, empItems] = await Promise.all([
+      metricsPromise,
       fetchTargetConfig(companyId),
-      dynamodb.scan(empScanParams).promise(),
+      empPromise,
     ]);
 
     // Active performers only: agent / telecaller / intern
     const allowedIds = new Set(
-      (empResult.Items ?? [])
+      empItems
         .filter(e => !TEAM_EXCLUDED_ROLES.has(e.role) && e.status !== 'inactive')
         .map(e => e.id)
     );
@@ -384,7 +410,7 @@ router.get('/team-summary', checkRole(['admin', 'manager']), async (req, res, ne
     const targets = toDailyTargets(targetCfg);
     const summary = {};
 
-    (result.Items ?? []).forEach(item => {
+    metricsItems.forEach(item => {
       if (!item.userId || !item.metric_type) return;
       if (!allowedIds.has(item.userId)) return;
       const status = item.verificationStatus || (item.verified === true ? 'approved' : 'pending');
@@ -752,25 +778,50 @@ router.get('/leaderboard', async (req, res, next) => {
     const today = now.toISOString().split('T')[0];
 
     const { companyId } = req.user;
-    const lbMetricsParams = addCompanyFilter({
-      TableName: process.env.DYNAMODB_TABLE_METRICS,
-      FilterExpression: '#date BETWEEN :start AND :end AND attribute_exists(metric_type)',
-      ExpressionAttributeNames: { '#date': 'date' },
-      ExpressionAttributeValues: { ':start': monthStart, ':end': today },
-    }, companyId, '#date BETWEEN :start AND :end AND attribute_exists(metric_type)');
-    const lbEmpParams = companyId
-      ? { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status', '#type': 'type' }, FilterExpression: 'companyId = :__cid AND attribute_not_exists(#type)', ExpressionAttributeValues: { ':__cid': companyId } }
-      : { TableName: process.env.DYNAMODB_TABLE_EMPLOYEES, ProjectionExpression: 'id, #r, #s', ExpressionAttributeNames: { '#r': 'role', '#s': 'status' } };
+    const METRICS_TABLE = process.env.DYNAMODB_TABLE_METRICS;
+    const EMP_TABLE = process.env.DYNAMODB_TABLE_EMPLOYEES;
 
-    const [result, targetCfg, empResult] = await Promise.all([
-      dynamodb.scan(lbMetricsParams).promise(),
+    const lbMetricsPromise = companyId
+      ? queryAll({
+          TableName: METRICS_TABLE,
+          IndexName: 'companyIdIndex',
+          KeyConditionExpression: 'companyId = :__cid',
+          FilterExpression: '#date BETWEEN :start AND :end AND attribute_exists(metric_type)',
+          ExpressionAttributeNames: { '#date': 'date' },
+          ExpressionAttributeValues: { ':__cid': companyId, ':start': monthStart, ':end': today },
+        })
+      : dynamodb.scan({
+          TableName: METRICS_TABLE,
+          FilterExpression: '#date BETWEEN :start AND :end AND attribute_exists(metric_type)',
+          ExpressionAttributeNames: { '#date': 'date' },
+          ExpressionAttributeValues: { ':start': monthStart, ':end': today },
+        }).promise().then((r) => r.Items ?? []);
+
+    const lbEmpPromise = companyId
+      ? queryAll({
+          TableName: EMP_TABLE,
+          IndexName: 'companyIdIndex',
+          KeyConditionExpression: 'companyId = :__cid',
+          FilterExpression: 'attribute_not_exists(#type)',
+          ProjectionExpression: 'id, #r, #s',
+          ExpressionAttributeNames: { '#r': 'role', '#s': 'status', '#type': 'type' },
+          ExpressionAttributeValues: { ':__cid': companyId },
+        })
+      : dynamodb.scan({
+          TableName: EMP_TABLE,
+          ProjectionExpression: 'id, #r, #s',
+          ExpressionAttributeNames: { '#r': 'role', '#s': 'status' },
+        }).promise().then((r) => r.Items ?? []);
+
+    const [lbMetricsItems, targetCfg, lbEmpItems] = await Promise.all([
+      lbMetricsPromise,
       fetchTargetConfig(companyId),
-      dynamodb.scan(lbEmpParams).promise(),
+      lbEmpPromise,
     ]);
 
     // Active performers only: agent / telecaller / intern
     const allowedIds = new Set(
-      (empResult.Items ?? [])
+      lbEmpItems
         .filter(e => !TEAM_EXCLUDED_ROLES.has(e.role) && e.status !== 'inactive')
         .map(e => e.id)
     );
@@ -779,7 +830,7 @@ router.get('/leaderboard', async (req, res, next) => {
     const monthlyTargets = toMonthlyTargets(targetCfg);
 
     const byUser = {};
-    (result.Items ?? []).forEach(item => {
+    lbMetricsItems.forEach(item => {
       if (!item.userId || !item.metric_type) return;
       if (!allowedIds.has(item.userId)) return;
       const status = item.verificationStatus || (item.verified === true ? 'approved' : 'pending');
@@ -822,22 +873,28 @@ router.get('/leaderboard', async (req, res, next) => {
 router.get('/performers', checkRole(['admin', 'manager', 'team_lead']), async (req, res, next) => {
   try {
     const { companyId } = req.user;
-    const perfParams = {
-      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
-      ProjectionExpression: 'id, #n, email, #r, teamLeadId',
-      ExpressionAttributeNames: { '#n': 'name', '#s': 'status', '#r': 'role' },
-      FilterExpression: '#s <> :inactive',
-      ExpressionAttributeValues: { ':inactive': 'inactive' },
-    };
-    if (companyId) {
-      perfParams.FilterExpression += ' AND companyId = :__cid AND attribute_not_exists(#type)';
-      perfParams.ExpressionAttributeNames['#type'] = 'type';
-      perfParams.ExpressionAttributeValues[':__cid'] = companyId;
-    }
-    const result = await dynamodb.scan(perfParams).promise();
+    const EMP_TABLE = process.env.DYNAMODB_TABLE_EMPLOYEES;
+
+    const perfItems = companyId
+      ? await queryAll({
+          TableName: EMP_TABLE,
+          IndexName: 'companyIdIndex',
+          KeyConditionExpression: 'companyId = :__cid',
+          FilterExpression: '#s <> :inactive AND attribute_not_exists(#type)',
+          ProjectionExpression: 'id, #n, email, #r, teamLeadId',
+          ExpressionAttributeNames: { '#n': 'name', '#s': 'status', '#r': 'role', '#type': 'type' },
+          ExpressionAttributeValues: { ':__cid': companyId, ':inactive': 'inactive' },
+        })
+      : await dynamodb.scan({
+          TableName: EMP_TABLE,
+          ProjectionExpression: 'id, #n, email, #r, teamLeadId',
+          ExpressionAttributeNames: { '#n': 'name', '#s': 'status', '#r': 'role' },
+          FilterExpression: '#s <> :inactive',
+          ExpressionAttributeValues: { ':inactive': 'inactive' },
+        }).promise().then((r) => r.Items ?? []);
 
     const PERFORMER_ROLES = new Set(['agent', 'telecaller', 'intern']);
-    const performers = (result.Items ?? [])
+    const performers = perfItems
       .filter(e => PERFORMER_ROLES.has(e.role))
       .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 

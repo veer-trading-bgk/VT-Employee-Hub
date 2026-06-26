@@ -7,23 +7,46 @@ const logger = require('../config/logger');
 const router = express.Router();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function buildScan({ table, timeFilter, companyId, extraFilter, extraValues = {}, limit }) {
-  const filterParts = ['PK > :pk'];
-  const attrValues = { ':pk': timeFilter, ...extraValues };
+// Query audit_logs using companyIdIndex GSI when companyId is known.
+// Falls back to a scan for superadmin cross-company queries (companyId = null).
+async function queryAuditLogs({
+  companyId, startTime, skCondition = null,
+  extraFilter = null, extraNames = {}, extraValues = {}, limit,
+}) {
+  const TABLE = process.env.DYNAMODB_TABLE_AUDIT;
+  const timeValue = `audit#${startTime}`;
 
-  if (companyId) {
-    filterParts.push('companyId = :cid');
-    attrValues[':cid'] = companyId;
+  if (!companyId) {
+    const filterParts = ['PK > :pk'];
+    if (extraFilter) filterParts.push(extraFilter);
+    const params = {
+      TableName: TABLE,
+      FilterExpression: filterParts.join(' AND '),
+      ExpressionAttributeValues: { ':pk': timeValue, ...extraValues },
+      ...(Object.keys(extraNames).length && { ExpressionAttributeNames: extraNames }),
+    };
+    if (limit) params.Limit = limit;
+    const r = await dynamodb.scan(params).promise();
+    return r.Items ?? [];
   }
+
+  const keyExpr = skCondition
+    ? `companyId = :cid AND ${skCondition}`
+    : 'companyId = :cid';
+  const filterParts = ['PK > :pk'];
   if (extraFilter) filterParts.push(extraFilter);
 
   const params = {
-    TableName: table,
+    TableName: TABLE,
+    IndexName: 'companyIdIndex',
+    KeyConditionExpression: keyExpr,
     FilterExpression: filterParts.join(' AND '),
-    ExpressionAttributeValues: attrValues,
+    ExpressionAttributeValues: { ':cid': companyId, ':pk': timeValue, ...extraValues },
+    ...(Object.keys(extraNames).length && { ExpressionAttributeNames: extraNames }),
   };
   if (limit) params.Limit = limit;
-  return params;
+  const r = await dynamodb.query(params).promise();
+  return r.Items ?? [];
 }
 
 // ── GET /api/audit/logs ───────────────────────────────────────────────────────
@@ -35,32 +58,21 @@ router.get('/logs', adminMiddleware, async (req, res, next) => {
     const startTime = Date.now() - hours * 60 * 60 * 1000;
     const companyId = req.user.role === 'superadmin' ? (req.query.companyId || null) : req.user.companyId;
 
-    let result;
-    if (userId) {
-      result = await dynamodb.scan(buildScan({
-        table: process.env.DYNAMODB_TABLE_AUDIT,
-        timeFilter: `audit#${startTime}`,
-        companyId,
-        extraFilter: 'SK = :sk',
-        extraValues: { ':sk': `user#${userId}` },
-        limit,
-      })).promise();
-    } else {
-      result = await dynamodb.scan(buildScan({
-        table: process.env.DYNAMODB_TABLE_AUDIT,
-        timeFilter: `audit#${startTime}`,
-        companyId,
-        limit,
-      })).promise();
-    }
+    const items = await queryAuditLogs({
+      companyId,
+      startTime,
+      skCondition: userId ? 'SK = :sk' : null,
+      extraValues: userId ? { ':sk': `user#${userId}` } : {},
+      limit,
+    });
 
     await logAudit(req.user.id, 'view_audit_logs', userId || 'all', 'success', req.ip, {}, req.user.companyId);
     logger.info(`Admin ${req.user.email} viewed audit logs`);
 
     res.json({
       success: true,
-      data: result.Items || [],
-      totalRecords: result.Items?.length || 0,
+      data: items,
+      totalRecords: items.length,
       timeRange: `Last ${hours} hours`,
     });
   } catch (error) {
@@ -75,34 +87,29 @@ router.get('/suspicious', adminMiddleware, async (req, res, next) => {
     const startTime = Date.now() - hours * 60 * 60 * 1000;
     const companyId = req.user.role === 'superadmin' ? (req.query.companyId || null) : req.user.companyId;
 
-    const result2 = await dynamodb.scan({
-      TableName: process.env.DYNAMODB_TABLE_AUDIT,
-      FilterExpression: [
-        'PK > :pk',
-        companyId ? 'companyId = :cid' : null,
-        '(#action IN (:failed, :suspicious, :delete) OR #result = :flagged)',
-      ].filter(Boolean).join(' AND '),
-      ExpressionAttributeNames: { '#action': 'action', '#result': 'result' },
-      ExpressionAttributeValues: {
-        ':pk': `audit#${startTime}`,
-        ...(companyId ? { ':cid': companyId } : {}),
+    const result2 = await queryAuditLogs({
+      companyId,
+      startTime,
+      extraFilter: '(#action IN (:failed, :suspicious, :delete) OR #result = :flagged)',
+      extraNames: { '#action': 'action', '#result': 'result' },
+      extraValues: {
         ':failed': 'failed_login',
         ':suspicious': 'suspicious_metric_entry',
         ':delete': 'delete_employee',
         ':flagged': 'flagged',
       },
-    }).promise();
+    });
 
     const summary = {
-      failedLogins: result2.Items.filter((i) => i.action === 'failed_login').length,
-      suspiciousMetrics: result2.Items.filter((i) => i.action === 'suspicious_metric_entry').length,
-      deletedEmployees: result2.Items.filter((i) => i.action === 'delete_employee').length,
-      totalSuspicious: result2.Items.length,
+      failedLogins: result2.filter((i) => i.action === 'failed_login').length,
+      suspiciousMetrics: result2.filter((i) => i.action === 'suspicious_metric_entry').length,
+      deletedEmployees: result2.filter((i) => i.action === 'delete_employee').length,
+      totalSuspicious: result2.length,
     };
 
     await logAudit(req.user.id, 'view_suspicious_activity', 'suspicious_audit', 'success', req.ip, {}, req.user.companyId);
 
-    res.json({ success: true, summary, details: result2.Items || [], timeRange: `Last ${hours} hours` });
+    res.json({ success: true, summary, details: result2, timeRange: `Last ${hours} hours` });
   } catch (error) {
     next(error);
   }
@@ -115,25 +122,17 @@ router.get('/logins', adminMiddleware, async (req, res, next) => {
     const startTime = Date.now() - days * 24 * 60 * 60 * 1000;
     const companyId = req.user.role === 'superadmin' ? (req.query.companyId || null) : req.user.companyId;
 
-    const result = await dynamodb.scan({
-      TableName: process.env.DYNAMODB_TABLE_AUDIT,
-      FilterExpression: [
-        'PK > :pk',
-        companyId ? 'companyId = :cid' : null,
-        '#action IN (:success, :failed)',
-      ].filter(Boolean).join(' AND '),
-      ExpressionAttributeNames: { '#action': 'action' },
-      ExpressionAttributeValues: {
-        ':pk': `audit#${startTime}`,
-        ...(companyId ? { ':cid': companyId } : {}),
-        ':success': 'successful_login',
-        ':failed': 'failed_login',
-      },
-      Limit: 500,
-    }).promise();
+    const loginItems = await queryAuditLogs({
+      companyId,
+      startTime,
+      extraFilter: '#action IN (:success, :failed)',
+      extraNames: { '#action': 'action' },
+      extraValues: { ':success': 'successful_login', ':failed': 'failed_login' },
+      limit: 500,
+    });
 
     const grouped = {};
-    result.Items.forEach((log) => {
+    loginItems.forEach((log) => {
       if (!grouped[log.userId]) grouped[log.userId] = { successful: 0, failed: 0, ips: new Set() };
       if (log.action === 'successful_login') grouped[log.userId].successful++;
       else grouped[log.userId].failed++;
@@ -143,7 +142,7 @@ router.get('/logins', adminMiddleware, async (req, res, next) => {
 
     await logAudit(req.user.id, 'view_login_history', 'login_audit', 'success', req.ip, {}, req.user.companyId);
 
-    res.json({ success: true, data: grouped, totalLogins: result.Items.length, timeRange: `Last ${days} days` });
+    res.json({ success: true, data: grouped, totalLogins: loginItems.length, timeRange: `Last ${days} days` });
   } catch (error) {
     next(error);
   }
@@ -156,29 +155,21 @@ router.get('/security-report', adminMiddleware, async (req, res, next) => {
     const startTime = Date.now() - hours * 60 * 60 * 1000;
     const companyId = req.user.role === 'superadmin' ? (req.query.companyId || null) : req.user.companyId;
 
-    const result = await dynamodb.scan({
-      TableName: process.env.DYNAMODB_TABLE_AUDIT,
-      FilterExpression: ['PK > :pk', companyId ? 'companyId = :cid' : null].filter(Boolean).join(' AND '),
-      ExpressionAttributeValues: {
-        ':pk': `audit#${startTime}`,
-        ...(companyId ? { ':cid': companyId } : {}),
-      },
-      Limit: 1000,
-    }).promise();
+    const secItems = await queryAuditLogs({ companyId, startTime, limit: 1000 });
 
     const stats = {
-      totalActions: result.Items.length,
-      successfulLogins: result.Items.filter((i) => i.action === 'successful_login').length,
-      failedLogins: result.Items.filter((i) => i.action === 'failed_login').length,
-      metricAdded: result.Items.filter((i) => i.action === 'metric_added').length,
-      adminActions: result.Items.filter((i) => ['delete_employee', 'change_incentive'].includes(i.action)).length,
-      uniqueUsers: new Set(result.Items.map((i) => i.userId)).size,
-      uniqueIPs: new Set(result.Items.map((i) => i.ip)).size,
-      suspiciousActivities: result.Items.filter((i) => i.result === 'flagged' || i.action.includes('failed')).length,
+      totalActions: secItems.length,
+      successfulLogins: secItems.filter((i) => i.action === 'successful_login').length,
+      failedLogins: secItems.filter((i) => i.action === 'failed_login').length,
+      metricAdded: secItems.filter((i) => i.action === 'metric_added').length,
+      adminActions: secItems.filter((i) => ['delete_employee', 'change_incentive'].includes(i.action)).length,
+      uniqueUsers: new Set(secItems.map((i) => i.userId)).size,
+      uniqueIPs: new Set(secItems.map((i) => i.ip)).size,
+      suspiciousActivities: secItems.filter((i) => i.result === 'flagged' || i.action.includes('failed')).length,
     };
 
     const ipFailures = {};
-    result.Items.filter((i) => i.action === 'failed_login').forEach((i) => {
+    secItems.filter((i) => i.action === 'failed_login').forEach((i) => {
       ipFailures[i.ip] = (ipFailures[i.ip] || 0) + 1;
     });
     const highRiskIPs = Object.entries(ipFailures)
@@ -207,21 +198,13 @@ router.get('/export', adminMiddleware, async (req, res, next) => {
     const startTime = Date.now() - days * 24 * 60 * 60 * 1000;
     const companyId = req.user.role === 'superadmin' ? (req.query.companyId || null) : req.user.companyId;
 
-    const result = await dynamodb.scan({
-      TableName: process.env.DYNAMODB_TABLE_AUDIT,
-      FilterExpression: ['PK > :pk', companyId ? 'companyId = :cid' : null].filter(Boolean).join(' AND '),
-      ExpressionAttributeValues: {
-        ':pk': `audit#${startTime}`,
-        ...(companyId ? { ':cid': companyId } : {}),
-      },
-      Limit: 5000,
-    }).promise();
+    const exportItems = await queryAuditLogs({ companyId, startTime, limit: 5000 });
 
-    await logAudit(req.user.id, 'export_audit_logs', 'audit_export', 'success', req.ip, { days, records: result.Items.length }, req.user.companyId);
+    await logAudit(req.user.id, 'export_audit_logs', 'audit_export', 'success', req.ip, { days, records: exportItems.length }, req.user.companyId);
 
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename="audit_logs_${new Date().toISOString().split('T')[0]}.json"`);
-    res.send(JSON.stringify(result.Items, null, 2));
+    res.send(JSON.stringify(exportItems, null, 2));
   } catch (error) {
     next(error);
   }

@@ -62,19 +62,19 @@ app.use(cookieParser());
 app.use('/api/auth', authRoutes);
 app.use('/api/metrics', authMiddleware, subscriptionMiddleware, metricsRoutes);
 app.use('/api/audit', authMiddleware, auditRoutes);
-app.use('/api/ai', aiRoutes);
-app.use('/api/analytics', analyticsRoutes);
-app.use('/api/badges', badgesRoutes);
-app.use('/api/points', pointsRoutes);
-app.use('/api/compensation', compensationRoutes);
-app.use('/api/admin', subscriptionMiddleware, adminRoutes);
+app.use('/api/ai', authMiddleware, aiRoutes);
+app.use('/api/analytics', authMiddleware, analyticsRoutes);
+app.use('/api/badges', authMiddleware, badgesRoutes);
+app.use('/api/points', authMiddleware, pointsRoutes);
+app.use('/api/compensation', authMiddleware, compensationRoutes);
+app.use('/api/admin', authMiddleware, subscriptionMiddleware, adminRoutes);
 app.use('/api/companies', companiesRoutes);
 app.use('/api/platform', platformRoutes);
 app.use('/api/telegram', telegramRoutes);
-app.use('/api/attendance', attendanceRoutes);
-app.use('/api/crm', subscriptionMiddleware, crmRoutes);
+app.use('/api/attendance', authMiddleware, attendanceRoutes);
+app.use('/api/crm', authMiddleware, subscriptionMiddleware, crmRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
-app.use('/api/automations', subscriptionMiddleware, automationsRoutes);
+app.use('/api/automations', authMiddleware, subscriptionMiddleware, automationsRoutes);
 app.use('/api/forms', formsRoutes);
 
 // Health check

@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const speakeasy = require('speakeasy');
 const QRCode = require('qrcode');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
+const { queryAll } = require('../utils/db');
 const { logAudit } = require('../utils/audit');
 const { encrypt } = require('../utils/encryption');
 const { registerSchema, updateEmployeeSchema } = require('../utils/validation');
@@ -20,22 +21,30 @@ router.use(authMiddleware, adminMiddleware);
 router.get('/employees', async (req, res, next) => {
   try {
     const { companyId } = req.user;
-    const scanParams = {
-      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
-      ProjectionExpression: 'id, #name, email, mobileNumber, #role, telegramId, createdAt, #status, totpEnabled',
-      ExpressionAttributeNames: { '#name': 'name', '#role': 'role', '#status': 'status' },
-    };
+    const TABLE = process.env.DYNAMODB_TABLE_EMPLOYEES;
+    const PROJ = 'id, #name, email, mobileNumber, #role, telegramId, createdAt, #status, totpEnabled';
+    const NAMES = { '#name': 'name', '#role': 'role', '#status': 'status' };
+
+    let items;
     if (companyId) {
-      scanParams.FilterExpression = 'companyId = :cid AND attribute_not_exists(#type)';
-      scanParams.ExpressionAttributeNames['#type'] = 'type';
-      scanParams.ExpressionAttributeValues = { ':cid': companyId };
+      items = await queryAll({
+        TableName: TABLE,
+        IndexName: 'companyIdIndex',
+        KeyConditionExpression: 'companyId = :cid',
+        FilterExpression: 'attribute_not_exists(#type)',
+        ProjectionExpression: PROJ,
+        ExpressionAttributeNames: { ...NAMES, '#type': 'type' },
+        ExpressionAttributeValues: { ':cid': companyId },
+      });
+    } else {
+      const r = await dynamodb.scan({ TableName: TABLE, ProjectionExpression: PROJ, ExpressionAttributeNames: NAMES }).promise();
+      items = r.Items ?? [];
     }
-    const result = await dynamodb.scan(scanParams).promise();
 
     logAudit(req.user.id, 'list_employees', 'employees_table', 'success', req.ip, {}, req.user.companyId)
       .catch((err) => logger.error('Audit log failed for list_employees', err));
 
-    res.json({ success: true, data: result.Items ?? [] });
+    res.json({ success: true, data: items });
   } catch (error) {
     next(error);
   }

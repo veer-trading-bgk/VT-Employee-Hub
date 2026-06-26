@@ -90,7 +90,7 @@ router.post('/login', async (req, res, next) => {
     const { email, password } = loginSchema.parse(req.body);
 
     // Per-email rate limit: blocks only the account being attacked, not all office users
-    if (loginRateLimiter.isBlocked(email)) {
+    if (await loginRateLimiter.isBlocked(email)) {
       await logAudit('unknown', 'login_rate_limited', email, 'blocked', req.ip).catch(() => {});
       return res.status(429).json({ error: 'Too many failed login attempts. Try again in 15 minutes.' });
     }
@@ -98,7 +98,7 @@ router.post('/login', async (req, res, next) => {
     const user = await findUserByEmail(email);
 
     if (!user) {
-      loginRateLimiter.recordFail(email);
+      await loginRateLimiter.recordFail(email);
       await logAudit('unknown', 'failed_login', email, 'user_not_found', req.ip);
       logger.warn(`Failed login for unknown email ${email} from ${req.ip}`);
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -111,7 +111,7 @@ router.post('/login', async (req, res, next) => {
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      const fails = loginRateLimiter.recordFail(email);
+      const fails = await loginRateLimiter.recordFail(email);
       await logAudit(user.id, 'failed_login', email, 'invalid_password', req.ip);
       if (fails >= 5) {
         bot.sendMessage(
@@ -134,7 +134,7 @@ router.post('/login', async (req, res, next) => {
     }
 
     // ── No 2FA: issue full JWT ─────────────────────────────────────────────────
-    loginRateLimiter.reset(email);
+    await loginRateLimiter.reset(email);
     const userWithPlan = await attachPlan(user);
     const { accessToken } = issueTokens(userWithPlan, res);
     markAttendance(user);

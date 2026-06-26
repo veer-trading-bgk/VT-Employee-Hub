@@ -419,6 +419,48 @@ async function storeWamidLookup(wamid, leadPK, msgSK, companyId, extras = {}) {
   } catch { /* ignore duplicate */ }
 }
 
+// ── Download inbound Meta media → S3 ─────────────────────────────────────────
+// Meta media IDs expire in 30 days and proxying through Lambda hits the 6 MB
+// response limit. Storing to S3 at webhook time lets the browser stream directly
+// via presigned URL — no Lambda in the path, no size limit.
+const MIME_TO_EXT = {
+  'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif',
+  'video/mp4': '.mp4', 'video/3gpp': '.3gp',
+  'audio/ogg': '.ogg', 'audio/mpeg': '.mp3', 'audio/aac': '.aac',
+  'audio/ogg; codecs=opus': '.ogg',
+  'application/pdf': '.pdf',
+};
+
+async function storeInboundMedia(accessToken, mediaId, mimeType, companyId) {
+  if (!MEDIA_BUCKET || !mediaId || !accessToken) return null;
+  try {
+    const metaRes = await axios.get(`${GRAPH}/${mediaId}`, {
+      params: { access_token: accessToken },
+    });
+    const downloadUrl = metaRes.data?.url;
+    if (!downloadUrl) return null;
+
+    const mediaRes = await axios.get(downloadUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      responseType: 'arraybuffer',
+    });
+
+    const ext = MIME_TO_EXT[mimeType] ?? '';
+    const s3Key = `inbound/${companyId}/${mediaId}${ext}`;
+    await s3Client.upload({
+      Bucket: MEDIA_BUCKET,
+      Key: s3Key,
+      Body: Buffer.from(mediaRes.data),
+      ContentType: mimeType ?? 'application/octet-stream',
+    }).promise();
+
+    return s3Key;
+  } catch (err) {
+    logger.error('storeInboundMedia failed', err?.message);
+    return null; // fall back to proxy — graceful degradation
+  }
+}
+
 // Write a MEDIA# index item for per-contact gallery queries
 function writeMediaIndex(companyId, contactKey, item) {
   dynamodb.put({
@@ -529,10 +571,17 @@ router.post('/webhook', async (req, res) => {
 
       const lead = scanResult.Items?.[0];
 
+      // Download inbound media to S3 so the browser can stream directly —
+      // avoids Lambda 6 MB response limit and Meta 30-day media expiry.
+      const s3Key = mediaId
+        ? await storeInboundMedia(wabaConfig?.accessToken, mediaId, mimeType, webhookCompanyId)
+        : null;
+
       const msgItem = {
         direction: 'inbound', content: text, type,
         timestamp, waMessageId, messageId: waMessageId,
         ...(mediaId && { mediaId, mimeType, filename }),
+        ...(s3Key && { s3Key }),
       };
 
       if (lead) {
