@@ -1485,7 +1485,7 @@ router.post('/upload-send', authMiddleware, async (req, res, next) => {
         messageId: waMessageId, waMessageId,
         direction: 'outbound', type: mediaType,
         content: caption ?? `[${mediaType}]`,
-        mediaId, filename: safeFilename, mimeType,
+        mediaId, s3Key, filename: safeFilename, mimeType,
         sentBy: req.user.id, sentByName: req.user.name,
         timestamp, msgStatus: 'sent',
       },
