@@ -17,8 +17,8 @@ jobs:
           cache: 'npm'
           cache-dependency-path: package-lock.json
 
-      - name: Install all dependencies
-        run: npm ci
+      - name: Install all dependencies (including dev for tests)
+        run: npm install
 
       - name: Run tests
         run: npm test
