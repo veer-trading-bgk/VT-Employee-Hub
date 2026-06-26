@@ -25,6 +25,7 @@ interface Conversation {
   notes?: string;
   assignedTo?: string | null;
   assignedToName?: string | null;
+  pinned?: boolean;
   chatStatus: ChatStatus;
   lastMessageAt: string;
   lastMessagePreview?: string;
@@ -49,6 +50,10 @@ interface Message {
   authorName?: string;
   waMessageId?: string;
   msgStatus?: 'sent' | 'delivered' | 'read' | 'failed';
+  replyToWaMessageId?: string;
+  replyToContent?: string;
+  replyToDirection?: 'inbound' | 'outbound';
+  replyToSenderName?: string | null;
 }
 
 interface PipelineStage { key: string; label: string; color: string; }
@@ -108,6 +113,54 @@ function CannedPicker({
             {r.shortcut && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-mono text-slate-500 dark:bg-slate-800">/{r.shortcut}</span>}
           </div>
           <span className="truncate text-xs text-slate-400">{r.body}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Notification beep (Web Audio API — no external file required) ─────────────
+function playNotif() {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(660, ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.35);
+  } catch { /* blocked by browser autoplay policy or not supported */ }
+}
+
+// ── @Mention Picker ───────────────────────────────────────────────────────────
+function MentionPicker({
+  employees, query, onSelect,
+}: {
+  employees: EmployeeRecord[];
+  query: string;
+  onSelect: (emp: EmployeeRecord) => void;
+}) {
+  const filtered = employees.filter((e) =>
+    !query || e.name.toLowerCase().startsWith(query.toLowerCase())
+  ).slice(0, 6);
+  if (filtered.length === 0) return null;
+  return (
+    <div className="absolute bottom-full left-0 z-20 mb-1 w-56 overflow-hidden rounded-xl border border-amber-200 bg-white shadow-xl dark:border-amber-900/40 dark:bg-slate-900">
+      {filtered.map((emp) => (
+        <button key={emp.id} onMouseDown={(e) => { e.preventDefault(); onSelect(emp); }}
+          className="flex w-full items-center gap-2.5 px-3 py-2 text-left transition hover:bg-amber-50 dark:hover:bg-amber-900/20">
+          <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-amber-500 text-[10px] font-bold text-white">
+            {emp.name[0]}
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-xs font-semibold text-slate-800 dark:text-white">{emp.name}</p>
+            <p className="text-[10px] text-slate-400 capitalize">{emp.role}</p>
+          </div>
         </button>
       ))}
     </div>
@@ -517,6 +570,16 @@ export default function WhatsAppInboxPage() {
   const [isDragging, setIsDragging] = useState(false);
   const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
 
+  // Reply-to state
+  const [replyTo, setReplyTo] = useState<{
+    waMessageId: string; content: string;
+    direction: 'inbound' | 'outbound'; senderName?: string | null;
+  } | null>(null);
+
+  // @mention autocomplete state (note mode)
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [showMentionPicker, setShowMentionPicker] = useState(false);
+
   // Tracks the most recent message timestamp we've seen — used by the ping poll
   // to detect new activity without a full inbox scan on every tick.
   const lastActivityRef = useRef<string>(new Date(Date.now() - 60_000).toISOString());
@@ -562,6 +625,13 @@ export default function WhatsAppInboxPage() {
     queryFn: () => apiFetch<{ responses: CannedResponse[] }>('/api/whatsapp/inbox/canned'),
     staleTime: 60_000,
   });
+
+  const { data: availData } = useQuery({
+    queryKey: ['wa-availability'],
+    queryFn: () => apiFetch<{ available: boolean }>('/api/whatsapp/agent/availability'),
+    staleTime: 30_000,
+  });
+  const isAvailable = availData?.available ?? true;
 
   const conversations = inboxData?.conversations ?? [];
   const counts = inboxData?.counts ?? { open: 0, unassigned: 0, resolved: 0, unread: 0 };
@@ -627,6 +697,7 @@ export default function WhatsAppInboxPage() {
         );
         if (data.hasNew) {
           if (data.latestAt) lastActivityRef.current = data.latestAt;
+          playNotif();
           qc.invalidateQueries({ queryKey: ['wa-inbox'] });
           qc.invalidateQueries({ queryKey: ['wa-conv'] }); // refresh open chat immediately
         }
@@ -701,6 +772,16 @@ export default function WhatsAppInboxPage() {
   const autoAssignMutation = useMutation({
     mutationFn: () => apiFetch('/api/whatsapp/inbox/auto-assign', { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['wa-inbox'] }),
+  });
+
+  const pinMutation = useMutation({
+    mutationFn: (leadId: string) => apiFetch(`/api/whatsapp/inbox/${leadId}/pin`, { method: 'PUT' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['wa-inbox'] }),
+  });
+
+  const availMutation = useMutation({
+    mutationFn: (av: boolean) => apiFetch('/api/whatsapp/agent/availability', { method: 'PUT', body: JSON.stringify({ available: av }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['wa-availability'] }),
   });
 
   const addLeadMutation = useMutation({
@@ -882,9 +963,18 @@ export default function WhatsAppInboxPage() {
   const sendMutation = useMutation({
     mutationFn: () =>
       selected!.type === 'lead'
-        ? apiFetch('/api/whatsapp/send', { method: 'POST', body: JSON.stringify({ leadPK: selected!.PK, message: msgText }) })
+        ? apiFetch('/api/whatsapp/send', { method: 'POST', body: JSON.stringify({
+            leadPK: selected!.PK,
+            message: msgText,
+            ...(replyTo?.waMessageId && {
+              replyToWaMessageId: replyTo.waMessageId,
+              replyToContent: replyTo.content,
+              replyToDirection: replyTo.direction,
+              replyToSenderName: replyTo.senderName ?? null,
+            }),
+          }) })
         : apiFetch(`/api/whatsapp/inbox/unknown/${selected!.phone}/send`, { method: 'POST', body: JSON.stringify({ message: msgText }) }),
-    onSuccess: () => { setMsgText(''); setShowCanned(false); invalidate(); },
+    onSuccess: () => { setMsgText(''); setShowCanned(false); setReplyTo(null); invalidate(); },
   });
 
   // Paste screenshot from clipboard (Ctrl+V anywhere in the chat)
@@ -908,13 +998,41 @@ export default function WhatsAppInboxPage() {
 
   function handleMsgChange(val: string) {
     setMsgText(val);
-    if (val.startsWith('/')) {
+    if (val.startsWith('/') && inputMode === 'reply') {
       setShowCanned(true);
       setCannedSearch(val.slice(1).toLowerCase());
     } else {
       setShowCanned(false);
       setCannedSearch('');
     }
+    if (inputMode === 'note') {
+      const cursorPos = inputRef.current?.selectionStart ?? val.length;
+      const match = val.slice(0, cursorPos).match(/@(\w*)$/);
+      if (match) {
+        setMentionQuery(match[1]);
+        setShowMentionPicker(true);
+      } else {
+        setShowMentionPicker(false);
+        setMentionQuery('');
+      }
+    }
+  }
+
+  function insertMention(emp: EmployeeRecord) {
+    const cursorPos = inputRef.current?.selectionStart ?? msgText.length;
+    const before = msgText.slice(0, cursorPos);
+    const after = msgText.slice(cursorPos);
+    const atIdx = before.lastIndexOf('@');
+    const firstName = emp.name.split(' ')[0];
+    const newText = before.slice(0, atIdx) + `@${firstName} ` + after;
+    setMsgText(newText);
+    setShowMentionPicker(false);
+    setMentionQuery('');
+    setTimeout(() => {
+      const newPos = atIdx + firstName.length + 2;
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(newPos, newPos);
+    }, 0);
   }
 
   const isProcessing = sendMutation.isPending || noteMutation.isPending;
@@ -937,11 +1055,25 @@ export default function WhatsAppInboxPage() {
         {/* ══ LEFT PANEL — conversation list ══════════════════════════════════ */}
         <div className={`flex w-full flex-shrink-0 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 md:w-[288px] ${selected ? 'hidden md:flex' : 'flex'}`}>
 
-          {/* Search */}
-          <div className="border-b border-slate-100 p-3 dark:border-slate-800">
+          {/* Search + availability */}
+          <div className="border-b border-slate-100 p-3 dark:border-slate-800 space-y-2">
             <input value={search} onChange={(e) => setSearch(e.target.value)}
               placeholder="Search name or phone…"
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] text-slate-400">Your status</span>
+              <button
+                onClick={() => availMutation.mutate(!isAvailable)}
+                disabled={availMutation.isPending}
+                className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold transition-colors disabled:opacity-50 ${
+                  isAvailable
+                    ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-400'
+                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-400'
+                }`}>
+                <span className={`h-1.5 w-1.5 rounded-full ${isAvailable ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                {isAvailable ? 'Available' : 'Away'}
+              </button>
+            </div>
           </div>
 
           {/* Tabs */}
@@ -994,10 +1126,24 @@ export default function WhatsAppInboxPage() {
 
               const unread = conv.unreadCount ?? 0;
               return (
-                <button key={key} onClick={() => {
+                <div key={key} className="group relative">
+                {/* Pin/unpin button — sibling of the main button (nested buttons are invalid HTML) */}
+                {conv.type === 'lead' && conv.leadId && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); pinMutation.mutate(conv.leadId!); }}
+                    title={conv.pinned ? 'Unpin' : 'Pin conversation'}
+                    className={`absolute right-2 top-2 z-10 rounded-full p-0.5 text-sm transition-opacity ${
+                      conv.pinned ? 'text-indigo-500' : 'text-slate-300 opacity-0 group-hover:opacity-100'
+                    } hover:text-indigo-600`}>
+                    {conv.pinned ? '📌' : '📌'}
+                  </button>
+                )}
+                <button onClick={() => {
                   selectConv({ ...conv, unreadCount: 0 });
                   setMsgText('');
                   setInputMode('reply');
+                  setReplyTo(null);
+                  setShowMentionPicker(false);
                   setShowMediaInput(false);
                   setUploadFile(null);
                   setUploadPreview(null);
@@ -1051,6 +1197,7 @@ export default function WhatsAppInboxPage() {
                     )}
                   </div>
                 </button>
+                </div>
               );
             })}
           </div>
@@ -1152,11 +1299,17 @@ export default function WhatsAppInboxPage() {
               {timeline.length === 0 && <p className="py-12 text-center text-sm text-slate-400">No messages yet.</p>}
               {timeline.map((item) => {
                 if (item._kind === 'note') {
+                  // Render @mentions as highlighted spans
+                  const noteContent = item.content.split(/(@\w+)/g).map((part: string, i: number) =>
+                    part.match(/^@\w+$/)
+                      ? <span key={i} className="font-bold text-amber-600 dark:text-amber-300">{part}</span>
+                      : part
+                  );
                   return (
                     <div key={item.SK} className="flex justify-center">
                       <div className="max-w-sm rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 dark:border-amber-900/30 dark:bg-amber-900/10">
                         <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">🔒 Internal note · {item.authorName}</p>
-                        <p className="mt-0.5 whitespace-pre-wrap text-xs text-amber-700 dark:text-amber-300">{item.content}</p>
+                        <p className="mt-0.5 whitespace-pre-wrap text-xs text-amber-700 dark:text-amber-300">{noteContent}</p>
                         <p className="mt-1 text-[10px] text-amber-500">{new Date(item.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p>
                       </div>
                     </div>
@@ -1164,15 +1317,39 @@ export default function WhatsAppInboxPage() {
                 }
                 const MEDIA_TYPES = ['image', 'video', 'audio', 'document', 'sticker'];
                 const isMedia = MEDIA_TYPES.includes(item.type ?? '');
+                const outbound = item.direction === 'outbound';
                 return (
-                  <div key={item.SK} className={`flex ${item.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}>
+                  <div key={item.SK} className={`group flex items-end gap-1 ${outbound ? 'flex-row-reverse' : ''}`}>
+                    {/* Reply button — appears on hover, outside the bubble */}
+                    {item._kind === 'message' && item.waMessageId && !windowExpired && (
+                      <button
+                        onClick={() => {
+                          setReplyTo({ waMessageId: item.waMessageId!, content: item.content, direction: item.direction, senderName: item.sentByName ?? null });
+                          setInputMode('reply');
+                          inputRef.current?.focus();
+                        }}
+                        className="mb-1 flex-shrink-0 rounded-full p-1 text-xs text-slate-300 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-slate-100 hover:text-indigo-600 dark:hover:bg-slate-700">
+                        ↩
+                      </button>
+                    )}
                     <div className={`max-w-xs rounded-2xl px-4 py-2.5 text-sm shadow-sm ${
-                      item.direction === 'outbound'
+                      outbound
                         ? 'rounded-br-sm bg-indigo-600 text-white'
                         : 'rounded-bl-sm bg-white text-slate-900 shadow-none ring-1 ring-slate-100 dark:bg-slate-800 dark:text-white dark:ring-slate-700'
                     }`}>
+                      {/* Quoted message bubble */}
+                      {item.replyToContent && (
+                        <div className={`mb-2 rounded-lg border-l-2 px-2.5 py-1.5 text-xs ${
+                          outbound ? 'border-indigo-300 bg-indigo-500/30' : 'border-slate-300 bg-slate-50 dark:border-slate-600 dark:bg-slate-700/60'
+                        }`}>
+                          <p className={`mb-0.5 font-semibold ${outbound ? 'text-indigo-200' : 'text-slate-500 dark:text-slate-400'}`}>
+                            {item.replyToDirection === 'inbound' ? 'Customer' : (item.replyToSenderName ?? 'You')}
+                          </p>
+                          <p className={`truncate ${outbound ? 'text-indigo-100' : 'text-slate-600 dark:text-slate-300'}`}>{item.replyToContent}</p>
+                        </div>
+                      )}
                       {isMedia && (item.mediaId || item.mediaUrl) && (
-                        <MediaBubble item={item} outbound={item.direction === 'outbound'} />
+                        <MediaBubble item={item} outbound={outbound} />
                       )}
                       {(item.content && item.content !== `[${item.type}]`) && (
                         <p className="whitespace-pre-wrap break-words">{item.content}</p>
@@ -1180,10 +1357,10 @@ export default function WhatsAppInboxPage() {
                       {item.content === `[${item.type}]` && isMedia && !item.mediaId && !item.mediaUrl && (
                         <p className="italic text-xs opacity-60">{item.content}</p>
                       )}
-                      <p className={`mt-1 flex items-center gap-0.5 text-[10px] ${item.direction === 'outbound' ? 'text-indigo-200' : 'text-slate-400'}`}>
-                        {item.direction === 'outbound' && item.sentByName ? `${item.sentByName} · ` : ''}
+                      <p className={`mt-1 flex items-center gap-0.5 text-[10px] ${outbound ? 'text-indigo-200' : 'text-slate-400'}`}>
+                        {outbound && item.sentByName ? `${item.sentByName} · ` : ''}
                         {new Date(item.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
-                        {item.direction === 'outbound' && <MsgTick status={item.msgStatus} />}
+                        {outbound && <MsgTick status={item.msgStatus} />}
                       </p>
                     </div>
                   </div>
@@ -1194,6 +1371,18 @@ export default function WhatsAppInboxPage() {
 
             {/* Input area */}
             <div className="flex-shrink-0 border-t border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+              {/* Reply-to quote bar */}
+              {replyTo && (
+                <div className="flex items-start gap-2 border-b border-slate-100 bg-slate-50 px-4 py-2 dark:border-slate-800 dark:bg-slate-800/50">
+                  <div className="min-w-0 flex-1 border-l-2 border-indigo-400 pl-2">
+                    <p className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400">
+                      Replying to {replyTo.direction === 'inbound' ? 'Customer' : (replyTo.senderName ?? 'You')}
+                    </p>
+                    <p className="truncate text-xs text-slate-500 dark:text-slate-400">{replyTo.content}</p>
+                  </div>
+                  <button onClick={() => setReplyTo(null)} className="mt-0.5 flex-shrink-0 text-slate-400 hover:text-red-500 text-sm leading-none">×</button>
+                </div>
+              )}
               {/* Reply / Note tabs */}
               <div className="flex border-b border-slate-100 dark:border-slate-800">
                 {(['reply', 'note'] as const).map((m) => (
@@ -1229,6 +1418,13 @@ export default function WhatsAppInboxPage() {
                     onClose={() => setShowCanned(false)}
                   />
                 )}
+                {showMentionPicker && inputMode === 'note' && (
+                  <MentionPicker
+                    employees={employees}
+                    query={mentionQuery}
+                    onSelect={insertMention}
+                  />
+                )}
 
                 {/* Hidden file input — opened by 📎 button or drag-drop */}
                 <input ref={fileRef} type="file"
@@ -1259,7 +1455,7 @@ export default function WhatsAppInboxPage() {
                     ref={inputRef}
                     value={msgText}
                     onChange={(e) => handleMsgChange(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && canSend) { e.preventDefault(); handleSend(); } if (e.key === 'Escape') setShowCanned(false); }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && canSend) { e.preventDefault(); handleSend(); } if (e.key === 'Escape') { setShowCanned(false); setShowMentionPicker(false); } }}
                     disabled={windowExpired && inputMode === 'reply'}
                     placeholder={
                       windowExpired && inputMode === 'reply' ? '24h window expired — switch to Template or leave a Note'

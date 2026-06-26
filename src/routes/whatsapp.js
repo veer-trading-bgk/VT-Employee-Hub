@@ -156,7 +156,7 @@ function to10Digit(p) {
   return d;
 }
 
-async function sendTextMessage(companyId, to, body) {
+async function sendTextMessage(companyId, to, body, replyToWaMessageId = null) {
   const cfg = await getWabaConfig(companyId);
   if (!cfg?.accessToken || !cfg?.phoneNumberId) {
     logger.warn(`WhatsApp not configured for company ${companyId}`);
@@ -164,9 +164,11 @@ async function sendTextMessage(companyId, to, body) {
   }
   const phone = toE164(to);
   try {
+    const payload = { messaging_product: 'whatsapp', recipient_type: 'individual', to: phone, type: 'text', text: { preview_url: false, body } };
+    if (replyToWaMessageId) payload.context = { message_id: replyToWaMessageId };
     const res = await axios.post(
       `${GRAPH}/${cfg.phoneNumberId}/messages`,
-      { messaging_product: 'whatsapp', recipient_type: 'individual', to: phone, type: 'text', text: { preview_url: false, body } },
+      payload,
       { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } }
     );
     return res.data?.messages?.[0]?.id ?? null;
@@ -667,7 +669,7 @@ router.post('/webhook', async (req, res) => {
 // ── POST /api/whatsapp/send ────────────────────────────────────────────────────
 router.post('/send', authMiddleware, async (req, res, next) => {
   try {
-    const { leadPK: pk, message } = req.body;
+    const { leadPK: pk, message, replyToWaMessageId, replyToContent, replyToDirection, replyToSenderName } = req.body;
     if (!pk || !message?.trim()) return res.status(400).json({ error: 'leadPK and message required' });
 
     const result = await dynamodb.get({ TableName: TABLE, Key: { PK: pk, SK: 'METADATA' } }).promise();
@@ -680,7 +682,7 @@ router.post('/send', authMiddleware, async (req, res, next) => {
       return res.status(403).json({ error: 'Not your lead' });
     }
 
-    const waMessageId = await sendTextMessage(req.user.companyId, lead.phone, message.trim());
+    const waMessageId = await sendTextMessage(req.user.companyId, lead.phone, message.trim(), replyToWaMessageId ?? null);
     const timestamp = new Date().toISOString();
     const msgSK = `MSG#${timestamp}#${waMessageId ?? Date.now()}`;
 
@@ -695,6 +697,12 @@ router.post('/send', authMiddleware, async (req, res, next) => {
         sentBy: req.user.id,
         sentByName: req.user.name,
         timestamp, waMessageId, msgStatus: 'sent',
+        ...(replyToWaMessageId && {
+          replyToWaMessageId,
+          replyToContent: replyToContent ?? '',
+          replyToDirection: replyToDirection ?? 'inbound',
+          replyToSenderName: replyToSenderName ?? null,
+        }),
       },
     }).promise();
 
@@ -772,6 +780,7 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
         notes: l.notes ?? '',
         assignedTo: l.assignedTo ?? null,
         assignedToName: l.assignedToName ?? null,
+        pinned: l.pinned ?? false,
         chatStatus: effectiveStatus(l),
         lastMessageAt: l.lastMessageAt,
         lastMessagePreview: l.lastMessagePreview,
@@ -794,7 +803,11 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
         createdAt: u.createdAt ?? null,
         unreadCount: u.unreadCount ?? 0,
       })),
-    ].sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
+    ].sort((a, b) => {
+      const pinDiff = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+      if (pinDiff !== 0) return pinDiff;
+      return new Date(b.lastMessageAt) - new Date(a.lastMessageAt);
+    });
 
     const conversations = statusFilter === 'all'
       ? allConvs
@@ -903,6 +916,22 @@ router.put('/inbox/:leadId/reopen', authMiddleware, checkRole(['admin', 'manager
   } catch (err) { next(err); }
 });
 
+// ── PUT /api/whatsapp/inbox/:leadId/pin — toggle pinned conversation ───────────
+router.put('/inbox/:leadId/pin', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
+    const current = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
+    const pinned = !(current.Item?.pinned ?? false);
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK, SK: 'METADATA' },
+      UpdateExpression: 'SET pinned = :p',
+      ExpressionAttributeValues: { ':p': pinned },
+    }).promise();
+    res.json({ success: true, pinned });
+  } catch (err) { next(err); }
+});
+
 // ── POST /api/whatsapp/inbox/:leadId/note — internal team note ─────────────────
 router.post('/inbox/:leadId/note', authMiddleware, async (req, res, next) => {
   try {
@@ -910,6 +939,7 @@ router.post('/inbox/:leadId/note', authMiddleware, async (req, res, next) => {
     if (!content?.trim()) return res.status(400).json({ error: 'content required' });
     const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
     const timestamp = new Date().toISOString();
+    const mentionNames = [...content.matchAll(/@(\w+)/g)].map((m) => m[1]);
     await dynamodb.put({
       TableName: TABLE,
       Item: {
@@ -919,9 +949,43 @@ router.post('/inbox/:leadId/note', authMiddleware, async (req, res, next) => {
         authorName: req.user.name,
         type: 'note',
         timestamp,
+        ...(mentionNames.length && { mentions: mentionNames }),
       },
     }).promise();
+    if (mentionNames.length > 0) {
+      logger.alert(`📌 <b>${req.user.name}</b> mentioned ${mentionNames.map((n) => `@${n}`).join(', ')} in a note\nLead: <code>${req.params.leadId}</code>`);
+    }
     res.json({ success: true, timestamp });
+  } catch (err) { next(err); }
+});
+
+// ── GET /api/whatsapp/agent/availability — get own availability status ─────────
+router.get('/agent/availability', authMiddleware, async (req, res, next) => {
+  try {
+    const result = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `AGENT#AVAIL#${req.user.companyId}#${req.user.id}`, SK: 'STATUS' },
+    }).promise();
+    res.json({ available: result.Item?.available ?? true });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /api/whatsapp/agent/availability — set own availability status ─────────
+router.put('/agent/availability', authMiddleware, async (req, res, next) => {
+  try {
+    const { available } = req.body;
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: `AGENT#AVAIL#${req.user.companyId}#${req.user.id}`,
+        SK: 'STATUS',
+        available: !!available,
+        userId: req.user.id,
+        companyId: req.user.companyId,
+        updatedAt: new Date().toISOString(),
+      },
+    }).promise();
+    res.json({ success: true, available: !!available });
   } catch (err) { next(err); }
 });
 
@@ -937,7 +1001,21 @@ router.post('/inbox/auto-assign', authMiddleware, checkRole(['admin', 'manager']
       ExpressionAttributeNames: { '#r': 'role' },
       ExpressionAttributeValues: { ':prefix': `EMP#${companyId}#`, ':sk': 'PROFILE', ':r1': 'telecaller', ':r2': 'agent', ':r3': 'intern' },
     }).promise();
-    const employees = empResult.Items ?? [];
+    const allEmployees = empResult.Items ?? [];
+    if (allEmployees.length === 0) return res.status(400).json({ error: 'No employees available to assign' });
+
+    // Filter to available agents; fall back to all if everyone is away
+    const availChecks = await Promise.all(
+      allEmployees.map((emp) =>
+        dynamodb.get({
+          TableName: TABLE,
+          Key: { PK: `AGENT#AVAIL#${companyId}#${emp.userId ?? emp.id}`, SK: 'STATUS' },
+        }).promise().then((r) => ({ ...emp, available: r.Item?.available ?? true }))
+      )
+    );
+    const employees = availChecks.filter((e) => e.available).length > 0
+      ? availChecks.filter((e) => e.available)
+      : allEmployees;
     if (employees.length === 0) return res.status(400).json({ error: 'No employees available to assign' });
 
     // Get unassigned conversations
