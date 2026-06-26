@@ -655,7 +655,7 @@ export default function WhatsAppInboxPage() {
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
         };
-        xhr.onload = () => xhr.status < 300 ? resolve() : reject(new Error(`S3 upload failed (${xhr.status})`));
+        xhr.onload = () => (xhr.status > 0 && xhr.status < 300) ? resolve() : reject(new Error(`S3 upload failed (${xhr.status}) — check CORS or file type`));
         xhr.onerror = () => reject(new Error('Network error during upload'));
         xhr.onabort = () => reject(new Error('Upload cancelled'));
         xhr.open('PUT', uploadUrl);
