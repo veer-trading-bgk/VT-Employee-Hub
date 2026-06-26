@@ -1284,6 +1284,10 @@ router.post('/upload-send', authMiddleware, async (req, res, next) => {
     if (!pk || !base64Data || !mimeType) {
       return res.status(400).json({ error: 'leadPK, base64Data, and mimeType are required' });
     }
+    // base64 strings inflate by ~33%; reject before attempting Meta upload
+    if (base64Data.length > 4.5 * 1024 * 1024) {
+      return res.status(413).json({ error: 'File too large — max 3 MB per upload' });
+    }
 
     const result = await dynamodb.get({ TableName: TABLE, Key: { PK: pk, SK: 'METADATA' } }).promise();
     const lead = result.Item;

@@ -578,8 +578,8 @@ export default function WhatsAppInboxPage() {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploadError('');
-    if (file.size > 7 * 1024 * 1024) {
-      setUploadError('File too large — max 7 MB for direct upload');
+    if (file.size > 3 * 1024 * 1024) {
+      setUploadError('File too large — max 3 MB (Lambda payload limit). For larger files, upload to Google Drive / S3 and share the link via the text box.');
       if (fileRef.current) fileRef.current.value = '';
       return;
     }
@@ -936,7 +936,7 @@ export default function WhatsAppInboxPage() {
                           className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 py-5 text-sm text-slate-400 hover:border-indigo-400 hover:text-indigo-500 dark:border-slate-600 dark:hover:border-indigo-500">
                           📎 Click to choose a file
                         </button>
-                        <p className="mt-1.5 text-center text-[10px] text-slate-400">Images, video, audio, PDF, doc — max 7 MB</p>
+                        <p className="mt-1.5 text-center text-[10px] text-slate-400">Images, audio, PDF, doc — max 3 MB</p>
                       </>
                     ) : (
                       <div className="space-y-2">
