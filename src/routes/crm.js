@@ -41,17 +41,18 @@ async function getPipelineStages(companyId) {
 }
 
 async function scanAllLeads(companyId) {
-  // SCALE: Once GSI 'leadsByCompany' is ACTIVE (run scripts/create-leads-gsi.js),
-  // replace this scan with a query on companyId for O(company-size) instead of O(table-size).
+  // GSI query on leadsByCompany — O(company-size) instead of O(table-size)
   const params = {
     TableName: TABLE,
-    FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta',
-    ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA' },
+    IndexName: 'leadsByCompany',
+    KeyConditionExpression: 'companyId = :cid',
+    FilterExpression: 'SK = :meta',
+    ExpressionAttributeValues: { ':cid': companyId, ':meta': 'METADATA' },
   };
   const items = [];
   let lastKey;
   do {
-    const result = await dynamodb.scan({ ...params, ...(lastKey && { ExclusiveStartKey: lastKey }) }).promise();
+    const result = await dynamodb.query({ ...params, ...(lastKey && { ExclusiveStartKey: lastKey }) }).promise();
     items.push(...(result.Items ?? []));
     lastKey = result.LastEvaluatedKey;
   } while (lastKey);
@@ -920,3 +921,4 @@ router.get('/crm-analytics', authMiddleware, checkRole(['admin', 'manager']), as
 });
 
 module.exports = router;
+
