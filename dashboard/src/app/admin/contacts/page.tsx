@@ -8,6 +8,7 @@ import { TagBadge } from '@/components/tags/TagBadge';
 import { TagSelector } from '@/components/tags/TagSelector';
 import type { Tag } from '@/components/tags/TagBadge';
 import { apiFetch } from '@/lib/api';
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Contact {
@@ -334,9 +335,30 @@ export default function ContactHubPage() {
     }
   }, [router]);
 
+  const exportCsv = () => {
+    const rows = contacts.map((c: any) => ({
+      Name: c.name ?? '',
+      Phone: c.phone ?? '',
+      Email: c.email ?? '',
+      Stage: c.stage ?? '',
+      Source: c.source ?? '',
+      Tags: (c.tags ?? []).join('; '),
+      Assigned: c.assignedToName ?? '',
+      Updated: c.updatedAt ? new Date(c.updatedAt).toLocaleDateString('en-IN') : '',
+    }));
+    if (rows.length === 0) return;
+    const headers = Object.keys(rows[0]);
+    const csv = [headers.join(','), ...rows.map((r: any) => headers.map((h: string) => `"${(r[h] ?? '').toString().replace(/"/g, '""')}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `contacts-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const anyFilter = !!(searchInput || sourceFilter || stageFilter || tagFilter);
 
   return (
+    <ErrorBoundary>
     <div className="flex h-screen flex-col bg-slate-50 dark:bg-slate-950">
       <Navbar />
 
@@ -410,6 +432,16 @@ export default function ContactHubPage() {
                 className="text-xs text-slate-400 underline hover:text-slate-600 dark:hover:text-slate-200"
               >
                 Clear all
+              </button>
+            )}
+
+            {/* CSV export */}
+            {contacts.length > 0 && (
+              <button
+                onClick={exportCsv}
+                className="flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                ↓ CSV
               </button>
             )}
           </div>
@@ -646,5 +678,6 @@ export default function ContactHubPage() {
         </div>
       )}
     </div>
+    </ErrorBoundary>
   );
 }

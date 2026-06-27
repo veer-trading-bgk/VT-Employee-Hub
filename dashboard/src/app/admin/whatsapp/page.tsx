@@ -8,6 +8,8 @@ import { Navbar } from '@/components/layout/Navbar';
 import { apiFetch, getMemoryToken } from '@/lib/api';
 import { TemplatePicker } from '@/components/whatsapp/TemplatePicker';
 import { WhatsAppSubNav } from '@/components/layout/WhatsAppSubNav';
+import { SkeletonConversation } from '@/components/common/Skeleton';
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ChatStatus = 'open' | 'unassigned' | 'resolved';
@@ -575,6 +577,14 @@ export default function WhatsAppInboxPage() {
   const [isDragging, setIsDragging] = useState(false);
   const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
 
+  const [tabActive, setTabActive] = useState(true);
+
+  useEffect(() => {
+    const handleVisibility = () => setTabActive(!document.hidden);
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, []);
+
   // Contact name inline edit
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState('');
@@ -599,8 +609,8 @@ export default function WhatsAppInboxPage() {
     queryFn: () => apiFetch<{ success: boolean; conversations: Conversation[]; counts: Record<string, number> }>(
       `/api/whatsapp/inbox?status=${activeTab === 'all' ? 'all' : activeTab}`
     ),
-    refetchInterval: 30_000,           // fallback safety net; main updates via ping below
-    refetchIntervalInBackground: true, // don't let browser throttle this in background tabs
+    refetchInterval: tabActive ? 8000 : 30000,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
   });
 
@@ -625,7 +635,7 @@ export default function WhatsAppInboxPage() {
         : apiFetch<{ messages: Message[] }>(`/api/whatsapp/inbox/unknown/${selected!.phone}/messages`),
     enabled: !!selected,
     refetchInterval: 3_000,
-    refetchIntervalInBackground: true, // keep messages live even in background tabs
+    refetchIntervalInBackground: false,
     staleTime: 0,
   });
 
@@ -1110,6 +1120,7 @@ export default function WhatsAppInboxPage() {
   ];
 
   return (
+    <ErrorBoundary>
     <>
       <Navbar title="WhatsApp Inbox" />
       <WhatsAppSubNav />
@@ -1170,7 +1181,11 @@ export default function WhatsAppInboxPage() {
 
           {/* Conversation list */}
           <div className="flex-1 divide-y divide-slate-50 overflow-y-auto dark:divide-slate-800/50">
-            {inboxLoading && <p className="p-6 text-center text-sm text-slate-400">Loading…</p>}
+            {inboxLoading ? (
+              <div className="flex-1 overflow-y-auto">
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => <SkeletonConversation key={i} />)}
+              </div>
+            ) : null}
             {!inboxLoading && filtered.length === 0 && (
               <div className="flex flex-col items-center justify-center p-10 text-center">
                 <span className="mb-3 text-4xl">💬</span>
@@ -1771,5 +1786,6 @@ export default function WhatsAppInboxPage() {
         </div>
       )}
     </>
+    </ErrorBoundary>
   );
 }
