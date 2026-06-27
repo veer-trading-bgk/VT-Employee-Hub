@@ -605,6 +605,48 @@ router.post('/import', authMiddleware, checkRole(['admin', 'manager']), async (r
     const existingLeads = await scanAllLeads(companyId);
     const phoneMap = new Map(existingLeads.map((l) => [l.phone, l]));
 
+    // Resolve all text tag labels → catalog IDs before processing leads.
+    // CSV tags and importTag arrive as plain strings (e.g. "vip"), but
+    // contacts store and filter by catalog IDs (e.g. "t_abc123"). Without
+    // this step, tag-based filtering on the contacts page finds nothing.
+    const allTagValues = new Set();
+    if (importTag?.trim()) allTagValues.add(importTag.trim());
+    for (const lead of leads) {
+      if (Array.isArray(lead.tags)) {
+        for (const t of lead.tags) { if (t?.trim()) allTagValues.add(t.trim()); }
+      }
+    }
+
+    let tagIdMap = {};
+    if (allTagValues.size > 0) {
+      const catResult = await dynamodb.get({
+        TableName: TABLE,
+        Key: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG' },
+      }).promise();
+      const catalog = catResult.Item?.tags ?? [];
+      let catalogDirty = false;
+
+      for (const val of allTagValues) {
+        const byId = catalog.find((t) => t.id === val);
+        if (byId) { tagIdMap[val] = byId.id; continue; }
+        const byLabel = catalog.find((t) => t.label.toLowerCase() === val.toLowerCase());
+        if (byLabel) { tagIdMap[val] = byLabel.id; continue; }
+        const newId = `t_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        catalog.push({ id: newId, label: val, color: '#6366f1', createdAt: new Date().toISOString() });
+        tagIdMap[val] = newId;
+        catalogDirty = true;
+      }
+
+      if (catalogDirty) {
+        await dynamodb.put({
+          TableName: TABLE,
+          Item: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG', tags: catalog },
+        }).promise();
+      }
+    }
+
+    const importTagId = importTag?.trim() ? tagIdMap[importTag.trim()] ?? null : null;
+
     const results = { imported: 0, overwritten: 0, skipped: 0, errors: [] };
     const now = new Date().toISOString();
 
@@ -625,7 +667,11 @@ router.post('/import', authMiddleware, checkRole(['admin', 'manager']), async (r
             return;
           }
 
-          const tags = [...new Set([...(Array.isArray(lead.tags) ? lead.tags : []), ...(importTag ? [importTag] : [])])].filter(Boolean);
+          const rawTags = Array.isArray(lead.tags) ? lead.tags : [];
+          const tags = [...new Set([
+            ...rawTags.map((t) => tagIdMap[t?.trim()] ?? t).filter(Boolean),
+            ...(importTagId ? [importTagId] : []),
+          ])];
 
           const leadId = existing?.leadId ?? uuidv4();
           await dynamodb.put({

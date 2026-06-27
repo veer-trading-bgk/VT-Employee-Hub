@@ -124,8 +124,20 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
     // Stage filter
     if (stage) contacts = contacts.filter((c) => c.stage === stage);
 
-    // Tag filter — contact must include the tag ID
-    if (tag) contacts = contacts.filter((c) => (c.tags ?? []).includes(tag));
+    // Tag filter — match by catalog ID; also match by label to support
+    // contacts imported before IDs were resolved (legacy text-label tags).
+    if (tag) {
+      const catResult = await dynamodb.get({
+        TableName: TABLE,
+        Key: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG' },
+      }).promise();
+      const catalog = catResult.Item?.tags ?? [];
+      const tagLabel = catalog.find((t) => t.id === tag)?.label?.toLowerCase() ?? null;
+      contacts = contacts.filter((c) => {
+        const ct = c.tags ?? [];
+        return ct.includes(tag) || (tagLabel && ct.some((t) => t.toLowerCase() === tagLabel));
+      });
+    }
 
     const total = contacts.length;
     const pg = Math.max(1, parseInt(page, 10));
