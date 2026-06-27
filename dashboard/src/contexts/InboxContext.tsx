@@ -177,6 +177,9 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
   const [nameInput, setNameInput] = useState('');
 
   const lastActivityRef = useRef<string>(new Date(Date.now() - 60_000).toISOString());
+  // Keep a ref so the deep-link effect can read current selected without triggering on every click
+  const selectedRef = useRef<Conversation | null>(null);
+  selectedRef.current = selected;
 
   useEffect(() => {
     const handleVisibility = () => setTabActive(!document.hidden);
@@ -275,20 +278,22 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
   const stageObj = stages.find((s) => s.key === liveStage);
   const windowExpired = is24hExpired(currentLead?.lastInboundAt ?? selected?.lastInboundAt);
 
-  // Deep-link effect
+  // Deep-link effect — runs only when URL params or conversation list changes, NOT on every
+  // selectConv() call. Using selectedRef (not selected) prevents the effect from firing when
+  // the user clicks a conversation and temporarily creates a URL/state mismatch while
+  // router.replace() propagates asynchronously through useSearchParams().
   useEffect(() => {
     if (!conversations.length) return;
-    if (deepLinkLeadId && selected?.leadId !== deepLinkLeadId) {
+    if (deepLinkLeadId && selectedRef.current?.leadId !== deepLinkLeadId) {
       const match = conversations.find((c) => c.leadId === deepLinkLeadId);
       if (match) { setSelected(match); }
       else if (activeTab !== 'all') { setActiveTab('all'); }
-    } else if (deepLinkPhone && selected?.phone !== deepLinkPhone) {
+    } else if (deepLinkPhone && selectedRef.current?.phone !== deepLinkPhone) {
       const match = conversations.find((c) => c.phone === deepLinkPhone);
       if (match) { setSelected(match); }
       else if (activeTab !== 'all') { setActiveTab('all'); }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deepLinkLeadId, deepLinkPhone, conversations, selected, activeTab]);
+  }, [deepLinkLeadId, deepLinkPhone, conversations, activeTab]);
 
   // lastActivity watermark effect
   useEffect(() => {
