@@ -531,6 +531,7 @@ export default function WhatsAppInboxPage() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
 
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -661,7 +662,7 @@ export default function WhatsAppInboxPage() {
   const liveAssignedTo = currentLead?.assignedTo ?? selected?.assignedTo ?? '';
   const liveTags: string[] = currentLead?.tags ?? selected?.tags ?? [];
   const stageObj = stages.find((s) => s.key === liveStage);
-  const windowExpired = is24hExpired(selected?.lastInboundAt ?? currentLead?.lastInboundAt);
+  const windowExpired = is24hExpired(currentLead?.lastInboundAt ?? selected?.lastInboundAt);
 
   // Deep-link: ?leadId=xxx or ?phone=xxx opens that conversation automatically.
   // Handles both fresh deep-links and page-refresh state restoration.
@@ -739,7 +740,10 @@ export default function WhatsAppInboxPage() {
   }, [convKey]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = chatContainerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    if (atBottom) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [timeline.length]);
 
   // ── Mutations ────────────────────────────────────────────────────────────
@@ -1019,7 +1023,7 @@ export default function WhatsAppInboxPage() {
     if (!msgText.trim()) return;
     if (inputMode === 'note') { noteMutation.mutate(msgText); }
     else { sendMutation.mutate(); }
-    setMsgText('');
+    // Text cleared in onSuccess — preserved on failure so user doesn't lose their message
   }
 
   function handleMsgChange(val: string) {
@@ -1161,7 +1165,7 @@ export default function WhatsAppInboxPage() {
                     className={`absolute right-2 top-2 z-10 rounded-full p-0.5 text-sm transition-opacity ${
                       conv.pinned ? 'text-indigo-500' : 'text-slate-300 opacity-0 group-hover:opacity-100'
                     } hover:text-indigo-600`}>
-                    {conv.pinned ? '📌' : '📌'}
+                    {conv.pinned ? '📌' : '📍'}
                   </button>
                 )}
                 <button onClick={() => {
@@ -1345,7 +1349,7 @@ export default function WhatsAppInboxPage() {
             )}
 
             {/* Timeline */}
-            <div className="flex-1 space-y-2 overflow-y-auto p-4">
+            <div ref={chatContainerRef} className="flex-1 space-y-2 overflow-y-auto p-4">
               {timeline.length === 0 && <p className="py-12 text-center text-sm text-slate-400">No messages yet.</p>}
               {timeline.map((item) => {
                 if (item._kind === 'note') {

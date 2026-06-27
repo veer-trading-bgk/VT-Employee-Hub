@@ -154,6 +154,8 @@ export default function ContactHubPage() {
   const router = useRouter();
   const qc = useQueryClient();
 
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
   // Filter state
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch]           = useState('');
@@ -177,6 +179,9 @@ export default function ContactHubPage() {
 
   // Reset page on filter change
   useEffect(() => { setPage(1); }, [sourceFilter, stageFilter, tagFilter]);
+
+  // Clear selection when data changes (filter/page)
+  useEffect(() => { setSelectedIds(new Set()); }, [data]);
 
   // Build the query key used everywhere for this contacts list
   const contactsQKey = ['contacts', { search, sourceFilter, stageFilter, tagFilter, page }] as const;
@@ -260,12 +265,31 @@ export default function ContactHubPage() {
   });
 
   // ── Handlers ──────────────────────────────────────────────────────────────
+  const allRowIds = contacts.map((c) => `${c.type}-${c.id}`);
+  const allSelected = allRowIds.length > 0 && allRowIds.every((id) => selectedIds.has(id));
+  const someSelected = selectedIds.size > 0 && !allSelected;
+
+  function toggleAll() {
+    setSelectedIds(allSelected ? new Set() : new Set(allRowIds));
+  }
+  function toggleOne(key: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  const SELECTOR_HEIGHT = 280;
   function openTagSelector(contact: Contact, e: React.MouseEvent<HTMLElement>) {
     e.stopPropagation();
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const top = rect.bottom + 4 + SELECTOR_HEIGHT > window.innerHeight
+      ? rect.top - SELECTOR_HEIGHT - 4
+      : rect.bottom + 4;
     setSelectorState({
       contact,
-      top: rect.bottom + 4,
+      top,
       left: Math.min(rect.left, window.innerWidth - 240),
     });
   }
@@ -414,7 +438,13 @@ export default function ContactHubPage() {
             <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900">
               <tr>
                 <th className="w-8 px-4 py-3">
-                  <input type="checkbox" disabled className="rounded border-slate-300 text-indigo-600 opacity-40" />
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleAll}
+                    ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                    className="rounded border-slate-300 text-indigo-600"
+                  />
                 </th>
                 {COLUMNS.map((col) => (
                   <th key={col.key}
@@ -464,9 +494,15 @@ export default function ContactHubPage() {
                     <tr key={`${c.type}-${c.id}`}
                       className="group transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
 
-                      {/* Checkbox — future bulk actions */}
+                      {/* Checkbox — row selection */}
                       <td className="px-4 py-3">
-                        <input type="checkbox" className="rounded border-slate-300 text-indigo-600" />
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(`${c.type}-${c.id}`)}
+                          onChange={() => toggleOne(`${c.type}-${c.id}`)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="rounded border-slate-300 text-indigo-600"
+                        />
                       </td>
 
                       {/* Contact Name */}

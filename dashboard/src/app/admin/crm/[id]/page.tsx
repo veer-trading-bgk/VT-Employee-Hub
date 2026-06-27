@@ -61,7 +61,10 @@ function is24hExpired(lastInboundAt?: string | null) {
 
 function timeAgo(iso: string) {
   const diff = Date.now() - new Date(iso).getTime();
-  const h = Math.floor(diff / 3_600_000);
+  const m = Math.floor(diff / 60_000);
+  if (m < 1) return 'Just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
 }
@@ -330,9 +333,9 @@ export default function LeadDetailPage() {
                 </div>
 
                 {/* WA inbox link */}
-                <Link href="/admin/whatsapp"
+                <Link href={`/admin/whatsapp?leadId=${lead.leadId}`}
                   className="rounded-lg border border-slate-200 py-1.5 text-center text-xs text-slate-400 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">
-                  Open in WA Inbox ↗
+                  Open in Inbox ↗
                 </Link>
               </div>
             </div>
@@ -482,10 +485,12 @@ export default function LeadDetailPage() {
                 </div>
 
                 <div className="flex gap-2 p-3">
-                  <input value={msgText}
+                  <textarea
+                    value={msgText}
                     onChange={(e) => setMsgText(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && canSend) { e.preventDefault(); handleSend(); } }}
                     disabled={windowExpired && inputMode === 'reply'}
+                    rows={1}
                     placeholder={
                       windowExpired && inputMode === 'reply'
                         ? '24h window expired — switch to Note'
@@ -493,7 +498,7 @@ export default function LeadDetailPage() {
                           ? 'Internal note (not sent to customer)…'
                           : `Message ${lead.name} on WhatsApp…`
                     }
-                    className={`flex-1 rounded-xl border px-4 py-2.5 text-sm outline-none ${
+                    className={`flex-1 resize-none rounded-xl border px-4 py-2.5 text-sm outline-none ${
                       inputMode === 'note'
                         ? 'border-amber-200 bg-amber-50 focus:border-amber-400 dark:border-amber-900/30 dark:bg-amber-900/10 dark:text-white'
                         : windowExpired
