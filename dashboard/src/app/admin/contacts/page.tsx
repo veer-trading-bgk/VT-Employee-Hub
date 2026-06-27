@@ -180,9 +180,6 @@ export default function ContactHubPage() {
   // Reset page on filter change
   useEffect(() => { setPage(1); }, [sourceFilter, stageFilter, tagFilter]);
 
-  // Clear selection when data changes (filter/page)
-  useEffect(() => { setSelectedIds(new Set()); }, [data]);
-
   // Build the query key used everywhere for this contacts list
   const contactsQKey = ['contacts', { search, sourceFilter, stageFilter, tagFilter, page }] as const;
 
@@ -214,6 +211,9 @@ export default function ContactHubPage() {
   const pages        = data?.pages ?? 1;
   const stages       = pipelineData?.stages ?? [];
   const tagCatalog   = tagCatalogData?.tags ?? [];
+
+  // Clear selection when contacts page/filter result changes
+  useEffect(() => { setSelectedIds(new Set()); }, [data]);
 
   // ── Stage mutation ────────────────────────────────────────────────────────
   const stageMutation = useMutation({
