@@ -149,6 +149,28 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
   }
 });
 
+// ── DELETE /api/contacts/unknown/:phone — remove an INBOX# CONTACT record ────────
+// Hard-deletes the inbox-only (unknown) contact record for the given phone.
+// Safe: only touches INBOX#, never a CRM LEAD# record.
+router.delete('/unknown/:phone', authMiddleware, checkRole(['admin', 'manager']), rateLimit(30, 60_000), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+    const phone = to10Digit(req.params.phone);
+    if (!phone) return res.status(400).json({ error: 'phone required' });
+
+    const PK = `INBOX#${companyId}#${phone}`;
+    const SK = 'CONTACT';
+
+    const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK } }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'Unknown contact not found' });
+
+    await dynamodb.delete({ TableName: TABLE, Key: { PK, SK } }).promise();
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── PUT /api/contacts/stage — set CRM stage for lead or unknown contact ────────
 router.put('/stage', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {

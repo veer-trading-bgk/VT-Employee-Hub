@@ -270,13 +270,18 @@ export default function ContactHubPage() {
 
   // ── Bulk delete mutation ──────────────────────────────────────────────────
   const deleteMutation = useMutation({
-    mutationFn: (leadIds: string[]) =>
-      Promise.all(leadIds.map((id) => apiFetch(`/api/crm/leads/${id}`, { method: 'DELETE' }))),
-    onSuccess: (_, leadIds) => {
+    mutationFn: async ({ leadIds, unknownPhones }: { leadIds: string[]; unknownPhones: string[] }) => {
+      await Promise.all([
+        ...leadIds.map((id) => apiFetch(`/api/crm/leads/${id}`, { method: 'DELETE' })),
+        ...unknownPhones.map((phone) => apiFetch(`/api/contacts/unknown/${encodeURIComponent(phone)}`, { method: 'DELETE' })),
+      ]);
+      return leadIds.length + unknownPhones.length;
+    },
+    onSuccess: (count) => {
       setSelectedIds(new Set());
       setConfirmDelete(false);
       qc.invalidateQueries({ queryKey: ['contacts'] });
-      toast.success(`${leadIds.length} contact(s) deleted`);
+      toast.success(`${count} contact(s) deleted`);
     },
     onError: () => {
       setConfirmDelete(false);
@@ -289,10 +294,17 @@ export default function ContactHubPage() {
   const allSelected = allRowIds.length > 0 && allRowIds.every((id) => selectedIds.has(id));
   const someSelected = selectedIds.size > 0 && !allSelected;
 
-  // Only lead-type contacts can be soft-deleted via /api/crm/leads/:id
+  // Lead contacts: soft-deleted via DELETE /api/crm/leads/:id
   const selectedLeadIds = contacts
     .filter((c) => selectedIds.has(`${c.type}-${c.id}`) && c.type === 'lead' && c.leadId)
     .map((c) => c.leadId as string);
+
+  // Unknown/inbox contacts: hard-deleted via DELETE /api/contacts/unknown/:phone
+  const selectedUnknownPhones = contacts
+    .filter((c) => selectedIds.has(`${c.type}-${c.id}`) && c.type === 'unknown' && c.phone)
+    .map((c) => c.phone);
+
+  const totalSelected = selectedLeadIds.length + selectedUnknownPhones.length;
 
   function toggleAll() {
     setSelectedIds(allSelected ? new Set() : new Set(allRowIds));
@@ -469,14 +481,14 @@ export default function ContactHubPage() {
               </button>
             )}
 
-            {/* Bulk delete — only when leads are selected */}
-            {selectedLeadIds.length > 0 && (
+            {/* Bulk delete — visible when any deletable contact is selected */}
+            {totalSelected > 0 && (
               <button
                 onClick={() => setConfirmDelete(true)}
                 className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                Delete ({selectedLeadIds.length})
+                Delete ({totalSelected})
               </button>
             )}
           </div>
@@ -702,10 +714,11 @@ export default function ContactHubPage() {
               <Trash2 className="h-5 w-5 text-red-600 dark:text-red-400" />
             </div>
             <h3 className="mb-1 text-base font-semibold text-slate-900 dark:text-white">
-              Delete {selectedLeadIds.length} contact{selectedLeadIds.length !== 1 ? 's' : ''}?
+              Delete {totalSelected} contact{totalSelected !== 1 ? 's' : ''}?
             </h3>
             <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">
-              This can be restored later from the CRM.
+              {selectedLeadIds.length > 0 && 'CRM leads can be restored later. '}
+              {selectedUnknownPhones.length > 0 && 'Inbox-only contacts will be permanently removed.'}
             </p>
             <div className="flex justify-end gap-2">
               <button
@@ -716,7 +729,7 @@ export default function ContactHubPage() {
                 Cancel
               </button>
               <button
-                onClick={() => deleteMutation.mutate(selectedLeadIds)}
+                onClick={() => deleteMutation.mutate({ leadIds: selectedLeadIds, unknownPhones: selectedUnknownPhones })}
                 disabled={deleteMutation.isPending}
                 className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
               >
