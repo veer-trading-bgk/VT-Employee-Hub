@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useRef, useEffect, useCallback, Dispatch, SetStateAction } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient, UseMutationResult, QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 
@@ -164,7 +164,6 @@ export function useInbox() {
 
 export function InboxProvider({ children }: { children: React.ReactNode }) {
   const qc = useQueryClient();
-  const router = useRouter();
   const searchParams = useSearchParams();
   const deepLinkLeadId = searchParams.get('leadId');
   const deepLinkPhone = searchParams.get('phone');
@@ -189,13 +188,19 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
 
   const selectConv = useCallback((conv: Conversation | null) => {
     setSelected(conv);
+    // window.history.replaceState updates the URL bar silently — no Next.js navigation,
+    // no page flash. useSearchParams() does not update (it only changes on real navigations),
+    // so the deep-link effect is never triggered by clicks.
+    // The URL is still correct on page refresh, preserving conversation restore.
     if (conv) {
-      const param = conv.type === 'lead' && conv.leadId ? `?leadId=${conv.leadId}` : `?phone=${encodeURIComponent(conv.phone)}`;
-      router.replace(param, { scroll: false });
+      const param = conv.type === 'lead' && conv.leadId
+        ? `?leadId=${conv.leadId}`
+        : `?phone=${encodeURIComponent(conv.phone)}`;
+      window.history.replaceState(null, '', param);
     } else {
-      router.replace('?', { scroll: false });
+      window.history.replaceState(null, '', window.location.pathname);
     }
-  }, [router]);
+  }, []);
 
   // ── Queries ───────────────────────────────────────────────────────────────
   const { data: inboxData, isLoading: inboxLoading } = useQuery({
