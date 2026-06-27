@@ -9,6 +9,8 @@ import { TagSelector } from '@/components/tags/TagSelector';
 import type { Tag } from '@/components/tags/TagBadge';
 import { apiFetch } from '@/lib/api';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import { Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Contact {
@@ -156,6 +158,7 @@ export default function ContactHubPage() {
   const qc = useQueryClient();
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   // Filter state
   const [searchInput, setSearchInput] = useState('');
@@ -265,10 +268,31 @@ export default function ContactHubPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tag-catalog'] }),
   });
 
+  // ── Bulk delete mutation ──────────────────────────────────────────────────
+  const deleteMutation = useMutation({
+    mutationFn: (leadIds: string[]) =>
+      Promise.all(leadIds.map((id) => apiFetch(`/api/crm/leads/${id}`, { method: 'DELETE' }))),
+    onSuccess: (_, leadIds) => {
+      setSelectedIds(new Set());
+      setConfirmDelete(false);
+      qc.invalidateQueries({ queryKey: ['contacts'] });
+      toast.success(`${leadIds.length} contact(s) deleted`);
+    },
+    onError: () => {
+      setConfirmDelete(false);
+      toast.error('Failed to delete contacts. Please try again.');
+    },
+  });
+
   // ── Handlers ──────────────────────────────────────────────────────────────
   const allRowIds = contacts.map((c) => `${c.type}-${c.id}`);
   const allSelected = allRowIds.length > 0 && allRowIds.every((id) => selectedIds.has(id));
   const someSelected = selectedIds.size > 0 && !allSelected;
+
+  // Only lead-type contacts can be soft-deleted via /api/crm/leads/:id
+  const selectedLeadIds = contacts
+    .filter((c) => selectedIds.has(`${c.type}-${c.id}`) && c.type === 'lead' && c.leadId)
+    .map((c) => c.leadId as string);
 
   function toggleAll() {
     setSelectedIds(allSelected ? new Set() : new Set(allRowIds));
@@ -442,6 +466,17 @@ export default function ContactHubPage() {
                 className="flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
               >
                 ↓ CSV
+              </button>
+            )}
+
+            {/* Bulk delete — only when leads are selected */}
+            {selectedLeadIds.length > 0 && (
+              <button
+                onClick={() => setConfirmDelete(true)}
+                className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete ({selectedLeadIds.length})
               </button>
             )}
           </div>
@@ -656,6 +691,41 @@ export default function ContactHubPage() {
           <Pagination page={page} pages={pages} total={total} pageSize={50} onChange={setPage} />
         </div>
       </div>
+
+      {/* ── Delete confirm dialog ─────────────────────────────────────────── */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={() => setConfirmDelete(false)}>
+          <div className="mx-4 w-full max-w-sm rounded-xl bg-white p-6 shadow-2xl dark:bg-slate-900"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
+              <Trash2 className="h-5 w-5 text-red-600 dark:text-red-400" />
+            </div>
+            <h3 className="mb-1 text-base font-semibold text-slate-900 dark:text-white">
+              Delete {selectedLeadIds.length} contact{selectedLeadIds.length !== 1 ? 's' : ''}?
+            </h3>
+            <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">
+              This can be restored later from the CRM.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setConfirmDelete(false)}
+                disabled={deleteMutation.isPending}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => deleteMutation.mutate(selectedLeadIds)}
+                disabled={deleteMutation.isPending}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Tag Selector — rendered outside table to avoid overflow clip ─── */}
       {selectorState && (
