@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
@@ -8,6 +8,9 @@ import { Loading } from '@/components/common/Loading';
 import { apiFetch, ApiClientError } from '@/lib/api';
 import { CrmSubNav } from '@/components/layout/CrmSubNav';
 import { calculateScore, scoreBadge } from '@/utils/leadScore';
+import { useDebounce } from '@/hooks/useDebounce';
+import { SkeletonCard, SkeletonRow } from '@/components/common/Skeleton';
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 
 export interface PipelineStage {
   key: string;
@@ -97,6 +100,11 @@ export default function AdminCrmPage() {
     assignedTo: '', closureDeadline: '', tags: '', productInterest: [] as string[],
   });
   const [listPage, setListPage] = useState(1);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkStage, setBulkStage] = useState('');
+
+  const debouncedSearch = useDebounce(search, 300);
+  const debouncedAssignee = useDebounce(filterAssignee, 300);
 
   const { data: pipelineData } = useQuery({
     queryKey: ['crm-pipeline'],
@@ -108,13 +116,13 @@ export default function AdminCrmPage() {
   const LIST_PAGE_SIZE = 50;
   const { data: leadsData, isLoading } = useQuery({
     queryKey: view === 'list'
-      ? ['crm-leads', 'list', listPage, search, filterAssignee]
+      ? ['crm-leads', 'list', listPage, debouncedSearch, debouncedAssignee]
       : ['crm-leads', 'kanban'],
     queryFn: () => {
       if (view === 'list') {
         const params = new URLSearchParams({ page: String(listPage), pageSize: String(LIST_PAGE_SIZE) });
-        if (search) params.set('search', search);
-        if (filterAssignee) params.set('assignedTo', filterAssignee);
+        if (debouncedSearch) params.set('search', debouncedSearch);
+        if (debouncedAssignee) params.set('assignedTo', debouncedAssignee);
         return apiFetch<{ success: boolean; leads: Lead[]; total: number; pages: number; truncated?: boolean }>(`/api/crm/leads?${params}`);
       }
       return apiFetch<{ success: boolean; leads: Lead[]; total: number; truncated?: boolean }>('/api/crm/leads');
@@ -173,7 +181,19 @@ export default function AdminCrmPage() {
   const stageMutation = useMutation({
     mutationFn: ({ leadId, stage }: { leadId: string; stage: string }) =>
       apiFetch(`/api/crm/leads/${leadId}/stage`, { method: 'PUT', body: JSON.stringify({ stage }) }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['crm-leads'] }),
+    onMutate: async ({ leadId, stage }) => {
+      await queryClient.cancelQueries({ queryKey: ['crm-leads'] });
+      const snapshots = queryClient.getQueriesData<{ leads: Lead[]; total: number }>({ queryKey: ['crm-leads'] });
+      queryClient.setQueriesData({ queryKey: ['crm-leads'] }, (old: any) => {
+        if (!old?.leads) return old;
+        return { ...old, leads: old.leads.map((l: Lead) => l.leadId === leadId ? { ...l, stage } : l) };
+      });
+      return { snapshots };
+    },
+    onError: (_err, _vars, ctx) => {
+      ctx?.snapshots?.forEach(([key, data]: [any, any]) => queryClient.setQueryData(key, data));
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['crm-leads'] }),
   });
 
   const assignMutation = useMutation({
@@ -185,8 +205,32 @@ export default function AdminCrmPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['crm-leads'] }),
   });
 
+  const bulkStageMutation = useMutation({
+    mutationFn: async ({ leadIds, stage }: { leadIds: string[]; stage: string }) => {
+      await Promise.all(leadIds.map((id) => apiFetch(`/api/crm/leads/${id}/stage`, { method: 'PUT', body: JSON.stringify({ stage }) })));
+    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['crm-leads'] }); setSelectedIds(new Set()); },
+  });
+
+  const bulkAssignMutation = useMutation({
+    mutationFn: async ({ leadIds, assignedTo }: { leadIds: string[]; assignedTo: string }) => {
+      const assignedToName = employees.find((e) => e.id === assignedTo)?.name;
+      await Promise.all(leadIds.map((id) =>
+        apiFetch(`/api/crm/leads/${id}/assign`, { method: 'PUT', body: JSON.stringify({ assignedTo, assignedToName }) })
+      ));
+    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['crm-leads'] }); setSelectedIds(new Set()); },
+  });
+
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (leadIds: string[]) => {
+      await Promise.all(leadIds.map((id) => apiFetch(`/api/crm/leads/${id}`, { method: 'DELETE' })));
+    },
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['crm-leads'] }); setSelectedIds(new Set()); },
+  });
+
   // Reset list pagination when filters or view change
-  useEffect(() => { setListPage(1); }, [view, search, filterAssignee]);
+  useEffect(() => { setListPage(1); }, [view, debouncedSearch, debouncedAssignee]);
 
   const rawLeads = leadsData?.leads ?? [];
   const totalLeads = leadsData?.total ?? 0;
@@ -209,6 +253,25 @@ export default function AdminCrmPage() {
     setShowAddForm(true);
   };
 
+  const exportCsv = useCallback(() => {
+    const rows = rawLeads.map((l) => ({
+      Name: l.name,
+      Phone: l.phone,
+      Email: l.email ?? '',
+      Stage: stages.find((s) => s.key === l.stage)?.label ?? l.stage,
+      Assigned: l.assignedToName ?? '',
+      Deadline: l.closureDeadline ?? '',
+      Source: l.source ?? '',
+      Updated: new Date(l.updatedAt).toLocaleDateString('en-IN'),
+    }));
+    const headers = Object.keys(rows[0] ?? {});
+    const csv = [headers.join(','), ...rows.map((r) => headers.map((h) => `"${(r as any)[h]}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `leads-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }, [rawLeads, stages]);
+
   const toggleProduct = (p: string) => {
     setForm((f) => ({
       ...f,
@@ -217,6 +280,7 @@ export default function AdminCrmPage() {
   };
 
   return (
+    <ErrorBoundary>
     <>
       <Navbar title="CRM" showBack />
       <CrmSubNav />
@@ -244,6 +308,12 @@ export default function AdminCrmPage() {
             </select>
 
             <div className="ml-auto flex items-center gap-2">
+              {view === 'list' && rawLeads.length > 0 && (
+                <button onClick={exportCsv}
+                  className="flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
+                  ↓ CSV
+                </button>
+              )}
               <Link href="/admin/crm/import"
                 className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-600 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-900/20 dark:text-indigo-400">
                 ↑ Import CSV
@@ -268,7 +338,16 @@ export default function AdminCrmPage() {
           )}
 
           {isLoading ? (
-            <div className="flex flex-1 items-center justify-center"><Loading /></div>
+            <div className="flex flex-1 gap-0 overflow-x-auto p-4">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="mr-3 flex w-[280px] flex-shrink-0 flex-col rounded-xl border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900">
+                  <div className="mb-2 h-8 animate-pulse rounded-lg bg-slate-100 dark:bg-slate-800" />
+                  <div className="flex flex-col gap-2">
+                    {[1, 2, 3].map((j) => <SkeletonCard key={j} />)}
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : view === 'kanban' ? (
             // ── Kanban ──────────────────────────────────────────────────────────
             <div className="flex flex-1 gap-0 overflow-x-auto p-4">
@@ -455,23 +534,48 @@ export default function AdminCrmPage() {
             // ── List view ────────────────────────────────────────────────────────
             <div className="flex flex-1 flex-col overflow-hidden">
               <div className="flex-1 overflow-auto p-4">
+                {selectedIds.size > 0 && (
+                  <div className="mb-3 flex items-center gap-2 rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-2.5 dark:border-indigo-900/30 dark:bg-indigo-900/10">
+                    <span className="text-xs font-semibold text-indigo-700 dark:text-indigo-300">{selectedIds.size} selected</span>
+                    <select value={bulkStage} onChange={(e) => setBulkStage(e.target.value)}
+                      className="ml-2 rounded border border-indigo-200 bg-white px-2 py-1 text-xs text-slate-700 dark:border-indigo-700 dark:bg-slate-800 dark:text-white">
+                      <option value="">Move to stage…</option>
+                      {stages.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                    </select>
+                    <button onClick={() => { if (bulkStage) bulkStageMutation.mutate({ leadIds: [...selectedIds], stage: bulkStage }); }}
+                      disabled={!bulkStage || bulkStageMutation.isPending}
+                      className="rounded bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-40">
+                      Apply
+                    </button>
+                    <button onClick={() => { if (confirm(`Delete ${selectedIds.size} leads? This cannot be undone.`)) bulkDeleteMutation.mutate([...selectedIds]); }}
+                      disabled={bulkDeleteMutation.isPending}
+                      className="ml-auto rounded bg-rose-600 px-3 py-1 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-40">
+                      Delete {selectedIds.size}
+                    </button>
+                    <button onClick={() => setSelectedIds(new Set())} className="text-xs text-slate-400 hover:text-slate-600">Clear</button>
+                  </div>
+                )}
                 <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
                   <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-slate-800">
+                      <th className="px-4 py-3"><input type="checkbox" className="rounded" checked={selectedIds.size === rawLeads.length && rawLeads.length > 0} onChange={(e) => setSelectedIds(e.target.checked ? new Set(rawLeads.map((l) => l.leadId)) : new Set())} /></th>
                       {['Name', 'Phone', 'Score', 'Stage', 'Assigned', 'Deadline', 'Updated', ''].map((h) => (
                         <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-400">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50 dark:divide-slate-800/50">
-                    {rawLeads.length === 0 ? (
-                      <tr><td colSpan={8} className="py-16 text-center text-sm text-slate-400">No leads found</td></tr>
+                    {isLoading ? (
+                      [1,2,3,4,5].map((i) => <SkeletonRow key={i} />)
+                    ) : rawLeads.length === 0 ? (
+                      <tr><td colSpan={9} className="py-16 text-center text-sm text-slate-400">No leads found</td></tr>
                     ) : rawLeads.map((lead) => {
                       const stage = stages.find((s) => s.key === lead.stage);
                       const dl = deadlineLabel(lead.closureDeadline);
                       return (
                         <tr key={lead.leadId} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                          <td className="px-4 py-3"><input type="checkbox" className="rounded" checked={selectedIds.has(lead.leadId)} onChange={(e) => { const next = new Set(selectedIds); e.target.checked ? next.add(lead.leadId) : next.delete(lead.leadId); setSelectedIds(next); }} /></td>
                           <td className="px-4 py-3 font-medium text-slate-900 dark:text-white">{lead.name}</td>
                           <td className="px-4 py-3 tabular-nums text-slate-500">{lead.phone}</td>
                           <td className="px-4 py-3">
@@ -616,5 +720,6 @@ export default function AdminCrmPage() {
         </div>
       )}
     </>
+    </ErrorBoundary>
   );
 }

@@ -9,6 +9,8 @@ import { Loading } from '@/components/common/Loading';
 import { apiFetch } from '@/lib/api';
 import type { PipelineStage } from '../page';
 import { TemplatePicker } from '@/components/whatsapp/TemplatePicker';
+import { UndoToast } from '@/components/common/UndoToast';
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Lead {
@@ -92,6 +94,11 @@ export default function LeadDetailPage() {
   const [newTag, setNewTag] = useState('');
   const [addingTag, setAddingTag] = useState(false);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(false);
+  const [olderMessages, setOlderMessages] = useState<Message[]>([]);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
 
   // ── Queries ──────────────────────────────────────────────────────────────
   const { data, isLoading } = useQuery({
@@ -128,6 +135,8 @@ export default function LeadDetailPage() {
   const lead = data?.lead;
   const rawMessages = data?.messages ?? [];
   const rawNotes = data?.internalNotes ?? [];
+  const serverHasMore = (data as any)?.hasMore ?? false;
+  const serverNextCursor = (data as any)?.nextCursor ?? null;
   const stages = pipelineData?.stages ?? [];
   const employees = (empData?.data ?? []).filter((e) =>
     ['telecaller', 'agent', 'intern', 'team_lead', 'manager'].includes(e.role)
@@ -139,9 +148,19 @@ export default function LeadDetailPage() {
   const windowExpired = is24hExpired(lead?.lastInboundAt);
   const chatStatus = lead?.chatStatus ?? (lead?.assignedTo ? 'open' : 'unassigned');
 
+  // On initial load (no older messages yet), sync state from server
+  useEffect(() => {
+    if (data) {
+      setHasMore(serverHasMore);
+      setNextCursor(serverNextCursor);
+      setOlderMessages([]); // reset on lead change
+    }
+  }, [id]); // reset when lead changes, not on every refetch
+
   // Merged timeline sorted by timestamp
+  const allMessages = [...olderMessages, ...rawMessages];
   const timeline = [
-    ...rawMessages.map((m) => ({ ...m, _kind: 'message' as const })),
+    ...allMessages.map((m) => ({ ...m, _kind: 'message' as const })),
     ...rawNotes.map((n) => ({ ...n, _kind: 'note' as const })),
   ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
@@ -245,6 +264,19 @@ export default function LeadDetailPage() {
     } catch { /* silent */ } finally { setAddingTag(false); }
   }
 
+  async function loadMoreMessages() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const res = await apiFetch<{ success: boolean; messages: Message[]; hasMore: boolean; nextCursor: string | null }>(
+        `/api/crm/leads/${id}?before=${encodeURIComponent(nextCursor)}`
+      );
+      setOlderMessages((prev) => [...(res.messages ?? []), ...prev]);
+      setHasMore(res.hasMore ?? false);
+      setNextCursor(res.nextCursor ?? null);
+    } catch { /* silent */ } finally { setLoadingMore(false); }
+  }
+
   function handleSend() {
     if (!msgText.trim()) return;
     if (inputMode === 'note') noteMutation.mutate(msgText);
@@ -258,6 +290,7 @@ export default function LeadDetailPage() {
   if (!lead) return <><Navbar title="Lead" showBack /><p className="p-8 text-center text-slate-400">Lead not found.</p></>;
 
   return (
+    <ErrorBoundary>
     <>
       <Navbar title={lead.name} showBack />
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
@@ -359,7 +392,7 @@ export default function LeadDetailPage() {
                     className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800">
                     {editing ? '✕' : '✏'}
                   </button>
-                  <button onClick={() => { if (confirm(`Delete ${lead.name}?`)) deleteMutation.mutate(); }}
+                  <button onClick={() => setPendingDelete(true)}
                     className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-500 hover:bg-red-100 dark:border-red-900/50 dark:bg-red-900/20">
                     🗑
                   </button>
@@ -464,6 +497,14 @@ export default function LeadDetailPage() {
 
               {/* Timeline */}
               <div className="flex-1 overflow-y-auto space-y-2 p-4">
+                {(hasMore || serverHasMore) && (
+                  <div className="flex justify-center py-2">
+                    <button onClick={loadMoreMessages} disabled={loadingMore}
+                      className="rounded-lg border border-slate-200 px-4 py-1.5 text-xs text-slate-500 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800">
+                      {loadingMore ? 'Loading…' : '↑ Load earlier messages'}
+                    </button>
+                  </div>
+                )}
                 {timeline.length === 0 && (
                   <p className="py-10 text-center text-sm text-slate-400">No messages yet. Start the conversation below.</p>
                 )}
@@ -671,6 +712,15 @@ export default function LeadDetailPage() {
           )}
         </div>
       </div>
+      {pendingDelete && (
+        <UndoToast
+          message="Lead will be deleted"
+          onConfirm={() => { setPendingDelete(false); deleteMutation.mutate(); }}
+          onUndo={() => setPendingDelete(false)}
+          duration={5000}
+        />
+      )}
     </>
+    </ErrorBoundary>
   );
 }
