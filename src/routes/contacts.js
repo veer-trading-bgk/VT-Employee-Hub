@@ -3,14 +3,9 @@ const router = express.Router();
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const { rateLimit } = require('../middleware/rateLimiter');
+const { to10Digit } = require('../utils/phone');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
-
-function to10Digit(phone) {
-  if (!phone) return '';
-  const d = String(phone).replace(/\D/g, '');
-  return d.length > 10 ? d.slice(-10) : d;
-}
 
 // Normalise a raw DDB lead record into the shared Contact shape
 function normaliseLead(l) {
@@ -68,14 +63,16 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
     const companyId = req.user.companyId;
     const { q = '', source = '', stage = '', tag = '', page = '1', pageSize = '50' } = req.query;
 
-    // Full scan of LEAD# METADATA records for this company
+    // GSI query for LEAD# METADATA records — O(company-size) not O(table-size)
     const leadItems = [];
     let lk1;
     do {
-      const r = await dynamodb.scan({
+      const r = await dynamodb.query({
         TableName: TABLE,
-        FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta',
-        ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA' },
+        IndexName: 'leadsByCompany',
+        KeyConditionExpression: 'companyId = :cid',
+        FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
+        ExpressionAttributeValues: { ':cid': companyId, ':meta': 'METADATA' },
         ...(lk1 && { ExclusiveStartKey: lk1 }),
       }).promise();
       leadItems.push(...(r.Items ?? []));

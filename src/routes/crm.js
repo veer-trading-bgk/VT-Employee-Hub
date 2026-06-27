@@ -41,12 +41,12 @@ async function getPipelineStages(companyId) {
 }
 
 async function scanAllLeads(companyId) {
-  // GSI query on leadsByCompany � O(company-size) instead of O(table-size)
+  // GSI query on leadsByCompany � O(company-size) instead of O(table-size)
   const params = {
     TableName: TABLE,
     IndexName: 'leadsByCompany',
     KeyConditionExpression: 'companyId = :cid',
-    FilterExpression: 'SK = :meta',
+    FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
     ExpressionAttributeValues: { ':cid': companyId, ':meta': 'METADATA' },
   };
   const items = [];
@@ -156,7 +156,7 @@ router.put('/pipeline', authMiddleware, checkRole(['admin']), async (req, res, n
 // ── GET /api/crm/leads ─────────────────────────────────────────────────────────
 router.get('/leads', authMiddleware, async (req, res, next) => {
   try {
-    const { stage, assignedTo, search, page: pageParam, pageSize: pageSizeParam } = req.query;
+    const { stage, assignedTo, search, dateFrom, dateTo, page: pageParam, pageSize: pageSizeParam } = req.query;
     const companyId = req.user.companyId;
     const empRoles = ['telecaller', 'agent', 'intern'];
 
@@ -175,6 +175,12 @@ router.get('/leads', authMiddleware, async (req, res, next) => {
       leads = leads.filter(
         (l) => l.name?.toLowerCase().includes(q) || l.phone?.includes(q) || l.email?.toLowerCase().includes(q)
       );
+    }
+
+    if (dateFrom) leads = leads.filter((l) => l.createdAt && l.createdAt >= dateFrom);
+    if (dateTo) {
+      const endOfDay = `${dateTo}T23:59:59.999Z`;
+      leads = leads.filter((l) => l.createdAt && l.createdAt <= endOfDay);
     }
 
     leads.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
@@ -360,7 +366,21 @@ router.put('/leads/:id', authMiddleware, rateLimit(30, 60_000), async (req, res,
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
-    if (updates.phone) updates.phone = String(updates.phone).replace(/\D/g, '');
+    if (updates.phone) {
+      updates.phone = String(updates.phone).replace(/\D/g, '');
+      // Reject if another lead in this company already owns this phone
+      if (updates.phone !== existing.Item.phone) {
+        const dupCheck = await dynamodb.scan({
+          TableName: TABLE,
+          FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND phone = :ph AND attribute_not_exists(deletedAt)',
+          ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA', ':ph': updates.phone },
+        }).promise();
+        const conflict = (dupCheck.Items ?? []).find((l) => l.leadId !== req.params.id);
+        if (conflict) {
+          return res.status(409).json({ error: 'Phone number already used by another lead', existingLeadId: conflict.leadId, existingName: conflict.name });
+        }
+      }
+    }
     if (updates.tags) updates.tags = await resolveTagIds(companyId, updates.tags);
     updates.updatedAt = new Date().toISOString();
 
@@ -522,31 +542,47 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── DELETE /api/crm/leads/:id ──────────────────────────────────────────────────
+// ── DELETE /api/crm/leads/:id — soft-delete (sets deletedAt, never purges) ─────
 router.delete('/leads/:id', authMiddleware, checkRole(['admin', 'manager']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const PK = leadPK(req.user.companyId, req.params.id);
-    const result = await dynamodb.query({
+    const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'Lead not found' });
+    if (existing.Item.deletedAt) return res.status(410).json({ error: 'Lead already deleted' });
+
+    await dynamodb.update({
       TableName: TABLE,
-      KeyConditionExpression: 'PK = :pk',
-      ExpressionAttributeValues: { ':pk': PK },
-      ProjectionExpression: 'PK, SK',
+      Key: { PK, SK: 'METADATA' },
+      UpdateExpression: 'SET deletedAt = :ts, deletedBy = :uid',
+      ExpressionAttributeValues: { ':ts': new Date().toISOString(), ':uid': req.user.id },
     }).promise();
-
-    const items = result.Items ?? [];
-    if (items.length === 0) return res.status(404).json({ error: 'Lead not found' });
-
-    for (let i = 0; i < items.length; i += 25) {
-      const chunk = items.slice(i, i + 25);
-      await dynamodb.batchWrite({
-        RequestItems: { [TABLE]: chunk.map((item) => ({ DeleteRequest: { Key: { PK: item.PK, SK: item.SK } } })) },
-      }).promise();
-    }
 
     await logAudit(req.user.id, 'crm_lead_deleted', req.params.id, 'success', req.ip, {});
     res.json({ success: true });
   } catch (err) {
     logger.error('crm/leads/:id DELETE error', err);
+    next(err);
+  }
+});
+
+// ── POST /api/crm/leads/:id/restore — undo soft-delete ────────────────────────
+router.post('/leads/:id/restore', authMiddleware, checkRole(['admin', 'manager']), rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const PK = leadPK(req.user.companyId, req.params.id);
+    const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'Lead not found' });
+    if (!existing.Item.deletedAt) return res.status(400).json({ error: 'Lead is not deleted' });
+
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK, SK: 'METADATA' },
+      UpdateExpression: 'REMOVE deletedAt, deletedBy',
+    }).promise();
+
+    await logAudit(req.user.id, 'crm_lead_restored', req.params.id, 'success', req.ip, {});
+    res.json({ success: true });
+  } catch (err) {
+    logger.error('crm/leads/:id/restore error', err);
     next(err);
   }
 });

@@ -88,7 +88,7 @@ export const CHAT_STATUS_CHIP: Record<ChatStatus, string> = {
   resolved:   'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400',
 };
 
-export function playNotif() {
+export function playNotifTone() {
   try {
     const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
     const osc = ctx.createOscillator();
@@ -131,7 +131,7 @@ interface InboxContextValue {
   tagCatalog: Array<{ id: string; label: string; color: string }>;
   inboxLoading: boolean;
   isAvailable: boolean;
-  convKey: string | undefined;
+  activeConvKey: string | undefined;
   timeline: TimelineItem[];
   liveStage: string | undefined;
   liveAssignedTo: string;
@@ -225,9 +225,9 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
     staleTime: 10 * 60_000,
   });
 
-  const convKey = selected?.type === 'lead' ? selected.leadId : selected?.phone;
+  const activeConvKey = selected?.type === 'lead' ? selected.leadId : selected?.phone;
   const { data: convData } = useQuery({
-    queryKey: ['wa-conv', convKey],
+    queryKey: ['wa-conv', activeConvKey],
     queryFn: () =>
       selected!.type === 'lead'
         ? apiFetch<{ lead: any; messages: Message[]; internalNotes: Message[] }>(`/api/crm/leads/${selected!.leadId}`)
@@ -309,20 +309,25 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
     }
   }, [conversations]);
 
-  // Ping loop effect
+  // Ping loop effect — pauses when tab is hidden to avoid hammering the API
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
     let cancelled = false;
 
     async function ping() {
       if (cancelled) return;
+      if (!tabActive) {
+        // Tab is hidden — reschedule without making a network request
+        timer = setTimeout(ping, 2_000);
+        return;
+      }
       try {
         const data = await apiFetch<{ hasNew: boolean; latestAt: string | null }>(
           `/api/whatsapp/inbox/ping?since=${encodeURIComponent(lastActivityRef.current)}`
         );
         if (data.hasNew) {
           if (data.latestAt) lastActivityRef.current = data.latestAt;
-          playNotif();
+          playNotifTone();
           qc.invalidateQueries({ queryKey: ['wa-inbox'] });
           qc.invalidateQueries({ queryKey: ['wa-conv'] });
         }
@@ -334,23 +339,23 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
 
     timer = setTimeout(ping, 2_000);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [qc]);
+  }, [qc, tabActive]);
 
   // Visibility change invalidation effect
   useEffect(() => {
     function onVisible() {
       if (document.visibilityState !== 'visible') return;
       qc.invalidateQueries({ queryKey: ['wa-inbox'] });
-      if (convKey) qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
+      if (activeConvKey) qc.invalidateQueries({ queryKey: ['wa-conv', activeConvKey] });
     }
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [qc, convKey]);
+  }, [qc, activeConvKey]);
 
   // Reset editingName when conversation changes
   useEffect(() => {
     setEditingName(false);
-  }, [convKey]);
+  }, [activeConvKey]);
 
   // Mark-read effect
   useEffect(() => {
@@ -362,13 +367,13 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
       body: JSON.stringify({ lastWaMessageId: lastInbound.waMessageId }),
     }).catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [convKey, rawMessages.length]);
+  }, [activeConvKey, rawMessages.length]);
 
   // ── Mutations ─────────────────────────────────────────────────────────────
   const invalidate = useCallback(() => {
     qc.invalidateQueries({ queryKey: ['wa-inbox'] });
-    qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
-  }, [qc, convKey]);
+    qc.invalidateQueries({ queryKey: ['wa-conv', activeConvKey] });
+  }, [qc, activeConvKey]);
 
   const stageMutation = useMutation({
     mutationFn: (stage: string) => apiFetch(`/api/crm/leads/${selected!.leadId}/stage`, { method: 'PUT', body: JSON.stringify({ stage }) }),
@@ -455,7 +460,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
     tagCatalog,
     inboxLoading,
     isAvailable,
-    convKey,
+    activeConvKey,
     timeline,
     liveStage,
     liveAssignedTo,

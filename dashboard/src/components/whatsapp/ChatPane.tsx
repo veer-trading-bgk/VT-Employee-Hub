@@ -7,6 +7,8 @@ import { TemplatePicker } from '@/components/whatsapp/TemplatePicker';
 import { apiFetch, getMemoryToken } from '@/lib/api';
 import { useInbox, timeAgo, avatarLetters, CHAT_STATUS_CHIP } from '@/contexts/InboxContext';
 import type { Message, CannedResponse, EmployeeRecord } from '@/contexts/InboxContext';
+import { META_SIZE_LIMITS } from '@/lib/mediaConstants';
+import { Paperclip } from 'lucide-react';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -406,7 +408,7 @@ function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; ou
 export function ChatPane() {
   const {
     selected, selectConv, timeline, currentLead, windowExpired, stageObj,
-    employees, canned, stages, convKey, editingName, nameInput, setEditingName,
+    employees, canned, stages, activeConvKey, editingName, nameInput, setEditingName,
     setNameInput, resolveMutation, reopenMutation, noteMutation, nameMutation,
     showSidebar, setShowSidebar, qc, invalidate, refetchCanned,
   } = useInbox();
@@ -452,7 +454,7 @@ export function ChatPane() {
     setUploadPreview(null);
     setUploadStage('idle');
     setUploadProgress(0);
-  }, [convKey]);
+  }, [activeConvKey]);
 
   // Scroll to bottom when timeline grows
   useEffect(() => {
@@ -462,13 +464,6 @@ export function ChatPane() {
     if (atBottom) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [timeline.length]);
 
-  // Per-type size limits matching Meta's actual limits
-  const META_SIZE_LIMITS: Record<string, number> = {
-    image: 5 * 1024 * 1024,
-    video: 16 * 1024 * 1024,
-    audio: 16 * 1024 * 1024,
-    document: 100 * 1024 * 1024,
-  };
   function mediaKind(mimeType: string) {
     if (mimeType.startsWith('image/')) return 'image';
     if (mimeType.startsWith('video/')) return 'video';
@@ -807,7 +802,7 @@ export function ChatPane() {
               <TemplatePicker
                 leadId={selected.leadId}
                 phone={selected.phone}
-                onSent={() => { setShowTemplatePicker(false); qc.invalidateQueries({ queryKey: ['wa-conv', convKey] }); }}
+                onSent={() => { setShowTemplatePicker(false); qc.invalidateQueries({ queryKey: ['wa-conv', activeConvKey] }); }}
                 onCancel={() => setShowTemplatePicker(false)}
               />
             </div>
@@ -959,8 +954,8 @@ export function ChatPane() {
                 {inputMode === 'reply' && !windowExpired && (
                   <button onClick={() => fileRef.current?.click()}
                     title="Send image, video or document"
-                    className="flex-shrink-0 rounded-xl border border-slate-200 px-3 py-2.5 text-sm text-slate-400 hover:text-indigo-600 dark:border-slate-700 transition">
-                    📎
+                    className="flex-shrink-0 rounded-xl border border-slate-200 px-3 py-2.5 text-slate-400 hover:text-indigo-600 dark:border-slate-700 transition">
+                    <Paperclip className="h-4 w-4" />
                   </button>
                 )}
                 <input

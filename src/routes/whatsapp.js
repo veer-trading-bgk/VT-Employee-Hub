@@ -6,33 +6,17 @@ const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 const { rateLimit } = require('../middleware/rateLimiter');
+const { to10Digit } = require('../utils/phone');
+const { ALLOWED_MIME, META_SIZE_LIMITS } = require('../utils/mediaConstants');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
-const GRAPH = 'https://graph.facebook.com/v19.0';
-const MEDIA_BUCKET = process.env.WA_MEDIA_BUCKET ?? '';
+const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?? 'v19.0'}`;
+const MEDIA_BUCKET = process.env.WA_MEDIA_BUCKET;
+if (!MEDIA_BUCKET) {
+  throw new Error('WA_MEDIA_BUCKET env var is required but not set — refusing to start');
+}
 const s3Client = new S3({ region: process.env.AWS_REGION ?? 'ap-south-1' });
-
-// Meta-supported MIME types
-const ALLOWED_MIME = new Set([
-  'image/jpeg','image/png','image/gif','image/webp',
-  'video/mp4','video/3gpp',
-  'audio/mpeg','audio/ogg','audio/aac','audio/mp4','audio/amr',
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'text/plain','text/csv',
-]);
-
-// Meta per-type upload limits
-const META_SIZE_LIMITS = {
-  image: 5 * 1024 * 1024,
-  video: 16 * 1024 * 1024,
-  audio: 16 * 1024 * 1024,
-  document: 100 * 1024 * 1024,
-};
 
 function mediaTypeFromMime(mimeType) {
   if (mimeType.startsWith('image/')) return 'image';
@@ -147,13 +131,6 @@ function toE164(p) {
   const d = String(p).replace(/\D/g, '');
   if (d.length === 10) return '91' + d;           // 9901251785  → 919901251785
   if (d.length === 11 && d.startsWith('0')) return '91' + d.slice(1); // 09901251785 → 919901251785
-  return d;
-}
-
-// Normalize Meta E.164 to 10-digit for matching against stored leads
-function to10Digit(p) {
-  const d = String(p).replace(/\D/g, '');
-  if (d.length === 12 && d.startsWith('91')) return d.slice(2);
   return d;
 }
 
@@ -512,7 +489,7 @@ router.post('/webhook', async (req, res) => {
       try {
         const wamid = statusUpdate.id;
         const statusType = statusUpdate.status; // 'sent'|'delivered'|'read'|'failed'
-        if (!['delivered', 'read'].includes(statusType)) continue;
+        if (!['delivered', 'read', 'failed'].includes(statusType)) continue;
 
         const lookup = await dynamodb.get({
           TableName: TABLE,
@@ -522,24 +499,34 @@ router.post('/webhook', async (req, res) => {
 
         const { leadPK, msgSK, broadcastId, broadcastSK, companyId: cid } = lookup.Item;
 
-        // Update MSG# record status (read wins over delivered)
+        // Update MSG# record — priority order: failed < sent < delivered < read
+        // 'failed' always overwrites (message can't recover); read can't be downgraded
+        const priorityOrder = { failed: 0, sent: 1, delivered: 2, read: 3 };
+        const conditionExpr = statusType === 'failed'
+          ? 'attribute_not_exists(msgStatus) OR msgStatus <> :read'
+          : 'attribute_not_exists(msgStatus) OR msgStatus <> :read';
         await dynamodb.update({
           TableName: TABLE,
           Key: { PK: leadPK, SK: msgSK },
           UpdateExpression: 'SET msgStatus = :s',
-          ConditionExpression: 'attribute_not_exists(msgStatus) OR msgStatus <> :read',
+          ConditionExpression: conditionExpr,
           ExpressionAttributeValues: { ':s': statusType, ':read': 'read' },
         }).promise().catch(() => {});
 
         // Increment broadcast stats if this came from a broadcast
         if (broadcastId && broadcastSK && cid) {
-          const field = statusType === 'delivered' ? 'deliveredCount' : 'readCount';
-          await dynamodb.update({
-            TableName: TABLE,
-            Key: { PK: `BROADCAST#${cid}`, SK: broadcastSK },
-            UpdateExpression: `ADD ${field} :one`,
-            ExpressionAttributeValues: { ':one': 1 },
-          }).promise().catch(() => {});
+          const field = statusType === 'delivered' ? 'deliveredCount'
+            : statusType === 'read' ? 'readCount'
+            : statusType === 'failed' ? 'failedCount'
+            : null;
+          if (field) {
+            await dynamodb.update({
+              TableName: TABLE,
+              Key: { PK: `BROADCAST#${cid}`, SK: broadcastSK },
+              UpdateExpression: `ADD ${field} :one`,
+              ExpressionAttributeValues: { ':one': 1 },
+            }).promise().catch(() => {});
+          }
         }
       } catch (e) {
         logger.warn('status-update failed', e.message);
@@ -1134,12 +1121,32 @@ router.post('/inbox/canned', authMiddleware, checkRole(['admin', 'manager']), ra
   try {
     const { title, body, shortcut } = req.body;
     if (!title?.trim() || !body?.trim()) return res.status(400).json({ error: 'title and body required' });
+
+    const normShortcut = shortcut?.trim().toLowerCase().replace(/\s+/g, '_') ?? null;
+
+    // Enforce shortcut uniqueness within the company
+    if (normShortcut) {
+      const existing = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+        FilterExpression: 'shortcut = :sh',
+        ExpressionAttributeValues: {
+          ':pk': `CONFIG#CANNED#${req.user.companyId}`,
+          ':sk': 'CANNED#',
+          ':sh': normShortcut,
+        },
+      }).promise();
+      if ((existing.Items?.length ?? 0) > 0) {
+        return res.status(409).json({ error: `Shortcut "${normShortcut}" is already used by another canned response` });
+      }
+    }
+
     const id = require('crypto').randomUUID();
     const item = {
       PK: `CONFIG#CANNED#${req.user.companyId}`,
       SK: `CANNED#${id}`,
       id, title: title.trim(), body: body.trim(),
-      shortcut: shortcut?.trim().toLowerCase().replace(/\s+/g, '_') ?? null,
+      shortcut: normShortcut,
       createdBy: req.user.id,
       createdAt: new Date().toISOString(),
     };
@@ -1316,6 +1323,11 @@ router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateL
 
     await Promise.allSettled(items.map(async (lead) => {
       try {
+        if (!lead.phone) {
+          logger.warn(`broadcast: skipping lead ${lead.leadId} — no phone number`);
+          failed++;
+          return;
+        }
         const params = (variableValues ?? []).map((v) => {
           if (v === '{{name}}') return lead.name ?? '';
           if (v === '{{phone}}') return lead.phone ?? '';

@@ -92,6 +92,8 @@ export default function AdminCrmPage() {
   const [view, setView] = useState<'kanban' | 'list'>('kanban');
   const [search, setSearch] = useState('');
   const [filterAssignee, setFilterAssignee] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [addStage, setAddStage] = useState('');
   const [duplicateWarning, setDuplicateWarning] = useState<{ existingLeadId: string; existingName: string } | null>(null);
@@ -116,13 +118,15 @@ export default function AdminCrmPage() {
   const LIST_PAGE_SIZE = 50;
   const { data: leadsData, isLoading } = useQuery({
     queryKey: view === 'list'
-      ? ['crm-leads', 'list', listPage, debouncedSearch, debouncedAssignee]
+      ? ['crm-leads', 'list', listPage, debouncedSearch, debouncedAssignee, dateFrom, dateTo]
       : ['crm-leads', 'kanban'],
     queryFn: () => {
       if (view === 'list') {
         const params = new URLSearchParams({ page: String(listPage), pageSize: String(LIST_PAGE_SIZE) });
         if (debouncedSearch) params.set('search', debouncedSearch);
         if (debouncedAssignee) params.set('assignedTo', debouncedAssignee);
+        if (dateFrom) params.set('dateFrom', dateFrom);
+        if (dateTo) params.set('dateTo', dateTo);
         return apiFetch<{ success: boolean; leads: Lead[]; total: number; pages: number; truncated?: boolean }>(`/api/crm/leads?${params}`);
       }
       return apiFetch<{ success: boolean; leads: Lead[]; total: number; truncated?: boolean }>('/api/crm/leads');
@@ -230,7 +234,7 @@ export default function AdminCrmPage() {
   });
 
   // Reset list pagination when filters or view change
-  useEffect(() => { setListPage(1); }, [view, debouncedSearch, debouncedAssignee]);
+  useEffect(() => { setListPage(1); }, [view, debouncedSearch, debouncedAssignee, dateFrom, dateTo]);
 
   const rawLeads = leadsData?.leads ?? [];
   const totalLeads = leadsData?.total ?? 0;
@@ -298,8 +302,24 @@ export default function AdminCrmPage() {
               ))}
             </div>
 
-            <input placeholder="Search leads…" value={search} onChange={(e) => setSearch(e.target.value)}
+            <input placeholder="Search by name or phone" value={search} onChange={(e) => setSearch(e.target.value)}
               className="w-52 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
+
+            {view === 'list' && (
+              <div className="flex items-center gap-1">
+                <input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setListPage(1); }}
+                  title="Created from"
+                  className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-600 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300" />
+                <span className="text-xs text-slate-400">–</span>
+                <input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setListPage(1); }}
+                  title="Created to"
+                  className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-600 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300" />
+                {(dateFrom || dateTo) && (
+                  <button onClick={() => { setDateFrom(''); setDateTo(''); setListPage(1); }}
+                    className="text-xs text-slate-400 hover:text-slate-600 px-1">✕</button>
+                )}
+              </div>
+            )}
 
             <select value={filterAssignee} onChange={(e) => setFilterAssignee(e.target.value)}
               className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">

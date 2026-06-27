@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useInbox, timeAgo, avatarLetters, CHAT_STATUS_CHIP } from '@/contexts/InboxContext';
 import { SkeletonConversation } from '@/components/common/Skeleton';
 import { apiFetch } from '@/lib/api';
+import { Pin, PinOff } from 'lucide-react';
 
 const TABS: Array<{ key: 'open' | 'unassigned' | 'unread' | 'resolved' | 'all'; label: string }> = [
   { key: 'open',       label: 'Open' },
@@ -30,7 +31,7 @@ export function ConversationList() {
       {/* Search + availability */}
       <div className="border-b border-slate-100 p-3 dark:border-slate-800 space-y-2">
         <input value={search} onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search name or phone…"
+          placeholder="Search by name or phone"
           className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-slate-400">Your status</span>
@@ -109,10 +110,10 @@ export function ConversationList() {
                 <button
                   onClick={(e) => { e.stopPropagation(); pinMutation.mutate(conv.leadId!); }}
                   title={conv.pinned ? 'Unpin' : 'Pin conversation'}
-                  className={`absolute right-2 top-2 z-10 rounded-full p-0.5 text-sm transition-opacity ${
+                  className={`absolute right-2 top-2 z-10 rounded-full p-0.5 transition-opacity ${
                     conv.pinned ? 'text-indigo-500' : 'text-slate-300 opacity-0 group-hover:opacity-100'
                   } hover:text-indigo-600`}>
-                  {conv.pinned ? '📌' : '📍'}
+                  {conv.pinned ? <Pin className="h-3.5 w-3.5" /> : <PinOff className="h-3.5 w-3.5" />}
                 </button>
               )}
               <button onClick={() => {
