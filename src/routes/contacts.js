@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
+const { rateLimit } = require('../middleware/rateLimiter');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -152,7 +153,7 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
 });
 
 // ── PUT /api/contacts/stage — set CRM stage for lead or unknown contact ────────
-router.put('/stage', authMiddleware, async (req, res, next) => {
+router.put('/stage', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { leadId, phone, stage } = req.body;
     const companyId = req.user.companyId;

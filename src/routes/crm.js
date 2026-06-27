@@ -5,6 +5,8 @@ const dynamodb = require('../config/dynamodb');
 const { logAudit } = require('../utils/audit');
 const logger = require('../config/logger');
 const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
+const { rateLimit } = require('../middleware/rateLimiter');
+const { createLeadSchema, updateLeadSchema, createFollowupSchema } = require('../utils/validation');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -39,6 +41,8 @@ async function getPipelineStages(companyId) {
 }
 
 async function scanAllLeads(companyId) {
+  // SCALE: Once GSI 'leadsByCompany' is ACTIVE (run scripts/create-leads-gsi.js),
+  // replace this scan with a query on companyId for O(company-size) instead of O(table-size).
   const params = {
     TableName: TABLE,
     FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta',
@@ -57,7 +61,7 @@ async function scanAllLeads(companyId) {
 // Resolves an array of tag values (raw labels or IDs) to catalog IDs.
 // IDs already start with 't_' and pass through unchanged.
 // Unknown labels are auto-created in the catalog.
-async function resolveTagIds(companyId, rawTags) {
+async function resolveTagIds(companyId, rawTags, _retry = 0) {
   if (!rawTags || rawTags.length === 0) return [];
   const needsResolve = rawTags.filter((t) => !String(t).startsWith('t_'));
   if (needsResolve.length === 0) return rawTags;
@@ -66,6 +70,7 @@ async function resolveTagIds(companyId, rawTags) {
     Key: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG' },
   }).promise();
   const catalog = catResult.Item?.tags ?? [];
+  const version = catResult.Item?.version ?? 0;
   let dirty = false;
   const resolved = rawTags.map((tag) => {
     const s = String(tag).trim();
@@ -78,10 +83,20 @@ async function resolveTagIds(companyId, rawTags) {
     return newId;
   });
   if (dirty) {
-    await dynamodb.put({
-      TableName: TABLE,
-      Item: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG', tags: catalog },
-    }).promise();
+    try {
+      await dynamodb.put({
+        TableName: TABLE,
+        Item: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG', tags: catalog, version: version + 1 },
+        ConditionExpression: 'attribute_not_exists(#ver) OR #ver = :ver',
+        ExpressionAttributeNames: { '#ver': 'version' },
+        ExpressionAttributeValues: { ':ver': version },
+      }).promise();
+    } catch (e) {
+      if (e.code === 'ConditionalCheckFailedException' && _retry < 3) {
+        return resolveTagIds(companyId, rawTags, _retry + 1);
+      }
+      throw e;
+    }
   }
   return [...new Set(resolved)];
 }
@@ -184,8 +199,10 @@ router.get('/leads', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/crm/leads ────────────────────────────────────────────────────────
-router.post('/leads', authMiddleware, async (req, res, next) => {
+router.post('/leads', authMiddleware, rateLimit(30, 60_000), async (req, res, next) => {
   try {
+    const parsed = createLeadSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
     const { name, phone, email, productInterest, source, notes, assignedTo, assignedToName, closureDeadline, tags, stage } = req.body;
     if (!name?.trim() || !phone?.trim()) {
       return res.status(400).json({ error: 'name and phone are required' });
@@ -261,14 +278,12 @@ router.post('/leads', authMiddleware, async (req, res, next) => {
     await logAudit(req.user.id, 'crm_lead_created', leadId, 'success', req.ip, { name });
 
     // Fire automations
-    try {
-      const { runAutomations } = require('./automations');
-      await runAutomations(companyId, 'lead_created', {
-        leadId, leadPK: item.PK, phone: cleanPhone, name: name.trim(),
-        source: item.source, stage: defaultStage, tags: item.tags,
-        assignedTo: item.assignedTo,
-      });
-    } catch (e) { logger.warn('lead_created automation error: ' + e.message); }
+    const { runAutomations } = require('./automations');
+    runAutomations(companyId, 'lead_created', {
+      leadId, leadPK: item.PK, phone: cleanPhone, name: name.trim(),
+      source: item.source, stage: defaultStage, tags: item.tags,
+      assignedTo: item.assignedTo,
+    }).catch((e) => logger.warn('automation error: ' + e.message));
 
     res.status(201).json({ success: true, lead: item });
   } catch (err) {
@@ -283,24 +298,40 @@ router.get('/leads/:id', authMiddleware, async (req, res, next) => {
     const companyId = req.user.companyId;
     const PK = leadPK(companyId, req.params.id);
 
-    const result = await dynamodb.query({
-      TableName: TABLE,
-      KeyConditionExpression: 'PK = :pk',
-      ExpressionAttributeValues: { ':pk': PK },
-    }).promise();
+    const MSG_PAGE = 50;
+    const before = req.query.before;
 
-    const items = result.Items ?? [];
-    const meta = items.find((i) => i.SK === 'METADATA');
-    if (!meta) return res.status(404).json({ error: 'Lead not found' });
+    const metaRes = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
+    if (!metaRes.Item) return res.status(404).json({ error: 'Lead not found' });
+    const meta = metaRes.Item;
 
     const empRoles = ['telecaller', 'agent', 'intern'];
     if (empRoles.includes(req.user.role) && meta.assignedTo !== req.user.id) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    const messages = items.filter((i) => i.SK.startsWith('MSG#')).sort((a, b) => a.SK.localeCompare(b.SK));
-    const internalNotes = items.filter((i) => i.SK.startsWith('NOTE#')).sort((a, b) => a.SK.localeCompare(b.SK));
-    res.json({ success: true, lead: meta, messages, internalNotes });
+    const msgQuery = {
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :pfx)',
+      ExpressionAttributeValues: { ':pk': PK, ':pfx': 'MSG#' },
+      ScanIndexForward: false,
+      Limit: MSG_PAGE + 1,
+    };
+    if (before) msgQuery.ExclusiveStartKey = { PK, SK: before };
+    const msgRes = await dynamodb.query(msgQuery).promise();
+    const allMsgs = msgRes.Items ?? [];
+    const hasMore = allMsgs.length > MSG_PAGE;
+    const messages = allMsgs.slice(0, MSG_PAGE).reverse();
+
+    const noteRes = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :pfx)',
+      ExpressionAttributeValues: { ':pk': PK, ':pfx': 'NOTE#' },
+    }).promise();
+    const internalNotes = (noteRes.Items ?? []).sort((a, b) => a.SK.localeCompare(b.SK));
+
+    const nextCursor = hasMore ? (messages[0]?.SK ?? null) : null;
+    res.json({ success: true, lead: meta, messages, internalNotes, hasMore, nextCursor });
   } catch (err) {
     logger.error('crm/leads/:id GET error', err);
     next(err);
@@ -308,8 +339,10 @@ router.get('/leads/:id', authMiddleware, async (req, res, next) => {
 });
 
 // ── PUT /api/crm/leads/:id ─────────────────────────────────────────────────────
-router.put('/leads/:id', authMiddleware, async (req, res, next) => {
+router.put('/leads/:id', authMiddleware, rateLimit(30, 60_000), async (req, res, next) => {
   try {
+    const parsed = updateLeadSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
     const companyId = req.user.companyId;
     const PK = leadPK(companyId, req.params.id);
 
@@ -346,17 +379,15 @@ router.put('/leads/:id', authMiddleware, async (req, res, next) => {
     if (Array.isArray(updates.tags)) {
       const addedTags = updates.tags.filter((t) => !(existing.Item.tags ?? []).includes(t));
       if (addedTags.length) {
-        try {
-          const { runAutomations } = require('./automations');
-          for (const tag of addedTags) {
-            await runAutomations(companyId, 'tag_added', {
-              leadId: req.params.id, leadPK: PK,
-              phone: existing.Item.phone, name: existing.Item.name,
-              tags: updates.tags, stage: existing.Item.stage,
-              assignedTo: existing.Item.assignedTo,
-            });
-          }
-        } catch (e) { logger.warn('tag_added automation error: ' + e.message); }
+        const { runAutomations } = require('./automations');
+        for (const tag of addedTags) {
+          runAutomations(companyId, 'tag_added', {
+            leadId: req.params.id, leadPK: PK,
+            phone: existing.Item.phone, name: existing.Item.name,
+            tags: updates.tags, stage: existing.Item.stage,
+            assignedTo: existing.Item.assignedTo,
+          }).catch((e) => logger.warn('automation error: ' + e.message));
+        }
       }
     }
 
@@ -457,15 +488,13 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
     } catch (e) { logger.warn('Stage history write failed: ' + e.message); }
 
     // Fire automations
-    try {
-      const { runAutomations } = require('./automations');
-      await runAutomations(companyId, 'stage_change', {
-        leadId: req.params.id, leadPK: PK,
-        phone: lead.phone, name: lead.name,
-        fromStage: lead.stage, toStage: stage,
-        stage, tags: lead.tags ?? [], assignedTo: lead.assignedTo,
-      });
-    } catch (e) { logger.warn('stage_change automation error: ' + e.message); }
+    const { runAutomations } = require('./automations');
+    runAutomations(companyId, 'stage_change', {
+      leadId: req.params.id, leadPK: PK,
+      phone: lead.phone, name: lead.name,
+      fromStage: lead.stage, toStage: stage,
+      stage, tags: lead.tags ?? [], assignedTo: lead.assignedTo,
+    }).catch((e) => logger.warn('automation error: ' + e.message));
 
     // Auto-credit metric
     const metricType = METRIC_STAGE_MAP[stage];
@@ -493,7 +522,7 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
 });
 
 // ── DELETE /api/crm/leads/:id ──────────────────────────────────────────────────
-router.delete('/leads/:id', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.delete('/leads/:id', authMiddleware, checkRole(['admin', 'manager']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const PK = leadPK(req.user.companyId, req.params.id);
     const result = await dynamodb.query({
@@ -577,12 +606,11 @@ router.get('/followups', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/crm/leads/:id/followup ──────────────────────────────────────────
-router.post('/leads/:id/followup', authMiddleware, async (req, res, next) => {
+router.post('/leads/:id/followup', authMiddleware, rateLimit(30, 60_000), async (req, res, next) => {
   try {
-    const { date, note } = req.body;
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
-    }
+    const parsed = createFollowupSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    const { date, note } = parsed.data;
 
     const companyId = req.user.companyId;
     // Fetch lead name to store with the followup for denormalized display

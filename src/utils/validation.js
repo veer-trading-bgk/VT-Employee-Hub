@@ -66,6 +66,38 @@ const companySignupSchema = z.object({
     .regex(/[0-9]/, 'Must contain a number'),
 });
 
+const VALID_SOURCES = ['manual', 'import', 'whatsapp', 'referral', 'website', 'facebook', 'instagram', 'whatsapp_ai'];
+
+const createLeadSchema = z.object({
+  name: z.string().min(1, 'Name required').max(100).trim(),
+  phone: z.string().regex(/^\d{10}$/, 'Phone must be 10 digits'),
+  email: z.string().email().optional().nullable(),
+  source: z.enum(VALID_SOURCES).default('manual'),
+  notes: z.string().max(2000).optional().default(''),
+  stage: z.string().max(50).optional(),
+  tags: z.array(z.string().max(100)).max(20).optional().default([]),
+  assignedTo: z.string().optional(),
+  assignedToName: z.string().max(100).optional(),
+  closureDeadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+  productInterest: z.array(z.string().max(50)).max(10).optional().default([]),
+});
+
+const updateLeadSchema = z.object({
+  name: z.string().min(1).max(100).trim().optional(),
+  phone: z.string().regex(/^\d{10}$/).optional(),
+  email: z.string().email().optional().nullable(),
+  productInterest: z.array(z.string().max(50)).max(10).optional(),
+  source: z.enum(VALID_SOURCES).optional(),
+  notes: z.string().max(2000).optional(),
+  closureDeadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+  tags: z.array(z.string().max(100)).max(20).optional(),
+}).strict();
+
+const createFollowupSchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD'),
+  note: z.string().max(500).optional().default(''),
+});
+
 module.exports = {
   loginSchema,
   addMetricSchema,
@@ -74,4 +106,7 @@ module.exports = {
   verifyBackupSchema,
   updateEmployeeSchema,
   companySignupSchema,
+  createLeadSchema,
+  updateLeadSchema,
+  createFollowupSchema,
 };

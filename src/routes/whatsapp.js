@@ -5,6 +5,7 @@ const S3 = require('aws-sdk/clients/s3');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
+const { rateLimit } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -700,7 +701,7 @@ router.post('/webhook', async (req, res) => {
 });
 
 // ── POST /api/whatsapp/send ────────────────────────────────────────────────────
-router.post('/send', authMiddleware, async (req, res, next) => {
+router.post('/send', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { leadPK: pk, message, replyToWaMessageId, replyToContent, replyToDirection, replyToSenderName } = req.body;
     if (!pk || !message?.trim()) return res.status(400).json({ error: 'leadPK and message required' });
@@ -895,7 +896,7 @@ router.get('/inbox/unknown/:phone/messages', authMiddleware, checkRole(['admin',
 });
 
 // ── POST /api/whatsapp/inbox/unknown/:phone/send ──────────────────────────────
-router.post('/inbox/unknown/:phone/send', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.post('/inbox/unknown/:phone/send', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
     const phone = req.params.phone.replace(/\D/g, '');
@@ -927,7 +928,7 @@ router.post('/inbox/unknown/:phone/send', authMiddleware, checkRole(['admin', 'm
 });
 
 // ── PUT /api/whatsapp/inbox/:leadId/resolve ───────────────────────────────────
-router.put('/inbox/:leadId/resolve', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.put('/inbox/:leadId/resolve', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
     await dynamodb.update({
@@ -941,7 +942,7 @@ router.put('/inbox/:leadId/resolve', authMiddleware, checkRole(['admin', 'manage
 });
 
 // ── PUT /api/whatsapp/inbox/:leadId/reopen ─────────────────────────────────────
-router.put('/inbox/:leadId/reopen', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.put('/inbox/:leadId/reopen', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
     await dynamodb.update({
@@ -955,7 +956,7 @@ router.put('/inbox/:leadId/reopen', authMiddleware, checkRole(['admin', 'manager
 });
 
 // ── PUT /api/whatsapp/inbox/:leadId/pin — toggle pinned conversation ───────────
-router.put('/inbox/:leadId/pin', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.put('/inbox/:leadId/pin', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
     const current = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
@@ -971,7 +972,7 @@ router.put('/inbox/:leadId/pin', authMiddleware, checkRole(['admin', 'manager'])
 });
 
 // ── PUT /api/whatsapp/contact/name — set/edit contact display name ────────────
-router.put('/contact/name', authMiddleware, async (req, res, next) => {
+router.put('/contact/name', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { leadId, phone, name } = req.body;
     const companyId = req.user.companyId;
@@ -1001,7 +1002,7 @@ router.put('/contact/name', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/whatsapp/inbox/:leadId/note — internal team note ─────────────────
-router.post('/inbox/:leadId/note', authMiddleware, async (req, res, next) => {
+router.post('/inbox/:leadId/note', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { content } = req.body;
     if (!content?.trim()) return res.status(400).json({ error: 'content required' });
@@ -1039,7 +1040,7 @@ router.get('/agent/availability', authMiddleware, async (req, res, next) => {
 });
 
 // ── PUT /api/whatsapp/agent/availability — set own availability status ─────────
-router.put('/agent/availability', authMiddleware, async (req, res, next) => {
+router.put('/agent/availability', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { available } = req.body;
     await dynamodb.put({
@@ -1058,7 +1059,7 @@ router.put('/agent/availability', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/whatsapp/inbox/auto-assign — round-robin assign unassigned ───────
-router.post('/inbox/auto-assign', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.post('/inbox/auto-assign', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
 
@@ -1129,7 +1130,7 @@ router.get('/inbox/canned', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/whatsapp/inbox/canned — create canned response ──────────────────
-router.post('/inbox/canned', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.post('/inbox/canned', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { title, body, shortcut } = req.body;
     if (!title?.trim() || !body?.trim()) return res.status(400).json({ error: 'title and body required' });
@@ -1148,7 +1149,7 @@ router.post('/inbox/canned', authMiddleware, checkRole(['admin', 'manager']), as
 });
 
 // ── DELETE /api/whatsapp/inbox/canned/:id — delete canned response ────────────
-router.delete('/inbox/canned/:id', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.delete('/inbox/canned/:id', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     await dynamodb.delete({
       TableName: TABLE,
@@ -1171,7 +1172,7 @@ router.get('/templates', authMiddleware, checkRole(['admin', 'manager']), async 
 });
 
 // ── POST /api/whatsapp/templates — create template ────────────────────────────
-router.post('/templates', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { name, templateName, language, category, bodyPreview, variables } = req.body;
     if (!name?.trim() || !templateName?.trim()) {
@@ -1197,7 +1198,7 @@ router.post('/templates', authMiddleware, checkRole(['admin']), async (req, res,
 });
 
 // ── PUT /api/whatsapp/templates/:id — update template ────────────────────────
-router.put('/templates/:id', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.put('/templates/:id', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { name, templateName, language, category, bodyPreview, variables } = req.body;
     await dynamodb.update({
@@ -1217,7 +1218,7 @@ router.put('/templates/:id', authMiddleware, checkRole(['admin']), async (req, r
 });
 
 // ── DELETE /api/whatsapp/templates/:id ───────────────────────────────────────
-router.delete('/templates/:id', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.delete('/templates/:id', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     await dynamodb.delete({
       TableName: TABLE,
@@ -1228,7 +1229,7 @@ router.delete('/templates/:id', authMiddleware, checkRole(['admin']), async (req
 });
 
 // ── POST /api/whatsapp/send-template — send template to a lead ────────────────
-router.post('/send-template', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.post('/send-template', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { leadId, leadPK: leadPK0, templateId, variableValues } = req.body;
     // Accept either leadId (from TemplatePicker) or leadPK (direct)
@@ -1270,7 +1271,7 @@ router.post('/send-template', authMiddleware, checkRole(['admin', 'manager']), a
 });
 
 // ── POST /api/whatsapp/broadcast — send template to a lead segment ────────────
-router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { templateId, variableValues, filter } = req.body;
     if (!templateId) return res.status(400).json({ error: 'templateId required' });
@@ -1390,7 +1391,7 @@ router.get('/welcome-config', authMiddleware, checkRole(['admin']), async (req, 
 });
 
 // ── PUT /api/whatsapp/welcome-config ──────────────────────────────────────────
-router.put('/welcome-config', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.put('/welcome-config', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { enabled, templateName, language } = req.body;
     await dynamodb.put({
@@ -1533,7 +1534,7 @@ router.get('/media/:mediaId', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/whatsapp/send-media — send image/document to lead ───────────────
-router.post('/send-media', authMiddleware, async (req, res, next) => {
+router.post('/send-media', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { leadPK: pk, mediaType, mediaUrl, caption, filename } = req.body;
     if (!pk || !mediaType || !mediaUrl) return res.status(400).json({ error: 'leadPK, mediaType, and mediaUrl are required' });
@@ -1587,7 +1588,7 @@ router.post('/send-media', authMiddleware, async (req, res, next) => {
 // ── POST /api/whatsapp/upload-send — read from S3, upload to Meta, send ───────
 // Called after the browser has PUT the file directly to S3 via presigned URL.
 // Works for both known leads (leadPK) and unknown contacts (phone).
-router.post('/upload-send', authMiddleware, async (req, res, next) => {
+router.post('/upload-send', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { leadPK, phone: rawPhone, s3Key, mimeType, filename, caption, fileHash } = req.body;
     if ((!leadPK && !rawPhone) || !s3Key || !mimeType) {
