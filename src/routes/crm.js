@@ -54,6 +54,38 @@ async function scanAllLeads(companyId) {
   return items;
 }
 
+// Resolves an array of tag values (raw labels or IDs) to catalog IDs.
+// IDs already start with 't_' and pass through unchanged.
+// Unknown labels are auto-created in the catalog.
+async function resolveTagIds(companyId, rawTags) {
+  if (!rawTags || rawTags.length === 0) return [];
+  const needsResolve = rawTags.filter((t) => !String(t).startsWith('t_'));
+  if (needsResolve.length === 0) return rawTags;
+  const catResult = await dynamodb.get({
+    TableName: TABLE,
+    Key: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG' },
+  }).promise();
+  const catalog = catResult.Item?.tags ?? [];
+  let dirty = false;
+  const resolved = rawTags.map((tag) => {
+    const s = String(tag).trim();
+    if (s.startsWith('t_')) return s;
+    const found = catalog.find((t) => t.label.toLowerCase() === s.toLowerCase());
+    if (found) return found.id;
+    const newId = `t_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    catalog.push({ id: newId, label: s, color: '#6366f1', createdAt: new Date().toISOString() });
+    dirty = true;
+    return newId;
+  });
+  if (dirty) {
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG', tags: catalog },
+    }).promise();
+  }
+  return [...new Set(resolved)];
+}
+
 // ── GET /api/crm/pipeline ──────────────────────────────────────────────────────
 router.get('/pipeline', authMiddleware, async (req, res, next) => {
   try {
@@ -108,7 +140,7 @@ router.put('/pipeline', authMiddleware, checkRole(['admin']), async (req, res, n
 // ── GET /api/crm/leads ─────────────────────────────────────────────────────────
 router.get('/leads', authMiddleware, async (req, res, next) => {
   try {
-    const { stage, assignedTo, search } = req.query;
+    const { stage, assignedTo, search, page: pageParam, pageSize: pageSizeParam } = req.query;
     const companyId = req.user.companyId;
     const empRoles = ['telecaller', 'agent', 'intern'];
 
@@ -130,7 +162,21 @@ router.get('/leads', authMiddleware, async (req, res, next) => {
     }
 
     leads.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
-    res.json({ success: true, leads });
+    const total = leads.length;
+
+    // Paginated path — used by list view
+    if (pageParam !== undefined) {
+      const page = Math.max(1, Number(pageParam));
+      const pageSize = Math.min(200, Math.max(10, Number(pageSizeParam ?? 50)));
+      const pages = Math.ceil(total / pageSize) || 1;
+      leads = leads.slice((page - 1) * pageSize, page * pageSize);
+      return res.json({ success: true, leads, total, page, pages, pageSize });
+    }
+
+    // Unpaginated path — used by kanban (capped at 500 for safety)
+    const MAX_KANBAN = 500;
+    const truncated = total > MAX_KANBAN;
+    res.json({ success: true, leads: truncated ? leads.slice(0, MAX_KANBAN) : leads, total, truncated });
   } catch (err) {
     logger.error('crm/leads GET error', err);
     next(err);
@@ -200,7 +246,7 @@ router.post('/leads', authMiddleware, async (req, res, next) => {
       source: source ?? 'manual',
       notes: notes?.trim() ?? '',
       stage: defaultStage,
-      tags: tags ?? [],
+      tags: await resolveTagIds(companyId, tags ?? []),
       closureDeadline: closureDeadline ?? null,
       assignedTo: resolvedAssignedTo,
       assignedToName: resolvedAssignedName,
@@ -281,6 +327,7 @@ router.put('/leads/:id', authMiddleware, async (req, res, next) => {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
     }
     if (updates.phone) updates.phone = String(updates.phone).replace(/\D/g, '');
+    if (updates.tags) updates.tags = await resolveTagIds(companyId, updates.tags);
     updates.updatedAt = new Date().toISOString();
 
     const setExpr = Object.keys(updates).map((k) => `#${k} = :${k}`).join(', ');
@@ -502,6 +549,11 @@ router.get('/followups', authMiddleware, async (req, res, next) => {
     let followups = empRoles.includes(req.user.role)
       ? items.filter((f) => f.assignedTo === req.user.id)
       : items;
+
+    // Optional leadId filter — used by lead detail page to avoid fetching all company followups
+    if (req.query.leadId) {
+      followups = followups.filter((f) => f.leadId === req.query.leadId);
+    }
 
     // Batch-enrich with lead names (for global dashboard)
     const needsName = followups.filter((f) => f.leadId && !f.leadName);

@@ -90,6 +90,7 @@ export default function LeadDetailPage() {
   const [fuNote, setFuNote] = useState('');
   const [activeTab, setActiveTab] = useState<'chat' | 'followups' | 'info'>('chat');
   const [newTag, setNewTag] = useState('');
+  const [addingTag, setAddingTag] = useState(false);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
   // ── Queries ──────────────────────────────────────────────────────────────
@@ -114,8 +115,14 @@ export default function LeadDetailPage() {
 
   const { data: followupsData } = useQuery({
     queryKey: ['crm-followups', id],
-    queryFn: () => apiFetch<{ success: boolean; followups: any[] }>('/api/crm/followups?days=30'),
+    queryFn: () => apiFetch<{ success: boolean; followups: any[] }>(`/api/crm/followups?days=30&leadId=${id}`),
     staleTime: 30_000,
+  });
+
+  const { data: tagCatalogData } = useQuery({
+    queryKey: ['tag-catalog'],
+    queryFn: () => apiFetch<{ success: boolean; tags: Array<{ id: string; label: string; color: string }> }>('/api/tags'),
+    staleTime: 5 * 60_000,
   });
 
   const lead = data?.lead;
@@ -125,7 +132,9 @@ export default function LeadDetailPage() {
   const employees = (empData?.data ?? []).filter((e) =>
     ['telecaller', 'agent', 'intern', 'team_lead', 'manager'].includes(e.role)
   );
-  const followups = (followupsData?.followups ?? []).filter((f: any) => f.leadId === id);
+  const followups = followupsData?.followups ?? [];
+  const tagCatalog = tagCatalogData?.tags ?? [];
+  const tagById = (tid: string) => tagCatalog.find((t) => t.id === tid);
   const currentStage = stages.find((s) => s.key === lead?.stage);
   const windowExpired = is24hExpired(lead?.lastInboundAt);
   const chatStatus = lead?.chatStatus ?? (lead?.assignedTo ? 'open' : 'unassigned');
@@ -212,6 +221,30 @@ export default function LeadDetailPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['crm-followups', id] }),
   });
 
+  async function handleAddTag() {
+    const label = newTag.trim();
+    if (!label || addingTag) return;
+    setAddingTag(true);
+    try {
+      let tagId: string;
+      const found = tagCatalog.find((t) => t.label.toLowerCase() === label.toLowerCase());
+      if (found) {
+        tagId = found.id;
+      } else {
+        const res = await apiFetch<{ success: boolean; tag: { id: string } }>('/api/tags', {
+          method: 'POST',
+          body: JSON.stringify({ label, color: '#6366f1' }),
+        });
+        tagId = res.tag.id;
+        qc.invalidateQueries({ queryKey: ['tag-catalog'] });
+      }
+      if (!(lead?.tags ?? []).includes(tagId)) {
+        updateMutation.mutate({ tags: [...(lead?.tags ?? []), tagId] } as any);
+      }
+      setNewTag('');
+    } catch { /* silent */ } finally { setAddingTag(false); }
+  }
+
   function handleSend() {
     if (!msgText.trim()) return;
     if (inputMode === 'note') noteMutation.mutate(msgText);
@@ -269,22 +302,22 @@ export default function LeadDetailPage() {
 
                 {/* Tags */}
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  {(lead.tags ?? []).map((t) => (
-                    <span key={t} className="flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                      {t}
-                      <button onClick={() => updateMutation.mutate({ tags: (lead.tags ?? []).filter((x) => x !== t) } as any)}
-                        className="text-slate-400 hover:text-red-500">×</button>
-                    </span>
-                  ))}
+                  {(lead.tags ?? []).map((t) => {
+                    const tag = tagById(t);
+                    return (
+                      <span key={t} className="flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-white"
+                        style={{ backgroundColor: tag?.color ?? '#6366f1' }}>
+                        {tag?.label ?? t}
+                        <button onClick={() => updateMutation.mutate({ tags: (lead.tags ?? []).filter((x) => x !== t) } as any)}
+                          className="opacity-70 hover:opacity-100">×</button>
+                      </span>
+                    );
+                  })}
                   <input value={newTag} onChange={(e) => setNewTag(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && newTag.trim()) {
-                        updateMutation.mutate({ tags: [...(lead.tags ?? []), newTag.trim()] } as any);
-                        setNewTag('');
-                      }
-                    }}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleAddTag(); }}
+                    disabled={addingTag}
                     placeholder="+ tag"
-                    className="h-6 w-16 rounded-full border border-dashed border-slate-300 bg-transparent px-2 text-xs text-slate-500 outline-none focus:border-indigo-400 dark:border-slate-600" />
+                    className="h-6 w-16 rounded-full border border-dashed border-slate-300 bg-transparent px-2 text-xs text-slate-500 outline-none focus:border-indigo-400 disabled:opacity-50 dark:border-slate-600" />
                 </div>
 
                 {lead.closureDeadline && (

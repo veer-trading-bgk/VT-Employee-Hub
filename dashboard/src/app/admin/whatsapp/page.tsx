@@ -559,6 +559,7 @@ export default function WhatsAppInboxPage() {
   const [cannedSearch, setCannedSearch] = useState('');
   const [showCannedModal, setShowCannedModal] = useState(false);
   const [newTag, setNewTag] = useState('');
+  const [addingTag, setAddingTag] = useState(false);
   const [quickNote, setQuickNote] = useState('');
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const [showAddLeadModal, setShowAddLeadModal] = useState(false);
@@ -640,6 +641,14 @@ export default function WhatsAppInboxPage() {
     staleTime: 30_000,
   });
   const isAvailable = availData?.available ?? true;
+
+  const { data: tagCatalogData } = useQuery({
+    queryKey: ['tag-catalog'],
+    queryFn: () => apiFetch<{ success: boolean; tags: Array<{ id: string; label: string; color: string }> }>('/api/tags'),
+    staleTime: 5 * 60_000,
+  });
+  const tagCatalog = tagCatalogData?.tags ?? [];
+  const tagById = (tid: string) => tagCatalog.find((t) => t.id === tid);
 
   const conversations = inboxData?.conversations ?? [];
   const counts = inboxData?.counts ?? { open: 0, unassigned: 0, resolved: 0, unread: 0 };
@@ -832,6 +841,30 @@ export default function WhatsAppInboxPage() {
       qc.invalidateQueries({ queryKey: ['wa-inbox'] });
     },
   });
+
+  async function handleSidebarAddTag() {
+    const label = newTag.trim();
+    if (!label || addingTag || !selected?.leadId) return;
+    setAddingTag(true);
+    try {
+      let tagId: string;
+      const found = tagCatalog.find((t) => t.label.toLowerCase() === label.toLowerCase());
+      if (found) {
+        tagId = found.id;
+      } else {
+        const res = await apiFetch<{ success: boolean; tag: { id: string } }>('/api/tags', {
+          method: 'POST',
+          body: JSON.stringify({ label, color: '#6366f1' }),
+        });
+        tagId = res.tag.id;
+        qc.invalidateQueries({ queryKey: ['tag-catalog'] });
+      }
+      if (!liveTags.includes(tagId)) {
+        tagMutation.mutate([...liveTags, tagId]);
+      }
+      setNewTag('');
+    } catch { /* silent */ } finally { setAddingTag(false); }
+  }
 
   // Send WA read receipt (blue ticks) when new inbound messages arrive while conversation is open
   useEffect(() => {
@@ -1617,24 +1650,24 @@ export default function WhatsAppInboxPage() {
               <div className="border-b border-slate-100 p-4 dark:border-slate-800">
                 <p className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">Tags</p>
                 <div className="mb-2 flex flex-wrap gap-1.5">
-                  {liveTags.map((t) => (
-                    <span key={t} className="flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400">
-                      {t}
-                      <button onClick={() => tagMutation.mutate(liveTags.filter((x) => x !== t))}
-                        className="text-indigo-300 hover:text-red-500">×</button>
-                    </span>
-                  ))}
+                  {liveTags.map((t) => {
+                    const tag = tagById(t);
+                    return (
+                      <span key={t} className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-white"
+                        style={{ backgroundColor: tag?.color ?? '#6366f1' }}>
+                        {tag?.label ?? t}
+                        <button onClick={() => tagMutation.mutate(liveTags.filter((x) => x !== t))}
+                          className="opacity-70 hover:opacity-100">×</button>
+                      </span>
+                    );
+                  })}
                 </div>
                 <div className="flex gap-1">
                   <input value={newTag} onChange={(e) => setNewTag(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && newTag.trim()) {
-                        tagMutation.mutate([...liveTags, newTag.trim()]);
-                        setNewTag('');
-                      }
-                    }}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && newTag.trim()) handleSidebarAddTag(); }}
+                    disabled={addingTag}
                     placeholder="Add tag + Enter"
-                    className="flex-1 rounded-lg border border-dashed border-slate-300 bg-transparent px-2.5 py-1.5 text-[11px] outline-none focus:border-indigo-400 dark:border-slate-600 dark:text-white" />
+                    className="flex-1 rounded-lg border border-dashed border-slate-300 bg-transparent px-2.5 py-1.5 text-[11px] outline-none focus:border-indigo-400 disabled:opacity-50 dark:border-slate-600 dark:text-white" />
                 </div>
               </div>
             )}

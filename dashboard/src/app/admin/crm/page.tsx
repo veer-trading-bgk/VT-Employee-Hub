@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
@@ -96,6 +96,7 @@ export default function AdminCrmPage() {
     name: '', phone: '', email: '', source: 'manual', notes: '',
     assignedTo: '', closureDeadline: '', tags: '', productInterest: [] as string[],
   });
+  const [listPage, setListPage] = useState(1);
 
   const { data: pipelineData } = useQuery({
     queryKey: ['crm-pipeline'],
@@ -103,10 +104,29 @@ export default function AdminCrmPage() {
     staleTime: 5 * 60_000,
   });
 
+  // Kanban: all leads (capped at 500 server-side). List: server-paginated with server-side filters.
+  const LIST_PAGE_SIZE = 50;
   const { data: leadsData, isLoading } = useQuery({
-    queryKey: ['crm-leads'],
-    queryFn: () => apiFetch<{ success: boolean; leads: Lead[] }>('/api/crm/leads'),
+    queryKey: view === 'list'
+      ? ['crm-leads', 'list', listPage, search, filterAssignee]
+      : ['crm-leads', 'kanban'],
+    queryFn: () => {
+      if (view === 'list') {
+        const params = new URLSearchParams({ page: String(listPage), pageSize: String(LIST_PAGE_SIZE) });
+        if (search) params.set('search', search);
+        if (filterAssignee) params.set('assignedTo', filterAssignee);
+        return apiFetch<{ success: boolean; leads: Lead[]; total: number; pages: number; truncated?: boolean }>(`/api/crm/leads?${params}`);
+      }
+      return apiFetch<{ success: boolean; leads: Lead[]; total: number; truncated?: boolean }>('/api/crm/leads');
+    },
     staleTime: 30_000,
+    placeholderData: view === 'list' ? (prev: any) => prev : undefined,
+  });
+
+  const { data: tagCatalogData } = useQuery({
+    queryKey: ['tag-catalog'],
+    queryFn: () => apiFetch<{ success: boolean; tags: Array<{ id: string; label: string; color: string }> }>('/api/tags'),
+    staleTime: 5 * 60_000,
   });
 
   const { data: empData } = useQuery({
@@ -117,6 +137,7 @@ export default function AdminCrmPage() {
 
   const stages = pipelineData?.stages ?? [];
   const employees = (empData?.data ?? []).filter((e) => ['telecaller', 'agent', 'intern', 'team_lead', 'manager'].includes(e.role));
+  const tagCatalog = tagCatalogData?.tags ?? [];
 
   const addMutation = useMutation({
     mutationFn: async (body: typeof form & { stage: string }) => {
@@ -164,15 +185,24 @@ export default function AdminCrmPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['crm-leads'] }),
   });
 
-  const leads = leadsData?.leads ?? [];
-  const filtered = leads.filter((l) => {
+  // Reset list pagination when filters or view change
+  useEffect(() => { setListPage(1); }, [view, search, filterAssignee]);
+
+  const rawLeads = leadsData?.leads ?? [];
+  const totalLeads = leadsData?.total ?? 0;
+  const listPages = (leadsData as any)?.pages ?? 1;
+  const kanbanTruncated = !!(leadsData as any)?.truncated;
+  const tagById = (id: string) => tagCatalog.find((t) => t.id === id);
+
+  // Kanban: client-side filter (instant, no refetch). List: already server-filtered.
+  const kanbanFiltered = rawLeads.filter((l) => {
     const q = search.toLowerCase();
     const matchSearch = !search || l.name.toLowerCase().includes(q) || l.phone.includes(q) || l.email?.toLowerCase().includes(q);
     const matchAssignee = !filterAssignee || l.assignedTo === filterAssignee;
     return matchSearch && matchAssignee;
   });
 
-  const byStage = Object.fromEntries(stages.map((s) => [s.key, filtered.filter((l) => l.stage === s.key)]));
+  const byStage = Object.fromEntries(stages.map((s) => [s.key, kanbanFiltered.filter((l) => l.stage === s.key)]));
 
   const openAdd = (stageKey: string) => {
     setAddStage(stageKey);
@@ -225,6 +255,18 @@ export default function AdminCrmPage() {
             </div>
           </div>
 
+          {/* Kanban truncated warning — shown when >500 leads exist */}
+          {!isLoading && view === 'kanban' && kanbanTruncated && (
+            <div className="flex items-center gap-2 border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs dark:border-amber-900/30 dark:bg-amber-900/10">
+              <span className="text-amber-500">⚠</span>
+              <span className="text-amber-700 dark:text-amber-400">
+                Showing first 500 of {totalLeads} leads.{' '}
+                <button className="font-semibold underline" onClick={() => setView('list')}>Switch to List view</button>
+                {' '}with search/filters to see all.
+              </span>
+            </div>
+          )}
+
           {isLoading ? (
             <div className="flex flex-1 items-center justify-center"><Loading /></div>
           ) : view === 'kanban' ? (
@@ -246,7 +288,7 @@ export default function AdminCrmPage() {
                       setDragOverStage(null);
                       const leadId = dragLeadId.current;
                       if (!leadId) return;
-                      const lead = leads.find((l) => l.leadId === leadId);
+                      const lead = rawLeads.find((l) => l.leadId === leadId);
                       if (lead && lead.stage !== stage.key) stageMutation.mutate({ leadId, stage: stage.key });
                       dragLeadId.current = null;
                     }}
@@ -318,9 +360,15 @@ export default function AdminCrmPage() {
                                     {PRODUCT_LABELS[p] ?? p}
                                   </span>
                                 ))}
-                                {lead.tags?.slice(0, 2).map((t) => (
-                                  <span key={t} className="rounded-full bg-indigo-50 px-1.5 py-0.5 text-[9px] font-medium text-indigo-500 dark:bg-indigo-900/30 dark:text-indigo-400">{t}</span>
-                                ))}
+                                {lead.tags?.slice(0, 2).map((t) => {
+                                  const tag = tagById(t);
+                                  return (
+                                    <span key={t} className="rounded-full px-1.5 py-0.5 text-[9px] font-medium text-white"
+                                      style={{ backgroundColor: tag?.color ?? '#6366f1' }}>
+                                      {tag?.label ?? t}
+                                    </span>
+                                  );
+                                })}
                                 {(lead.tags?.length ?? 0) > 2 && (
                                   <span className="text-[9px] text-slate-400">+{(lead.tags?.length ?? 0) - 2}</span>
                                 )}
@@ -405,9 +453,10 @@ export default function AdminCrmPage() {
             </div>
           ) : (
             // ── List view ────────────────────────────────────────────────────────
-            <div className="flex-1 overflow-auto p-4">
-              <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-                <table className="w-full text-sm">
+            <div className="flex flex-1 flex-col overflow-hidden">
+              <div className="flex-1 overflow-auto p-4">
+                <div className="rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
+                  <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-slate-800">
                       {['Name', 'Phone', 'Score', 'Stage', 'Assigned', 'Deadline', 'Updated', ''].map((h) => (
@@ -416,9 +465,9 @@ export default function AdminCrmPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50 dark:divide-slate-800/50">
-                    {filtered.length === 0 ? (
+                    {rawLeads.length === 0 ? (
                       <tr><td colSpan={8} className="py-16 text-center text-sm text-slate-400">No leads found</td></tr>
-                    ) : filtered.map((lead) => {
+                    ) : rawLeads.map((lead) => {
                       const stage = stages.find((s) => s.key === lead.stage);
                       const dl = deadlineLabel(lead.closureDeadline);
                       return (
@@ -458,7 +507,25 @@ export default function AdminCrmPage() {
                     })}
                   </tbody>
                 </table>
+                </div>
               </div>
+              {/* List pagination */}
+              {listPages > 1 && (
+                <div className="flex items-center justify-between border-t border-slate-100 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
+                  <p className="text-xs text-slate-500">{totalLeads} leads total</p>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => setListPage((p) => p - 1)} disabled={listPage === 1}
+                      className="rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-40 dark:text-slate-300 dark:hover:bg-slate-800">
+                      ‹ Prev
+                    </button>
+                    <span className="px-2 text-xs text-slate-500">{listPage} / {listPages}</span>
+                    <button onClick={() => setListPage((p) => p + 1)} disabled={listPage === listPages}
+                      className="rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 disabled:opacity-40 dark:text-slate-300 dark:hover:bg-slate-800">
+                      Next ›
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
