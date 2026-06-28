@@ -236,10 +236,9 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
         ? apiFetch<{ lead: any; messages: Message[]; internalNotes: Message[] }>(`/api/crm/leads/${selected!.leadId}`)
         : apiFetch<{ messages: Message[] }>(`/api/whatsapp/inbox/unknown/${selected!.phone}/messages`),
     enabled: !!selected,
-    // When WS is live, setQueryData handles real-time updates — polling races with
-    // the WS push and wins (poll fetches the message before the WS frame arrives),
-    // causing the WS handler to see it as a duplicate SK and skip. Disable the poll
-    // when WS is connected; resume at 3 s as fallback when WS drops.
+    // When WS is live, the WS handler calls refetchQueries for the active conv on
+    // each inbound message. Disable scheduled polling to avoid redundant requests;
+    // resume at 3 s as fallback when WS drops.
     refetchInterval: wsConnected ? false : 3_000,
     refetchIntervalInBackground: false,
     staleTime: 0,
@@ -359,9 +358,10 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [qc, activeConvKey]);
 
-  // WS real-time handler: write message directly into React Query cache via setQueryData.
-  // The WS payload now carries the full message object, so no HTTP round-trip is needed —
-  // the message appears in the UI the instant the backend broadcasts it.
+  // WS real-time handler: when a message arrives for the currently-open conversation,
+  // immediately refetch its data. refetchQueries goes through React Query's normal
+  // data flow and reliably triggers a re-render; setQueryData from outside React's
+  // event system can be batched/deferred and was causing 20-30 s UI lag.
   useEffect(() => {
     const handler = (wsMsg: WsMessage) => {
       playNotifTone();
@@ -369,50 +369,20 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
       const payload = wsMsg as WsMessage & {
         conversationId?: string | null;
         phone?: string;
+        from?: string | number;
         isUnknown?: boolean;
-        message?: Record<string, unknown>;
       };
 
-      console.log('[WS] whatsapp_message received', {
-        conversationId: payload.conversationId,
-        phone: payload.phone,
-        isUnknown: payload.isUnknown,
-        hasMessage: !!payload.message,
-        messageSK: payload.message?.SK,
-        activeConvKey,
-      });
-
-      if (!activeConvKey || !payload.message) {
-        console.log('[WS] fallback refetch — no activeConvKey or no payload.message');
-        if (activeConvKey) qc.refetchQueries({ queryKey: ['wa-conv', activeConvKey] });
-        return;
-      }
+      if (!activeConvKey) return;
 
       const isActiveConv = payload.isUnknown
         ? (payload.phone === activeConvKey || String(payload.from) === activeConvKey)
         : payload.conversationId === activeConvKey;
 
-      console.log('[WS] isActiveConv:', isActiveConv, '| payload.conversationId:', payload.conversationId, '| activeConvKey:', activeConvKey);
-
       if (isActiveConv) {
-        qc.setQueryData(['wa-conv', activeConvKey], (old: unknown) => {
-          if (!old || typeof old !== 'object') {
-            console.log('[WS] setQueryData: no existing cache data');
-            return old;
-          }
-          const data = old as Record<string, unknown>;
-          const existing = (data.messages ?? []) as Record<string, unknown>[];
-          if (existing.some((m) => m.SK === payload.message!.SK)) {
-            console.log('[WS] setQueryData: duplicate SK, skipping');
-            return old;
-          }
-          console.log('[WS] setQueryData: appending message, new count =', existing.length + 1);
-          return { ...data, messages: [...existing, payload.message] };
-        });
-      } else {
-        console.log('[WS] different conversation — refetching active conv');
         qc.refetchQueries({ queryKey: ['wa-conv', activeConvKey] });
       }
+      // For other convs: wa-inbox update is handled by WebSocketContext's EVENT_QUERY_MAP.
     };
 
     wsClient.on('whatsapp_message', handler);
