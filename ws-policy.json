@@ -1,1 +1,0 @@
-{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"execute-api:ManageConnections","Resource":"arn:aws:execute-api:ap-south-1:657672949684:j3zbw8ex9h/prod/POST/@connections/*"}]}

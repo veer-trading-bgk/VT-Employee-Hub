@@ -1,1 +1,0 @@
-[{"IndexName":"companyIdIndex","KeySchema":[{"AttributeName":"companyId","KeyType":"HASH"},{"AttributeName":"connectionId","KeyType":"RANGE"}],"Projection":{"ProjectionType":"ALL"}}]
