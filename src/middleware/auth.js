@@ -20,6 +20,17 @@ const authMiddleware = (req, res, next) => {
     req.user = decoded;
     next();
   } catch (error) {
+    // TokenExpiredError is normal expected behaviour — user session ran out.
+    // JsonWebTokenError means a bad/tampered token. Neither is a production bug.
+    if (error.name === 'TokenExpiredError') {
+      logger.warn(`JWT expired for ${req.ip}`);
+      return res.status(401).json({ error: 'Token expired' });
+    }
+    if (error.name === 'JsonWebTokenError') {
+      logger.warn(`Invalid JWT from ${req.ip}: ${error.message}`);
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+    // Anything else (e.g. missing JWT_SECRET env var) is a real error
     logger.error('Token verification failed', error);
     return res.status(401).json({ error: 'Invalid token' });
   }
