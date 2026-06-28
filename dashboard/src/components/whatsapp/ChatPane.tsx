@@ -461,6 +461,14 @@ export function ChatPane() {
     setUploadProgress(0);
   }, [activeConvKey]);
 
+  // Escape closes add-to-CRM modal
+  useEffect(() => {
+    if (!showAddLeadModal) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowAddLeadModal(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showAddLeadModal]);
+
   // Track bottom-proximity on scroll (fires before any DOM change, so reading is accurate)
   useEffect(() => {
     const el = chatContainerRef.current;

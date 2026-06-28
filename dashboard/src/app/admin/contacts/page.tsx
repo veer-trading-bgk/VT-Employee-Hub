@@ -59,6 +59,12 @@ const SKELETON_WIDTHS: Record<string, string> = {
   name: '65%', phone: '55%', email: '72%', createdAt: '38%', stage: '50%', source: '42%', tags: '60%',
 };
 
+const COLUMN_CLS: Record<string, string> = {
+  name: '', phone: '', email: 'hidden md:table-cell',
+  createdAt: 'hidden sm:table-cell', stage: '', source: 'hidden sm:table-cell',
+  tags: 'hidden lg:table-cell',
+};
+
 // ── Source badge config — add future sources here ─────────────────────────────
 const SOURCE_CONFIG: Record<string, { label: string; cls: string }> = {
   whatsapp:    { label: 'WhatsApp',  cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' },
@@ -188,6 +194,14 @@ export default function ContactHubPage() {
   // Reset page on filter change
   useEffect(() => { setPage(1); }, [sourceFilter, stageFilter, tagFilter]);
 
+  // Escape closes delete confirm dialog
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setConfirmDelete(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [confirmDelete]);
+
   // Build the query key used everywhere for this contacts list
   const contactsQKey = ['contacts', { search, sourceFilter, stageFilter, tagFilter, page }] as const;
 
@@ -228,6 +242,7 @@ export default function ContactHubPage() {
     mutationFn: ({ leadId, phone, stage }: { leadId: string | null; phone: string; stage: string }) =>
       apiFetch('/api/contacts/stage', { method: 'PUT', body: JSON.stringify({ leadId, phone, stage }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['contacts'] }),
+    onError: () => toast.error('Failed to update status'),
   });
 
   // ── Tag mutation (optimistic) ─────────────────────────────────────────────
@@ -518,7 +533,7 @@ export default function ContactHubPage() {
 
         {/* ── Table ────────────────────────────────────────────────────────── */}
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[900px] border-collapse text-sm">
+          <table className="w-full min-w-[360px] border-collapse text-sm">
             <thead className="sticky top-0 z-10 bg-slate-50 dark:bg-slate-900">
               <tr>
                 <th className="w-8 px-4 py-3">
@@ -532,7 +547,7 @@ export default function ContactHubPage() {
                 </th>
                 {COLUMNS.map((col) => (
                   <th key={col.key}
-                    className="border-b border-slate-200 px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                    className={`border-b border-slate-200 px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:text-slate-400 ${COLUMN_CLS[col.key] ?? ''}`}>
                     {col.label}
                   </th>
                 ))}
@@ -548,7 +563,7 @@ export default function ContactHubPage() {
                   <tr key={i} className="animate-pulse">
                     <td className="px-4 py-3"><div className="h-3 w-3 rounded bg-slate-200 dark:bg-slate-700" /></td>
                     {COLUMNS.map((c) => (
-                      <td key={c.key} className="px-3 py-3">
+                      <td key={c.key} className={`px-3 py-3 ${COLUMN_CLS[c.key] ?? ''}`}>
                         <div className="h-3 rounded bg-slate-200 dark:bg-slate-700" style={{ width: SKELETON_WIDTHS[c.key] ?? '60%' }} />
                       </td>
                     ))}
@@ -617,14 +632,14 @@ export default function ContactHubPage() {
                       </td>
 
                       {/* Email */}
-                      <td className="px-3 py-3">
+                      <td className="hidden px-3 py-3 md:table-cell">
                         <span className="block max-w-[150px] truncate text-xs text-slate-600 dark:text-slate-400">
                           {c.email ?? '—'}
                         </span>
                       </td>
 
                       {/* Created On */}
-                      <td className="px-3 py-3">
+                      <td className="hidden px-3 py-3 sm:table-cell">
                         <span className="text-xs text-slate-500 dark:text-slate-400">
                           {fmtDate(c.createdAt)}
                         </span>
@@ -651,12 +666,12 @@ export default function ContactHubPage() {
                       </td>
 
                       {/* Source */}
-                      <td className="px-3 py-3">
+                      <td className="hidden px-3 py-3 sm:table-cell">
                         <SourceBadge source={c.source} />
                       </td>
 
                       {/* Tags — click to open selector */}
-                      <td className="px-3 py-3">
+                      <td className="hidden px-3 py-3 lg:table-cell">
                         <button
                           type="button"
                           onClick={(e) => openTagSelector(c, e)}

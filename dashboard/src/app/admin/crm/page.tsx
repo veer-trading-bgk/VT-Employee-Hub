@@ -217,6 +217,7 @@ export default function AdminCrmPage() {
         body: JSON.stringify({ assignedTo, assignedToName: employees.find((e) => e.id === assignedTo)?.name }),
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['crm-leads'] }),
+    onError: () => toast.error('Failed to assign lead'),
   });
 
   const bulkStageMutation = useMutation({
@@ -224,6 +225,7 @@ export default function AdminCrmPage() {
       await Promise.all(leadIds.map((id) => apiFetch(`/api/crm/leads/${id}/stage`, { method: 'PUT', body: JSON.stringify({ stage }) })));
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['crm-leads'] }); setSelectedIds(new Set()); },
+    onError: () => toast.error('Failed to update stages'),
   });
 
   const bulkAssignMutation = useMutation({
@@ -241,10 +243,19 @@ export default function AdminCrmPage() {
       await Promise.all(leadIds.map((id) => apiFetch(`/api/crm/leads/${id}`, { method: 'DELETE' })));
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['crm-leads'] }); setSelectedIds(new Set()); },
+    onError: () => toast.error('Failed to delete leads'),
   });
 
   // Reset list pagination when filters or view change
   useEffect(() => { setListPage(1); }, [view, debouncedSearch, debouncedAssignee, dateFrom, dateTo]);
+
+  // Escape closes add lead modal
+  useEffect(() => {
+    if (!showAddForm) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setShowAddForm(false); setDuplicateWarning(null); } };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showAddForm]);
 
   const rawLeads = leadsData?.leads ?? [];
   const totalLeads = leadsData?.total ?? 0;
@@ -393,7 +404,7 @@ export default function AdminCrmPage() {
                 return (
                   <div
                     key={stage.key}
-                    className={`mr-3 flex w-[280px] flex-shrink-0 flex-col rounded-xl border bg-white transition-colors dark:bg-slate-900 ${dragOverStage === stage.key ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/10' : 'border-slate-200 dark:border-slate-800'}`}
+                    className={`mr-3 flex w-[280px] flex-shrink-0 flex-col overflow-hidden rounded-xl border bg-white transition-colors dark:bg-slate-900 ${dragOverStage === stage.key ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/10' : 'border-slate-200 dark:border-slate-800'}`}
                     onDragOver={(e) => { e.preventDefault(); setDragOverStage(stage.key); }}
                     onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverStage(null); }}
                     onDrop={(e) => {
@@ -426,7 +437,7 @@ export default function AdminCrmPage() {
                     </div>
 
                     {/* Cards */}
-                    <div className="flex flex-col gap-2 overflow-y-auto p-2" style={{ maxHeight: 'calc(100vh - 200px)' }}>
+                    <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-2">
                       {colLeads.map((lead) => {
                         const dl = deadlineLabel(lead.closureDeadline);
                         const score = calculateScore(lead, stages);
