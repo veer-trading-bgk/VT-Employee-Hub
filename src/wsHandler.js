@@ -24,9 +24,6 @@ exports.handler = async (event) => {
     const rawToken = event.queryStringParameters?.token;
     const token = rawToken ? decodeURIComponent(rawToken) : undefined;
 
-    console.log('[WS $connect] token present:', !!token);
-    console.log('[WS $connect] JWT_SECRET length:', process.env.JWT_SECRET?.length ?? 0);
-
     if (!token) {
       return { statusCode: 401, body: 'Missing token' };
     }
