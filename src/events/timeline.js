@@ -14,25 +14,7 @@
 
 const dynamodb = require('../config/dynamodb');
 const logger   = require('../config/logger');
-
-/**
- * Build the DynamoDB partition key for a timeline entity.
- * Pattern: TL#${companyId}#${entityType}#${entityId}
- */
-function tlPK(companyId, entityType, entityId) {
-  return `TL#${companyId}#${entityType}#${entityId}`;
-}
-
-/**
- * Build the sort key for a timeline record.
- * Pattern: ${isoTimestamp}#${eventType}#${eventId}
- *
- * ISO 8601 timestamps sort lexicographically, giving us chronological
- * order for free via a range query on SK.
- */
-function tlSK(timestamp, eventType, eventId) {
-  return `${timestamp}#${eventType}#${eventId}`;
-}
+const { tlPK, tlSK } = require('../core/entityKeys');
 
 /**
  * Write a single TL# item to DynamoDB.
