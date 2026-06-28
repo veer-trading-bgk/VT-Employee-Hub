@@ -574,31 +574,29 @@ router.post('/webhook', async (req, res) => {
       // Skip message if we can't determine which company owns this WhatsApp number
       if (!webhookCompanyId) continue;
 
-      // Find lead — scoped to this company only (prevents cross-company lead contamination)
-      const scanResult = await dynamodb.scan({
+      // Find lead by normalised phone via GSI — O(1) instead of full-table Scan.
+      // phoneNorm = to10Digit(phone) is written to every lead METADATA item by the
+      // CRM routes. The company-phone-index GSI lets us look up by companyId + phoneNorm.
+      const t0 = Date.now();
+      const queryResult = await dynamodb.query({
         TableName: TABLE,
-        FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND (phone = :p1 OR phone = :p2 OR phone = :p3)',
+        IndexName: 'company-phone-index',
+        KeyConditionExpression: 'companyId = :cid AND phoneNorm = :p',
         ExpressionAttributeValues: {
-          ':prefix': `LEAD#${webhookCompanyId}#`, ':meta': 'METADATA',
-          ':p1': phone10,
-          ':p2': fromPhone,
-          ':p3': '+91' + phone10,
+          ':cid': webhookCompanyId,
+          ':p': phone10,
         },
+        Limit: 1,
       }).promise();
+      const lead = queryResult.Items?.[0];
+      logger.info(`[wh:${waMessageId}] gsi-query=${Date.now()-t0}ms lead=${!!lead}`);
 
-      const lead = scanResult.Items?.[0];
-
-      // Download inbound media to S3 so the browser can stream directly —
-      // avoids Lambda 6 MB response limit and Meta 30-day media expiry.
-      const s3Key = mediaId
-        ? await storeInboundMedia(wabaConfig?.accessToken, mediaId, mimeType, webhookCompanyId)
-        : null;
-
+      // s3Key is patched onto the MSG# record asynchronously after notifyCompany fires,
+      // so media download does not block the WS push.
       const msgItem = {
         direction: 'inbound', content: text, type,
         timestamp, waMessageId, messageId: waMessageId,
         ...(mediaId && { mediaId, mimeType, filename }),
-        ...(s3Key && { s3Key }),
       };
 
       if (lead) {
@@ -639,6 +637,20 @@ router.post('/webhook', async (req, res) => {
             preview: text.slice(0, 100),
             message: { SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
           }).catch(() => {});
+          logger.info(`[wh:${waMessageId}] notified (lead) total=${Date.now()-t0}ms`);
+          // Archive media AFTER WS push so the user sees the message immediately.
+          // Lambda stays alive here — s3Key is reliably written before handler resolves.
+          if (mediaId) {
+            const s3Key = await storeInboundMedia(wabaConfig?.accessToken, mediaId, mimeType, webhookCompanyId);
+            if (s3Key) {
+              await dynamodb.update({
+                TableName: TABLE,
+                Key: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}` },
+                UpdateExpression: 'SET s3Key = :sk',
+                ExpressionAttributeValues: { ':sk': s3Key },
+              }).promise().catch(() => {});
+            }
+          }
         }
       } else {
         const companyId = webhookCompanyId; // already resolved above
@@ -685,6 +697,18 @@ router.post('/webhook', async (req, res) => {
             isUnknown: true,
             message: { SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
           }).catch(() => {});
+          logger.info(`[wh:${waMessageId}] notified (inbox) total=${Date.now()-t0}ms`);
+          if (mediaId) {
+            const s3Key = await storeInboundMedia(wabaConfig?.accessToken, mediaId, mimeType, webhookCompanyId);
+            if (s3Key) {
+              await dynamodb.update({
+                TableName: TABLE,
+                Key: { PK, SK: `MSG#${timestamp}#${waMessageId}` },
+                UpdateExpression: 'SET s3Key = :sk',
+                ExpressionAttributeValues: { ':sk': s3Key },
+              }).promise().catch(() => {});
+            }
+          }
         }
 
         // Send welcome message on first contact (only for genuinely new messages)

@@ -8,6 +8,7 @@ const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign')
 const { rateLimit } = require('../middleware/rateLimiter');
 const { createLeadSchema, updateLeadSchema, createFollowupSchema } = require('../utils/validation');
 const { notifyCompany } = require('../utils/wsNotify');
+const { to10Digit } = require('../utils/phone');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -266,6 +267,7 @@ router.post('/leads', authMiddleware, rateLimit(30, 60_000), async (req, res, ne
       companyId,
       name: name.trim(),
       phone: cleanPhone,
+      phoneNorm: to10Digit(cleanPhone),
       email: email?.trim() ?? null,
       productInterest: productInterest ?? [],
       source: source ?? 'manual',
@@ -374,6 +376,7 @@ router.put('/leads/:id', authMiddleware, rateLimit(30, 60_000), async (req, res,
     }
     if (updates.phone) {
       updates.phone = String(updates.phone).replace(/\D/g, '');
+      updates.phoneNorm = to10Digit(updates.phone);
       // Reject if another lead in this company already owns this phone
       if (updates.phone !== existing.Item.phone) {
         const dupCheck = await dynamodb.scan({
@@ -812,6 +815,7 @@ router.post('/import', authMiddleware, checkRole(['admin', 'manager']), async (r
               companyId,
               name,
               phone,
+              phoneNorm: to10Digit(phone),
               email: String(lead.email ?? '').trim() || null,
               productInterest: Array.isArray(lead.productInterest) ? lead.productInterest : [],
               source: lead.source ?? 'import',
