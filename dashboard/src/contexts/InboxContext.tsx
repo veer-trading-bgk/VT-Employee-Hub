@@ -369,28 +369,44 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
         message?: Record<string, unknown>;
       };
 
+      console.log('[WS] whatsapp_message received', {
+        conversationId: payload.conversationId,
+        phone: payload.phone,
+        isUnknown: payload.isUnknown,
+        hasMessage: !!payload.message,
+        messageSK: payload.message?.SK,
+        activeConvKey,
+      });
+
       if (!activeConvKey || !payload.message) {
-        // Old backend or no active conversation — fall back to refetch
+        console.log('[WS] fallback refetch — no activeConvKey or no payload.message');
         if (activeConvKey) qc.refetchQueries({ queryKey: ['wa-conv', activeConvKey] });
         return;
       }
 
-      // Check if this message belongs to the currently open conversation
       const isActiveConv = payload.isUnknown
         ? (payload.phone === activeConvKey || String(payload.from) === activeConvKey)
         : payload.conversationId === activeConvKey;
 
+      console.log('[WS] isActiveConv:', isActiveConv, '| payload.conversationId:', payload.conversationId, '| activeConvKey:', activeConvKey);
+
       if (isActiveConv) {
         qc.setQueryData(['wa-conv', activeConvKey], (old: unknown) => {
-          if (!old || typeof old !== 'object') return old;
+          if (!old || typeof old !== 'object') {
+            console.log('[WS] setQueryData: no existing cache data');
+            return old;
+          }
           const data = old as Record<string, unknown>;
           const existing = (data.messages ?? []) as Record<string, unknown>[];
-          // Deduplicate — Meta re-delivers webhooks; SK is the unique key
-          if (existing.some((m) => m.SK === payload.message!.SK)) return old;
+          if (existing.some((m) => m.SK === payload.message!.SK)) {
+            console.log('[WS] setQueryData: duplicate SK, skipping');
+            return old;
+          }
+          console.log('[WS] setQueryData: appending message, new count =', existing.length + 1);
           return { ...data, messages: [...existing, payload.message] };
         });
       } else {
-        // Message for a different conversation — refetch to ensure inbox list updates
+        console.log('[WS] different conversation — refetching active conv');
         qc.refetchQueries({ queryKey: ['wa-conv', activeConvKey] });
       }
     };
