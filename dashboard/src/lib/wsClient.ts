@@ -13,6 +13,20 @@ class WsClient {
   private backoff = 1_000;
   private readonly MAX_BACKOFF = 30_000;
   private destroyed = false;
+  private refreshFn: (() => Promise<void>) | null = null;
+
+  setRefreshFn(fn: (() => Promise<void>) | null): void {
+    this.refreshFn = fn;
+  }
+
+  private _isTokenExpired(token: string): boolean {
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+      return typeof payload.exp === 'number' && payload.exp * 1000 < Date.now() + 10_000;
+    } catch {
+      return false;
+    }
+  }
 
   connect(url: string): void {
     const token = getMemoryToken();
@@ -47,14 +61,29 @@ class WsClient {
 
     this.baseUrl = safeUrl;
     this.destroyed = false;
-    this._open();
+    void this._open();
   }
 
-  private _open(): void {
+  private async _open(): Promise<void> {
     if (!this.baseUrl || this.destroyed) return;
     // Read token fresh on every open attempt — handles reconnects after token refresh
-    const raw = getMemoryToken();
+    let raw = getMemoryToken();
     if (!raw) return; // token cleared (logout in flight) — stop reconnect loop
+
+    // If the JWT has expired and a refresh function is registered, obtain a fresh token
+    // before opening the socket. Without this, every reconnect after expiry is rejected
+    // by $connect with TokenExpiredError, growing backoff to 30 s and staying broken.
+    if (this._isTokenExpired(raw) && this.refreshFn) {
+      try {
+        await this.refreshFn();
+      } catch {
+        console.warn('[wsClient] token refresh failed — stopping reconnect loop');
+        return;
+      }
+      if (this.destroyed) return;
+      raw = getMemoryToken();
+      if (!raw) return;
+    }
 
     // JWT tokens are base64url-encoded: only A-Za-z0-9, -, _, and . are valid.
     // encodeURIComponent() on a string containing non-ASCII (e.g. Unicode PUA characters)
@@ -115,7 +144,7 @@ class WsClient {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.backoff = Math.min(this.backoff * 2, this.MAX_BACKOFF);
-      this._open();
+      void this._open();
     }, this.backoff);
   }
 

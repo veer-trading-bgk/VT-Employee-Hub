@@ -231,10 +231,19 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
   const activeConvKey = selected?.type === 'lead' ? selected.leadId : selected?.phone;
   const { data: convData } = useQuery({
     queryKey: ['wa-conv', activeConvKey],
-    queryFn: () =>
-      selected!.type === 'lead'
-        ? apiFetch<{ lead: any; messages: Message[]; internalNotes: Message[] }>(`/api/crm/leads/${selected!.leadId}`)
-        : apiFetch<{ messages: Message[] }>(`/api/whatsapp/inbox/unknown/${selected!.phone}/messages`),
+    queryFn: async () => {
+      const url = selected!.type === 'lead'
+        ? `/api/crm/leads/${selected!.leadId}`
+        : `/api/whatsapp/inbox/unknown/${selected!.phone}/messages`;
+      console.log('[wa-conv] queryFn START', { url, time: new Date().toISOString() });
+      const data = await (selected!.type === 'lead'
+        ? apiFetch<{ lead: any; messages: Message[]; internalNotes: Message[] }>(url)
+        : apiFetch<{ messages: Message[] }>(url));
+      const msgCount = (data as any)?.messages?.length ?? 0;
+      const lastMsgId = (data as any)?.messages?.at(-1)?.SK ?? null;
+      console.log('[wa-conv] queryFn DONE', { msgCount, lastMsgId, time: new Date().toISOString() });
+      return data;
+    },
     enabled: !!selected,
     // When WS is live, the WS handler calls refetchQueries for the active conv on
     // each inbound message. Disable scheduled polling to avoid redundant requests;
@@ -363,31 +372,59 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
   // data flow and reliably triggers a re-render; setQueryData from outside React's
   // event system can be batched/deferred and was causing 20-30 s UI lag.
   useEffect(() => {
-    const handler = (wsMsg: WsMessage) => {
-      playNotifTone();
+  const handler = (wsMsg: WsMessage) => {
 
-      const payload = wsMsg as WsMessage & {
-        conversationId?: string | null;
-        phone?: string;
-        from?: string | number;
-        isUnknown?: boolean;
-      };
+    console.log("========== WS EVENT ==========");
+    console.log("Time:", new Date().toISOString());
+    console.log("WS Payload:", wsMsg);
 
-      if (!activeConvKey) return;
+    playNotifTone();
 
-      const isActiveConv = payload.isUnknown
-        ? (payload.phone === activeConvKey || String(payload.from) === activeConvKey)
-        : payload.conversationId === activeConvKey;
-
-      if (isActiveConv) {
-        qc.refetchQueries({ queryKey: ['wa-conv', activeConvKey] });
-      }
-      // For other convs: wa-inbox update is handled by WebSocketContext's EVENT_QUERY_MAP.
+    const payload = wsMsg as WsMessage & {
+      conversationId?: string | null;
+      phone?: string;
+      from?: string | number;
+      isUnknown?: boolean;
     };
 
-    wsClient.on('whatsapp_message', handler);
-    return () => wsClient.off('whatsapp_message', handler);
-  }, [qc, activeConvKey]);
+    console.log("Active Conversation:", activeConvKey);
+    console.log("Payload Conversation:", payload.conversationId);
+    console.log("Phone:", payload.phone);
+    console.log("From:", payload.from);
+
+    if (!activeConvKey) {
+      console.log("No active conversation selected.");
+      return;
+    }
+
+    const isActiveConv = payload.isUnknown
+      ? (payload.phone === activeConvKey || String(payload.from) === activeConvKey)
+      : payload.conversationId === activeConvKey;
+
+    console.log("isActiveConv =", isActiveConv);
+
+    if (isActiveConv) {
+      console.log("Calling refetchQueries...");
+
+      qc.refetchQueries({
+        queryKey: ['wa-conv', activeConvKey],
+      })
+      .then(() => {
+        console.log("refetchQueries FINISHED");
+      })
+      .catch((err) => {
+        console.error("refetchQueries ERROR", err);
+      });
+    } else {
+      console.log("Ignored because conversation is not active.");
+    }
+  };
+
+  wsClient.on('whatsapp_message', handler);
+  return () => wsClient.off('whatsapp_message', handler);
+}, [qc, activeConvKey]);
+        
+      
 
   // Reset editingName when conversation changes
   useEffect(() => {

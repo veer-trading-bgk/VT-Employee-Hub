@@ -10,6 +10,7 @@ import {
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { wsClient, type WsMessage } from '@/lib/wsClient';
+import { api, setMemoryToken } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 
 interface WsContextValue {
@@ -38,12 +39,19 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const url = process.env.NEXT_PUBLIC_WS_URL ?? 'wss://j3zbw8ex9h.execute-api.ap-south-1.amazonaws.com/prod';
     if (!url || !user) {
+      wsClient.setRefreshFn(null);
       wsClient.disconnect();
       setConnected(false);
       return;
     }
+    wsClient.setRefreshFn(async () => {
+      const me = await api.me() as { token?: string };
+      if (!me.token) throw new Error('no token in /api/auth/me response');
+      setMemoryToken(me.token);
+    });
     wsClient.connect(url);
     return () => {
+      wsClient.setRefreshFn(null);
       wsClient.disconnect();
       setConnected(false);
     };
