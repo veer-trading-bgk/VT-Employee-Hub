@@ -635,7 +635,7 @@ router.post('/webhook', async (req, res) => {
           await notifyCompany(webhookCompanyId, {
             event: 'whatsapp_message',
             conversationId: lead.leadId,
-            from: phone,
+            from: fromPhone,
             preview: text.slice(0, 100),
           }).catch(() => {});
         }
@@ -678,7 +678,7 @@ router.post('/webhook', async (req, res) => {
           await notifyCompany(companyId, {
             event: 'whatsapp_message',
             conversationId: null,
-            from: phone,
+            from: fromPhone,
             preview: text.slice(0, 100),
             isUnknown: true,
           }).catch(() => {});
