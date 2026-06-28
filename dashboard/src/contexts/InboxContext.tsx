@@ -62,16 +62,18 @@ export interface EmployeeRecord { id: string; name: string; role: string; }
 export interface CannedResponse { id: string; title: string; body: string; shortcut?: string; }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+const IST = 'Asia/Kolkata';
+const istDay = (date: Date) => date.toLocaleDateString('en-CA', { timeZone: IST });
+
 export function timeAgo(iso: string) {
   const diff = Date.now() - new Date(iso).getTime();
   if (diff < 5 * 60_000) return 'Just now';
   if (diff < 60 * 60_000) return `${Math.floor(diff / 60_000)}m ago`;
   const d = new Date(iso);
-  const yest = new Date(); yest.setDate(yest.getDate() - 1);
-  if (d.toDateString() === new Date().toDateString())
-    return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-  if (d.toDateString() === yest.toDateString()) return 'Yesterday';
-  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  if (istDay(d) === istDay(new Date()))
+    return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: IST });
+  if (istDay(d) === istDay(new Date(Date.now() - 86_400_000))) return 'Yesterday';
+  return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: IST });
 }
 
 export function avatarLetters(name?: string | null, phone?: string) {

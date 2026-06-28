@@ -59,7 +59,7 @@ export function BadgeCard({ badge, size = 'md' }: Props) {
       {/* Earned date */}
       {!locked && badge.earnedAt && (
         <p className="mt-1.5 text-[10px] text-slate-400">
-          {new Date(badge.earnedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+          {new Date(badge.earnedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' })}
         </p>
       )}
     </div>

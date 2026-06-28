@@ -135,7 +135,7 @@ export default function PlatformPage() {
             <div>
               <h1 className="text-xl font-bold text-slate-900 dark:text-white">Platform Overview</h1>
               <p className="text-sm text-slate-500 dark:text-slate-400">
-                {statsData?.generatedAt ? `Updated ${new Date(statsData.generatedAt).toLocaleTimeString()}` : 'Loading...'}
+                {statsData?.generatedAt ? `Updated ${new Date(statsData.generatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })}` : 'Loading...'}
               </p>
             </div>
             <Link

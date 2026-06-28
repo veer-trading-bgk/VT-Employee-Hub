@@ -881,7 +881,7 @@ export function ChatPane() {
                     <div className="max-w-sm rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 dark:border-amber-900/30 dark:bg-amber-900/10">
                       <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">🔒 Internal note · {item.authorName}</p>
                       <p className="mt-0.5 whitespace-pre-wrap text-xs text-amber-700 dark:text-amber-300">{noteContent}</p>
-                      <p className="mt-1 text-[10px] text-amber-500">{new Date(item.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p>
+                      <p className="mt-1 text-[10px] text-amber-500">{new Date(item.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })}</p>
                     </div>
                   </div>
                 );
@@ -928,7 +928,7 @@ export function ChatPane() {
                     )}
                     <p className={`mt-1 flex items-center gap-0.5 text-[10px] ${outbound ? 'text-indigo-200' : 'text-slate-400'}`}>
                       {outbound && item.sentByName ? `${item.sentByName} · ` : ''}
-                      {new Date(item.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                      {new Date(item.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })}
                       {outbound && <MsgTick status={item.msgStatus} />}
                     </p>
                   </div>

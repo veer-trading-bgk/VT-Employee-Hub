@@ -1,11 +1,11 @@
+const IST = 'Asia/Kolkata';
+
 export function today(): string {
-  return new Date().toISOString().split('T')[0];
+  return new Date().toLocaleDateString('en-CA', { timeZone: IST });
 }
 
 export function daysAgo(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().split('T')[0];
+  return new Date(Date.now() - n * 86_400_000).toLocaleDateString('en-CA', { timeZone: IST });
 }
 
 export function daysLeftInMonth(): number {
@@ -15,12 +15,12 @@ export function daysLeftInMonth(): number {
 }
 
 export function currentMonthLabel(): string {
-  return new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  return new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: IST });
 }
 
 export function dateRangeLabel(from: string, to: string): string {
-  const f = new Date(from).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-  const t = new Date(to).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  const f = new Date(from).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: IST });
+  const t = new Date(to).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: IST });
   return `${f} – ${t}`;
 }
 

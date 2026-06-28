@@ -30,7 +30,7 @@ export default function PlatformHealthPage() {
                   {data?.status === 'ok' ? 'Operational' : 'Degraded'}
                 </span>
                 <span className="text-xs text-slate-400">
-                  Last check: {data?.timestamp ? new Date(data.timestamp).toLocaleTimeString() : '—'}
+                  Last check: {data?.timestamp ? new Date(data.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : '—'}
                 </span>
               </div>
             )}

@@ -99,7 +99,7 @@ export function InsightsPanel() {
             </p>
           </div>
           <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
-            <span>Generated {new Date(data.generatedAt).toLocaleTimeString()}</span>
+            <span>Generated {new Date(data.generatedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })}</span>
             <span>Confidence: {Math.round(data.confidence * 100)}% ✅</span>
           </div>
         </div>

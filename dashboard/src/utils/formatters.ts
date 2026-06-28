@@ -26,8 +26,8 @@ export function formatRelativeTime(date: Date | string): string {
 
 export function formatDate(date: Date | string, style: 'short' | 'long' = 'short'): string {
   const d = typeof date === 'string' ? new Date(date) : date;
-  if (style === 'long') return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  if (style === 'long') return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' });
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: '2-digit', timeZone: 'Asia/Kolkata' });
 }
 
 export function getInitials(name: string): string {
