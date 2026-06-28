@@ -18,9 +18,20 @@ class WsClient {
     const token = getMemoryToken();
     if (!token) return; // no token yet — WebSocketContext will call connect() again after login
 
+    // Strip non-printable ASCII (BOM, Private Use Area chars from UTF-16 env file encoding bugs).
+    // NEXT_PUBLIC_WS_URL can arrive with invisible trailing/embedded PUA chars (%EE%81%xx)
+    // when the .env file was saved as UTF-16 LE or the Vercel dashboard value has hidden chars.
+    const safeUrl = url.replace(/[^\x20-\x7E]/g, '').trim();
+    if (safeUrl !== url) {
+      console.warn('[wsClient] NEXT_PUBLIC_WS_URL had non-printable chars; stripped', {
+        original: JSON.stringify(url),
+        sanitized: safeUrl,
+      });
+    }
+
     // Already connected/connecting to this base URL — skip
     if (
-      this.baseUrl === url &&
+      this.baseUrl === safeUrl &&
       this.ws &&
       this.ws.readyState !== WebSocket.CLOSED &&
       !this.destroyed
@@ -34,7 +45,7 @@ class WsClient {
     this.ws?.close();
     this.ws = null;
 
-    this.baseUrl = url;
+    this.baseUrl = safeUrl;
     this.destroyed = false;
     this._open();
   }
