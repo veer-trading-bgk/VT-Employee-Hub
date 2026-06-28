@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient, UseMutationResult, QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { useWsContext } from '@/contexts/WebSocketContext';
-import { wsClient } from '@/lib/wsClient';
+import { wsClient, type WsMessage } from '@/lib/wsClient';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export type ChatStatus = 'open' | 'unassigned' | 'resolved';
@@ -355,16 +355,46 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [qc, activeConvKey]);
 
-  // WS direct handler: force-refetch active conversation instantly on inbound message.
-  // Uses refetchQueries (not invalidateQueries) to bypass React Query deduplication —
-  // rapid messages can cause invalidateQueries to be dropped if a fetch is already in flight.
+  // WS real-time handler: write message directly into React Query cache via setQueryData.
+  // The WS payload now carries the full message object, so no HTTP round-trip is needed —
+  // the message appears in the UI the instant the backend broadcasts it.
   useEffect(() => {
-    const handler = () => {
+    const handler = (wsMsg: WsMessage) => {
       playNotifTone();
-      if (activeConvKey) {
+
+      const payload = wsMsg as WsMessage & {
+        conversationId?: string | null;
+        phone?: string;
+        isUnknown?: boolean;
+        message?: Record<string, unknown>;
+      };
+
+      if (!activeConvKey || !payload.message) {
+        // Old backend or no active conversation — fall back to refetch
+        if (activeConvKey) qc.refetchQueries({ queryKey: ['wa-conv', activeConvKey] });
+        return;
+      }
+
+      // Check if this message belongs to the currently open conversation
+      const isActiveConv = payload.isUnknown
+        ? (payload.phone === activeConvKey || String(payload.from) === activeConvKey)
+        : payload.conversationId === activeConvKey;
+
+      if (isActiveConv) {
+        qc.setQueryData(['wa-conv', activeConvKey], (old: unknown) => {
+          if (!old || typeof old !== 'object') return old;
+          const data = old as Record<string, unknown>;
+          const existing = (data.messages ?? []) as Record<string, unknown>[];
+          // Deduplicate — Meta re-delivers webhooks; SK is the unique key
+          if (existing.some((m) => m.SK === payload.message!.SK)) return old;
+          return { ...data, messages: [...existing, payload.message] };
+        });
+      } else {
+        // Message for a different conversation — refetch to ensure inbox list updates
         qc.refetchQueries({ queryKey: ['wa-conv', activeConvKey] });
       }
     };
+
     wsClient.on('whatsapp_message', handler);
     return () => wsClient.off('whatsapp_message', handler);
   }, [qc, activeConvKey]);

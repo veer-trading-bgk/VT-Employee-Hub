@@ -637,6 +637,7 @@ router.post('/webhook', async (req, res) => {
             conversationId: lead.leadId,
             from: fromPhone,
             preview: text.slice(0, 100),
+            message: { SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
           }).catch(() => {});
         }
       } else {
@@ -679,8 +680,10 @@ router.post('/webhook', async (req, res) => {
             event: 'whatsapp_message',
             conversationId: null,
             from: fromPhone,
+            phone: phone10,
             preview: text.slice(0, 100),
             isUnknown: true,
+            message: { SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
           }).catch(() => {});
         }
 
