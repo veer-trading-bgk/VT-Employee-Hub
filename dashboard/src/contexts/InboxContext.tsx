@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient, UseMutationResult, QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { useWsContext } from '@/contexts/WebSocketContext';
+import { wsClient } from '@/lib/wsClient';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export type ChatStatus = 'open' | 'unassigned' | 'resolved';
@@ -352,6 +353,20 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
     }
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [qc, activeConvKey]);
+
+  // WS direct handler: force-refetch active conversation instantly on inbound message.
+  // Uses refetchQueries (not invalidateQueries) to bypass React Query deduplication —
+  // rapid messages can cause invalidateQueries to be dropped if a fetch is already in flight.
+  useEffect(() => {
+    const handler = () => {
+      playNotifTone();
+      if (activeConvKey) {
+        qc.refetchQueries({ queryKey: ['wa-conv', activeConvKey] });
+      }
+    };
+    wsClient.on('whatsapp_message', handler);
+    return () => wsClient.off('whatsapp_message', handler);
   }, [qc, activeConvKey]);
 
   // Reset editingName when conversation changes
