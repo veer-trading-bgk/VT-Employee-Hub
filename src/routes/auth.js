@@ -533,7 +533,8 @@ router.get('/me', authMiddleware, async (req, res) => {
     if (!result.Item) return res.status(404).json({ error: 'User not found' });
 
     const { password, totpSecret, backupCodes, ...safe } = result.Item;
-    res.json(safe);
+    const token = req.cookies?.accessToken;
+    res.json(token ? { ...safe, token } : safe);
   } catch {
     res.status(500).json({ error: 'Failed to fetch user' });
   }

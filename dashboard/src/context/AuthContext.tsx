@@ -37,7 +37,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     (async () => {
       try {
-        const me = await api.me();
+        const me = await api.me() as UserShape & { token?: string };
+        if (me.token) setMemoryToken(me.token);
         setUser(me as User);
       } catch {
         setUser(null);
