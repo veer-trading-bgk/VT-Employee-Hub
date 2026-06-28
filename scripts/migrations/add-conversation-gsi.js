@@ -34,20 +34,18 @@ const client = new AWS.DynamoDB({ region: REGION });
 
 const GSIDEFS = [
   {
-    name:           'ConvByCompany',
-    description:    'List conversations per company sorted by lastActivityAt (newest-first)',
-    hashKey:        { AttributeName: 'convCompanyPK', AttributeType: 'S' },
-    rangeKey:       { AttributeName: 'lastActivityAt', AttributeType: 'S' },
-    projection:     { ProjectionType: 'ALL' },
-    provisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+    name:        'ConvByCompany',
+    description: 'List conversations per company sorted by lastActivityAt (newest-first)',
+    hashKey:     { AttributeName: 'convCompanyPK',  AttributeType: 'S' },
+    rangeKey:    { AttributeName: 'lastActivityAt', AttributeType: 'S' },
+    projection:  { ProjectionType: 'ALL' },
   },
   {
-    name:           'ConvByContact',
-    description:    'List conversations per contact sorted by lastActivityAt (newest-first)',
-    hashKey:        { AttributeName: 'convContactPK', AttributeType: 'S' },
-    rangeKey:       { AttributeName: 'lastActivityAt', AttributeType: 'S' },
-    projection:     { ProjectionType: 'ALL' },
-    provisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 },
+    name:        'ConvByContact',
+    description: 'List conversations per contact sorted by lastActivityAt (newest-first)',
+    hashKey:     { AttributeName: 'convContactPK',  AttributeType: 'S' },
+    rangeKey:    { AttributeName: 'lastActivityAt', AttributeType: 'S' },
+    projection:  { ProjectionType: 'ALL' },
   },
 ];
 
@@ -107,34 +105,30 @@ async function main() {
 
     console.log(`  [CREATE] ${def.name} — ${def.description}`);
 
-    // Collect new attribute definitions needed specifically for this GSI
-    const attrsForThisGsi = [def.hashKey, def.rangeKey].filter(
-      a => !existingAttrNames.has(a.AttributeName),
-    );
+    const isOnDemand = table.BillingModeSummary?.BillingMode === 'PAY_PER_REQUEST';
 
+    const createSpec = {
+      IndexName:  def.name,
+      KeySchema:  [
+        { AttributeName: def.hashKey.AttributeName,  KeyType: 'HASH'  },
+        { AttributeName: def.rangeKey.AttributeName, KeyType: 'RANGE' },
+      ],
+      Projection: def.projection,
+    };
+    if (!isOnDemand) {
+      createSpec.ProvisionedThroughput = { ReadCapacityUnits: 5, WriteCapacityUnits: 5 };
+    }
+
+    // Always declare both key attributes in every UpdateTable call —
+    // DynamoDB requires all GSI key attributes in the same request.
     await client.updateTable({
       TableName: TABLE_NAME,
-      AttributeDefinitions: attrsForThisGsi.map(a => ({
-        AttributeName: a.AttributeName,
-        AttributeType: a.AttributeType,
-      })),
-      GlobalSecondaryIndexUpdates: [
-        {
-          Create: {
-            IndexName:             def.name,
-            KeySchema:             [
-              { AttributeName: def.hashKey.AttributeName,  KeyType: 'HASH'  },
-              { AttributeName: def.rangeKey.AttributeName, KeyType: 'RANGE' },
-            ],
-            Projection:            def.projection,
-            ProvisionedThroughput: def.provisionedThroughput,
-          },
-        },
+      AttributeDefinitions: [
+        { AttributeName: def.hashKey.AttributeName,  AttributeType: def.hashKey.AttributeType  },
+        { AttributeName: def.rangeKey.AttributeName, AttributeType: def.rangeKey.AttributeType },
       ],
+      GlobalSecondaryIndexUpdates: [{ Create: createSpec }],
     }).promise();
-
-    // Track which attributes we've now registered
-    for (const a of attrsForThisGsi) existingAttrNames.add(a.AttributeName);
     anyCreated = true;
 
     console.log(`  Waiting for ${def.name} to become ACTIVE...`);
