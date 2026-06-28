@@ -413,13 +413,6 @@ export function ChatPane() {
     showSidebar, setShowSidebar, qc, invalidate, refetchCanned,
   } = useInbox();
 
-  console.log('[ChatPane] render', {
-    activeConvKey,
-    msgCount: timeline.length,
-    lastMsgId: timeline.at(-1)?.SK ?? null,
-    time: new Date().toISOString(),
-  });
-
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
