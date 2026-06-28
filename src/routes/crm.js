@@ -9,6 +9,7 @@ const { rateLimit } = require('../middleware/rateLimiter');
 const { createLeadSchema, updateLeadSchema, createFollowupSchema } = require('../utils/validation');
 const { notifyCompany } = require('../utils/wsNotify');
 const { to10Digit } = require('../utils/phone');
+const LeadService = require('../services/LeadService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -285,10 +286,30 @@ router.post('/leads', authMiddleware, rateLimit(30, 60_000), async (req, res, ne
       createdAt: now,
       updatedAt: now,
       convertedAt: null,
+
+      // V2 entity links — null until background linkage runs
+      contactId:             null,
+      primaryConversationId: null,
+
+      // Reserved future-ready fields (Phase 2/3 pipeline, revenue, journey)
+      pipelineId:      null,
+      productId:       null,
+      expectedValue:   null,
+      probability:     null,
+      wonAt:           null,
+      lostReason:      null,
+      customerJourney: null,
+
+      // Append-only audit arrays (Phase 2 — populated by service layer, not API directly)
+      ownerHistory:      [],  // [{ employeeId, name, assignedAt, assignedBy }]
+      leadSourceHistory: [],  // [{ source, sourceId, recordedAt, recordedBy }]
     };
 
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();
     await logAudit(req.user.id, 'crm_lead_created', leadId, 'success', req.ip, { name });
+
+    // Link Contact entity to this lead in the background (never blocks response)
+    LeadService.linkContactToLead(companyId, item.PK, cleanPhone, name.trim()).catch(() => {});
 
     // Fire automations
     const { runAutomations } = require('./automations');
@@ -833,6 +854,23 @@ router.post('/import', authMiddleware, checkRole(['admin', 'manager']), async (r
               updatedAt: now,
               convertedAt: null,
               importedAt: now,
+
+              // V2 entity links — null until background linkage runs
+              contactId:             existing?.contactId ?? null,
+              primaryConversationId: existing?.primaryConversationId ?? null,
+
+              // Reserved future-ready fields (Phase 2/3)
+              pipelineId:      existing?.pipelineId      ?? null,
+              productId:       existing?.productId       ?? null,
+              expectedValue:   existing?.expectedValue   ?? null,
+              probability:     existing?.probability     ?? null,
+              wonAt:           existing?.wonAt           ?? null,
+              lostReason:      existing?.lostReason      ?? null,
+              customerJourney: existing?.customerJourney ?? null,
+
+              // Append-only audit arrays — preserve on overwrite
+              ownerHistory:      existing?.ownerHistory      ?? [],
+              leadSourceHistory: existing?.leadSourceHistory ?? [],
             },
           }).promise();
 
