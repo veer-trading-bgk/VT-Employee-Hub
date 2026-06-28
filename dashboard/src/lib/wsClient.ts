@@ -42,9 +42,24 @@ class WsClient {
   private _open(): void {
     if (!this.baseUrl || this.destroyed) return;
     // Read token fresh on every open attempt — handles reconnects after token refresh
-    const token = getMemoryToken();
-    if (!token) return; // token cleared (logout in flight) — stop reconnect loop
-    const url = `${this.baseUrl}?token=${encodeURIComponent(token)}`;
+    const raw = getMemoryToken();
+    if (!raw) return; // token cleared (logout in flight) — stop reconnect loop
+
+    // JWT tokens are base64url-encoded: only A-Za-z0-9, -, _, and . are valid.
+    // encodeURIComponent() on a string containing non-ASCII (e.g. Unicode PUA characters)
+    // produces %EE%81%xx sequences that corrupt the URL. Sanitize instead: strip every
+    // character outside the JWT alphabet, then use the token directly — no encoding needed
+    // because the remaining characters are already URL-safe.
+    const token = String(raw).replace(/[^A-Za-z0-9\-_.]/g, '');
+    if (!token) {
+      console.warn('[wsClient] token empty after sanitization — skipping connect');
+      return;
+    }
+    if (token !== raw) {
+      console.warn('[wsClient] token contained non-JWT characters; they were stripped', { originalLength: raw.length, sanitizedLength: token.length });
+    }
+
+    const url = `${this.baseUrl}?token=${token}`;
     try {
       this.ws = new WebSocket(url);
     } catch {
