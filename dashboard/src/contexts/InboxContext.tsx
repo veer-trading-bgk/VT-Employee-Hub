@@ -364,6 +364,17 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [qc, activeConvKey]);
 
+  // WS reconnect: refetch the active conversation to show messages that arrived
+  // while the socket was down. wa-inbox is already handled by WebSocketContext's
+  // $open handler; here we cover the open conversation pane.
+  useEffect(() => {
+    const onReconnect = () => {
+      if (activeConvKey) qc.refetchQueries({ queryKey: ['wa-conv', activeConvKey] });
+    };
+    wsClient.on('$open', onReconnect);
+    return () => wsClient.off('$open', onReconnect);
+  }, [qc, activeConvKey]);
+
   // WS real-time handler: when a message arrives for the currently-open conversation,
   // immediately refetch its data. refetchQueries goes through React Query's normal
   // data flow and reliably triggers a re-render; setQueryData from outside React's

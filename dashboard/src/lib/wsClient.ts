@@ -5,15 +5,63 @@ import { getMemoryToken } from '@/lib/api';
 export type WsMessage = { event: string; [key: string]: unknown };
 type WsHandler = (msg: WsMessage) => void;
 
+/**
+ * Granular WebSocket connection states.
+ * Exposed via WsContextValue so UI can show meaningful connection indicators.
+ *
+ * idle        — not connected, not trying (logged-out or before first connect)
+ * connecting  — opening socket for the first time (no prior successful session)
+ * connected   — socket is OPEN and healthy
+ * reconnecting— re-opening after a disconnect (there was at least one prior session)
+ * offline     — browser reports navigator.onLine = false
+ * error       — auth failure (JWT rejected by $connect); user intervention needed
+ */
+export type WsConnectionState =
+  | 'idle'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'offline'
+  | 'error';
+
 class WsClient {
   private ws: WebSocket | null = null;
-  private baseUrl: string | null = null; // base URL without token
+  private baseUrl: string | null = null;
   private readonly handlers = new Map<string, Set<WsHandler>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private backoff = 1_000;
   private readonly MAX_BACKOFF = 30_000;
   private destroyed = false;
   private refreshFn: (() => Promise<void>) | null = null;
+
+  // ── Connection state machine ──────────────────────────────────────────────
+  private _state: WsConnectionState = 'idle';
+  private _lastConnectedAt: number | null = null;
+  private _everConnected = false;
+  private _windowListenersAdded = false;
+
+  // ─────────────────────────────────────────────────────────────────────────
+
+  private _setState(state: WsConnectionState): void {
+    if (this._state === state) return; // no-op on same state
+    this._state = state;
+    this._emit({ event: '$state', state, lastConnectedAt: this._lastConnectedAt });
+  }
+
+  /**
+   * Wire window online/offline events the first time connect() is called.
+   * Guarded against SSR environments where window is undefined.
+   */
+  private _initWindowListeners(): void {
+    if (this._windowListenersAdded || typeof window === 'undefined') return;
+    this._windowListenersAdded = true;
+    window.addEventListener('offline', () => {
+      if (this._state !== 'idle' && this._state !== 'error') this._setState('offline');
+    });
+    window.addEventListener('online', () => {
+      if (this._state === 'offline') this.reconnect();
+    });
+  }
 
   setRefreshFn(fn: (() => Promise<void>) | null): void {
     this.refreshFn = fn;
@@ -30,11 +78,11 @@ class WsClient {
 
   connect(url: string): void {
     const token = getMemoryToken();
-    if (!token) return; // no token yet — WebSocketContext will call connect() again after login
+    if (!token) return;
+
+    this._initWindowListeners();
 
     // Strip non-printable ASCII (BOM, Private Use Area chars from UTF-16 env file encoding bugs).
-    // NEXT_PUBLIC_WS_URL can arrive with invisible trailing/embedded PUA chars (%EE%81%xx)
-    // when the .env file was saved as UTF-16 LE or the Vercel dashboard value has hidden chars.
     const safeUrl = url.replace(/[^\x20-\x7E]/g, '').trim();
     if (safeUrl !== url) {
       console.warn('[wsClient] NEXT_PUBLIC_WS_URL had non-printable chars; stripped', {
@@ -66,18 +114,20 @@ class WsClient {
 
   private async _open(): Promise<void> {
     if (!this.baseUrl || this.destroyed) return;
-    // Read token fresh on every open attempt — handles reconnects after token refresh
-    let raw = getMemoryToken();
-    if (!raw) return; // token cleared (logout in flight) — stop reconnect loop
 
-    // If the JWT has expired and a refresh function is registered, obtain a fresh token
-    // before opening the socket. Without this, every reconnect after expiry is rejected
-    // by $connect with TokenExpiredError, growing backoff to 30 s and staying broken.
+    // Emit connecting vs. reconnecting based on session history
+    this._setState(this._everConnected ? 'reconnecting' : 'connecting');
+
+    let raw = getMemoryToken();
+    if (!raw) return;
+
+    // Refresh token before connecting if it is about to expire.
     if (this._isTokenExpired(raw) && this.refreshFn) {
       try {
         await this.refreshFn();
       } catch {
         console.warn('[wsClient] token refresh failed — stopping reconnect loop');
+        this._setState('error');
         return;
       }
       if (this.destroyed) return;
@@ -85,18 +135,17 @@ class WsClient {
       if (!raw) return;
     }
 
-    // JWT tokens are base64url-encoded: only A-Za-z0-9, -, _, and . are valid.
-    // encodeURIComponent() on a string containing non-ASCII (e.g. Unicode PUA characters)
-    // produces %EE%81%xx sequences that corrupt the URL. Sanitize instead: strip every
-    // character outside the JWT alphabet, then use the token directly — no encoding needed
-    // because the remaining characters are already URL-safe.
     const token = String(raw).replace(/[^A-Za-z0-9\-_.]/g, '');
     if (!token) {
       console.warn('[wsClient] token empty after sanitization — skipping connect');
+      this._setState('error');
       return;
     }
     if (token !== raw) {
-      console.warn('[wsClient] token contained non-JWT characters; they were stripped', { originalLength: raw.length, sanitizedLength: token.length });
+      console.warn('[wsClient] token contained non-JWT characters; they were stripped', {
+        originalLength: raw.length,
+        sanitizedLength: token.length,
+      });
     }
 
     const url = `${this.baseUrl}?token=${token}`;
@@ -109,6 +158,9 @@ class WsClient {
 
     this.ws.onopen = () => {
       this.backoff = 1_000;
+      this._everConnected = true;
+      this._lastConnectedAt = Date.now();
+      this._setState('connected');
       this._emit({ event: '$open' });
     };
 
@@ -124,7 +176,12 @@ class WsClient {
 
     this.ws.onclose = () => {
       this._emit({ event: '$close' });
-      if (!this.destroyed) this._scheduleReconnect();
+      if (!this.destroyed) {
+        this._setState('reconnecting');
+        this._scheduleReconnect();
+      } else {
+        this._setState('idle');
+      }
     };
 
     this.ws.onerror = () => {
@@ -135,7 +192,7 @@ class WsClient {
 
   private _emit(msg: WsMessage): void {
     this.handlers.get(msg.event)?.forEach((h) => h(msg));
-    // wildcard handlers receive every event including $open/$close
+    // wildcard handlers receive every event including $open/$close/$state
     this.handlers.get('*')?.forEach((h) => h(msg));
   }
 
@@ -148,12 +205,26 @@ class WsClient {
     }, this.backoff);
   }
 
+  /**
+   * Immediately attempt reconnect, bypassing the exponential backoff timer.
+   * Resets backoff to 1 s so the next automatic retry is also fast.
+   * No-ops if already connected, if destroyed, or if no baseUrl is set.
+   */
+  reconnect(): void {
+    if (this.destroyed || !this.baseUrl) return;
+    if (this.ws && this.ws.readyState !== WebSocket.CLOSED) return;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.backoff = 1_000;
+    void this._open();
+  }
+
   disconnect(): void {
     this.destroyed = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.ws?.close();
     this.ws = null;
     this.baseUrl = null;
+    this._setState('idle');
   }
 
   on(event: string, handler: WsHandler): void {
@@ -165,6 +236,13 @@ class WsClient {
     this.handlers.get(event)?.delete(handler);
   }
 
+  /** Current granular connection state. */
+  get state(): WsConnectionState { return this._state; }
+
+  /** Unix timestamp (ms) of the most recent successful connection, or null. */
+  get lastConnectedAt(): number | null { return this._lastConnectedAt; }
+
+  /** True when the socket is OPEN — backward-compatible shorthand. */
   get connected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
   }

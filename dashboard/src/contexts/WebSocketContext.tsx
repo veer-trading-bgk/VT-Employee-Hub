@@ -9,15 +9,21 @@ import {
   type ReactNode,
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { wsClient, type WsMessage } from '@/lib/wsClient';
+import { wsClient, type WsMessage, type WsConnectionState } from '@/lib/wsClient';
 import { api, setMemoryToken } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 
 interface WsContextValue {
-  connected: boolean;
+  connected: boolean;                    // backward-compatible shorthand
+  wsState: WsConnectionState;            // granular connection state
+  lastConnectedAt: number | null;        // timestamp of last successful connection
 }
 
-const WsContext = createContext<WsContextValue>({ connected: false });
+const WsContext = createContext<WsContextValue>({
+  connected: false,
+  wsState: 'idle',
+  lastConnectedAt: null,
+});
 
 // Map WS event names → React Query keys to invalidate on each push.
 // Keep keys aligned with queryKey arrays used in each page's useQuery() calls.
@@ -34,6 +40,8 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const qc = useQueryClient();
   const [connected, setConnected] = useState(false);
+  const [wsState, setWsState] = useState<WsConnectionState>('idle');
+  const [lastConnectedAt, setLastConnectedAt] = useState<number | null>(null);
 
   // ── Lifecycle: connect when logged in, disconnect on logout ────────────────
   useEffect(() => {
@@ -65,15 +73,47 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     };
   }, [user]);
 
-  // ── Track connection state via $open / $close synthetic events ─────────────
+  // ── Idle-session recovery: reconnect WS immediately on tab-visible ─────────
+  // After a long idle, the backoff timer can be up to 30 s. Calling reconnect()
+  // cancels the timer, resets backoff to 1 s, and opens the socket immediately.
+  // Only wires up when the user is logged in (same guard as the connect effect).
+  useEffect(() => {
+    if (!user) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') wsClient.reconnect();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [user]);
+
+  // ── Stale-cache recovery: invalidate inbox whenever WS (re)connects ────────
+  // Catches any messages that arrived while the socket was down. The $open event
+  // fires both on the initial connect and on every subsequent reconnect.
+  useEffect(() => {
+    const onOpen = () => {
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+    };
+    wsClient.on('$open', onOpen);
+    return () => wsClient.off('$open', onOpen);
+  }, [qc]);
+
+  // ── Track connection state via $open / $close / $state synthetic events ───
   useEffect(() => {
     const onOpen  = () => setConnected(true);
     const onClose = () => setConnected(false);
+    const onState = (msg: WsMessage) => {
+      const s = msg.state as WsConnectionState;
+      const ts = msg.lastConnectedAt as number | null;
+      setWsState(s);
+      if (ts !== null) setLastConnectedAt(ts);
+    };
     wsClient.on('$open',  onOpen);
     wsClient.on('$close', onClose);
+    wsClient.on('$state', onState);
     return () => {
       wsClient.off('$open',  onOpen);
       wsClient.off('$close', onClose);
+      wsClient.off('$state', onState);
     };
   }, []);
 
@@ -93,7 +133,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   }, [handleMessage]);
 
   return (
-    <WsContext.Provider value={{ connected }}>
+    <WsContext.Provider value={{ connected, wsState, lastConnectedAt }}>
       {children}
     </WsContext.Provider>
   );
