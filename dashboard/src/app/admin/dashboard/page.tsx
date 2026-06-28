@@ -119,12 +119,12 @@ export default function AdminDashboardPage() {
   const { data: teamData, isLoading: teamLoading, isError: teamError } = useQuery({
     queryKey: ['admin-team-summary'],
     queryFn: () => apiFetch<TeamSummaryResponse>('/api/metrics/team-summary'),
-    refetchInterval: 30_000,
+    refetchInterval: 300_000, // WS push drives updates; this is the 5-min fallback
   });
   const { data: lbData, isLoading: lbLoading, isError: lbError } = useQuery({
     queryKey: ['admin-leaderboard-monthly'],
     queryFn: () => apiFetch<LeaderboardResponse>('/api/metrics/leaderboard'),
-    refetchInterval: 60_000,
+    refetchInterval: 300_000,
   });
   const { data: targetsData } = useQuery({
     queryKey: ['admin-targets'],
@@ -134,17 +134,17 @@ export default function AdminDashboardPage() {
   const { data: crmData } = useQuery({
     queryKey: ['dashboard-crm'],
     queryFn: () => apiFetch<CrmAnalytics>('/api/crm/crm-analytics'),
-    staleTime: 60_000, refetchInterval: 120_000,
+    staleTime: 60_000, refetchInterval: 300_000,
   });
   const { data: waData } = useQuery({
     queryKey: ['dashboard-wa'],
     queryFn: () => apiFetch<WaInboxResponse>('/api/whatsapp/inbox?status=open'),
-    staleTime: 30_000, refetchInterval: 30_000,
+    staleTime: 30_000, refetchInterval: 300_000,
   });
   const { data: followupsData } = useQuery({
     queryKey: ['dashboard-followups'],
     queryFn: () => apiFetch<FollowupsResponse>('/api/crm/followups?days=1&overdue=true'),
-    staleTime: 60_000, refetchInterval: 120_000,
+    staleTime: 60_000, refetchInterval: 300_000,
   });
   const { data: empData } = useQuery({
     queryKey: ['admin-employees'],

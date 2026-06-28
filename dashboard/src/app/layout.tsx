@@ -4,6 +4,7 @@ import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { QueryProvider } from "@/providers/QueryProvider";
+import { WebSocketProvider } from "@/contexts/WebSocketContext";
 import { Toaster } from "sonner";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 
@@ -52,9 +53,11 @@ export default function RootLayout({
         <QueryProvider>
           <ThemeProvider>
             <AuthProvider>
-              {children}
-              <Toaster richColors position="top-right" offset="4.5rem" />
-              <ServiceWorkerRegister />
+              <WebSocketProvider>
+                {children}
+                <Toaster richColors position="top-right" offset="4.5rem" />
+                <ServiceWorkerRegister />
+              </WebSocketProvider>
             </AuthProvider>
           </ThemeProvider>
         </QueryProvider>

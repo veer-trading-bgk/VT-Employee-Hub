@@ -23,7 +23,7 @@ export interface RealTimeState {
 
 export function useRealTime({
   queryKeys,
-  intervalMs = 30_000,
+  intervalMs = 300_000,
   enabled = true,
 }: UseRealTimeOptions): RealTimeState {
   const queryClient = useQueryClient();
