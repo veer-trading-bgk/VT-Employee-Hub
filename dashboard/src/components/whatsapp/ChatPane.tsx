@@ -612,21 +612,55 @@ export function ChatPane() {
     },
   });
 
-  const sendMutation = useMutation({
-    mutationFn: () =>
+  type SendVars = { text: string; reply: typeof replyTo };
+  const sendMutation = useMutation<unknown, Error, SendVars, { snapshot: unknown }>({
+    onMutate: async (vars) => {
+      await qc.cancelQueries({ queryKey: ['wa-conv', activeConvKey] });
+      const snapshot = qc.getQueryData(['wa-conv', activeConvKey]);
+      const now = new Date().toISOString();
+      qc.setQueryData(['wa-conv', activeConvKey], (old: unknown) => {
+        if (!old || typeof old !== 'object') return old;
+        const data = old as Record<string, unknown>;
+        const msgs = (data.messages ?? []) as Record<string, unknown>[];
+        return {
+          ...data,
+          messages: [...msgs, {
+            SK: `MSG#${now}#opt`,
+            direction: 'outbound',
+            content: vars.text,
+            timestamp: now,
+            type: 'text',
+            msgStatus: 'sending',
+            ...(vars.reply && {
+              replyToContent: vars.reply.content,
+              replyToDirection: vars.reply.direction,
+              replyToSenderName: vars.reply.senderName ?? null,
+            }),
+          }],
+        };
+      });
+      setMsgText('');
+      setShowCanned(false);
+      setReplyTo(null);
+      return { snapshot };
+    },
+    mutationFn: ({ text, reply }) =>
       selected!.type === 'lead'
         ? apiFetch('/api/whatsapp/send', { method: 'POST', body: JSON.stringify({
             leadPK: selected!.PK,
-            message: msgText,
-            ...(replyTo?.waMessageId && {
-              replyToWaMessageId: replyTo.waMessageId,
-              replyToContent: replyTo.content,
-              replyToDirection: replyTo.direction,
-              replyToSenderName: replyTo.senderName ?? null,
+            message: text,
+            ...(reply?.waMessageId && {
+              replyToWaMessageId: reply.waMessageId,
+              replyToContent: reply.content,
+              replyToDirection: reply.direction,
+              replyToSenderName: reply.senderName ?? null,
             }),
           }) })
-        : apiFetch(`/api/whatsapp/inbox/unknown/${selected!.phone}/send`, { method: 'POST', body: JSON.stringify({ message: msgText }) }),
-    onSuccess: () => { setMsgText(''); setShowCanned(false); setReplyTo(null); invalidate(); },
+        : apiFetch(`/api/whatsapp/inbox/unknown/${selected!.phone}/send`, { method: 'POST', body: JSON.stringify({ message: text }) }),
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.snapshot !== undefined) qc.setQueryData(['wa-conv', activeConvKey], ctx.snapshot);
+    },
+    onSettled: () => { invalidate(); },
   });
 
   const addLeadMutation = useMutation({
@@ -663,7 +697,7 @@ export function ChatPane() {
   function handleSend() {
     if (!msgText.trim()) return;
     if (inputMode === 'note') { noteMutation.mutate(msgText, { onSuccess: () => setMsgText('') }); }
-    else { sendMutation.mutate(); }
+    else { sendMutation.mutate({ text: msgText, reply: replyTo }); }
   }
 
   function handleMsgChange(val: string) {
