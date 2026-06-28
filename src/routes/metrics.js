@@ -7,6 +7,7 @@ const dynamodb = require('../config/dynamodb');
 const { queryAll } = require('../utils/db');
 const bot = require('../config/telegram');
 const logger = require('../config/logger');
+const { notifyCompany } = require('../utils/wsNotify');
 
 const router = express.Router();
 
@@ -129,6 +130,14 @@ router.post('/add', async (req, res, next) => {
       message: `${metric_type} updated: +${value} (total today: ${totalValue})`,
       data: { metric_type, value, total: totalValue, date: metricDate },
     });
+    notifyCompany(req.user.companyId, {
+      event: 'metric_added',
+      userId,
+      metric_type,
+      value,
+      total: totalValue,
+      date: metricDate,
+    }).catch(() => {});
   } catch (error) {
     next(error);
   }
@@ -688,6 +697,12 @@ router.post('/verify', checkRole(['admin', 'manager']), async (req, res, next) =
     const auditRef = req.body.metricId || `${key.PK}#${key.SK}`;
     await logAudit(req.user.id, 'verify_metric', auditRef, approved ? 'approved' : 'rejected', req.ip);
     res.json({ success: true });
+    notifyCompany(req.user.companyId, {
+      event: 'metric_verified',
+      metricId: auditRef,
+      approved: !!approved,
+      verifiedBy: req.user.id,
+    }).catch(() => {});
   } catch (error) {
     next(error);
   }
@@ -761,6 +776,12 @@ router.post('/verify/:metricId', adminMiddleware, async (req, res, next) => {
     await logAudit(req.user.id, 'verify_metric', metricId, approved ? 'approved' : 'rejected', req.ip);
     logger.info(`Metric ${metricId} ${approved ? 'approved' : 'rejected'} by ${req.user.email}`);
     res.json({ success: true, message: `Metric ${approved ? 'approved' : 'rejected'}` });
+    notifyCompany(req.user.companyId, {
+      event: 'metric_verified',
+      metricId,
+      approved: !!approved,
+      verifiedBy: req.user.id,
+    }).catch(() => {});
   } catch (error) {
     next(error);
   }
@@ -1025,6 +1046,14 @@ router.post('/add-for-member', checkRole(['team_lead', 'manager', 'admin']), asy
       message: `${validated.metric_type} +${validated.value} for ${target.name} (total: ${totalValue})`,
       data: { metric_type: validated.metric_type, value: validated.value, total: totalValue, date: metricDate },
     });
+    notifyCompany(req.user.companyId, {
+      event: 'metric_added',
+      userId: targetUserId,
+      metric_type: validated.metric_type,
+      value: validated.value,
+      total: totalValue,
+      date: metricDate,
+    }).catch(() => {});
   } catch (error) {
     next(error);
   }

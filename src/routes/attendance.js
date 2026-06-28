@@ -3,6 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
+const { notifyCompany } = require('../utils/wsNotify');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -60,6 +61,11 @@ router.post('/mark', authMiddleware, async (req, res, next) => {
     });
 
     res.status(201).json({ success: true, date, alreadyMarked: false });
+    notifyCompany(req.user.companyId, {
+      event: 'attendance_marked',
+      userId: req.user.id,
+      date,
+    }).catch(() => {});
   } catch (error) {
     logger.error('attendance/mark error', error);
     next(error);

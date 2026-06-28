@@ -7,6 +7,7 @@ const logger = require('../config/logger');
 const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
 const { rateLimit } = require('../middleware/rateLimiter');
 const { createLeadSchema, updateLeadSchema, createFollowupSchema } = require('../utils/validation');
+const { notifyCompany } = require('../utils/wsNotify');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -293,6 +294,11 @@ router.post('/leads', authMiddleware, rateLimit(30, 60_000), async (req, res, ne
     }).catch((e) => logger.warn('automation error: ' + e.message));
 
     res.status(201).json({ success: true, lead: item });
+    notifyCompany(companyId, {
+      event: 'lead_created',
+      leadId,
+      stage: defaultStage,
+    }).catch(() => {});
   } catch (err) {
     logger.error('crm/leads POST error', err);
     next(err);
@@ -536,6 +542,12 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
 
     await logAudit(req.user.id, 'crm_stage_change', req.params.id, 'success', req.ip, { from: lead.stage, to: stage });
     res.json({ success: true, stage, autoMetric: metricType ?? null });
+    notifyCompany(companyId, {
+      event: 'lead_updated',
+      leadId: req.params.id,
+      stage,
+      previousStage: lead.stage,
+    }).catch(() => {});
   } catch (err) {
     logger.error('crm/leads/:id/stage error', err);
     next(err);

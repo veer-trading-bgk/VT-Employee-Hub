@@ -8,6 +8,7 @@ const logger = require('../config/logger');
 const { rateLimit } = require('../middleware/rateLimiter');
 const { to10Digit } = require('../utils/phone');
 const { ALLOWED_MIME, META_SIZE_LIMITS } = require('../utils/mediaConstants');
+const { notifyCompany } = require('../utils/wsNotify');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -631,6 +632,12 @@ router.post('/webhook', async (req, res) => {
               ExpressionAttributeValues: { ':s': 'open' },
             }).promise().catch(() => {});
           }
+          await notifyCompany(webhookCompanyId, {
+            event: 'whatsapp_message',
+            conversationId: lead.leadId,
+            from: phone,
+            preview: text.slice(0, 100),
+          }).catch(() => {});
         }
       } else {
         const companyId = webhookCompanyId; // already resolved above
@@ -668,6 +675,13 @@ router.post('/webhook', async (req, res) => {
             UpdateExpression: 'SET lastActivityAt = :now',
             ExpressionAttributeValues: { ':now': new Date().toISOString() },
           }).promise().catch(() => {});
+          await notifyCompany(companyId, {
+            event: 'whatsapp_message',
+            conversationId: null,
+            from: phone,
+            preview: text.slice(0, 100),
+            isUnknown: true,
+          }).catch(() => {});
         }
 
         // Send welcome message on first contact (only for genuinely new messages)
