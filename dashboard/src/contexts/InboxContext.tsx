@@ -236,7 +236,11 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
         ? apiFetch<{ lead: any; messages: Message[]; internalNotes: Message[] }>(`/api/crm/leads/${selected!.leadId}`)
         : apiFetch<{ messages: Message[] }>(`/api/whatsapp/inbox/unknown/${selected!.phone}/messages`),
     enabled: !!selected,
-    refetchInterval: 3_000,
+    // When WS is live, setQueryData handles real-time updates — polling races with
+    // the WS push and wins (poll fetches the message before the WS frame arrives),
+    // causing the WS handler to see it as a duplicate SK and skip. Disable the poll
+    // when WS is connected; resume at 3 s as fallback when WS drops.
+    refetchInterval: wsConnected ? false : 3_000,
     refetchIntervalInBackground: false,
     staleTime: 0,
   });
