@@ -21,7 +21,12 @@ exports.handler = async (event) => {
 
   // ── $connect ──────────────────────────────────────────────────────────────
   if (routeKey === '$connect') {
-    const token = event.queryStringParameters?.token;
+    const rawToken = event.queryStringParameters?.token;
+    const token = rawToken ? decodeURIComponent(rawToken) : undefined;
+
+    console.log('[WS $connect] token present:', !!token);
+    console.log('[WS $connect] JWT_SECRET length:', process.env.JWT_SECRET?.length ?? 0);
+
     if (!token) {
       return { statusCode: 401, body: 'Missing token' };
     }
@@ -29,7 +34,8 @@ exports.handler = async (event) => {
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch {
+    } catch (err) {
+      console.log('[WS $connect] jwt error name:', err.name);
       return { statusCode: 401, body: 'Invalid token' };
     }
 
