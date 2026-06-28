@@ -418,6 +418,7 @@ export function ChatPane() {
   const fileRef = useRef<HTMLInputElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
+  const isNearBottomRef = useRef(true);
 
   const [msgText, setMsgText] = useState('');
   const [inputMode, setInputMode] = useState<'reply' | 'note'>('reply');
@@ -456,12 +457,28 @@ export function ChatPane() {
     setUploadProgress(0);
   }, [activeConvKey]);
 
-  // Scroll to bottom when timeline grows
+  // Track bottom-proximity on scroll (fires before any DOM change, so reading is accurate)
   useEffect(() => {
     const el = chatContainerRef.current;
     if (!el) return;
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-    if (atBottom) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const onScroll = () => {
+      isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // Jump to bottom instantly when switching conversations
+  useEffect(() => {
+    isNearBottomRef.current = true;
+    bottomRef.current?.scrollIntoView({ behavior: 'instant' as ScrollBehavior });
+  }, [activeConvKey]);
+
+  // Auto-scroll to bottom when new messages arrive, only if already near bottom
+  useEffect(() => {
+    if (isNearBottomRef.current) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [timeline.length]);
 
   function mediaKind(mimeType: string) {

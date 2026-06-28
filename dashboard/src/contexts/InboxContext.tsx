@@ -4,6 +4,7 @@ import { createContext, useContext, useState, useRef, useEffect, useCallback, Di
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient, UseMutationResult, QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { useWsContext } from '@/contexts/WebSocketContext';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 export type ChatStatus = 'open' | 'unassigned' | 'resolved';
@@ -164,6 +165,7 @@ export function useInbox() {
 
 export function InboxProvider({ children }: { children: React.ReactNode }) {
   const qc = useQueryClient();
+  const { connected: wsConnected } = useWsContext();
   const searchParams = useSearchParams();
   const deepLinkLeadId = searchParams.get('leadId');
   const deepLinkPhone = searchParams.get('phone');
@@ -208,7 +210,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
     queryFn: () => apiFetch<{ success: boolean; conversations: Conversation[]; counts: Record<string, number> }>(
       `/api/whatsapp/inbox?status=${activeTab === 'all' ? 'all' : activeTab}`
     ),
-    refetchInterval: tabActive ? 8000 : 30000,
+    refetchInterval: tabActive ? (wsConnected ? 30_000 : 8_000) : 60_000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
   });
@@ -316,9 +318,9 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
 
     async function ping() {
       if (cancelled) return;
-      if (!tabActive) {
-        // Tab is hidden — reschedule without making a network request
-        timer = setTimeout(ping, 2_000);
+      if (!tabActive || wsConnected) {
+        // Tab hidden or WS is live — WS push handles instant updates; ping is fallback only
+        timer = setTimeout(ping, wsConnected ? 15_000 : 2_000);
         return;
       }
       try {
@@ -339,7 +341,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
 
     timer = setTimeout(ping, 2_000);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [qc, tabActive]);
+  }, [qc, tabActive, wsConnected]);
 
   // Visibility change invalidation effect
   useEffect(() => {
