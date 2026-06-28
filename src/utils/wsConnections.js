@@ -46,9 +46,10 @@ async function getConnectionsByCompany(companyId) {
       ProjectionExpression: 'connectionId, userId, #r',
       ExpressionAttributeNames: { '#r': 'role' },
     }).promise();
+    logger.info(`wsConnections.getConnectionsByCompany: table=${table()} companyId=${companyId} found=${result.Items?.length ?? 0}`);
     return result.Items ?? [];
   } catch (err) {
-    logger.warn('wsConnections.getConnectionsByCompany failed', err.message);
+    logger.warn(`wsConnections.getConnectionsByCompany failed: table=${table()} companyId=${companyId} error=${err.message} code=${err.code}`);
     return [];
   }
 }

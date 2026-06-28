@@ -51,9 +51,9 @@ exports.handler = async (event) => {
         decoded.companyId ?? null,
         decoded.role ?? 'unknown'
       );
-      logger.info(`WS $connect: user=${decoded.id} role=${decoded.role} conn=${connectionId}`);
+      logger.info(`WS $connect: saved conn=${connectionId} user=${decoded.id} companyId=${decoded.companyId ?? 'SUPERADMIN'} role=${decoded.role} table=${process.env.WS_CONNECTIONS_TABLE || 'ws_connections'}`);
     } catch (err) {
-      logger.error('WS $connect: saveConnection failed', err);
+      logger.error(`WS $connect: saveConnection failed conn=${connectionId}`, err.message);
       return { statusCode: 500, body: 'Internal error' };
     }
 
