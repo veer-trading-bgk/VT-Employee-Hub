@@ -9,6 +9,7 @@ import { useInbox, timeAgo, avatarLetters, CHAT_STATUS_CHIP } from '@/contexts/I
 import type { Message, CannedResponse, EmployeeRecord } from '@/contexts/InboxContext';
 import { META_SIZE_LIMITS } from '@/lib/mediaConstants';
 import { Paperclip } from 'lucide-react';
+import { toast } from 'sonner';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -344,7 +345,10 @@ function MediaBubble({ item, outbound }: { item: Message & { _kind: string }; ou
   if (!src && !error) {
     return (
       <div className="mb-1.5 flex h-24 w-40 items-center justify-center rounded-xl bg-slate-200 dark:bg-slate-700">
-        <span className="text-xs text-slate-400">Loading…</span>
+        <svg className="h-5 w-5 animate-spin text-slate-400" viewBox="0 0 24 24" fill="none">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+        </svg>
       </div>
     );
   }
@@ -804,13 +808,17 @@ export function ChatPane() {
             {/* Action buttons */}
             <div className="flex flex-shrink-0 items-center gap-1.5">
               {selected.type === 'lead' && selected.chatStatus !== 'resolved' && (
-                <button onClick={() => resolveMutation.mutate()} disabled={resolveMutation.isPending}
+                <button
+                  onClick={() => resolveMutation.mutate(undefined, { onError: () => toast.error('Failed to resolve conversation') })}
+                  disabled={resolveMutation.isPending}
                   className="rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-900 dark:bg-emerald-900/20 dark:text-emerald-400">
                   ✓ Resolve
                 </button>
               )}
               {selected.type === 'lead' && selected.chatStatus === 'resolved' && (
-                <button onClick={() => reopenMutation.mutate()} disabled={reopenMutation.isPending}
+                <button
+                  onClick={() => reopenMutation.mutate(undefined, { onError: () => toast.error('Failed to reopen conversation') })}
+                  disabled={reopenMutation.isPending}
                   className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
                   ↺ Reopen
                 </button>
@@ -837,14 +845,14 @@ export function ChatPane() {
 
           {/* 24h window warning + template picker */}
           {windowExpired && inputMode === 'reply' && !showTemplatePicker && (
-            <div className="flex items-center gap-3 border-b border-amber-100 bg-amber-50 px-4 py-2.5 dark:border-amber-900/30 dark:bg-amber-900/10">
-              <span className="text-base">⚠</span>
-              <p className="flex-1 text-xs text-amber-700 dark:text-amber-400">
-                Customer last replied <strong>{timeAgo(selected.lastInboundAt ?? currentLead?.lastInboundAt ?? '')}</strong> ago. The 24-hour window has expired.
+            <div className="flex items-center gap-3 border-b border-amber-200 bg-amber-100 px-4 py-3 dark:border-amber-900/40 dark:bg-amber-900/20">
+              <span className="text-lg">⚠️</span>
+              <p className="flex-1 text-xs text-amber-800 dark:text-amber-300">
+                <strong>24-hour window expired.</strong> Customer last replied {timeAgo(selected.lastInboundAt ?? currentLead?.lastInboundAt ?? '')}.
               </p>
               <button onClick={() => setShowTemplatePicker(true)}
-                className="flex-shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-amber-700">
-                Send Template
+                className="flex-shrink-0 rounded-lg bg-amber-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-amber-700 active:bg-amber-800">
+                Send Template →
               </button>
             </div>
           )}
@@ -891,7 +899,7 @@ export function ChatPane() {
                         setInputMode('reply');
                         inputRef.current?.focus();
                       }}
-                      className="mb-1 flex-shrink-0 rounded-full p-1 text-xs text-slate-300 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-slate-100 hover:text-indigo-600 dark:hover:bg-slate-700">
+                      className="mb-1 flex-shrink-0 rounded-full p-1 text-xs text-slate-300 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 hover:bg-slate-100 hover:text-indigo-600 dark:hover:bg-slate-700">
                       ↩
                     </button>
                   )}
