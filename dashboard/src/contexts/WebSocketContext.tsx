@@ -25,7 +25,7 @@ const EVENT_QUERY_MAP: Record<string, string[][]> = {
   metric_verified:   [['admin-team-summary'], ['my-metrics'], ['pending-metrics']],
   lead_created:      [['crm-leads'], ['dashboard-crm']],
   lead_updated:      [['crm-leads'], ['dashboard-crm']],
-  whatsapp_message:  [['wa-inbox'], ['wa-conv'], ['dashboard-wa']],
+  whatsapp_message:  [['wa-inbox'], ['dashboard-wa']],
   attendance_marked: [['attendance']],
 };
 
