@@ -36,8 +36,9 @@ if (Test-Path $binDir) { Remove-Item $binDir -Recurse -Force }
 # 5. Remove TypeScript type definitions and source maps
 Get-ChildItem -Path $staging -Recurse -Include "*.d.ts","*.d.ts.map","*.js.map" | Remove-Item -Force
 
-# 6. Remove documentation files
-Get-ChildItem -Path $staging -Recurse -Include "README*","readme*","CHANGELOG*","CHANGES*","HISTORY*","LICENSE*","LICENCE*","NOTICE*","*.md","*.txt" | Remove-Item -Force -Recurse
+# 6. Remove documentation files (.md and .txt by extension only — avoids
+#    case-insensitive wildcard collisions like LICENSE* matching licensemanager.js)
+Get-ChildItem -Path $staging -Recurse -File -Include "*.md","*.txt" | Remove-Item -Force
 
 # 7. Check unzipped size before compressing (Lambda limit: 262 MB)
 $stagingBytes = (Get-ChildItem -Path $staging -Recurse -File | Measure-Object -Property Length -Sum).Sum
