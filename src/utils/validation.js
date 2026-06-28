@@ -66,7 +66,7 @@ const companySignupSchema = z.object({
     .regex(/[0-9]/, 'Must contain a number'),
 });
 
-const VALID_SOURCES = ['manual', 'import', 'whatsapp', 'referral', 'website', 'facebook', 'instagram', 'whatsapp_ai', 'walk_in', 'social'];
+const VALID_SOURCES = ['manual', 'import', 'whatsapp', 'referral', 'website', 'facebook', 'instagram', 'whatsapp_ai', 'walk_in', 'social', 'webinar'];
 
 const createLeadSchema = z.object({
   name: z.string().min(1, 'Name required').max(100).trim(),

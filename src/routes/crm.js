@@ -210,9 +210,12 @@ router.get('/leads', authMiddleware, async (req, res, next) => {
 // ── POST /api/crm/leads ────────────────────────────────────────────────────────
 router.post('/leads', authMiddleware, rateLimit(30, 60_000), async (req, res, next) => {
   try {
-    const parsed = createLeadSchema.safeParse(req.body);
+    // Strip non-digits from phone before schema validation so +91/spaces/dashes are accepted
+    const body = { ...req.body };
+    if (body.phone) body.phone = String(body.phone).replace(/\D/g, '');
+    const parsed = createLeadSchema.safeParse(body);
     if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
-    const { name, phone, email, productInterest, source, notes, assignedTo, assignedToName, closureDeadline, tags, stage } = req.body;
+    const { name, phone, email, productInterest, source, notes, assignedTo, assignedToName, closureDeadline, tags, stage } = body;
     if (!name?.trim() || !phone?.trim()) {
       return res.status(400).json({ error: 'name and phone are required' });
     }
@@ -220,10 +223,10 @@ router.post('/leads', authMiddleware, rateLimit(30, 60_000), async (req, res, ne
     const companyId = req.user.companyId;
     const cleanPhone = String(phone).replace(/\D/g, '');
 
-    // Duplicate phone check
+    // Duplicate phone check — exclude soft-deleted leads
     const dupCheck = await dynamodb.scan({
       TableName: TABLE,
-      FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND phone = :ph',
+      FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND phone = :ph AND attribute_not_exists(deletedAt)',
       ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA', ':ph': cleanPhone },
     }).promise();
     if ((dupCheck.Items?.length ?? 0) > 0) {

@@ -723,8 +723,13 @@ export default function AdminCrmPage() {
               <div className="grid grid-cols-2 gap-3">
                 <input placeholder="Full Name *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
                   className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
-                <input placeholder="WhatsApp Phone *" value={form.phone} onChange={(e) => { setForm({ ...form, phone: e.target.value }); setDuplicateWarning(null); }}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
+                <div>
+                  <input placeholder="10-digit mobile *" value={form.phone} onChange={(e) => { setForm({ ...form, phone: e.target.value }); setDuplicateWarning(null); }}
+                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:bg-slate-800 dark:text-white ${form.phone && form.phone.replace(/\D/g, '').length !== 10 ? 'border-red-300 dark:border-red-700' : 'border-slate-200 dark:border-slate-700'}`} />
+                  {form.phone && form.phone.replace(/\D/g, '').length !== 10 && (
+                    <p className="mt-0.5 text-[10px] text-red-500">Enter 10-digit mobile number</p>
+                  )}
+                </div>
               </div>
               <input placeholder="Email (optional)" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
                 className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
@@ -768,8 +773,8 @@ export default function AdminCrmPage() {
             </div>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => { setShowAddForm(false); setDuplicateWarning(null); }} className="rounded-lg px-4 py-2 text-sm text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">Cancel</button>
-              <button onClick={() => addMutation.mutate({ ...form, stage: addStage })}
-                disabled={!form.name.trim() || form.phone.trim().replace(/\D/g, '').length < 7 || addMutation.isPending}
+              <button onClick={() => addMutation.mutate({ ...form, phone: form.phone.replace(/\D/g, ''), stage: addStage })}
+                disabled={!form.name.trim() || form.phone.replace(/\D/g, '').length !== 10 || addMutation.isPending}
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
                 {addMutation.isPending ? 'Adding…' : 'Add Lead'}
               </button>
