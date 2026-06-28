@@ -36,7 +36,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
 
   // ── Lifecycle: connect when logged in, disconnect on logout ────────────────
   useEffect(() => {
-    const url = process.env.NEXT_PUBLIC_WS_URL;
+    const url = process.env.NEXT_PUBLIC_WS_URL ?? 'wss://j3zbw8ex9h.execute-api.ap-south-1.amazonaws.com/prod';
     if (!url || !user) {
       wsClient.disconnect();
       setConnected(false);
