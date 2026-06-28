@@ -29,3 +29,7 @@ Thumbs.db
 # Local
 .claude/
 node/
+
+env-temp.json
+gsi.json
+ws-policy.json
