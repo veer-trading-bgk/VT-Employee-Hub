@@ -89,16 +89,5 @@ jobs:
       - name: Install Vercel CLI
         run: npm install --global vercel@latest
 
-      - name: Pull Vercel environment & project info
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
-
-      - name: Build dashboard
-        run: |
-          rm -rf .vercel/output
-          vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
-        env:
-          NEXT_PUBLIC_WS_URL: ${{ secrets.NEXT_PUBLIC_WS_URL }}
-          NEXT_PUBLIC_REFRESH_INTERVAL_MS: "300000"
-
       - name: Deploy to Vercel
-        run: vercel deploy --prebuilt --prod --archive=tgz --token=${{ secrets.VERCEL_TOKEN }}
+        run: vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }}
