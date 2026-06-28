@@ -17,13 +17,40 @@ let _memToken: string | null = null;
 export const setMemoryToken = (t: string | null) => { _memToken = t; };
 export const getMemoryToken = () => _memToken;
 
+// Single in-flight refresh promise — prevents thundering herd when multiple
+// concurrent requests all get 401 at the same time.
+let _refreshPromise: Promise<boolean> | null = null;
+
+async function _tryRefreshToken(): Promise<boolean> {
+  if (_refreshPromise) return _refreshPromise;
+  _refreshPromise = (async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) return false;
+      const data = await res.json() as { token?: string };
+      if (data.token) { setMemoryToken(data.token); return true; }
+      return false;
+    } catch {
+      return false;
+    } finally {
+      _refreshPromise = null;
+    }
+  })();
+  return _refreshPromise;
+}
+
 interface RequestOptions extends RequestInit {
   retries?: number;
   retryDelayMs?: number;
+  _isRetryAfterRefresh?: boolean;
 }
 
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { retries = 2, retryDelayMs = 500, ...init } = options;
+  const { retries = 2, retryDelayMs = 500, _isRetryAfterRefresh = false, ...init } = options;
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -45,6 +72,18 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
           errorBody = await res.json() as Record<string, unknown>;
           message = (errorBody.error as string) || message;
         } catch { /* non-JSON body */ }
+
+        // On 401, attempt a silent token refresh once then replay the request.
+        // Skip if this is already the retry-after-refresh to avoid infinite loop.
+        if (res.status === 401 && !_isRetryAfterRefresh && path !== '/api/auth/refresh') {
+          const refreshed = await _tryRefreshToken();
+          if (refreshed) {
+            return apiFetch<T>(path, { ...options, _isRetryAfterRefresh: true });
+          }
+          // Refresh failed — token is truly gone. Signal logout to the app.
+          window.dispatchEvent(new CustomEvent('auth:expired'));
+        }
+
         throw new ApiClientError(message, res.status, errorBody);
       }
 

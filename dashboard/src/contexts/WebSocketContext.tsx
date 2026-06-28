@@ -45,9 +45,17 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
       return;
     }
     wsClient.setRefreshFn(async () => {
-      const me = await api.me() as { token?: string };
-      if (!me.token) throw new Error('no token in /api/auth/me response');
-      setMemoryToken(me.token);
+      // Use the refresh endpoint (refresh token cookie) — not /me which requires
+      // a valid access token and would always fail when the access token is expired.
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3000'}/api/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) throw new Error('refresh failed');
+      const data = await res.json() as { token?: string };
+      if (!data.token) throw new Error('no token in refresh response');
+      setMemoryToken(data.token);
     });
     wsClient.connect(url);
     return () => {
