@@ -3,6 +3,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { LayoutGrid, List } from 'lucide-react';
+import { toast } from 'sonner';
 import { Navbar } from '@/components/layout/Navbar';
 import { Loading } from '@/components/common/Loading';
 import { apiFetch, ApiClientError } from '@/lib/api';
@@ -52,6 +54,10 @@ const PRODUCT_LABELS: Record<string, string> = {
 };
 
 const SOURCES = ['manual', 'referral', 'whatsapp', 'walk_in', 'social', 'webinar', 'whatsapp_ai'];
+const SOURCE_LABELS: Record<string, string> = {
+  manual: 'Manual', referral: 'Referral', whatsapp: 'WhatsApp',
+  walk_in: 'Walk-in', social: 'Social', webinar: 'Webinar', whatsapp_ai: 'WA AI',
+};
 
 const AVATAR_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316'];
 function avatarColor(name?: string) {
@@ -179,6 +185,10 @@ export default function AdminCrmPage() {
       setShowAddForm(false);
       setDuplicateWarning(null);
       setForm({ name: '', phone: '', email: '', source: 'manual', notes: '', assignedTo: '', closureDeadline: '', tags: '', productInterest: [] });
+      toast.success('Lead added');
+    },
+    onError: (err) => {
+      if (!(err instanceof ApiClientError && err.status === 409)) toast.error('Failed to add lead');
     },
   });
 
@@ -294,12 +304,14 @@ export default function AdminCrmPage() {
           {/* Toolbar */}
           <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
             <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 p-0.5 dark:border-slate-700 dark:bg-slate-800">
-              {(['kanban', 'list'] as const).map((v) => (
-                <button key={v} onClick={() => setView(v)}
-                  className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${view === v ? 'bg-white text-indigo-600 shadow-sm dark:bg-slate-700 dark:text-indigo-400' : 'text-slate-500'}`}>
-                  {v === 'kanban' ? '⬛ Kanban' : '☰ List'}
-                </button>
-              ))}
+              <button onClick={() => setView('kanban')}
+                className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition-colors ${view === 'kanban' ? 'bg-white text-indigo-600 shadow-sm dark:bg-slate-700 dark:text-indigo-400' : 'text-slate-500 hover:text-slate-700'}`}>
+                <LayoutGrid className="h-3.5 w-3.5" />Kanban
+              </button>
+              <button onClick={() => setView('list')}
+                className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition-colors ${view === 'list' ? 'bg-white text-indigo-600 shadow-sm dark:bg-slate-700 dark:text-indigo-400' : 'text-slate-500 hover:text-slate-700'}`}>
+                <List className="h-3.5 w-3.5" />List
+              </button>
             </div>
 
             <input placeholder="Search by name or phone" value={search} onChange={(e) => setSearch(e.target.value)}
@@ -316,7 +328,9 @@ export default function AdminCrmPage() {
                   className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-600 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300" />
                 {(dateFrom || dateTo) && (
                   <button onClick={() => { setDateFrom(''); setDateTo(''); setListPage(1); }}
-                    className="text-xs text-slate-400 hover:text-slate-600 px-1">✕</button>
+                    className="flex items-center gap-0.5 rounded-md border border-slate-200 px-2 py-1.5 text-xs text-slate-500 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800">
+                    Clear dates
+                  </button>
                 )}
               </div>
             )}
@@ -589,7 +603,20 @@ export default function AdminCrmPage() {
                     {isLoading ? (
                       [1,2,3,4,5].map((i) => <SkeletonRow key={i} />)
                     ) : rawLeads.length === 0 ? (
-                      <tr><td colSpan={9} className="py-16 text-center text-sm text-slate-400">No leads found</td></tr>
+                      <tr>
+                        <td colSpan={9} className="py-16 text-center">
+                          <p className="mb-2 text-4xl">📋</p>
+                          <p className="text-sm font-medium text-slate-500 dark:text-slate-400">
+                            {debouncedSearch || debouncedAssignee || dateFrom || dateTo ? 'No leads match the current filters' : 'No leads yet'}
+                          </p>
+                          {!debouncedSearch && !debouncedAssignee && !dateFrom && !dateTo && (
+                            <button onClick={() => openAdd(stages[0]?.key ?? '')}
+                              className="mt-3 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700">
+                              + Add your first lead
+                            </button>
+                          )}
+                        </td>
+                      </tr>
                     ) : rawLeads.map((lead) => {
                       const stage = stages.find((s) => s.key === lead.stage);
                       const dl = deadlineLabel(lead.closureDeadline);
@@ -706,7 +733,7 @@ export default function AdminCrmPage() {
               <div className="grid grid-cols-2 gap-3">
                 <select value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value })}
                   className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white">
-                  {SOURCES.map((s) => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+                  {SOURCES.map((s) => <option key={s} value={s}>{SOURCE_LABELS[s] ?? s}</option>)}
                 </select>
                 <input type="date" value={form.closureDeadline} onChange={(e) => setForm({ ...form, closureDeadline: e.target.value })}
                   className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
@@ -731,7 +758,7 @@ export default function AdminCrmPage() {
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => { setShowAddForm(false); setDuplicateWarning(null); }} className="rounded-lg px-4 py-2 text-sm text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800">Cancel</button>
               <button onClick={() => addMutation.mutate({ ...form, stage: addStage })}
-                disabled={!form.name || !form.phone || addMutation.isPending}
+                disabled={!form.name.trim() || form.phone.trim().replace(/\D/g, '').length < 7 || addMutation.isPending}
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
                 {addMutation.isPending ? 'Adding…' : 'Add Lead'}
               </button>

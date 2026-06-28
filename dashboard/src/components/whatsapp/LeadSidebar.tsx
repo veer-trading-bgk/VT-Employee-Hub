@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { toast } from 'sonner';
 import { useInbox, avatarLetters, CHAT_STATUS_CHIP } from '@/contexts/InboxContext';
 import { apiFetch } from '@/lib/api';
 
@@ -37,7 +38,7 @@ export function LeadSidebar() {
         tagMutation.mutate([...liveTags, tagId]);
       }
       setNewTag('');
-    } catch { /* silent */ } finally { setAddingTag(false); }
+    } catch { toast.error('Failed to add tag'); } finally { setAddingTag(false); }
   }
 
   if (!selected || !showSidebar) return null;
@@ -144,10 +145,16 @@ export function LeadSidebar() {
             placeholder="Add a private note…"
             className="w-full resize-none rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
           <button
-            onClick={() => { if (quickNote.trim()) { noteMutation.mutate(quickNote); setQuickNote(''); } }}
-            disabled={!quickNote.trim()}
+            onClick={() => {
+              if (!quickNote.trim()) return;
+              noteMutation.mutate(quickNote, {
+                onSuccess: () => { setQuickNote(''); toast.success('Note saved'); },
+                onError: () => toast.error('Failed to save note'),
+              });
+            }}
+            disabled={!quickNote.trim() || noteMutation.isPending}
             className="mt-2 w-full rounded-lg bg-amber-500 py-1.5 text-xs font-semibold text-white hover:bg-amber-600 disabled:opacity-40">
-            Save Note
+            {noteMutation.isPending ? 'Saving…' : 'Save Note'}
           </button>
         </div>
       )}
@@ -156,7 +163,7 @@ export function LeadSidebar() {
       <div className="p-4">
         <p className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">Details</p>
         <div className="space-y-2 text-xs">
-          {selected.source && <div className="flex justify-between"><span className="text-slate-400">Source</span><span className="font-medium capitalize text-slate-700 dark:text-slate-300">{selected.source}</span></div>}
+          {selected.source && <div className="flex justify-between"><span className="text-slate-400">Source</span><span className="font-medium capitalize text-slate-700 dark:text-slate-300">{selected.source.replace(/_/g, ' ')}</span></div>}
           <div className="flex justify-between"><span className="text-slate-400">Status</span>
             <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold capitalize ${CHAT_STATUS_CHIP[selected.chatStatus]}`}>{selected.chatStatus}</span>
           </div>

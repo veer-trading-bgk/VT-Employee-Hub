@@ -55,6 +55,10 @@ const COLUMNS = [
   { key: 'tags',      label: 'Tags',         sortable: false },
 ] as const;
 
+const SKELETON_WIDTHS: Record<string, string> = {
+  name: '65%', phone: '55%', email: '72%', createdAt: '38%', stage: '50%', source: '42%', tags: '60%',
+};
+
 // ── Source badge config — add future sources here ─────────────────────────────
 const SOURCE_CONFIG: Record<string, { label: string; cls: string }> = {
   whatsapp:    { label: 'WhatsApp',  cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' },
@@ -84,7 +88,7 @@ function avatarLetters(name?: string | null, phone?: string) {
 }
 function fmtDate(iso?: string | null) {
   if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  return new Date(iso).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
 }
 
 // ── Source Badge ──────────────────────────────────────────────────────────────
@@ -389,6 +393,7 @@ export default function ContactHubPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = `contacts-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
     URL.revokeObjectURL(url);
+    toast.success(`${rows.length} contacts exported to CSV`);
   };
 
   const anyFilter = !!(searchInput || sourceFilter || stageFilter || tagFilter);
@@ -544,7 +549,7 @@ export default function ContactHubPage() {
                     <td className="px-4 py-3"><div className="h-3 w-3 rounded bg-slate-200 dark:bg-slate-700" /></td>
                     {COLUMNS.map((c) => (
                       <td key={c.key} className="px-3 py-3">
-                        <div className="h-3 rounded bg-slate-200 dark:bg-slate-700" style={{ width: `${40 + Math.random() * 40}%` }} />
+                        <div className="h-3 rounded bg-slate-200 dark:bg-slate-700" style={{ width: SKELETON_WIDTHS[c.key] ?? '60%' }} />
                       </td>
                     ))}
                     <td className="px-3 py-3"><div className="h-3 w-6 rounded bg-slate-200 dark:bg-slate-700" /></td>
