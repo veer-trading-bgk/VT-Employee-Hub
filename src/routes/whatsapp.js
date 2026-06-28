@@ -9,6 +9,8 @@ const { rateLimit } = require('../middleware/rateLimiter');
 const { to10Digit } = require('../utils/phone');
 const { ALLOWED_MIME, META_SIZE_LIMITS } = require('../utils/mediaConstants');
 const { notifyCompany } = require('../utils/wsNotify');
+const { resolveForInbox, resolveForLead, syncConvStatus, syncMarkRead } = require('../utils/conversationResolver');
+const ConversationService = require('../services/ConversationService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -651,6 +653,9 @@ router.post('/webhook', async (req, res) => {
               }).promise().catch(() => {});
             }
           }
+          // Fire-and-forget: create/update CONV# entity for this WhatsApp thread.
+          // Does not affect message delivery, WS push, or existing lead data.
+          resolveForLead(webhookCompanyId, lead.PK, phone10, { text, timestamp }).catch(() => {});
         }
       } else {
         const companyId = webhookCompanyId; // already resolved above
@@ -709,6 +714,8 @@ router.post('/webhook', async (req, res) => {
               }).promise().catch(() => {});
             }
           }
+          // Fire-and-forget: create/update CONV# entity for this unknown-contact thread.
+          resolveForInbox(companyId, phone10, { inboxPK: PK, text, timestamp, waName }).catch(() => {});
         }
 
         // Send welcome message on first contact (only for genuinely new messages)
@@ -770,6 +777,12 @@ router.post('/send', authMiddleware, rateLimit(20, 60_000), async (req, res, nex
 
     await storeWamidLookup(waMessageId, pk, msgSK, req.user.companyId);
     await updateLeadLastMessage(pk, message.trim(), 'outbound', timestamp);
+    // Fire-and-forget: keep CONV# lastMessage in sync with outbound messages
+    if (lead.convId) {
+      ConversationService.updateLastMessage(req.user.companyId, lead.convId, {
+        text: message.trim(), timestamp,
+      }).catch(() => {});
+    }
     res.json({ success: true, messageId: waMessageId, timestamp });
   } catch (err) {
     logger.error('whatsapp/send error', err);
@@ -949,6 +962,16 @@ router.post('/inbox/unknown/:phone/send', authMiddleware, checkRole(['admin', 'm
       ExpressionAttributeValues: { ':ts': timestamp, ':prev': message.trim().slice(0, 100), ':dir': 'outbound' },
     }).promise();
 
+    // Fire-and-forget: keep CONV# lastMessage in sync for unknown-contact outbound
+    ;(async () => {
+      const ci = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'CONTACT' } }).promise();
+      if (ci.Item?.convId) {
+        await ConversationService.updateLastMessage(companyId, ci.Item.convId, {
+          text: message.trim(), timestamp,
+        });
+      }
+    })().catch(() => {});
+
     res.json({ success: true, messageId: waMessageId, timestamp });
   } catch (err) {
     next(err);
@@ -965,6 +988,8 @@ router.put('/inbox/:leadId/resolve', authMiddleware, checkRole(['admin', 'manage
       UpdateExpression: 'SET chatStatus = :s, resolvedAt = :ra, resolvedBy = :rb',
       ExpressionAttributeValues: { ':s': 'resolved', ':ra': new Date().toISOString(), ':rb': req.user.id },
     }).promise();
+    // Fire-and-forget: mirror status change to CONV# entity
+    syncConvStatus(req.user.companyId, PK, 'resolved', req.user.id).catch(() => {});
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -979,6 +1004,8 @@ router.put('/inbox/:leadId/reopen', authMiddleware, checkRole(['admin', 'manager
       UpdateExpression: 'SET chatStatus = :s REMOVE resolvedAt, resolvedBy',
       ExpressionAttributeValues: { ':s': 'open' },
     }).promise();
+    // Fire-and-forget: mirror status change to CONV# entity
+    syncConvStatus(req.user.companyId, PK, 'open', req.user.id).catch(() => {});
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -1477,6 +1504,8 @@ router.post('/inbox/:leadId/mark-read', authMiddleware, async (req, res, next) =
       UpdateExpression: 'SET unreadCount = :zero',
       ExpressionAttributeValues: { ':zero': 0 },
     }).promise().catch(() => {});
+    // Fire-and-forget: sync unread reset to CONV# entity
+    syncMarkRead(companyId, { leadPK: `LEAD#${companyId}#${leadId}` }, req.user.id).catch(() => {});
 
     // Send read receipt to Meta (shows blue ticks on customer's phone)
     if (lastWaMessageId) {
@@ -1506,6 +1535,8 @@ router.post('/inbox/unknown/:phone/mark-read', authMiddleware, async (req, res, 
       UpdateExpression: 'SET unreadCount = :zero',
       ExpressionAttributeValues: { ':zero': 0 },
     }).promise().catch(() => {});
+    // Fire-and-forget: sync unread reset to CONV# entity
+    syncMarkRead(companyId, { inboxPK: `INBOX#${companyId}#${phone}` }, req.user.id).catch(() => {});
     res.json({ success: true });
   } catch (err) { next(err); }
 });
