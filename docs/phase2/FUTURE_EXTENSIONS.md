@@ -1,0 +1,266 @@
+# Future Extensions
+
+This document reserves architecture for features that are not implemented in Phase 2 but will extend the Customer 360 page and the APForce platform in future phases.
+
+Architecture is reserved by:
+1. Reserving UI space on the page (placeholder sections, disabled buttons)
+2. Reserving tab slots in the tab config array
+3. Reserving field slots in the contact data model
+4. Not making decisions that would require these areas to be redesigned when the features ship
+
+---
+
+## 1. Workflow Engine
+
+**Current state:** Automations exist in `/admin/crm/automations` with basic triggers (lead_created, stage_change, tag_added) and basic actions (send_template, assign_to, add_tag, move_stage, create_followup).
+
+**Future vision:** A full workflow engine with:
+- Visual flowchart builder (node-based graph editor)
+- Delay actions (wait 24 hours, wait until next business day)
+- Branching conditions (if/else, switch)
+- Loop prevention (max fires per contact per day)
+- Webhook actions (call external URL)
+- Inbound trigger types (message_received, message_contains, window_expired, form_submitted)
+- Cross-channel triggers (email, SMS)
+
+**Architecture reservation:**
+- Automation tab in Customer 360 already shows active rules and run history per contact
+- Backend automation engine is trigger-based and extensible (new trigger types require a handler, not a schema change)
+- Automations navigation item is already in the sidebar — it will expand to the full workflow engine
+
+**No UI changes needed to accommodate this.** The Automation tab in Customer 360 will show richer data as the engine becomes richer.
+
+---
+
+## 2. AI Receptionist
+
+**Current state:** `/api/ai/insights` exists and returns summaries. The AI tab in Customer 360 is reserved.
+
+**Future vision:** An AI agent that:
+- Responds to inbound WhatsApp messages autonomously based on a trained FAQ/product knowledge base
+- Escalates to a human agent based on intent detection
+- Suggests replies in the ChatPane ("Suggested: Here is the SIP comparison..." [Use this])
+- Qualifies leads automatically (asks questions, fills CRM fields)
+- Schedules follow-ups based on conversation content
+
+**Architecture reservation:**
+- AI tab in Customer 360 already has `NextActionCard` and `AiSummaryCard` placeholders
+- ChatPane can receive a `suggestedReply` prop (reserved, renders nothing if null)
+- Feature flag `ai_receptionist` reserved in the flags system
+- `/api/ai/` route namespace is reserved for all AI features
+
+---
+
+## 3. Customer Journey Tracking (Extended)
+
+**Current state:** Journey bar in Customer 360 header shows 8 steps inferred from existing data. Steps 6–8 (Won, Retention, Referral) are either inferred from stage or reserved.
+
+**Future vision:**
+- `contact.milestones` object on the contact record, manually set or auto-inferred
+- Each milestone stores: date, actor, notes
+- Meeting milestone: set when a follow-up with type "meeting" is marked done
+- Retention milestone: set when a "won" contact makes a repeat purchase or renews
+- Referral milestone: set when a new contact is linked as "referred by" this contact
+- Journey bar click on a step → filters Timeline to that stage's events
+
+**Architecture reservation:**
+- Journey bar component already reads `milestones` from contact (shows hollow if null)
+- `journeyInference.ts` is a pure function — adding new step inference rules requires only adding cases to the function
+- `contact.milestones` field is reserved in the contact type definition
+
+---
+
+## 4. AI Health Score
+
+**Current state:** Health score widget renders in header and AI tab with `– / 100` placeholder when AI flag is off.
+
+**Future vision:**
+- Six-factor score calculated by AI model
+- Score updates when new messages arrive (webhook-triggered recalculation)
+- Score trend chart (how the score changed over the past 30 days)
+- At-risk alerts (score drops below threshold → notification to assigned agent)
+- Segment filtering by health score in Contact Hub
+
+**Architecture reservation:**
+- `HealthScoreBadge` component has two states (active + placeholder) already implemented
+- AI tab `HealthScoreCard` has six factor slots already laid out
+- Contact Hub filter bar has a reserved "Health" filter slot (disabled until AI enabled)
+- `contact.healthScore` field is reserved in the contact type definition
+
+---
+
+## 5. Relationship Graph
+
+**Current state:** Profile tab has a "Relationship Graph" section with all fields showing `–` and a note "Architecture reserved."
+
+**Future vision:**
+- Visual graph (network diagram) showing relationships between contacts
+- Relationship types: Company → Decision Maker, Company → Influencer, Referral, Family, Accountant
+- Clicking a relationship node opens that contact's Customer 360 page
+- "Company" node shows all contacts at that company in a mini-directory
+
+**Architecture reservation:**
+- Profile tab relationship section already has labelled field slots for all relationship types
+- `contact.relationships` array field reserved in the contact type
+- No schema changes are needed in DynamoDB — relationships stored as a JSON attribute on the contact item
+
+---
+
+## 6. Marketplace / Product Catalog
+
+**Current state:** "Product Interest" is a free-text string on the CRM tab.
+
+**Future vision:**
+- A product catalog: Angel One products (mutual funds, equity, SIP plans, insurance) with descriptions, commission rates, and eligibility rules
+- Agents select products from the catalog when recording interest
+- Product interest field becomes a structured multi-select
+- Analytics: which products are most-requested, conversion rate per product
+- Automated product recommendations based on contact profile
+
+**Architecture reservation:**
+- "Product Interest" field in CRM tab will be replaced by a structured product selector
+- Product catalog data stored in DynamoDB under `PRODUCT#` key prefix (reserved)
+- `/api/products` route namespace reserved
+
+---
+
+## 7. Public API & Webhook SDK
+
+**Current state:** APForce is a closed system. No external integrations.
+
+**Future vision:**
+- A REST API for external integrations (CRM, ERP, accounting software)
+- Webhook support: APForce posts events (contact created, stage changed, message received) to a configured URL
+- API key management in System settings
+- Rate limiting and usage dashboard
+
+**Architecture reservation:**
+- System navigation item is already in the sidebar
+- Backend event model (Phase 1) already emits structured events — these are the webhook payloads
+- API key table reserved in DynamoDB under `APIKEY#` key prefix
+
+---
+
+## 8. Mobile App (React Native)
+
+**Current state:** The Next.js frontend is mobile-responsive. A PWA manifest is configured.
+
+**Future vision:**
+- A native React Native app for agents on mobile
+- Push notifications for inbound messages (via FCM)
+- Offline-capable contact view
+- Biometric auth
+
+**Architecture reservation:**
+- The backend API is already REST + WebSocket — fully consumable by React Native
+- Customer 360 tab structure maps 1:1 to a bottom-tab navigator in React Native
+- The `buildTimeline` pure function is framework-agnostic — can be shared via a monorepo package
+
+---
+
+## 9. Voice Calling
+
+**Current state:** No voice integration.
+
+**Future vision:**
+- Click-to-call from the Customer 360 header (using Exotel, Twilio, or similar)
+- Call recording stored as a Document in the Documents tab
+- Call transcript added to Timeline as a `call` event type
+- Call outcome linked to a Task follow-up
+
+**Architecture reservation:**
+- Timeline `TimelineEvent` already has an extensible `type` field — adding `'call'` requires a new case in the switch, not a schema change
+- Documents tab already has a file list — call recordings appear here
+- Customer 360 header phone row has space reserved for a call button (reserved as a comment in the JSX)
+
+---
+
+## 10. Meta CAPI (Conversions API)
+
+**Current state:** APForce receives WhatsApp webhooks but does not send conversion events back to Meta.
+
+**Future vision:**
+- When a lead is marked "Won" in APForce, send a conversion event to Meta CAPI
+- This closes the loop on which Meta campaigns/ads produced converted customers
+- Campaign analytics in APForce can show ROAS (return on ad spend)
+
+**Architecture reservation:**
+- Stage change mutation already fires through `useContactMutations` — a CAPI call can be added as an `onSuccess` side effect when `stage === 'Won'`
+- `/api/meta/capi` route namespace reserved in backend
+- No schema changes required
+
+---
+
+## 11. Multi-Channel Inbox
+
+**Current state:** Inbox handles WhatsApp only.
+
+**Future vision:**
+- Email inbox (Gmail/Outlook integration)
+- SMS inbox
+- Instagram DM inbox
+- All channels visible in the Conversation tab of Customer 360, with a channel selector
+
+**Architecture reservation:**
+- Conversation tab already has a `ConversationSelector` component for multiple conversations — this extends naturally to multiple channels
+- The `Message` type already has a `channel` field reserved (`'whatsapp' | 'email' | 'sms' | 'instagram'`)
+- Backend conversation resolver is channel-agnostic in its interface
+
+---
+
+## 12. Plugin SDK
+
+**Future vision:**
+- Third-party developers can build tabs that appear in Customer 360
+- Plugins are sandboxed iframes with a defined message API
+- Examples: show a contact's loan application from a fintech, show open tickets from a helpdesk
+
+**Architecture reservation:**
+- Tab config array in `ContactTabNav` is data-driven — plugin tabs are appended at runtime
+- `ContactTabPanel` switch has a default case that renders a plugin iframe if the tab ID matches a registered plugin
+- Plugin registry stored in `PLUGIN#` key prefix in DynamoDB
+
+---
+
+## Reserved Field Slots in Contact Type
+
+The following fields are added to the `Contact` TypeScript interface now (with `undefined` values in v1) so that future features do not require interface changes:
+
+```ts
+interface Contact {
+  // ... existing fields ...
+
+  // Phase 2 — Customer Journey
+  milestones?: {
+    meeting?: { date: string; actor: string; notes?: string }
+    retention?: { date: string; actor: string }
+    referral?: { date: string; referredContactId: string }
+  }
+
+  // Phase 2 — AI
+  healthScore?: number | null
+  healthScoreFactors?: {
+    replies: number
+    engagement: number
+    followups: number
+    inactivity: number
+    sentiment: number
+    purchases: number
+  }
+
+  // Future — Relationships
+  relationships?: Array<{
+    type: 'company' | 'decision_maker' | 'influencer' | 'referral' | 'family' | 'accountant'
+    contactId: string
+    label?: string
+  }>
+
+  // Future — Structured Products
+  productsInterested?: string[]   // replaces free-text productInterest in v3+
+
+  // Future — Multi-channel
+  channels?: Array<'whatsapp' | 'email' | 'sms' | 'instagram'>
+}
+```
+
+Fields not returned by the API default to `undefined`. Components check for presence before rendering.
