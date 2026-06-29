@@ -24,7 +24,6 @@ export const metadata: Metadata = {
   title: "APForce",
   description: "AP & Sub-Broker Performance Platform",
   manifest: "/manifest.json",
-  themeColor: "#4f46e5",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
@@ -36,6 +35,7 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
+  themeColor: "#4f46e5",
 };
 
 export default function RootLayout({

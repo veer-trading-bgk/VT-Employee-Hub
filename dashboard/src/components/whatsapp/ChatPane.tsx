@@ -669,8 +669,9 @@ export function ChatPane() {
             }),
           }) })
         : apiFetch(`/api/whatsapp/inbox/unknown/${selected!.phone}/send`, { method: 'POST', body: JSON.stringify({ message: text }) }),
-    onError: (_err, _vars, ctx) => {
+    onError: (_err, vars, ctx) => {
       if (ctx?.snapshot !== undefined) qc.setQueryData(['wa-conv', activeConvKey], ctx.snapshot);
+      setMsgText(vars.text);
     },
     onSettled: () => { invalidate(); },
   });

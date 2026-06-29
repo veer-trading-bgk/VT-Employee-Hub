@@ -50,10 +50,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Global handler: apiFetch dispatches this when a 401 survives even after a
   // token refresh attempt — meaning the refresh token is also expired/invalid.
+  // Guard prevents multiple concurrent dispatches (e.g. from ping loop) from
+  // calling logout() and router.push('/login') more than once.
   useEffect(() => {
-    const handle = () => logout();
+    let handled = false;
+    const handle = () => {
+      if (handled) return;
+      handled = true;
+      logout();
+    };
     window.addEventListener('auth:expired', handle);
-    return () => window.removeEventListener('auth:expired', handle);
+    return () => { window.removeEventListener('auth:expired', handle); handled = false; };
   }, [logout]);
 
   const login = useCallback(async (email: string, password: string): Promise<TotpChallenge | null> => {
