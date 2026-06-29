@@ -956,8 +956,7 @@ function ContactHubContent() {
               Delete {totalSelected} contact{totalSelected !== 1 ? 's' : ''}?
             </h3>
             <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">
-              {selectedLeadIds.length > 0 && 'CRM leads can be restored later. '}
-              {selectedUnknownPhones.length > 0 && 'Inbox-only contacts will be permanently removed.'}
+              All contact records and message history will be permanently erased. This cannot be undone.
             </p>
             <div className="flex justify-end gap-2">
               <button

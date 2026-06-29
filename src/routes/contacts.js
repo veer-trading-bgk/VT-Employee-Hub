@@ -155,9 +155,8 @@ router.get('/', authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── DELETE /api/contacts/unknown/:phone — remove an INBOX# CONTACT record ────────
-// Hard-deletes the inbox-only (unknown) contact record for the given phone.
-// Safe: only touches INBOX#, never a CRM LEAD# record.
+// ── DELETE /api/contacts/unknown/:phone — hard-purge all INBOX# items for this phone ──
+// Deletes the CONTACT record + all MSG#* items under the INBOX# PK.
 router.delete('/unknown/:phone', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
@@ -165,12 +164,35 @@ router.delete('/unknown/:phone', authMiddleware, checkRole(['admin']), rateLimit
     if (!phone) return res.status(400).json({ error: 'phone required' });
 
     const PK = `INBOX#${companyId}#${phone}`;
-    const SK = 'CONTACT';
 
-    const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK } }).promise();
+    const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'CONTACT' } }).promise();
     if (!existing.Item) return res.status(404).json({ error: 'Unknown contact not found' });
 
-    await dynamodb.delete({ TableName: TABLE, Key: { PK, SK } }).promise();
+    // Query all items under this INBOX# PK (CONTACT, MSG#*, etc.)
+    const items = [];
+    let lk;
+    do {
+      const r = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk',
+        ExpressionAttributeValues: { ':pk': PK },
+        ...(lk && { ExclusiveStartKey: lk }),
+      }).promise();
+      items.push(...(r.Items ?? []));
+      lk = r.LastEvaluatedKey;
+    } while (lk);
+
+    // Batch-delete all (DynamoDB limit: 25 per call)
+    for (let i = 0; i < items.length; i += 25) {
+      await dynamodb.batchWrite({
+        RequestItems: {
+          [TABLE]: items.slice(i, i + 25).map((it) => ({
+            DeleteRequest: { Key: { PK: it.PK, SK: it.SK } },
+          })),
+        },
+      }).promise();
+    }
+
     res.json({ success: true });
   } catch (err) {
     next(err);

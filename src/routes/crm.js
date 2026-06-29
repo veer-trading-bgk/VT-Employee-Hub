@@ -583,22 +583,51 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
   }
 });
 
-// ── DELETE /api/crm/leads/:id — soft-delete (sets deletedAt, never purges) ─────
+// ── DELETE /api/crm/leads/:id — hard-purge: removes all DDB items for this lead ──
+// Deletes METADATA + all MSG/NOTE items under LEAD# PK, plus the INBOX# CONTACT
+// shadow record and any pre-promotion INBOX# messages for the same phone.
 router.delete('/leads/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
-    const PK = leadPK(req.user.companyId, req.params.id);
+    const companyId = req.user.companyId;
+    const leadId = req.params.id;
+    const PK = leadPK(companyId, leadId);
+
     const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
     if (!existing.Item) return res.status(404).json({ error: 'Lead not found' });
-    if (existing.Item.deletedAt) return res.status(410).json({ error: 'Lead already deleted' });
+    const phone = existing.Item.phone;
 
-    await dynamodb.update({
-      TableName: TABLE,
-      Key: { PK, SK: 'METADATA' },
-      UpdateExpression: 'SET deletedAt = :ts, deletedBy = :uid',
-      ExpressionAttributeValues: { ':ts': new Date().toISOString(), ':uid': req.user.id },
-    }).promise();
+    // Helper: query all items under a PK and batch-delete them
+    async function purgePartition(pk) {
+      const items = [];
+      let lk;
+      do {
+        const r = await dynamodb.query({
+          TableName: TABLE,
+          KeyConditionExpression: 'PK = :pk',
+          ExpressionAttributeValues: { ':pk': pk },
+          ...(lk && { ExclusiveStartKey: lk }),
+        }).promise();
+        items.push(...(r.Items ?? []));
+        lk = r.LastEvaluatedKey;
+      } while (lk);
+      for (let i = 0; i < items.length; i += 25) {
+        await dynamodb.batchWrite({
+          RequestItems: {
+            [TABLE]: items.slice(i, i + 25).map((it) => ({
+              DeleteRequest: { Key: { PK: it.PK, SK: it.SK } },
+            })),
+          },
+        }).promise();
+      }
+    }
 
-    await logAudit(req.user.id, 'crm_lead_deleted', req.params.id, 'success', req.ip, {});
+    // 1. Delete all items under LEAD# PK (METADATA, MSG#*, NOTE#*, etc.)
+    await purgePartition(PK);
+
+    // 2. Delete all items under INBOX# PK for this phone (shadow CONTACT + pre-promotion MSG#*)
+    if (phone) await purgePartition(`INBOX#${companyId}#${phone}`).catch(() => {});
+
+    await logAudit(req.user.id, 'crm_lead_purged', leadId, 'success', req.ip, { phone });
     res.json({ success: true });
   } catch (err) {
     logger.error('crm/leads/:id DELETE error', err);
