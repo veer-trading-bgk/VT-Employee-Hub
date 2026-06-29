@@ -213,7 +213,7 @@ function CrmPanel() {
     queryKey: ['tag-catalog'],
     queryFn: () =>
       apiFetch<{ success: boolean; tags: Tag[] }>('/api/tags'),
-    staleTime: 2 * 60_000,
+    staleTime: 5 * 60_000,
   });
   const tagCatalog: Tag[] = useMemo(() => tagCatalogData?.tags ?? [], [tagCatalogData]);
 
