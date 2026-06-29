@@ -591,12 +591,6 @@ router.delete('/leads/:id', authMiddleware, rateLimit(10, 60_000), async (req, r
     if (!existing.Item) return res.status(404).json({ error: 'Lead not found' });
     if (existing.Item.deletedAt) return res.status(410).json({ error: 'Lead already deleted' });
 
-    // admin/manager/team_lead can delete any lead; employees can only delete leads assigned to them
-    const selfOnlyRoles = ['agent', 'telecaller', 'intern'];
-    if (selfOnlyRoles.includes(req.user.role) && existing.Item.assignedTo !== req.user.id) {
-      return res.status(403).json({ error: 'You can only delete leads assigned to you' });
-    }
-
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK, SK: 'METADATA' },
