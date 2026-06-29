@@ -40,14 +40,16 @@ interface ActivityPanelProps {
 }
 
 export function ActivityPanel({ className = '' }: ActivityPanelProps) {
-  const { contact, stageObj, timeline, nextFollowup } = useCustomer360();
+  const { contact, stageObj, timeline, nextFollowup, followups } = useCustomer360();
 
   if (!contact) return null;
 
-  const chatStatus = contact.chatStatus ?? 'open';
+  const chatStatus     = contact.chatStatus ?? 'open';
   const recentActivity = [...timeline].reverse().slice(0, 3);
-  const priority = derivePriority(contact);
-  const priorityStyle = PRIORITY_STYLES[priority];
+  const priority       = derivePriority(contact);
+  const priorityStyle  = PRIORITY_STYLES[priority];
+  const today          = new Date().toISOString().slice(0, 10);
+  const overdueCount   = followups.filter((f) => !f.done && f.date < today).length;
 
   function copyPhone() {
     navigator.clipboard.writeText(contact!.phone).catch(() => {});
@@ -148,18 +150,25 @@ export function ActivityPanel({ className = '' }: ActivityPanelProps) {
           <div data-slot="activity-panel-tasks" className="hidden" aria-hidden="true" />
         </section>
 
-        {/* ── Next Follow-up ───────────────────────────────── */}
+        {/* ── Next Task / Follow-up ────────────────────────── */}
         <section aria-labelledby="panel-followup">
-          <h3 id="panel-followup" className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-            Next Follow-up
-          </h3>
+          <div className="mb-2 flex items-center justify-between">
+            <h3 id="panel-followup" className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+              Next Task
+            </h3>
+            {overdueCount > 0 && (
+              <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/30 dark:text-red-400">
+                {overdueCount} overdue
+              </span>
+            )}
+          </div>
           {nextFollowup ? (
             <div>
               <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
                 {fmtDate(nextFollowup.date)}
               </p>
               {nextFollowup.note && (
-                <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                <p className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400">
                   {nextFollowup.note}
                 </p>
               )}

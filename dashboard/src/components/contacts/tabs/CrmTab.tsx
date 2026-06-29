@@ -11,6 +11,7 @@ import { TagSelector } from '@/components/tags/TagSelector';
 import { TagBadge } from '@/components/tags/TagBadge';
 import type { Tag } from '@/components/tags/TagBadge';
 import type { ContactDetail } from '@/lib/contacts/types';
+import { FollowUpForm } from '@/components/ui/FollowUpForm';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -232,9 +233,6 @@ function CrmPanel() {
   // ── Tag selector ──────────────────────────────────────────────────────
   const [showTagSelector, setShowTagSelector] = useState(false);
 
-  // ── Follow-up create form ─────────────────────────────────────────────
-  const [fuDate, setFuDate] = useState('');
-  const [fuNote, setFuNote] = useState('');
   const [showDoneHistory, setShowDoneHistory] = useState(false);
 
   // ── Mark done mutation (matches existing CRM page endpoint) ───────────
@@ -295,21 +293,6 @@ function CrmPanel() {
     });
     await qc.invalidateQueries({ queryKey: ['tag-catalog'] });
     if (res.tag) addTag.mutate(res.tag.id);
-  }
-
-  function handleAddFollowup() {
-    if (!fuDate) { toast.error('Please pick a date'); return; }
-    createTask.mutate(
-      { date: fuDate, note: fuNote },
-      {
-        onSuccess: () => {
-          refreshFollowups();
-          setFuDate('');
-          setFuNote('');
-          toast.success('Follow-up added');
-        },
-      }
-    );
   }
 
   // ── Derived ───────────────────────────────────────────────────────────
@@ -647,35 +630,21 @@ function CrmPanel() {
         {/* ── Follow-ups ─────────────────────────────────────────── */}
         <Section title="Follow-ups">
           {/* Create form */}
-          <div className="mb-4 rounded-lg bg-slate-50 p-3 dark:bg-slate-800/50">
-            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Schedule New</p>
-            <div className="flex gap-2">
-              <input
-                type="date"
-                value={fuDate}
-                min={todayISO()}
-                onChange={(e) => setFuDate(e.target.value)}
-                className={`${inputCls} flex-shrink-0`}
-                style={{ width: '140px' }}
-                aria-label="Follow-up date"
-              />
-              <input
-                type="text"
-                value={fuNote}
-                onChange={(e) => setFuNote(e.target.value)}
-                placeholder="Note or reminder…"
-                className={`${inputCls} flex-1`}
-                aria-label="Follow-up note"
-                onKeyDown={(e) => { if (e.key === 'Enter') handleAddFollowup(); }}
-              />
-              <button
-                onClick={handleAddFollowup}
-                disabled={createTask.isPending || !fuDate}
-                className="flex-shrink-0 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
-              >
-                {createTask.isPending ? '…' : 'Add'}
-              </button>
-            </div>
+          <div className="mb-4">
+            <FollowUpForm
+              onSubmit={(data, reset) => {
+                createTask.mutate(data, {
+                  onSuccess: () => {
+                    refreshFollowups();
+                    toast.success('Follow-up added');
+                    reset();
+                  },
+                });
+              }}
+              isLoading={createTask.isPending}
+              minDate={todayISO()}
+              label="Schedule New"
+            />
           </div>
 
           {/* Active follow-ups grouped */}

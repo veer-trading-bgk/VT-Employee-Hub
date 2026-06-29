@@ -6,17 +6,28 @@ import { ConversationTab } from './tabs/ConversationTab';
 import { CrmTab } from './tabs/CrmTab';
 import type { TabId, ContactDetail } from '@/lib/contacts/types';
 
+function TabLoader({ label }: { label: string }) {
+  return (
+    <div className="flex h-full items-center justify-center">
+      <p className="text-sm text-slate-400 dark:text-slate-500">Loading {label}…</p>
+    </div>
+  );
+}
+
 // Lazy-loaded: defers parsing until the tab is first opened
 const TimelineTab = dynamic(
   () => import('./tabs/TimelineTab').then((m) => ({ default: m.TimelineTab })),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm text-slate-400 dark:text-slate-500">Loading timeline…</p>
-      </div>
-    ),
-  }
+  { ssr: false, loading: () => <TabLoader label="timeline" /> }
+);
+
+const TasksTab = dynamic(
+  () => import('./tabs/TasksTab').then((m) => ({ default: m.TasksTab })),
+  { ssr: false, loading: () => <TabLoader label="tasks" /> }
+);
+
+const NotesTab = dynamic(
+  () => import('./tabs/NotesTab').then((m) => ({ default: m.NotesTab })),
+  { ssr: false, loading: () => <TabLoader label="notes" /> }
 );
 
 function ComingSoonPanel({ tab }: { tab: string }) {
@@ -53,8 +64,8 @@ export function ContactTabPanel({ activeTab, contactId, contact }: ContactTabPan
       {activeTab === 'conversation' && <ConversationTab key={contactId} />}
       {activeTab === 'timeline'     && <TimelineTab key={contactId} />}
       {activeTab === 'crm'          && <CrmTab key={contactId} />}
-      {activeTab === 'tasks'        && <ComingSoonPanel tab="Tasks" />}
-      {activeTab === 'notes'        && <ComingSoonPanel tab="Notes" />}
+      {activeTab === 'tasks'        && <TasksTab key={contactId} />}
+      {activeTab === 'notes'        && <NotesTab key={contactId} />}
       {activeTab === 'documents'    && <ComingSoonPanel tab="Documents" />}
     </div>
   );
