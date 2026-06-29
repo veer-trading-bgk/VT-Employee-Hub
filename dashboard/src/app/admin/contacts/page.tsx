@@ -168,6 +168,41 @@ const SOURCE_ADD_LABELS: Record<string, string> = {
   walk_in: 'Walk-in', social: 'Social', webinar: 'Webinar', whatsapp_ai: 'WA AI',
 };
 
+const VALID_IMPORT_SOURCES = new Set(['manual','import','whatsapp','referral','website','facebook','instagram','whatsapp_ai','walk_in','social','webinar']);
+
+interface ImportRow {
+  name: string; phone: string; email: string; stage: string; source: string;
+  valid: boolean; error: string;
+}
+
+function parseCsv(text: string): ImportRow[] {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(',').map((h) => h.replace(/^"|"$/g, '').trim().toLowerCase());
+  const idx = (keys: string[]) => headers.findIndex((h) => keys.some((k) => h.includes(k)));
+  const col = {
+    name:   idx(['name', 'full']),
+    phone:  idx(['phone', 'mobile', 'number']),
+    email:  idx(['email', 'mail']),
+    stage:  idx(['stage', 'status']),
+    source: idx(['source']),
+  };
+  return lines.slice(1).map((line) => {
+    const cells = line.split(',').map((c) => c.replace(/^"|"$/g, '').trim());
+    const get = (i: number) => (i >= 0 ? cells[i] ?? '' : '');
+    const name   = get(col.name);
+    const phone  = get(col.phone).replace(/\D/g, '').slice(-10);
+    const email  = get(col.email);
+    const stage  = get(col.stage);
+    const src    = get(col.source).toLowerCase();
+    const source = VALID_IMPORT_SOURCES.has(src) ? src : 'import';
+    let valid = true; let error = '';
+    if (!name) { valid = false; error = 'Name missing'; }
+    else if (phone.length !== 10) { valid = false; error = 'Invalid phone'; }
+    return { name, phone, email, stage, source, valid, error };
+  }).filter((r) => r.name || r.phone);
+}
+
 // ── Inner page — uses useSearchParams; must be wrapped in Suspense ────────────
 function ContactHubContent() {
   const router = useRouter();
@@ -191,6 +226,12 @@ function ContactHubContent() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [addDupeWarning, setAddDupeWarning] = useState<{ existingLeadId: string; existingName: string } | null>(null);
   const [addForm, setAddForm] = useState({ name: '', phone: '', email: '', source: 'manual', stage: '' });
+
+  // ── Import modal state ────────────────────────────────────────────────────
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importRows, setImportRows] = useState<ImportRow[]>([]);
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number; errors: number } | null>(null);
+  const [isImporting, setIsImporting] = useState(false);
 
   // Tag selector state — which contact's tag selector is open + screen position
   const [selectorState, setSelectorState] = useState<{
@@ -474,6 +515,50 @@ function ContactHubContent() {
     }
   }, [router]);
 
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const rows = parseCsv(ev.target?.result as string);
+      setImportRows(rows);
+      setImportProgress(null);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  }
+
+  async function handleImport() {
+    const valid = importRows.filter((r) => r.valid);
+    if (!valid.length) return;
+    setIsImporting(true);
+    setImportProgress({ done: 0, total: valid.length, errors: 0 });
+    let errors = 0;
+    for (let i = 0; i < valid.length; i++) {
+      try {
+        await apiFetch('/api/crm/leads', {
+          method: 'POST', retries: 0,
+          body: JSON.stringify({
+            name: valid[i].name,
+            phone: valid[i].phone,
+            email: valid[i].email || null,
+            stage: valid[i].stage || undefined,
+            source: valid[i].source,
+          }),
+        });
+      } catch { errors++; }
+      setImportProgress({ done: i + 1, total: valid.length, errors });
+    }
+    setIsImporting(false);
+    qc.invalidateQueries({ queryKey: ['contacts'] });
+    const imported = valid.length - errors;
+    if (imported > 0) toast.success(`${imported} contact${imported !== 1 ? 's' : ''} imported`);
+    if (errors > 0) toast.error(`${errors} row${errors !== 1 ? 's' : ''} failed (duplicates or invalid data)`);
+    setImportRows([]);
+    setImportProgress(null);
+    setShowImportModal(false);
+  }
+
   const exportCsv = () => {
     type CsvRow = Record<string, string>;
     const rows: CsvRow[] = contacts.map((c) => ({
@@ -592,9 +677,17 @@ function ContactHubContent() {
                 onClick={exportCsv}
                 className="flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
               >
-                ↓ CSV
+                ↓ Export
               </button>
             )}
+
+            {/* CSV import */}
+            <button
+              onClick={() => { setShowImportModal(true); setImportRows([]); setImportProgress(null); }}
+              className="flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              ↑ Import
+            </button>
 
             {/* Bulk delete — visible when any deletable contact is selected */}
             {totalSelected > 0 && (
@@ -952,6 +1045,118 @@ function ContactHubContent() {
                 {addContactMutation.isPending ? 'Adding…' : 'Add Contact'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Import CSV Modal ──────────────────────────────────────────────── */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => { if (!isImporting) { setShowImportModal(false); setImportRows([]); setImportProgress(null); } }}>
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white">Import Contacts from CSV</h2>
+              {!isImporting && (
+                <button onClick={() => { setShowImportModal(false); setImportRows([]); setImportProgress(null); }}
+                  className="text-slate-400 hover:text-slate-600">✕</button>
+              )}
+            </div>
+
+            {importRows.length === 0 && !importProgress && (
+              <div className="space-y-4">
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Upload a CSV file with columns: <span className="font-semibold">Name, Phone</span> (required), Email, Stage, Source (optional).
+                </p>
+                <div className="rounded-xl border-2 border-dashed border-slate-200 p-6 text-center dark:border-slate-700">
+                  <p className="mb-3 text-sm text-slate-400">Click to choose a CSV file</p>
+                  <label className="cursor-pointer rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700">
+                    Choose File
+                    <input type="file" accept=".csv,text/csv" className="hidden" onChange={handleImportFile} />
+                  </label>
+                </div>
+                <p className="text-[10px] text-slate-400">Duplicate phone numbers will be skipped automatically.</p>
+              </div>
+            )}
+
+            {importRows.length > 0 && !importProgress && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-500">
+                  <span>{importRows.filter((r) => r.valid).length} valid rows ready to import</span>
+                  {importRows.some((r) => !r.valid) && (
+                    <span className="text-amber-500">{importRows.filter((r) => !r.valid).length} rows will be skipped</span>
+                  )}
+                </div>
+                <div className="max-h-52 overflow-y-auto rounded-xl border border-slate-100 dark:border-slate-800">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-slate-50 dark:bg-slate-800">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-semibold text-slate-500">Name</th>
+                        <th className="px-3 py-2 text-left font-semibold text-slate-500">Phone</th>
+                        <th className="px-3 py-2 text-left font-semibold text-slate-500">Email</th>
+                        <th className="px-3 py-2 text-left font-semibold text-slate-500">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {importRows.slice(0, 50).map((r, i) => (
+                        <tr key={i} className={r.valid ? '' : 'opacity-40'}>
+                          <td className="px-3 py-1.5 text-slate-700 dark:text-slate-300">{r.name || '—'}</td>
+                          <td className="px-3 py-1.5 font-mono text-slate-600 dark:text-slate-400">{r.phone || '—'}</td>
+                          <td className="px-3 py-1.5 text-slate-500 dark:text-slate-400">{r.email || '—'}</td>
+                          <td className="px-3 py-1.5">
+                            {r.valid
+                              ? <span className="text-emerald-600">✓</span>
+                              : <span className="text-red-500">{r.error}</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {importRows.length > 50 && (
+                    <p className="px-3 py-2 text-center text-[10px] text-slate-400">…and {importRows.length - 50} more rows</p>
+                  )}
+                </div>
+                <div className="flex justify-between gap-2">
+                  <label className="cursor-pointer rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">
+                    Choose Different File
+                    <input type="file" accept=".csv,text/csv" className="hidden" onChange={handleImportFile} />
+                  </label>
+                  <button
+                    onClick={handleImport}
+                    disabled={importRows.filter((r) => r.valid).length === 0}
+                    className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    Import {importRows.filter((r) => r.valid).length} Contacts
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {importProgress && (
+              <div className="space-y-4">
+                <p className="text-sm text-slate-700 dark:text-slate-300">
+                  {isImporting ? 'Importing contacts…' : 'Import complete'}
+                </p>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                  <div
+                    className="h-full rounded-full bg-indigo-500 transition-all"
+                    style={{ width: `${(importProgress.done / importProgress.total) * 100}%` }}
+                  />
+                </div>
+                <p className="text-xs text-slate-500">
+                  {importProgress.done} / {importProgress.total} processed
+                  {importProgress.errors > 0 && ` · ${importProgress.errors} failed`}
+                </p>
+                {!isImporting && (
+                  <button
+                    onClick={() => { setShowImportModal(false); setImportRows([]); setImportProgress(null); }}
+                    className="w-full rounded-lg bg-indigo-600 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
+                  >
+                    Done
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
