@@ -19,7 +19,6 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
-    // eslint-disable-next-line no-console
     console.error('Dashboard render error:', error, info);
   }
 
@@ -31,7 +30,8 @@ export class ErrorBoundary extends Component<Props, State> {
             <p className="font-semibold">Something went wrong rendering this section.</p>
             <button
               onClick={() => this.setState({ hasError: false })}
-              className="mt-3 rounded-md bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700"
+              aria-label="Try again"
+              className="mt-3 rounded-md bg-rose-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
             >
               Try again
             </button>

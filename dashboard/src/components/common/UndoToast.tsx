@@ -27,7 +27,8 @@ export function UndoToast({ message, onConfirm, onUndo, duration = 5000 }: Props
       <span className="text-xs text-slate-400">{remaining}s</span>
       <button
         onClick={() => { confirmedRef.current = true; onUndo(); }}
-        className="rounded-lg bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-700"
+        aria-label="Undo this action"
+        className="rounded-lg bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
       >
         Undo
       </button>

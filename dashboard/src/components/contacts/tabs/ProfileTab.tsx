@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useRouter, usePathname } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
@@ -102,11 +102,14 @@ export function ProfileTab({ contact, leadId }: ProfileTabProps) {
     queryFn:  () => apiFetch<{ success: boolean; tags: Tag[] }>('/api/tags'),
     staleTime: 2 * 60_000,
   });
-  const tagCatalog = tagCatalogData?.tags ?? [];
+  const tagCatalog = useMemo(() => tagCatalogData?.tags ?? [], [tagCatalogData]);
 
-  const resolvedTags = (contact.tags ?? [])
-    .map((id) => tagCatalog.find((t) => t.id === id))
-    .filter((t): t is Tag => t !== undefined);
+  const resolvedTags = useMemo(
+    () => (contact.tags ?? [])
+      .map((id) => tagCatalog.find((t) => t.id === id))
+      .filter((t): t is Tag => t !== undefined),
+    [contact.tags, tagCatalog]
+  );
 
   function startEdit(field: 'name' | 'email') {
     setEditingField(field);
@@ -144,11 +147,14 @@ export function ProfileTab({ contact, leadId }: ProfileTabProps) {
     router.push(`${pathname}?tab=crm`);
   }
 
-  const lastActivity = contact.lastInboundAt
-    ? new Date(contact.lastInboundAt).toLocaleDateString('en-IN', {
-        day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata',
-      })
-    : '—';
+  const lastActivity = useMemo(
+    () => contact.lastInboundAt
+      ? new Date(contact.lastInboundAt).toLocaleDateString('en-IN', {
+          day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata',
+        })
+      : '—',
+    [contact.lastInboundAt]
+  );
 
   return (
     <div className="mx-auto max-w-2xl space-y-4 p-4 pb-10">

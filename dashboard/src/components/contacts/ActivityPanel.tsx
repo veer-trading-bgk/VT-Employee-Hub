@@ -1,6 +1,9 @@
 'use client';
 
+import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useCustomer360 } from '@/contexts/Customer360Context';
+import { apiFetch } from '@/lib/api';
 import type { ContactDetail } from '@/lib/contacts/types';
 
 const STATUS_STYLES: Record<string, string> = {
@@ -42,10 +45,17 @@ interface ActivityPanelProps {
 export function ActivityPanel({ className = '' }: ActivityPanelProps) {
   const { contact, stageObj, timeline, nextFollowup, followups } = useCustomer360();
 
+  const { data: tagCatalogData } = useQuery({
+    queryKey: ['tag-catalog'],
+    queryFn:  () => apiFetch<{ success: boolean; tags: Array<{ id: string; label: string; color: string }> }>('/api/tags'),
+    staleTime: 5 * 60_000,
+  });
+  const tagCatalog = useMemo(() => tagCatalogData?.tags ?? [], [tagCatalogData]);
+
   if (!contact) return null;
 
   const chatStatus     = contact.chatStatus ?? 'open';
-  const recentActivity = [...timeline].reverse().slice(0, 3);
+  const recentActivity = timeline.slice(-3).reverse();
   const priority       = derivePriority(contact);
   const priorityStyle  = PRIORITY_STYLES[priority];
   const today          = new Date().toISOString().slice(0, 10);
@@ -185,14 +195,18 @@ export function ActivityPanel({ className = '' }: ActivityPanelProps) {
               Tags
             </h3>
             <div className="flex flex-wrap gap-1.5">
-              {contact.tags.map((tag) => (
-                <span
-                  key={tag}
-                  className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-                >
-                  {tag}
-                </span>
-              ))}
+              {contact.tags.map((tagId) => {
+                const found = tagCatalog.find((t) => t.id === tagId);
+                return (
+                  <span
+                    key={tagId}
+                    className="rounded-full px-2 py-0.5 text-[11px] font-medium text-white"
+                    style={{ backgroundColor: found?.color ?? '#6366f1' }}
+                  >
+                    {found?.label ?? tagId}
+                  </span>
+                );
+              })}
             </div>
           </section>
         )}
