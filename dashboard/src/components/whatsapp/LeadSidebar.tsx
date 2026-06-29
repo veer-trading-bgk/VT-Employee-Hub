@@ -19,6 +19,7 @@ export function LeadSidebar() {
 
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
+  const canConvert = isAdmin || user?.role === 'manager';
 
   const [newTag, setNewTag] = useState('');
   const [addingTag, setAddingTag] = useState(false);
@@ -26,6 +27,8 @@ export function LeadSidebar() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [promoteExpanded, setPromoteExpanded] = useState(false);
   const [promoteName, setPromoteName] = useState('');
+  const [convertStage, setConvertStage] = useState('');
+  const [convertAssignee, setConvertAssignee] = useState('');
 
   // Reset transient UI state when switching conversations
   const convKey = selected?.type === 'lead' ? selected.leadId : selected?.phone;
@@ -33,6 +36,8 @@ export function LeadSidebar() {
     setConfirmDelete(false);
     setPromoteExpanded(false);
     setPromoteName('');
+    setConvertStage('');
+    setConvertAssignee('');
     setQuickNote('');
   }, [convKey]);
 
@@ -54,18 +59,25 @@ export function LeadSidebar() {
           name,
           phone: selected!.phone,
           source: selected!.source ?? 'whatsapp',
+          ...(convertStage && { stage: convertStage }),
+          ...(convertAssignee && {
+            assignedTo: convertAssignee,
+            assignedToName: employees.find((e) => e.id === convertAssignee)?.name ?? null,
+          }),
         }),
       }),
     onSuccess: () => {
-      toast.success('Contact saved to CRM');
+      toast.success('Contact converted to lead');
       setPromoteExpanded(false);
       setPromoteName('');
+      setConvertStage('');
+      setConvertAssignee('');
       qc.invalidateQueries({ queryKey: ['wa-inbox'] });
       qc.invalidateQueries({ queryKey: ['contacts'] });
     },
     onError: (err: any) => {
       if (err?.status === 409) toast.error('This phone number is already in CRM');
-      else toast.error('Failed to save contact');
+      else toast.error('Failed to convert contact');
     },
   });
 
@@ -162,7 +174,7 @@ export function LeadSidebar() {
           {/* Unknown contact notice */}
           {selected.type === 'unknown' && (
             <div className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:bg-amber-900/10 dark:text-amber-400">
-              Not in CRM yet{isAdmin ? ' — save as contact to unlock full profile' : ''}
+              Not in CRM yet{canConvert ? ' — convert to lead to unlock full profile' : ''}
             </div>
           )}
 
@@ -243,20 +255,22 @@ export function LeadSidebar() {
           </div>
         )}
 
-        {/* ── Save as Contact (unknown contacts, admin only) ───────────── */}
-        {selected.type === 'unknown' && isAdmin && (
+        {/* ── Convert to Lead (unknown contacts, admin/manager only) ─────── */}
+        {selected.type === 'unknown' && canConvert && (
           <div className="border-b border-slate-100 p-4 dark:border-slate-800">
             <p className="mb-2 text-[11px] font-bold uppercase tracking-wider text-slate-400">Add to CRM</p>
             {!promoteExpanded ? (
               <button
                 onClick={() => {
                   setPromoteName(selected.name ?? selected.displayName ?? '');
+                  setConvertStage(stages[0]?.key ?? '');
+                  setConvertAssignee('');
                   setPromoteExpanded(true);
                 }}
                 className="flex w-full items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 py-2 text-xs font-semibold text-indigo-600 transition hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-900/20 dark:text-indigo-400"
               >
                 <UserPlus className="h-3.5 w-3.5" />
-                Save as Contact
+                Convert to Lead
               </button>
             ) : (
               <div className="space-y-2">
@@ -265,13 +279,29 @@ export function LeadSidebar() {
                   value={promoteName}
                   onChange={(e) => setPromoteName(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && promoteName.trim()) promoteMutation.mutate(promoteName.trim());
                     if (e.key === 'Escape') setPromoteExpanded(false);
                   }}
                   placeholder="Full name *"
                   disabled={promoteMutation.isPending}
                   className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-indigo-400 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
                 />
+                <select
+                  value={convertStage}
+                  onChange={(e) => setConvertStage(e.target.value)}
+                  disabled={promoteMutation.isPending}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-indigo-400 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  {stages.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                </select>
+                <select
+                  value={convertAssignee}
+                  onChange={(e) => setConvertAssignee(e.target.value)}
+                  disabled={promoteMutation.isPending}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs outline-none focus:border-indigo-400 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                >
+                  <option value="">Auto-assign agent</option>
+                  {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </select>
                 <div className="flex gap-1.5">
                   <button
                     onClick={() => setPromoteExpanded(false)}
@@ -283,7 +313,7 @@ export function LeadSidebar() {
                     onClick={() => promoteMutation.mutate(promoteName.trim())}
                     disabled={!promoteName.trim() || promoteMutation.isPending}
                     className="flex-1 rounded-lg bg-indigo-600 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
-                    {promoteMutation.isPending ? 'Saving…' : 'Save'}
+                    {promoteMutation.isPending ? 'Converting…' : 'Confirm Lead'}
                   </button>
                 </div>
               </div>

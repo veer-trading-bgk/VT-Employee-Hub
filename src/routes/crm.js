@@ -209,7 +209,7 @@ router.get('/leads', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/crm/leads ────────────────────────────────────────────────────────
-router.post('/leads', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), async (req, res, next) => {
+router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit(30, 60_000), async (req, res, next) => {
   try {
     // Strip non-digits from phone before schema validation so +91/spaces/dashes are accepted
     const body = { ...req.body };
