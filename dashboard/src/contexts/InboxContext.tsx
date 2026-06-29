@@ -4,6 +4,7 @@ import { createContext, useContext, useState, useRef, useEffect, useCallback, Di
 import { useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient, UseMutationResult, QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { toast } from 'sonner';
 import { useWsContext } from '@/contexts/WebSocketContext';
 import { wsClient, type WsMessage } from '@/lib/wsClient';
 
@@ -490,6 +491,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
       } : s);
       qc.invalidateQueries({ queryKey: ['wa-inbox'] });
     },
+    onError: () => toast.error('Failed to rename contact'),
   });
 
   const value: InboxContextValue = {

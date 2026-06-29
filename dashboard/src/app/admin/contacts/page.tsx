@@ -221,6 +221,8 @@ function ContactHubContent() {
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
 
   // ── Add Contact modal state ───────────────────────────────────────────────
   const [showAddModal, setShowAddModal] = useState(false);
@@ -429,6 +431,25 @@ function ContactHubContent() {
       toast.error('Failed to delete contacts. Please try again.');
     },
   });
+
+  // ── Rename mutation ───────────────────────────────────────────────────────
+  const nameMutation = useMutation({
+    mutationFn: ({ leadId, phone, name }: { leadId: string | null; phone: string; name: string }) =>
+      apiFetch('/api/whatsapp/contact/name', { method: 'PUT', body: JSON.stringify({ leadId, phone, name }) }),
+    onSuccess: () => {
+      setRenamingId(null);
+      qc.invalidateQueries({ queryKey: ['contacts'] });
+    },
+    onError: () => toast.error('Failed to rename contact'),
+  });
+
+  function commitRename(c: Contact) {
+    if (renameValue.trim() && renameValue.trim() !== c.displayName) {
+      nameMutation.mutate({ leadId: c.leadId, phone: c.phone, name: renameValue.trim() });
+    } else {
+      setRenamingId(null);
+    }
+  }
 
   // ── Handlers ──────────────────────────────────────────────────────────────
   const allRowIds = contacts.map((c) => `${c.type}-${c.id}`);
@@ -811,7 +832,7 @@ function ContactHubContent() {
                         />
                       </td>
 
-                      {/* Contact Name */}
+                      {/* Contact Name — click to rename */}
                       <td className="px-3 py-3">
                         <div className="flex items-center gap-2.5">
                           <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
@@ -819,10 +840,32 @@ function ContactHubContent() {
                             {avatarLetters(c.displayName, c.phone)}
                           </div>
                           <div className="min-w-0">
-                            <p className="max-w-[160px] truncate font-medium text-slate-900 dark:text-white">
-                              {c.displayName || '—'}
-                            </p>
-                            {c.waName && c.waName !== c.displayName && (
+                            {renamingId === `${c.type}-${c.id}` ? (
+                              <input
+                                autoFocus
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') commitRename(c);
+                                  else if (e.key === 'Escape') setRenamingId(null);
+                                }}
+                                onBlur={() => commitRename(c)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="w-full max-w-[150px] rounded border border-indigo-300 px-1.5 py-0.5 text-sm font-medium text-slate-900 outline-none focus:border-indigo-500 dark:border-indigo-700 dark:bg-slate-800 dark:text-white"
+                              />
+                            ) : (
+                              <button
+                                className="group/name flex items-center gap-1 text-left"
+                                onClick={(e) => { e.stopPropagation(); setRenamingId(`${c.type}-${c.id}`); setRenameValue(c.displayName || ''); }}
+                                title="Click to rename"
+                              >
+                                <p className="max-w-[140px] truncate font-medium text-slate-900 dark:text-white">
+                                  {c.displayName || '—'}
+                                </p>
+                                <span className="flex-shrink-0 text-[10px] text-slate-300 opacity-0 transition-opacity group-hover/name:opacity-100 dark:text-slate-600">✏</span>
+                              </button>
+                            )}
+                            {c.waName && c.waName !== c.displayName && renamingId !== `${c.type}-${c.id}` && (
                               <p className="max-w-[160px] truncate text-[10px] text-slate-400">
                                 WA: {c.waName}
                               </p>

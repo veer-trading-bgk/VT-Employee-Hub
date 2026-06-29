@@ -153,7 +153,13 @@ export function LeadSidebar() {
                       setEditingName(false);
                     }
                   }}
-                  onBlur={() => setEditingName(false)}
+                  onBlur={() => {
+                    if (nameInput.trim() && nameInput.trim() !== displayName) {
+                      nameMutation.mutate({ leadId: selected.leadId, phone: selected.type === 'unknown' ? selected.phone : undefined, name: nameInput.trim() });
+                    } else {
+                      setEditingName(false);
+                    }
+                  }}
                   className="w-full rounded border border-indigo-300 px-2 py-0.5 text-sm font-bold text-slate-900 outline-none focus:border-indigo-500 dark:border-indigo-700 dark:bg-slate-800 dark:text-white"
                 />
               ) : (
