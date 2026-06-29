@@ -1,495 +1,412 @@
-# Implementation Plan
+# Implementation Plan — Phase 2: Customer 360
 
 ## Principles
 
 1. Every commit is independently deployable. No commit creates a broken state.
 2. No existing page is removed until its replacement is verified working.
-3. All new components are additive. Nothing is deleted in the first 7 commits.
-4. Commit 8 is the cutover — it redirects `/admin/crm/[id]` to Customer 360.
-5. After Commit 8, the CRM Lead Detail page is retired.
-6. Backend changes in Phase 2 are limited to two minor filter-parameter additions (Commits 11 and 13).
+3. All new components are additive. Destructive changes only in Commits 8–9.
+4. AI, Automation, and Campaigns are **not tabs**. They integrate into existing workspaces.
+5. Customer 360 manages one customer. Broader business modules live outside it.
+6. Backend changes are limited to minor additions (Commit 9). No schema changes.
 
 ---
 
-## Commit 1 — Contact Detail Page Skeleton
+## Approved Roadmap
+
+| # | Commit | Status |
+|---|---|---|
+| 1 | Customer 360 Foundation | ✅ `353b5f5` |
+| 2 | Conversation + Provider | ✅ `018865a` |
+| 3 | Conversation Workspace | ✅ `867ff8c` |
+| 4 | CRM Workspace | ✅ `e5e72f4` |
+| 5 | Timeline & Activity Feed | ✅ `c94ad1d` |
+| 6 | Contact Profile & Identity | ⏳ |
+| 7 | Tasks & Follow-up Workspace | ⏳ |
+| 8 | Contact Hub Migration | ⏳ |
+| 9 | CRM Migration | ⏳ |
+| 10 | Global Search & Navigation | ⏳ |
+| 11 | Performance, Accessibility & UX Polish | ⏳ |
+| 12 | Production Hardening & Regression Testing | ⏳ |
+| 13 | Phase 2 Release + Documentation + Git Tag | ⏳ |
+
+---
+
+## Architectural Decisions (Locked)
+
+### No dedicated AI tab
+AI is an assistant, not a page. AI surfaces in:
+- **Activity Panel** — next action recommendation, health score chip
+- **Conversation** — message draft suggestions (reserved slot)
+- **CRM** — win probability indicator (reserved slot)
+- **Timeline** — AI-generated event summaries (reserved slot)
+
+### No dedicated Automation tab
+Automation is event-driven, not a workspace. Automation surfaces in:
+- **Timeline** — automation trigger events (when data available)
+- **CRM** — automation rules affecting this lead (reserved extension point)
+- **Tasks** — tasks created by automation rules
+
+### No Campaigns tab
+Campaigns belong to a future Campaigns module, not inside Customer 360.
+Extension points (`data-slot="campaign-*"`) are reserved in the CRM and Timeline.
+No campaign data is fetched inside Customer 360.
+
+### No Analytics tab
+Contact analytics appear as cards and widgets in Profile and CRM.
+System-wide analytics live in a separate Analytics module outside Customer 360.
+
+---
+
+## Commit 6 — Contact Profile & Identity
 
 ### Scope
 
-Create the Customer 360 page at `/admin/contacts/[id]` with:
-- Header (real data from primary fetch)
-- Tab navigation bar (all 10 tabs rendered, most with empty panels)
-- Empty tab panels for all tabs except Profile
-- Profile tab with static contact info (from primary fetch)
+Make the Profile tab the definitive identity record for a contact.
 
-Update Contact Hub row click to navigate to `/admin/contacts/[id]` instead of opening WhatsApp.
+1. **Tab cleanup** — remove `campaigns`, `automation`, `ai` from `CONTACT_TABS` and `VALID_TAB_IDS`. Replace ComingSoonPanel entries for those tabs with `null` (or redirect to profile). This enforces the architectural decision that these are not Customer 360 tabs.
+
+2. **Profile tab — inline editing**
+   - Name: click-to-edit, saves on blur (`updateField` mutation)
+   - Email: click-to-edit, saves on blur
+   - Phone: read-only (click to copy)
+
+3. **Profile tab — identity sections**
+   - Personal Information (name, phone, email, last activity, created date)
+   - Contact Analytics mini-cards: Total Messages, Last Activity, Response Rate (derived from `messageCount`, `lastInboundAt`)
+   - Source Tracking (source label, created at, assigned to)
+   - Tags (existing `TagSelector` + `TagBadge` reuse)
+   - Relationship Graph — placeholder section with reserved `data-slot`
+   - CRM Notes — read-only preview with "Edit in CRM →" link to CRM tab
+
+4. **Activity Panel — health score slot**
+   - Add `data-slot="activity-panel-ai-health"` reserved section
+   - Shows `— / 100` chip with "AI not enabled" label
 
 ### Files Affected
 
-**New files:**
-- `dashboard/src/app/admin/contacts/[id]/page.tsx`
-- `dashboard/src/components/contacts/ContactHeader.tsx`
-- `dashboard/src/components/contacts/ContactAvatar.tsx`
-- `dashboard/src/components/contacts/ContactIdentityBlock.tsx`
-- `dashboard/src/components/contacts/ContactMetaRow.tsx`
-- `dashboard/src/components/contacts/CustomerJourneyBar.tsx`
-- `dashboard/src/components/contacts/HealthScoreBadge.tsx`
-- `dashboard/src/components/contacts/ContactTabNav.tsx`
-- `dashboard/src/components/contacts/ContactTabPanel.tsx`
-- `dashboard/src/components/contacts/tabs/ProfileTab.tsx`
-- `dashboard/src/lib/contacts/journeyInference.ts`
-- `dashboard/src/hooks/useContactMutations.ts`
-
 **Modified files:**
-- `dashboard/src/app/admin/contacts/page.tsx` — change row click from WhatsApp navigation to `/admin/contacts/[id]`
+- `dashboard/src/lib/contacts/types.ts` — remove `campaigns`, `automation`, `ai` from `TabId` union + `CONTACT_TABS` + `VALID_TAB_IDS`
+- `dashboard/src/components/contacts/tabs/ProfileTab.tsx` — inline editing, analytics cards, source section, relationship placeholder
+- `dashboard/src/components/contacts/ActivityPanel.tsx` — health score reserved slot
+- `dashboard/src/components/contacts/ContactTabPanel.tsx` — remove ComingSoonPanel for retired tabs
 
 ### Validation
 
-- [ ] Contact Hub row click opens Customer 360 page (not WhatsApp)
-- [ ] Header renders: avatar, name, phone, stage, assigned agent
-- [ ] Journey bar renders with correct step states
-- [ ] Health score shows `–` placeholder (AI not enabled)
-- [ ] Profile tab renders: personal info, tags, source
-- [ ] All other tabs render with "coming soon" or skeleton state
-- [ ] Mobile layout: header is compact, tab bar is scrollable
-- [ ] Back button returns to Contact Hub
-- [ ] TypeScript compiles without errors
-- [ ] Vercel preview deployment is green
+- [ ] TypeScript: PASS
+- [ ] ESLint: PASS (0 warnings)
+- [ ] Name inline edit: click → input appears; blur → save; ESC → cancel
+- [ ] Email inline edit: same pattern
+- [ ] Phone: click copies to clipboard; no edit input appears
+- [ ] Analytics mini-cards render with live data
+- [ ] Tags work: add, create, remove
+- [ ] Campaigns / Automation / AI tabs no longer appear in tab bar
+- [ ] No broken URL states from removed tabs
 
 ### Rollback
 
-Delete `dashboard/src/app/admin/contacts/[id]/` and revert the one-line change to `contacts/page.tsx`. The Contact Hub returns to its previous behaviour (opens WhatsApp) with zero impact on other pages.
+Revert `types.ts`, `ProfileTab.tsx`, `ActivityPanel.tsx`, `ContactTabPanel.tsx`. Retired tabs show "coming soon" again. Profile tab reverts to basic display.
 
 ### Risks
 
-Low. This commit is purely additive. The existing `/admin/crm/[id]` page is untouched. The Inbox is untouched. Only the Contact Hub row click behaviour changes.
+Low. The tab removal is the highest-impact change — verify no other page links to `?tab=campaigns`, `?tab=automation`, or `?tab=ai`.
 
 ---
 
-## Commit 2 — CRM Tab
+## Commit 7 — Tasks & Follow-up Workspace
 
 ### Scope
 
-Implement the CRM tab: pipeline position bar, deal details card (stage, product interest, close deadline, estimated value), lead score card.
+Dedicated workspace for follow-up management and internal notes.
 
-Extract `StageSelect` and `AssigneeSelect` from `LeadSidebar.tsx` into shared components and use them in both `ContactMetaRow` and `CrmTab`.
+1. **Tasks tab** — production-quality follow-up workspace
+   - Follow-up list grouped: Overdue → Today → Tomorrow → This Week → Later
+   - Each task card: date, note, status badge, Mark Done button, Reschedule button
+   - Mark Done inline: collapses task, shows outcome input (free text), optional next follow-up date
+   - Create task form: date picker + note + add button (identical to CRM tab form, extract shared component)
+   - Sync: after any mutation, calls `refreshFollowups()` from context
 
-### Files Affected
+2. **Notes tab** — internal agent notes workspace
+   - Note input at top (textarea + Post button)
+   - Notes feed below, newest first
+   - Each note: agent name, timestamp, content, delete button
+   - Notes are not editable after posting (audit integrity)
+   - Implemented with `addNote` mutation from `useContactMutations`
 
-**New files:**
-- `dashboard/src/components/contacts/tabs/CrmTab.tsx`
-- `dashboard/src/components/ui/StageSelect.tsx` (extracted from LeadSidebar)
-- `dashboard/src/components/ui/AssigneeSelect.tsx` (extracted from LeadSidebar)
-
-**Modified files:**
-- `dashboard/src/components/contacts/ContactTabPanel.tsx` — wire CRM tab
-- `dashboard/src/components/whatsapp/LeadSidebar.tsx` — import extracted components (behaviour unchanged)
-
-### Validation
-
-- [ ] CRM tab renders pipeline position bar with current stage highlighted
-- [ ] Deal details card shows product, deadline, estimated value
-- [ ] Stage change mutation fires and header stage updates
-- [ ] LeadSidebar still works correctly (extraction is transparent)
-- [ ] TypeScript compiles without errors
-
-### Rollback
-
-Remove `CrmTab.tsx`. Revert `ContactTabPanel.tsx`. Revert `LeadSidebar.tsx` import (if extraction was done). CRM tab falls back to "coming soon" state.
-
-### Risks
-
-Low. The extraction of `StageSelect` and `AssigneeSelect` is the only change that touches existing components, and it is a transparent refactor (same component, moved location, same behaviour).
-
----
-
-## Commit 3 — Tasks Tab
-
-### Scope
-
-Implement the Tasks tab: follow-ups grouped by urgency (Overdue, Today, Tomorrow, This Week, Later), task cards with mark-done + reschedule, task outcome modal, create new task button.
-
-Extract the task card component from `/admin/crm/followups/page.tsx` into a shared `TaskCard` component.
+3. **Extract shared component** — `FollowUpForm` (used in both Tasks tab and CRM tab; removes duplication)
 
 ### Files Affected
 
 **New files:**
 - `dashboard/src/components/contacts/tabs/TasksTab.tsx`
-- `dashboard/src/components/ui/TaskCard.tsx` (extracted from followups page)
-
-**Modified files:**
-- `dashboard/src/app/admin/crm/followups/page.tsx` — import `TaskCard` (behaviour unchanged)
-- `dashboard/src/components/contacts/ContactTabPanel.tsx` — wire Tasks tab
-
-### Validation
-
-- [ ] Tasks tab renders follow-ups grouped by urgency
-- [ ] Mark Done opens outcome modal
-- [ ] Outcome modal: text input + next follow-up toggle
-- [ ] Creating a follow-up from Tasks tab works
-- [ ] `/admin/crm/followups` page works identically (uses extracted TaskCard)
-- [ ] TypeScript compiles without errors
-
-### Rollback
-
-Remove `TasksTab.tsx`. Revert `ContactTabPanel.tsx`. Revert followups page import. Tasks tab shows "coming soon". Followups page returns to its own inline card rendering.
-
-### Risks
-
-Low. Same extraction pattern as Commit 2.
-
----
-
-## Commit 4 — Notes Tab
-
-### Scope
-
-Implement the Notes tab: internal notes feed (newest first), note creation input, note delete action.
-
-### Files Affected
-
-**New files:**
 - `dashboard/src/components/contacts/tabs/NotesTab.tsx`
+- `dashboard/src/components/ui/FollowUpForm.tsx` (extracted, shared by CrmTab + TasksTab)
 
 **Modified files:**
-- `dashboard/src/components/contacts/ContactTabPanel.tsx` — wire Notes tab
+- `dashboard/src/components/contacts/ContactTabPanel.tsx` — wire Tasks + Notes tabs
+- `dashboard/src/components/contacts/tabs/CrmTab.tsx` — use shared `FollowUpForm`
 
 ### Validation
 
-- [ ] Notes tab renders existing internal notes
-- [ ] New note input: type, submit, note appears without page reload
-- [ ] Delete note removes it from the list
-- [ ] Notes are not visible to customers (internal only — UI label confirms this)
-- [ ] TypeScript compiles without errors
+- [ ] TypeScript: PASS
+- [ ] ESLint: PASS
+- [ ] Tasks: follow-ups grouped correctly; overdue badge appears for past dates
+- [ ] Mark Done: task collapses; outcome saved; optional next follow-up created
+- [ ] Create task: form validates date required; success creates task in list
+- [ ] Notes: post note; note appears without reload; agent name shown
+- [ ] Notes: delete removes note with confirmation
+- [ ] CRM tab follow-up section still works (shared FollowUpForm)
 
 ### Rollback
 
-Remove `NotesTab.tsx`. Revert `ContactTabPanel.tsx`. Notes tab shows "coming soon".
+Remove `TasksTab.tsx`, `NotesTab.tsx`, `FollowUpForm.tsx`. Revert `ContactTabPanel.tsx` and `CrmTab.tsx`. Tasks and Notes tabs show "coming soon".
 
 ### Risks
 
-Low. Notes data comes from the primary fetch already loaded.
+Low. Data is already loaded in context. The shared `FollowUpForm` extraction is a transparent refactor.
 
 ---
 
-## Commit 5 — Timeline Tab
+## Commit 8 — Contact Hub Migration
 
 ### Scope
 
-Implement the Timeline tab: chronological activity feed synthesised from primary fetch data.
+Make the Contact Hub (`/admin/contacts`) the primary entry point to Customer 360. Production-quality list view with search, filters, and sorting.
 
-Implement `lib/contacts/buildTimeline.ts` pure function.
-Implement `TimelineEvent` component with all event types.
+1. **Contact Hub enhancements**
+   - Real-time search (debounced, calls existing API)
+   - Filter by stage, assigned employee, source, tags
+   - Sortable columns: Name, Stage, Last Activity, Created
+   - Row click navigates to `/admin/contacts/[id]` (already in place from Commit 1; verify it works)
+   - Keyboard accessibility: arrow keys navigate rows, Enter opens contact
+
+2. **Inbox bridge**
+   - Add "View Contact" button in `LeadSidebar.tsx` header, navigating to `/admin/contacts/[id]?tab=conversation`
+   - Remove old "View CRM Lead" link from sidebar (now redundant)
+
+3. **Breadcrumb / back navigation**
+   - Ensure browser back from Customer 360 returns to Contact Hub (or to the page that launched it)
+   - `?from=inbox` query param to control back button label: "Back to Inbox" vs "Back to Contact Hub"
 
 ### Files Affected
 
-**New files:**
-- `dashboard/src/components/contacts/tabs/TimelineTab.tsx`
-- `dashboard/src/components/contacts/TimelineEvent.tsx`
-- `dashboard/src/lib/contacts/buildTimeline.ts`
-
 **Modified files:**
-- `dashboard/src/components/contacts/ContactTabPanel.tsx` — wire Timeline tab
+- `dashboard/src/app/admin/contacts/page.tsx` — search, filters, sort
+- `dashboard/src/components/whatsapp/LeadSidebar.tsx` — "View Contact" button
+- `dashboard/src/app/admin/contacts/[id]/page.tsx` — `?from` param for back button label
 
 ### Validation
 
-- [ ] Timeline tab renders events in chronological order
-- [ ] Event types render with correct icons and actor names: messages, notes, stage changes, tasks, automations
-- [ ] Filter dropdown filters events by type
-- [ ] "Load earlier" works if pagination is available
-- [ ] Timeline is empty-state-safe (new contact with no messages shows "No activity yet")
-- [ ] Unit test for `buildTimeline.ts` (pure function — easy to test)
-- [ ] TypeScript compiles without errors
+- [ ] TypeScript: PASS
+- [ ] ESLint: PASS
+- [ ] Contact Hub search filters contacts in real time
+- [ ] Stage filter shows only matching contacts
+- [ ] Row click opens Customer 360
+- [ ] Inbox: "View Contact" button appears in sidebar header
+- [ ] Inbox: clicking "View Contact" opens Customer 360 at Conversation tab
+- [ ] Back button label is correct based on origin
 
 ### Rollback
 
-Remove timeline files. Revert `ContactTabPanel.tsx`. Timeline tab shows "coming soon".
+Revert `contacts/page.tsx` (search/filter removed). Revert `LeadSidebar.tsx`. Back button reverts to static label. Customer 360 still accessible; hub search reverts to basic display.
 
 ### Risks
 
-Low. Client-side synthesis only. No new API calls.
+Low-medium. The Contact Hub filter changes touch the list API query. Verify the existing API supports filter parameters before implementing client-side filter calls.
 
 ---
 
-## Commit 6 — Conversation Tab
+## Commit 9 — CRM Migration
 
 ### Scope
 
-Implement the Conversation tab: reuse `ChatPane` in full-width mode. Connect WebSocket. Prefetch messages on page mount.
+Retire the old CRM Lead Detail page by redirecting it to Customer 360. Update all internal links that reference the old page.
 
-This is the highest-value tab and the most technically complex. ChatPane is reused without modification.
+1. **Redirect** — `/admin/crm/[id]/page.tsx` → `redirect('/admin/contacts/${id}?tab=crm')`
 
-### Files Affected
+2. **CRM Pipeline links** — verify pipeline card clicks navigate to Customer 360 (if they currently link to `/admin/crm/[id]`, they now redirect automatically)
 
-**New files:**
-- `dashboard/src/components/contacts/tabs/ConversationTab.tsx`
+3. **Follow-ups page links** — update contact name links in `/admin/crm/followups/page.tsx` to navigate to `/admin/contacts/[id]?tab=tasks`
 
-**Modified files:**
-- `dashboard/src/app/admin/contacts/[id]/page.tsx` — add prefetch for messages query
-- `dashboard/src/components/contacts/ContactTabPanel.tsx` — wire Conversation tab
-
-### Validation
-
-- [ ] Conversation tab renders ChatPane in full width (no sidebar, no conversation list)
-- [ ] Historical messages load correctly
-- [ ] Sending a message from Conversation tab delivers to WhatsApp
-- [ ] Incoming WhatsApp message appears in real-time (via WebSocket — test by sending a message to the contact's phone)
-- [ ] Template picker works
-- [ ] Load more / cursor pagination works
-- [ ] ChatPane in the Inbox is completely unaffected
-- [ ] TypeScript compiles without errors
-
-### Rollback
-
-Remove `ConversationTab.tsx`. Remove prefetch from page. Revert `ContactTabPanel.tsx`. Conversation tab shows "coming soon". Inbox is unaffected.
-
-### Risks
-
-Medium. This is the most complex tab because it wires WebSocket and reuses `ChatPane`. The risk is that `ChatPane` has implicit dependencies on the Inbox context that need to be surfaced as props. Mitigation: review `ChatPane` props interface before writing `ConversationTab`, and ensure the full-width rendering mode is supported by props (not hardcoded layout assumptions).
-
----
-
-## Commit 7 — Documents Tab
-
-### Scope
-
-Implement the Documents tab: media grid extracted from messages, file list for non-image documents. Upload button reserved (disabled with tooltip).
-
-### Files Affected
-
-**New files:**
-- `dashboard/src/components/contacts/tabs/DocumentsTab.tsx`
-
-**Modified files:**
-- `dashboard/src/components/contacts/ContactTabPanel.tsx` — wire Documents tab
-
-### Validation
-
-- [ ] Documents tab renders images and videos from contact's messages
-- [ ] PDFs and other documents appear in a list below the media grid
-- [ ] Clicking a media item opens it in a new tab (or lightbox if one exists)
-- [ ] Upload button renders disabled with "Coming soon" tooltip
-- [ ] Empty state renders gracefully (no media)
-- [ ] TypeScript compiles without errors
-
-### Rollback
-
-Remove `DocumentsTab.tsx`. Revert `ContactTabPanel.tsx`. Documents tab shows "coming soon".
-
-### Risks
-
-Low. Data is already loaded from primary fetch.
-
----
-
-## Commit 8 — Cutover: Redirect CRM Lead Detail
-
-### Scope
-
-This is the cutover commit. After Commits 1–7 are verified, the CRM Lead Detail page is redirected to Customer 360.
-
-Add a client-side redirect in `/admin/crm/[id]/page.tsx`:
-```ts
-redirect(`/admin/contacts/${params.id}?tab=crm`)
-```
-
-Add contact name links in `/admin/crm/followups/page.tsx` pointing to `/admin/contacts/[id]?tab=tasks`.
+4. **CRM page cleanup** — add deprecation banner to `/admin/crm/[id]/page.tsx` before redirect, confirming the redirect is intentional
 
 ### Files Affected
 
 **Modified files:**
 - `dashboard/src/app/admin/crm/[id]/page.tsx` — add redirect
-- `dashboard/src/app/admin/crm/followups/page.tsx` — add contact name links
+- `dashboard/src/app/admin/crm/followups/page.tsx` — update contact name links
 
 ### Validation
 
-- [ ] Clicking a CRM pipeline card navigates to Customer 360 CRM tab
-- [ ] Contact names in follow-ups list link to Customer 360 Tasks tab
-- [ ] Browser back from Customer 360 returns to CRM Pipeline
-- [ ] No broken states — the redirect fires immediately, no flash of old content
-- [ ] TypeScript compiles without errors
+- [ ] TypeScript: PASS
+- [ ] Visiting `/admin/crm/[id]` redirects immediately to Customer 360 CRM tab
+- [ ] CRM Pipeline card click → Customer 360 CRM tab
+- [ ] Follow-ups contact names → Customer 360 Tasks tab
+- [ ] Browser back from Customer 360 returns to CRM Pipeline (not the redirect)
+- [ ] No 404s or broken internal links
 
 ### Rollback
 
-Remove the `redirect()` call from `crm/[id]/page.tsx`. The CRM Lead Detail page returns to its previous behaviour.
+Remove `redirect()` call. CRM Lead Detail page returns to normal rendering.
 
 ### Risks
 
-Low-medium. The redirect is a one-liner. The risk is if any internal link in the codebase constructs `/admin/crm/[id]` URLs with assumptions about what the page renders. Review all `href` and `router.push` calls that reference `/admin/crm/` before this commit.
+Medium. The redirect affects all users who have bookmarked `/admin/crm/[id]` URLs. Communicate the change before deployment. Verify all internal navigation that references `/admin/crm/[id]`.
 
 ---
 
-## Commit 9 — Inbox Bridge
+## Commit 10 — Global Search & Navigation
 
 ### Scope
 
-Add "View Contact" button in `LeadSidebar.tsx` header. Remove the existing "View CRM Lead" link (which now redirects anyway).
+Global search across contacts and navigation improvements.
+
+1. **Global search** — command palette or header search bar
+   - Searches contacts by name, phone, email
+   - Keyboard shortcut: `Cmd/Ctrl + K`
+   - Results navigate to `/admin/contacts/[id]`
+
+2. **URL deep-linking** — verify all tab URLs work as direct navigation targets
+   - Opening `/admin/contacts/[id]?tab=crm` directly should mount the correct tab
+   - Invalid `?tab=` values default to Profile tab
+
+3. **Tab URL sync** — ensure tab changes update the URL without full page reload (already in place; verify and fix edge cases)
 
 ### Files Affected
 
-**Modified files:**
-- `dashboard/src/components/whatsapp/LeadSidebar.tsx`
+TBD based on search implementation. Likely:
+- New global search component
+- Modifications to the admin layout or navbar
 
 ### Validation
 
-- [ ] "View Contact" button appears in the LeadSidebar header
-- [ ] Clicking it navigates to `/admin/contacts/[id]?tab=conversation`
-- [ ] The Conversation tab opens directly (Conversation tab is prefetched)
-- [ ] Old "View CRM Lead" link is gone
-- [ ] Inbox workflow is otherwise unchanged
-- [ ] TypeScript compiles without errors
-
-### Rollback
-
-Revert `LeadSidebar.tsx`. The Inbox returns to the previous sidebar header.
+- [ ] TypeScript: PASS
+- [ ] ESLint: PASS
+- [ ] `Cmd+K` opens search palette
+- [ ] Typing a name or phone number returns matching contacts
+- [ ] Clicking a result navigates to Customer 360
+- [ ] Deep-linking to `?tab=crm` opens CRM tab directly
+- [ ] Invalid tab values default to Profile tab
 
 ### Risks
 
-Low. Single file change.
+Medium. Global search introduces a new API call pattern. Design carefully to avoid triggering on every keystroke without debouncing.
 
 ---
 
-## Commit 10 — Customer Journey Bar (Full Implementation)
+## Commit 11 — Performance, Accessibility & UX Polish
 
 ### Scope
 
-Complete the `CustomerJourneyBar` with hover tooltips (date + actor), correct step inference for all steps available in v1, and the correct placeholder state for reserved steps (Meeting, Retention, Referral).
+Cross-cutting improvements across all Customer 360 tabs.
 
-Also: complete `HealthScoreBadge` with colour states (green/amber/red) and the muted placeholder state.
+1. **Performance**
+   - Audit React Query `staleTime` values — standardise
+   - Review memo() coverage — identify unnecessary re-renders
+   - Lazy-load Documents tab (heavy media grid)
+   - Add `loading` skeleton for initial page load
 
-This was partially implemented in Commit 1. This commit completes it.
+2. **Accessibility**
+   - Keyboard navigation through tabs (`Arrow` keys, `Home`, `End`)
+   - Focus management on tab switch
+   - Screen reader announcement on tab change (`aria-live`)
+   - Contrast audit for dark mode badges and chips
+
+3. **UX Polish**
+   - Loading skeletons for all tabs (consistent shimmer pattern)
+   - Error states for failed queries (inline retry button)
+   - Empty states for all tabs (consistent illustration + CTA)
+   - Responsive: verify all tabs on mobile 375px
 
 ### Files Affected
 
-**Modified files:**
-- `dashboard/src/components/contacts/CustomerJourneyBar.tsx`
-- `dashboard/src/components/contacts/HealthScoreBadge.tsx`
-- `dashboard/src/lib/contacts/journeyInference.ts`
+Multiple files across all tabs. No new components — modifications and improvements only.
 
 ### Validation
 
-- [ ] Journey bar shows correct step for a contact in each stage
-- [ ] Hovering a step shows tooltip with date
-- [ ] Reserved steps (Meeting, Retention, Referral) show hollow circles
-- [ ] Health score shows colour-coded badge when score is present
-- [ ] Health score shows `–` when AI is disabled
-- [ ] TypeScript compiles without errors
+- [ ] TypeScript: PASS
+- [ ] ESLint: PASS
+- [ ] Lighthouse accessibility score ≥ 90 on Customer 360 page
+- [ ] All tabs keyboard-navigable without a mouse
+- [ ] No layout overflow at 375px viewport
+- [ ] All error states trigger and show retry option
 
 ### Rollback
 
-Revert modified files. The journey bar returns to its basic v1 state (still functional, just missing tooltips and full colour states).
+Individual files can be reverted independently. No structural changes.
 
 ### Risks
 
-Low. UI polish only.
+Low. Improvements only. The accessibility changes are the highest-risk (focus management can cause unexpected scroll behaviour on some browsers).
 
 ---
 
-## Commit 11 — Campaigns Tab + Backend Filter
+## Commit 12 — Production Hardening & Regression Testing
 
 ### Scope
 
-Implement the Campaigns tab. Add `contactId` filter parameter to the broadcast list backend endpoint.
+Final hardening before the Phase 2 release tag.
+
+1. **Error boundaries** — wrap each tab in an `ErrorBoundary` so a crash in one tab does not crash the whole page
+
+2. **Feature flags** — verify all reserved / placeholder sections are gated correctly and show appropriate messages when the feature is not enabled
+
+3. **Regression testing checklist**
+   - Inbox: sending / receiving messages unaffected
+   - CRM Pipeline: stage changes still work
+   - Follow-ups page: task completion still works
+   - Contact Hub: search and row click still work
+   - All Customer 360 tabs: render without errors on 5 different contact types (new, active, resolved, converted, no-messages)
+
+4. **Monitoring**
+   - Verify EMF metrics log on page load (from Commit 2b890cf production hardening)
+   - Verify error events surface in CloudWatch
 
 ### Files Affected
 
-**New files:**
-- `dashboard/src/components/contacts/tabs/CampaignsTab.tsx`
-
-**Modified files:**
-- `dashboard/src/components/contacts/ContactTabPanel.tsx` — wire Campaigns tab
-- `src/routes/broadcast.js` — add `contactId` filter (backend)
+- Error boundary components
+- Feature flag checks in relevant tabs
 
 ### Validation
 
-- [ ] Campaigns tab renders active membership and send history
-- [ ] "Add to campaign" button renders (action TBD)
-- [ ] `GET /api/whatsapp/broadcast?contactId=X` returns filtered results
-- [ ] Existing broadcast list (without `contactId`) is unaffected
-- [ ] TypeScript compiles without errors
-
-### Rollback
-
-Remove `CampaignsTab.tsx`. Revert backend change. Campaigns tab shows "coming soon".
+- [ ] TypeScript: PASS
+- [ ] ESLint: PASS
+- [ ] Crashing one tab does not crash the header or other tabs
+- [ ] All placeholder sections show correct "feature not enabled" state
+- [ ] Full regression checklist executed and passing
 
 ### Risks
 
-Low. The backend change is additive (optional filter parameter).
+Low. Hardening only. No functional changes.
 
 ---
 
-## Commit 12 — AI Tab
+## Commit 13 — Phase 2 Release + Documentation + Git Tag
 
 ### Scope
 
-Implement the AI tab: health score gauge, factor breakdown, AI summary paragraph, next action card, sentiment history chart. Full placeholder state when AI feature flag is disabled.
+Formal Phase 2 release.
+
+1. **Documentation update** — update all Phase 2 docs to reflect final implementation (this file, `CUSTOMER_360_ARCHITECTURE.md`, `FUTURE_EXTENSIONS.md`)
+
+2. **Git tag** — `git tag v2.0.0 -m "Phase 2: Customer 360"`
+
+3. **Deployment verification** — production smoke test across all tabs
+
+4. **Post-Phase 2 cleanup notes** (not in this commit)
+   - Evaluate removing `dashboard/src/app/admin/crm/[id]/page.tsx` entirely (after 30 days stable redirect)
+   - Merge duplicate `Lead` and `ContactDetail` type definitions
+   - Consolidate `context/` and `contexts/` folders
 
 ### Files Affected
 
-**New files:**
-- `dashboard/src/components/contacts/tabs/AiTab.tsx`
-
-**Modified files:**
-- `dashboard/src/components/contacts/ContactTabPanel.tsx` — wire AI tab
+Documentation files only. No code changes.
 
 ### Validation
 
-- [ ] AI tab renders placeholder state when AI flag is off (no API call made)
-- [ ] AI tab renders health score, summary, next action when AI flag is on
-- [ ] "Recalculate" button invalidates the cache and re-fetches
-- [ ] Sentiment history chart renders a line chart
-- [ ] TypeScript compiles without errors
-
-### Rollback
-
-Remove `AiTab.tsx`. Revert `ContactTabPanel.tsx`. AI tab shows "coming soon".
+- [ ] All docs reflect actual implementation
+- [ ] Git tag `v2.0.0` exists and points to this commit
+- [ ] Production smoke test passes
 
 ### Risks
 
-Low-medium. AI endpoint behaviour needs to be verified against the expected response shape.
-
----
-
-## Commit 13 — Automation Tab + Backend Filter
-
-### Scope
-
-Implement the Automation tab. Add `contactId` filter to the automations run history backend endpoint.
-
-### Files Affected
-
-**New files:**
-- `dashboard/src/components/contacts/tabs/AutomationTab.tsx`
-
-**Modified files:**
-- `dashboard/src/components/contacts/ContactTabPanel.tsx` — wire Automation tab
-- `src/routes/automations.js` — add `contactId` filter to run history (backend)
-
-### Validation
-
-- [ ] Automation tab renders active rules for this contact
-- [ ] Automation tab renders run history filtered to this contact
-- [ ] "View all automations" link navigates to `/admin/crm/automations`
-- [ ] `GET /api/automations?contactId=X` returns filtered results
-- [ ] Existing automations list (without `contactId`) is unaffected
-- [ ] TypeScript compiles without errors
-
-### Rollback
-
-Remove `AutomationTab.tsx`. Revert backend change. Automation tab shows "coming soon".
-
-### Risks
-
-Low. Same pattern as Commit 11.
-
----
-
-## Post-Phase 2 Cleanup (Not in Rollout Plan)
-
-After all 13 commits are deployed and stable, a cleanup pass removes dead code:
-
-- Remove `app/admin/crm/[id]/page.tsx` (replaced by redirect and then Customer 360)
-- Evaluate removal of LeadSidebar's inline note input (now duplicated by Notes tab)
-- Merge duplicate `Lead` type definitions into a single shared type
-- Consolidate `context/` and `contexts/` folders
-
-These are low-risk cleanup tasks that do not affect functionality.
+None.

@@ -22,18 +22,27 @@ The Inbox is a queue manager — its job is to surface conversations that need a
 
 ### Everything connects from Contact
 
+Customer 360 manages **one customer**. Broader business capabilities (campaigns, automation, analytics) are separate modules that may surface data *inside* Customer 360 as widgets — but are not tabs.
+
 ```
 Contact
-├── Conversations    → who said what, when
-├── Timeline         → everything that happened, in order
-├── CRM              → stage, pipeline position, deal value
-├── Tasks            → follow-ups with outcomes
+├── Profile          → identity, editable fields, analytics widgets
+├── Conversation     → WhatsApp chat workspace
+├── Timeline         → unified chronological activity feed
+├── CRM              → stage, pipeline, deal value, follow-ups
+├── Tasks            → follow-up management workspace
 ├── Notes            → internal agent notes
-├── Documents        → shared files, WhatsApp media
-├── Campaigns        → broadcast membership and send history
-├── Automation       → which rules fire for this contact
-└── AI               → health score, summary, next action
+└── Documents        → shared files, WhatsApp media
 ```
+
+### What is NOT a tab (and why)
+
+| Feature | Integration approach |
+|---|---|
+| AI | Activity Panel chip, CRM win-probability slot, Timeline AI event type, Conversation draft suggestions — AI is an assistant, not a workspace |
+| Automation | Timeline automation event type, CRM extension point — automation is event-driven, not a workspace |
+| Campaigns | Future Campaigns module outside Customer 360; `data-slot` extension points reserved in CRM and Timeline |
+| Analytics | Contact-level stats appear as widgets in Profile and CRM; system analytics live in a separate Analytics module |
 
 ---
 
@@ -61,12 +70,11 @@ See [NAVIGATION_ARCHITECTURE.md](NAVIGATION_ARCHITECTURE.md) for the complete fl
 /admin/contacts/[id]?tab=tasks
 /admin/contacts/[id]?tab=notes
 /admin/contacts/[id]?tab=documents
-/admin/contacts/[id]?tab=campaigns
-/admin/contacts/[id]?tab=automation
-/admin/contacts/[id]?tab=ai
 ```
 
-Tab state is in the URL. Browser back/forward navigates between tabs. Deep-links from other pages work.
+Tab state is in the URL. Browser back/forward navigates between tabs. Deep-links from other pages work. Invalid `?tab=` values default to the Profile tab.
+
+Tabs **not** in the URL structure (removed in Commit 6): `campaigns`, `automation`, `ai`.
 
 ---
 
@@ -264,34 +272,22 @@ WhatsApp media shared in the conversation, plus manually uploaded files.
 - Media grid: images and videos from messages with `mediaUrl`
 - File list: PDFs, audio, uploaded documents (future S3 upload)
 
-### Tab 8 — Campaigns
+### AI Integration (not a tab)
 
-Broadcast membership and message send history for this contact.
+AI surfaces in three locations:
 
-**Sections:**
-- Active campaign membership (which broadcasts include this contact)
-- Send history: date, template name, delivery status (sent/delivered/read/failed)
-- Action: "Add to campaign" button
+- **Activity Panel** — health score chip (`— / 100` until AI enabled), next action recommendation slot (`data-slot="activity-panel-ai"`)
+- **CRM tab** — win probability field (reserved, shows `—` until AI enabled)
+- **Timeline** — `ai` event type defined; renders when AI events are injected via the event conversion layer
+- **Conversation tab** — draft suggestion slot (`data-slot="conversation-ai-draft"`) reserved
 
-### Tab 9 — Automation
+### Automation Integration (not a tab)
 
-Which automation rules are active for this contact and their execution history.
+Automation events surface in the Timeline as `workflow` event type. The `data-slot="timeline-ext-workflow"` extension point is already present. Automation context (which rules affect this contact) can be surfaced as a card in the CRM tab in a future commit.
 
-**Sections:**
-- Active rules: rule name, trigger, last fired, status
-- Run history: date, rule name, action taken, outcome
+### Campaign Extension Points (not a tab)
 
-### Tab 10 — AI
-
-AI-generated intelligence about this contact.
-
-**Sections:**
-- Health score gauge (0–100) with factor breakdown
-- AI summary (natural language paragraph from `/api/ai/insights`)
-- Recommended next action (call / send message / schedule follow-up)
-- Sentiment history chart (positive/neutral/negative over time)
-
-All sections show reserved placeholders until AI is enabled.
+`data-slot="timeline-ext-campaign"` and `data-slot="timeline-ext-broadcast"` are reserved in the Timeline. Campaign data is not fetched inside Customer 360. A future Campaigns module will inject campaign events via these slots.
 
 ---
 
@@ -309,9 +305,9 @@ All sections show reserved placeholders until AI is enabled.
 │  Marketing                    │  │  Health Score │ Journey Bar                   │   │
 │    Broadcast                  │  └──────────────────────────────────────────────┘   │
 │    Templates                  │                                                      │
-│    Campaigns                  │  Profile │ Conversation │ Timeline │ CRM │ Tasks   │
-│  Automation                   │  Notes │ Documents │ Campaigns │ Automation │ AI    │
-│    Workflow                   │  ─────────────────────────────────────────────────  │
+│    Campaigns                  │  Profile │ Conversation │ Timeline │ CRM │ Tasks │ Notes │ Documents  │
+│  Automation                   │  ─────────────────────────────────────────────────────────────────  │
+│    Workflow                   │                                                      │
 │    AI                         │                                                      │
 │  Team                         │  [TAB CONTENT — full width, scrollable]             │
 │    Employees                  │                                                      │
@@ -346,7 +342,7 @@ The content area uses the full remaining width. No secondary sidebar panels. All
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-The hamburger sidebar overlays the page. The tab bar shows the five most-used tabs and a "More ▾" dropdown for the remaining five (Notes, Documents, Campaigns, Automation, AI).
+The hamburger sidebar overlays the page. The tab bar shows the five most-used tabs and a "More ▾" dropdown for the remaining two (Notes, Documents).
 
 ---
 
