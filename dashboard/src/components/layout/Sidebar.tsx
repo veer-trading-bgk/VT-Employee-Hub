@@ -55,7 +55,8 @@ const ALL_NAV: NavItem[] = [
   // ── Employee ───────────────────────────────────────────────────────────────
   { href: '/employee/dashboard',   label: 'My Dashboard', icon: '📊', roles: EMPLOYEE_ROLES, group: 'my-work'     },
   { href: '/employee/daily-entry', label: 'Daily Entry',  icon: '✏️', roles: EMPLOYEE_ROLES, group: 'my-work'     },
-  { href: '/employee/crm',         label: 'My Leads',     icon: '🤝', roles: EMPLOYEE_ROLES, group: 'my-work'     },
+  { href: '/employee/crm',         label: 'CRM',          icon: '🤝', roles: EMPLOYEE_ROLES, group: 'my-work'     },
+  { href: '/admin/whatsapp',       label: 'Inbox',        icon: '💬', roles: EMPLOYEE_ROLES, group: 'my-work'     },
   { href: '/employee/achievements', label: 'Achievements', icon: '🏅', roles: EMPLOYEE_ROLES, group: 'my-progress' },
   { href: '/employee/compensation', label: 'My Pay',       icon: '💰', roles: EMPLOYEE_ROLES, group: 'my-progress' },
   { href: '/employee/attendance',   label: 'Attendance',   icon: '📅', roles: EMPLOYEE_ROLES, group: 'my-progress' },
