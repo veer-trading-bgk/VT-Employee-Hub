@@ -126,3 +126,50 @@ These principles override implementation convenience.
     If the answer suggests reuse, reuse the existing implementation.
 
 These principles are permanent project rules.
+## 12. Deployment Process (CRITICAL)
+
+### Backend Deployment (Lambda)
+- NEVER attempt to deploy to Lambda directly from Claude Code
+- NEVER run AWS CLI deploy commands
+- NEVER run npm run deploy or npm run package:lambda from within Claude Code
+- After every backend change: commit and push to GitHub only
+- Then tell the user exactly: "Backend changes committed. Please run F:\aws\deploy.ps1 to deploy to Lambda."
+
+### Frontend Deployment (Vercel)
+- Dashboard changes auto-deploy via Vercel on git push
+- No action needed after git push for frontend changes
+
+### Deploy Script
+- F:\aws\deploy.ps1 — user runs this from PowerShell to deploy backend to Lambda
+
+### Reason
+Claude Code environment does not have AWS credentials or correct PATH.
+Every deploy attempt from Claude Code wastes tokens and fails silently.
+
+After adding, commit with message: "docs: add deployment process rules to CLAUDE.md"
+and push to GitHub.
+
+Add Section 12 to CLAUDE.md at the end of the file:
+
+## 12. Deployment Process (CRITICAL)
+
+### Backend Deployment (Lambda)
+- NEVER attempt to deploy to Lambda directly from Claude Code
+- NEVER run AWS CLI deploy commands
+- NEVER run npm run deploy or npm run package:lambda from within Claude Code
+- After every backend change: commit and push to GitHub only
+- Then tell the user exactly: "Backend changes committed. Please run F:\aws\deploy.ps1 to deploy to Lambda."
+
+### Frontend Deployment (Vercel)
+- Dashboard changes auto-deploy via Vercel on git push
+- No action needed after git push for frontend changes
+
+### Deploy Script
+- F:\aws\deploy.ps1 — user runs this from PowerShell to deploy backend to Lambda
+
+### Reason
+Claude Code environment does not have AWS credentials or correct PATH.
+Every deploy attempt from Claude Code wastes tokens and fails silently.
+
+After adding, commit with message: "docs: add deployment process rules to CLAUDE.md"
+and push to GitHub.
