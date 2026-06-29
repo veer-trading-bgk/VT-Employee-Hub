@@ -46,9 +46,13 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`dark ${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
       suppressHydrationWarning
     >
+      {/* Runs before React hydrates — prevents dark/light flash on first load */}
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: `try{var t=localStorage.getItem('vt-theme');document.documentElement.classList.toggle('dark',t!=='light')}catch(e){document.documentElement.classList.add('dark')}` }} />
+      </head>
       <body className="min-h-full flex flex-col bg-slate-50 dark:bg-slate-950">
         <QueryProvider>
           <ThemeProvider>
