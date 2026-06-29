@@ -131,7 +131,7 @@ function ContactDetailPageInner() {
 
   return (
     <>
-      <Navbar showBack backLabel={backLabel} />
+      <Navbar showBack backLabel={backLabel} title="Customer 360" />
       <div className="flex flex-1 flex-col overflow-hidden">
         <Customer360Provider leadId={id}>
           <Customer360PageContent activeTab={activeTab} onTabChange={onTabChange} />
@@ -148,7 +148,7 @@ export default function ContactDetailPage() {
       <div className="flex h-screen flex-col bg-slate-50 dark:bg-slate-950">
         <Suspense fallback={
           <>
-            <Navbar showBack />
+            <Navbar showBack title="Customer 360" />
             <div className="flex flex-1 flex-col overflow-hidden">
               <PageSkeleton />
             </div>

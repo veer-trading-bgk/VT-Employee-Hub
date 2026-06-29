@@ -86,7 +86,7 @@ export function LeadSidebar() {
         {selected.type === 'lead' && (
           <Link href={`/admin/contacts/${selected.leadId}?tab=conversation&from=inbox`}
             className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 py-2 text-xs font-semibold text-indigo-600 hover:bg-indigo-100 dark:border-indigo-800 dark:bg-indigo-900/20 dark:text-indigo-400">
-            View Contact ↗
+            Open in Customer 360 ↗
           </Link>
         )}
       </div>

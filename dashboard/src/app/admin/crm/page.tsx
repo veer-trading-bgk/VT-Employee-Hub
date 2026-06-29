@@ -450,7 +450,7 @@ export default function AdminCrmPage() {
                         return (
                           <div
                             key={lead.leadId}
-                            className="cursor-grab rounded-xl border border-slate-100 bg-slate-50 shadow-sm transition active:cursor-grabbing hover:border-indigo-200 hover:shadow-md dark:border-slate-800 dark:bg-slate-800/60 dark:hover:border-indigo-700"
+                            className="group cursor-grab rounded-xl border border-slate-100 bg-slate-50 shadow-sm transition active:cursor-grabbing hover:border-indigo-200 hover:shadow-md dark:border-slate-800 dark:bg-slate-800/60 dark:hover:border-indigo-700"
                             draggable
                             onDragStart={(e) => { dragLeadId.current = lead.leadId; e.dataTransfer.effectAllowed = 'move'; }}
                             onDragEnd={() => { dragLeadId.current = null; setDragOverStage(null); }}
@@ -520,6 +520,12 @@ export default function AdminCrmPage() {
                                   </span>
                                 )}
                                 {dl && <span className={`ml-auto rounded px-1.5 py-0.5 font-semibold ${dl.cls}`}>{dl.text}</span>}
+                              </div>
+                              {/* Workspace CTA — signals this card opens Customer 360 */}
+                              <div className="mt-1.5 flex items-center justify-end border-t border-slate-100 pt-1.5 dark:border-slate-700/60">
+                                <span className="text-[10px] font-semibold text-indigo-300 transition-colors group-hover:text-indigo-500 dark:text-indigo-800 dark:group-hover:text-indigo-400">
+                                  Customer 360 ↗
+                                </span>
                               </div>
                             </Link>
 
@@ -660,8 +666,8 @@ export default function AdminCrmPage() {
                           <td className="px-4 py-3 text-xs text-slate-400">{timeSince(lead.updatedAt)}</td>
                           <td className="px-4 py-3">
                             <Link href={`/admin/contacts/${lead.leadId}?from=crm`}
-                              className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-indigo-600 hover:border-indigo-300 hover:bg-indigo-50 dark:border-slate-700">
-                              Open →
+                              className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-600 hover:border-indigo-300 hover:bg-indigo-100 dark:border-indigo-900/50 dark:bg-indigo-900/20 dark:text-indigo-400 dark:hover:bg-indigo-900/40">
+                              Customer 360 →
                             </Link>
                           </td>
                         </tr>

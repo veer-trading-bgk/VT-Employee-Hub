@@ -70,15 +70,17 @@ export function ContactHeader({ contact, isLoading, stages }: ContactHeaderProps
           </div>
         </div>
 
-        {/* Health score — desktop, right-aligned */}
-        <div
-          className="hidden flex-shrink-0 flex-col items-end gap-1 md:flex"
-          aria-label="Contact health score"
-        >
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
-            Health
+        {/* Workspace badge + health score — desktop, right-aligned */}
+        <div className="hidden flex-shrink-0 flex-col items-end gap-2 md:flex">
+          <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[10px] font-semibold tracking-wide text-indigo-600 ring-1 ring-inset ring-indigo-100 dark:bg-indigo-900/20 dark:text-indigo-400 dark:ring-indigo-800/60">
+            Customer 360
           </span>
-          <HealthScoreBadge score={contact.healthScore ?? null} aiEnabled={false} />
+          <div className="flex flex-col items-end gap-1" aria-label="Contact health score">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+              Health
+            </span>
+            <HealthScoreBadge score={contact.healthScore ?? null} aiEnabled={false} />
+          </div>
         </div>
       </div>
 

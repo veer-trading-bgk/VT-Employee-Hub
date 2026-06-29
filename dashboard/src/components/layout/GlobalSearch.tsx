@@ -127,6 +127,10 @@ export function GlobalSearch({ onClose }: { onClose: () => void }) {
                     {c.name ?? c.displayName ?? c.phone}
                   </p>
                   <p className="text-xs text-slate-400">{c.phone}</p>
+                  {c.leadId
+                    ? <p className="text-[10px] font-medium text-indigo-400 dark:text-indigo-500">Customer 360</p>
+                    : <p className="text-[10px] text-slate-300 dark:text-slate-600">WhatsApp only</p>
+                  }
                 </div>
                 {c.stage && (
                   <span className="flex-shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium capitalize text-slate-500 dark:bg-slate-800 dark:text-slate-400">

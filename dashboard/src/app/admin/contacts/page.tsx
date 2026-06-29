@@ -247,7 +247,7 @@ function ContactHubContent() {
   const { data: tagCatalogData, isLoading: tagsLoading } = useQuery({
     queryKey: ['tag-catalog'],
     queryFn: () => apiFetch<{ success: boolean; tags: Tag[] }>('/api/tags'),
-    staleTime: 2 * 60_000,
+    staleTime: 5 * 60_000,
   });
 
   const contacts   = useMemo(() => data?.contacts ?? [], [data]);
@@ -760,8 +760,18 @@ function ContactHubContent() {
                         </button>
                       </td>
 
-                      {/* Send Message */}
+                      {/* Send Message + Customer 360 hover hint */}
                       <td className="px-3 py-3">
+                        <div className="flex items-center gap-1.5">
+                          {c.leadId && (
+                            <span
+                              aria-hidden="true"
+                              className="select-none whitespace-nowrap text-[10px] font-semibold text-indigo-200 transition-colors group-hover:text-indigo-400 dark:text-indigo-900 dark:group-hover:text-indigo-500"
+                              title="Click row to open Customer 360"
+                            >
+                              C360 →
+                            </span>
+                          )}
                         <button
                           onClick={(e) => { e.stopPropagation(); openChat(c); }}
                           title="Open WhatsApp chat"
@@ -772,6 +782,7 @@ function ContactHubContent() {
                             <path d="M12 0C5.373 0 0 5.373 0 12c0 2.124.558 4.118 1.532 5.849L0 24l6.335-1.508A11.933 11.933 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.818a9.818 9.818 0 01-5.006-1.369l-.36-.214-3.727.977.995-3.635-.235-.374A9.818 9.818 0 1112 21.818z"/>
                           </svg>
                         </button>
+                        </div>
                       </td>
                     </tr>
                   );
