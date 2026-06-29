@@ -441,8 +441,7 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
       method: 'PUT', body: JSON.stringify({ assignedTo, assignedToName: employees.find((e) => e.id === assignedTo)?.name }),
     }),
     onSuccess: () => {
-      // Lead moves to 'open' status after assignment — switch tab so it stays visible
-      if (activeTab === 'unassigned') setActiveTab('open');
+      setActiveTab('open'); // assign always sets chatStatus='open'; stay on that tab
       invalidate();
     },
   });
