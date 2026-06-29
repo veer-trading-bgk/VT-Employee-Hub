@@ -58,9 +58,10 @@ function normaliseInbox(u) {
 // ── GET /api/contacts ─────────────────────────────────────────────────────────
 // Returns a unified, paginated list of all contacts (LEAD# + INBOX#).
 // Query params: q, source, stage, page (1-based), pageSize (max 100)
-router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.get('/', authMiddleware, async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
+    const isAdmin = req.user.role === 'admin';
     const { q = '', source = '', stage = '', tag = '', page = '1', pageSize = '50' } = req.query;
 
     // GSI query for LEAD# METADATA records — O(company-size) not O(table-size)
@@ -79,23 +80,25 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
       lk1 = r.LastEvaluatedKey;
     } while (lk1);
 
-    // Full scan of INBOX# CONTACT records for this company
+    // Full scan of INBOX# CONTACT records — only admin sees unknown contacts
     const inboxItems = [];
-    let lk2;
-    do {
-      const r = await dynamodb.scan({
-        TableName: TABLE,
-        FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk',
-        ExpressionAttributeValues: { ':prefix': `INBOX#${companyId}#`, ':sk': 'CONTACT' },
-        ...(lk2 && { ExclusiveStartKey: lk2 }),
-      }).promise();
-      inboxItems.push(...(r.Items ?? []));
-      lk2 = r.LastEvaluatedKey;
-    } while (lk2);
+    if (isAdmin) {
+      let lk2;
+      do {
+        const r = await dynamodb.scan({
+          TableName: TABLE,
+          FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk',
+          ExpressionAttributeValues: { ':prefix': `INBOX#${companyId}#`, ':sk': 'CONTACT' },
+          ...(lk2 && { ExclusiveStartKey: lk2 }),
+        }).promise();
+        inboxItems.push(...(r.Items ?? []));
+        lk2 = r.LastEvaluatedKey;
+      } while (lk2);
+    }
 
-    // Merge and normalise
+    // Merge and normalise; non-admin employees see only their assigned leads
     let contacts = [
-      ...leadItems.map(normaliseLead),
+      ...(isAdmin ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id)).map(normaliseLead),
       ...inboxItems.map(normaliseInbox),
     ];
 
@@ -152,7 +155,7 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
 // ── DELETE /api/contacts/unknown/:phone — remove an INBOX# CONTACT record ────────
 // Hard-deletes the inbox-only (unknown) contact record for the given phone.
 // Safe: only touches INBOX#, never a CRM LEAD# record.
-router.delete('/unknown/:phone', authMiddleware, rateLimit(30, 60_000), async (req, res, next) => {
+router.delete('/unknown/:phone', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
     const phone = to10Digit(req.params.phone);

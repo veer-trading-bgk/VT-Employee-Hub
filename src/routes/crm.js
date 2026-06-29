@@ -209,7 +209,7 @@ router.get('/leads', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/crm/leads ────────────────────────────────────────────────────────
-router.post('/leads', authMiddleware, rateLimit(30, 60_000), async (req, res, next) => {
+router.post('/leads', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), async (req, res, next) => {
   try {
     // Strip non-digits from phone before schema validation so +91/spaces/dashes are accepted
     const body = { ...req.body };
@@ -584,7 +584,7 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
 });
 
 // ── DELETE /api/crm/leads/:id — soft-delete (sets deletedAt, never purges) ─────
-router.delete('/leads/:id', authMiddleware, rateLimit(10, 60_000), async (req, res, next) => {
+router.delete('/leads/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const PK = leadPK(req.user.companyId, req.params.id);
     const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();

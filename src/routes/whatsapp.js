@@ -807,9 +807,10 @@ router.post('/send', authMiddleware, rateLimit(20, 60_000), async (req, res, nex
 });
 
 // ── GET /api/whatsapp/inbox — conversations with status filter + counts ────────
-router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.get('/inbox', authMiddleware, async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
+    const isAdmin = req.user.role === 'admin';
     const statusFilter = req.query.status ?? 'all'; // open | unassigned | resolved | all
 
     function effectiveStatus(l) {
@@ -831,23 +832,28 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
       lk1 = r.LastEvaluatedKey;
     } while (lk1);
 
-    // Unknown contacts
+    // Unknown contacts — only admin sees unassigned inbox contacts
     const unknownItems = [];
-    let lk2;
-    do {
-      const r = await dynamodb.scan({
-        TableName: TABLE,
-        FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk',
-        ExpressionAttributeValues: { ':prefix': `INBOX#${companyId}#`, ':sk': 'CONTACT' },
-        ...(lk2 && { ExclusiveStartKey: lk2 }),
-      }).promise();
-      unknownItems.push(...(r.Items ?? []));
-      lk2 = r.LastEvaluatedKey;
-    } while (lk2);
+    if (isAdmin) {
+      let lk2;
+      do {
+        const r = await dynamodb.scan({
+          TableName: TABLE,
+          FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk',
+          ExpressionAttributeValues: { ':prefix': `INBOX#${companyId}#`, ':sk': 'CONTACT' },
+          ...(lk2 && { ExclusiveStartKey: lk2 }),
+        }).promise();
+        unknownItems.push(...(r.Items ?? []));
+        lk2 = r.LastEvaluatedKey;
+      } while (lk2);
+    }
+
+    // Non-admin employees see only leads assigned to them
+    const visibleLeads = isAdmin ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id);
 
     // Build counts before filtering
     const counts = { open: 0, unassigned: 0, resolved: 0, unread: 0 };
-    leadItems.forEach((l) => {
+    visibleLeads.forEach((l) => {
       const s = effectiveStatus(l);
       if (counts[s] !== undefined) counts[s]++;
       if ((l.unreadCount ?? 0) > 0) counts.unread++;
@@ -858,7 +864,7 @@ router.get('/inbox', authMiddleware, checkRole(['admin', 'manager']), async (req
     });
 
     const allConvs = [
-      ...leadItems.map((l) => ({
+      ...visibleLeads.map((l) => ({
         type: 'lead',
         leadId: l.leadId,
         PK: l.PK,
@@ -995,7 +1001,7 @@ router.post('/inbox/unknown/:phone/send', authMiddleware, checkRole(['admin', 'm
 });
 
 // ── PUT /api/whatsapp/inbox/:leadId/resolve ───────────────────────────────────
-router.put('/inbox/:leadId/resolve', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
+router.put('/inbox/:leadId/resolve', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
     await dynamodb.update({
@@ -1011,7 +1017,7 @@ router.put('/inbox/:leadId/resolve', authMiddleware, checkRole(['admin', 'manage
 });
 
 // ── PUT /api/whatsapp/inbox/:leadId/reopen ─────────────────────────────────────
-router.put('/inbox/:leadId/reopen', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
+router.put('/inbox/:leadId/reopen', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
     await dynamodb.update({
@@ -1027,7 +1033,7 @@ router.put('/inbox/:leadId/reopen', authMiddleware, checkRole(['admin', 'manager
 });
 
 // ── PUT /api/whatsapp/inbox/:leadId/pin — toggle pinned conversation ───────────
-router.put('/inbox/:leadId/pin', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
+router.put('/inbox/:leadId/pin', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
     const current = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
