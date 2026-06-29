@@ -1,6 +1,7 @@
 // ── Shared types for Customer 360 ────────────────────────────────────────────
 
 export interface ContactDetail {
+  PK?: string;
   leadId: string;
   name: string;
   phone: string;
@@ -18,7 +19,6 @@ export interface ContactDetail {
   createdAt: string;
   updatedAt: string;
   convertedAt?: string | null;
-  // Populated when messageCount is returned by the API
   messageCount?: number;
   // Reserved — Phase 2 AI
   healthScore?: number | null;
@@ -38,14 +38,28 @@ export interface ContactDetail {
 
 export interface ContactMessage {
   SK: string;
-  direction?: 'inbound' | 'outbound';
+  direction: 'inbound' | 'outbound';
   content: string;
   sentByName?: string;
   authorName?: string;
   timestamp: string;
   type?: string;
+  mediaId?: string;
   mediaUrl?: string;
+  s3Key?: string;
+  mimeType?: string;
+  filename?: string;
+  msgStatus?: 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
+  waMessageId?: string;
+  replyToWaMessageId?: string;
+  replyToContent?: string;
+  replyToDirection?: 'inbound' | 'outbound';
+  replyToSenderName?: string | null;
 }
+
+export type TimelineItem =
+  | (ContactMessage & { _kind: 'message' })
+  | (ContactMessage & { _kind: 'note' });
 
 export interface ContactDetailResponse {
   success: boolean;

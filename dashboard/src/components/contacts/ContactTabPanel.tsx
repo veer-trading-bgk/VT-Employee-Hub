@@ -1,6 +1,7 @@
 'use client';
 
 import { ProfileTab } from './tabs/ProfileTab';
+import { ConversationTab } from './tabs/ConversationTab';
 import type { TabId, ContactDetail } from '@/lib/contacts/types';
 
 function ComingSoonPanel({ tab }: { tab: string }) {
@@ -34,7 +35,7 @@ export function ContactTabPanel({ activeTab, contactId, contact }: ContactTabPan
       className="h-full"
     >
       {activeTab === 'profile'      && <ProfileTab contact={contact} leadId={contactId} />}
-      {activeTab === 'conversation' && <ComingSoonPanel tab="Conversation" />}
+      {activeTab === 'conversation' && <ConversationTab key={contactId} />}
       {activeTab === 'timeline'     && <ComingSoonPanel tab="Timeline" />}
       {activeTab === 'crm'          && <ComingSoonPanel tab="CRM" />}
       {activeTab === 'tasks'        && <ComingSoonPanel tab="Tasks" />}

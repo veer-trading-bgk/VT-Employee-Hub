@@ -185,15 +185,23 @@ Displays all static contact information. Read-mostly; fields are editable inline
 
 ### Tab 2 — Conversation
 
-The canonical WhatsApp chat view for this contact. Reuses the existing `ChatPane` component from the Inbox.
+The canonical WhatsApp chat view for this contact, implemented as `ConversationTab` (`components/contacts/tabs/ConversationTab.tsx`).
+
+**Implementation note (updated Commit 2):** `ChatPane` from the Inbox is architecturally coupled to `InboxContext`, which owns the full inbox state machine (all conversations, ping loop, unread counts). Mounting `InboxProvider` inside Customer 360 would duplicate the entire inbox API call surface — a clear violation of the "no duplicate API requests" rule. `ConversationTab` therefore reuses the same API endpoints, WebSocket subscription pattern, and UI conventions as `ChatPane`, but is fed by `Customer360Provider` instead of `InboxContext`.
 
 **Behaviour:**
-- ChatPane renders in full-width mode (no ConversationList column, no LeadSidebar column)
-- The contact context comes from the parent page — ChatPane does not re-fetch identity
-- WebSocket subscription is the same as used by the Inbox — real-time messages
-- Template picker, emoji, attachments — all unchanged from Inbox
-- If the contact has multiple conversations (rare), a `ConversationSelector` appears above the ChatPane
-- Conversation tab is prefetched in the background as soon as the page mounts, so it feels instant on first click
+- `ConversationTab` reads messages, notes, and timeline from `Customer360Context` — no second fetch
+- Message data comes from the same `/api/crm/leads/:id` call that hydrates the page (fetched once by `Customer360Provider`)
+- WebSocket: subscribes to `whatsapp_message` events using `useWsEvent`; on match, calls `refresh()` which invalidates `['contact', leadId]`
+- Reply-to threading, internal notes, canned responses (`/` shortcut) — all implemented
+- Template picker reused directly from `components/whatsapp/TemplatePicker.tsx`
+- Resolve / Reopen conversation — same API endpoints as Inbox
+- Mark-read — same API endpoint as Inbox
+- Optimistic send — same pattern as Inbox (cache update → mutate → settle)
+- Media display (images, video, audio, documents) — implemented inline in `ConversationTab`
+- Media upload (new attachments) — deferred to Commit 3; file picker shows informational toast
+- Right activity panel slot reserved as `data-slot="activity-panel"` — hidden; future widgets plug in here
+- `ConversationTab` is wrapped in `React.memo` to prevent rerenders when unrelated contact metadata changes
 
 ### Tab 3 — Timeline
 
@@ -367,6 +375,37 @@ The hamburger sidebar overlays the page. The tab bar shows the five most-used ta
 The header collapses to two rows. The journey bar is horizontal-scrollable. The tab bar is swipe-scrollable. The back button returns to Contact Hub.
 
 ---
+
+## Data Architecture
+
+### Customer360Provider
+
+Added in Commit 2. `Customer360Provider` (`contexts/Customer360Context.tsx`) is the single source of truth for all data on the Customer 360 page.
+
+```
+ContactDetailPage
+  ErrorBoundary
+    div.h-screen
+      Navbar(showBack)
+      div.flex-1
+        Suspense(PageSkeleton)
+          ContactDetailPageInner              ← useParams + useSearchParams
+            Customer360Provider(leadId)       ← owns ['contact', leadId] + ['crm-pipeline']
+              Customer360PageContent          ← reads from useCustomer360()
+                ContactHeader(contact, stages)
+                ContactTabNav
+                div.flex-1.overflow-auto
+                  ContactTabPanel(activeTab)
+                    ProfileTab                ← reads contact from props
+                    ConversationTab           ← reads from useCustomer360() + own lazy queries
+                    [future tabs...]
+```
+
+**Rules:**
+- All tabs call `useCustomer360()` to access shared data
+- No tab may directly call `useQuery(['contact', leadId])` — they consume from context
+- Tabs may add their own **lazy** queries (e.g. `ConversationTab` adds `['admin-employees']` and `['wa-canned']` only when mounted)
+- `refresh()` from context invalidates `['contact', leadId]` — all tabs reflect the update automatically
 
 ## Component Hierarchy
 

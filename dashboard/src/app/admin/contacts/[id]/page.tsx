@@ -2,28 +2,20 @@
 
 import { Suspense } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api';
 import { Navbar } from '@/components/layout/Navbar';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { ContactHeader } from '@/components/contacts/ContactHeader';
 import { ContactTabNav } from '@/components/contacts/ContactTabNav';
 import { ContactTabPanel } from '@/components/contacts/ContactTabPanel';
 import { SkeletonLine } from '@/components/common/Skeleton';
+import { Customer360Provider, useCustomer360 } from '@/contexts/Customer360Context';
 import { VALID_TAB_IDS } from '@/lib/contacts/types';
-import type { ContactDetailResponse, TabId } from '@/lib/contacts/types';
+import type { TabId } from '@/lib/contacts/types';
 
-interface PipelineStage {
-  key: string;
-  label: string;
-  color: string;
-}
-
-// ── Skeleton shown while the page inner component suspends ────────────────────
+// ── Skeleton shown while the inner component suspends ─────────────────────────
 function PageSkeleton() {
   return (
     <>
-      {/* Header skeleton */}
       <div className="border-b border-slate-200 bg-white px-4 py-4 dark:border-slate-800 dark:bg-slate-900 md:px-6">
         <div className="flex items-start gap-3">
           <SkeletonLine className="h-12 w-12 flex-shrink-0 rounded-full" />
@@ -42,7 +34,6 @@ function PageSkeleton() {
           ))}
         </div>
       </div>
-      {/* Tab nav skeleton */}
       <div className="flex gap-1 border-b border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-900">
         {Array.from({ length: 5 }).map((_, i) => (
           <SkeletonLine key={i} className="h-4 w-14 rounded-full" />
@@ -75,46 +66,17 @@ function ContactNotFound({ onBack }: { onBack: () => void }) {
   );
 }
 
-// ── Inner page — uses hooks that require Suspense boundary ────────────────────
-function ContactDetailPageInner() {
-  const { id } = useParams<{ id: string }>();
-  const searchParams = useSearchParams();
+// ── Reads shared context; renders header + tabs ───────────────────────────────
+function Customer360PageContent({
+  activeTab,
+  onTabChange,
+}: {
+  activeTab: TabId;
+  onTabChange: (tab: TabId) => void;
+}) {
+  const { leadId, contact, stages, isLoading, isError } = useCustomer360();
   const router = useRouter();
 
-  // Resolve and validate the active tab from the URL
-  const rawTab = searchParams.get('tab') ?? 'profile';
-  const activeTab: TabId = VALID_TAB_IDS.includes(rawTab as TabId)
-    ? (rawTab as TabId)
-    : 'profile';
-
-  // Primary fetch — hydrates header, Profile, CRM, Tasks, Notes tabs
-  const {
-    data,
-    isLoading,
-    isError,
-  } = useQuery({
-    queryKey: ['contact', id],
-    queryFn: () => apiFetch<ContactDetailResponse>(`/api/crm/leads/${id}`),
-    staleTime: 60_000,
-    enabled: !!id,
-  });
-
-  // Pipeline stage config — for stage badge colours in the header
-  const { data: pipelineData } = useQuery({
-    queryKey: ['crm-pipeline'],
-    queryFn: () =>
-      apiFetch<{ success: boolean; stages: PipelineStage[] }>('/api/crm/pipeline'),
-    staleTime: 10 * 60_000,
-  });
-
-  const contact = data?.lead ?? null;
-  const stages = pipelineData?.stages ?? [];
-
-  function onTabChange(tab: TabId) {
-    router.replace(`/admin/contacts/${id}?tab=${tab}`);
-  }
-
-  // Error state — rendered inside the flex column so it fills available height
   if (isError) {
     return (
       <>
@@ -129,15 +91,37 @@ function ContactDetailPageInner() {
       <ContactHeader contact={contact} isLoading={isLoading} stages={stages} />
       <ContactTabNav activeTab={activeTab} onTabChange={onTabChange} />
       <div className="flex-1 overflow-auto">
-        {contact ? (
+        {contact && (
           <ContactTabPanel
             activeTab={activeTab}
-            contactId={id}
+            contactId={leadId}
             contact={contact}
           />
-        ) : isLoading ? null : null}
+        )}
       </div>
     </>
+  );
+}
+
+// ── Inner — inside Suspense boundary; resolves URL params + provides context ──
+function ContactDetailPageInner() {
+  const { id } = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  const rawTab = searchParams.get('tab') ?? 'profile';
+  const activeTab: TabId = VALID_TAB_IDS.includes(rawTab as TabId)
+    ? (rawTab as TabId)
+    : 'profile';
+
+  function onTabChange(tab: TabId) {
+    router.replace(`/admin/contacts/${id}?tab=${tab}`);
+  }
+
+  return (
+    <Customer360Provider leadId={id}>
+      <Customer360PageContent activeTab={activeTab} onTabChange={onTabChange} />
+    </Customer360Provider>
   );
 }
 
