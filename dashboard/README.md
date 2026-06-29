@@ -1,12 +1,20 @@
-# VT Employee Metrics Dashboard
+# APForce Dashboard
 
-Next.js (App Router, TypeScript, Tailwind CSS) dashboard for the VT Employee Bot backend.
+Next.js (App Router, TypeScript, Tailwind CSS) dashboard for APForce — a SaaS platform for AP/sub-broker management.
+
+**Current version:** v2.1.0-phase2
+
+---
 
 ## Stack
+
 - Next.js 16 (App Router) + React 19 + TypeScript
 - Tailwind CSS v4 (class-based dark mode)
-- Recharts for all charts (bar, line, gauge)
-- Cookie-based JWT auth against the existing Express backend (`../server.js`)
+- Recharts for charts (bar, line, gauge)
+- TanStack Query (React Query v5) for all server state
+- Cookie-based JWT auth against the Express backend (`../server.js`)
+
+---
 
 ## Setup
 
@@ -26,7 +34,9 @@ npm run build   # production build
 npm start        # serve the production build on :3001
 ```
 
-## Environment variables
+---
+
+## Environment Variables
 
 | Variable | Purpose | Default |
 |---|---|---|
@@ -34,50 +44,156 @@ npm start        # serve the production build on :3001
 | `NEXT_PUBLIC_REFRESH_INTERVAL_MS` | Auto-refresh polling interval for widgets | `30000` |
 | `NEXT_PUBLIC_SESSION_TIMEOUT_MS` | Idle time before auto-logout | `900000` (15 min) |
 
-## Adding a new metric
+---
 
-Everything is config-driven from a single file: [`src/lib/metrics.config.ts`](src/lib/metrics.config.ts).
-Add one entry to the `METRICS` array (key must match the `metric_type` the backend stores) and it
-automatically appears in summary cards, the daily progress bar chart, the trend chart selector,
-the leaderboard sort dropdown, and CSV exports. No other code changes required.
+## Module Overview
 
-## Project structure
+### Customer 360 (Phase 2)
+
+The canonical customer workspace. Every contact opens in `/admin/contacts/[id]`.
+
+**7-tab architecture (frozen):**
+
+| Tab | Purpose |
+|---|---|
+| Profile | Identity, editable fields, source tracking, tags, analytics |
+| Conversation | WhatsApp send/receive with media and reply support |
+| Timeline | Unified chronological feed of all messages, notes, and events |
+| CRM | Stage, deal value, closure deadline, assignment, follow-ups, tags |
+| Tasks | Follow-up management: create, complete, delete with undo |
+| Notes | Internal agent notes (not visible to customer) |
+| Documents | Phase 3 placeholder |
+
+**Global Search:** Cmd+K / Ctrl+K opens a command palette. Search by name or phone.
+
+**Back navigation:** Every Customer 360 link carries `?from=hub|inbox|crm|search` so the back button always shows the right label.
+
+**Architecture docs:** [`docs/phase2/CUSTOMER_360_ARCHITECTURE.md`](docs/phase2/CUSTOMER_360_ARCHITECTURE.md)
+
+---
+
+### CRM Pipeline
+
+`/admin/crm` — Kanban and list view of all leads across pipeline stages.
+
+- Stage drag-and-drop
+- Bulk assignment
+- Follow-up tracking
+- CSV export
+- Import from spreadsheet
+
+---
+
+### WhatsApp Inbox
+
+`/admin/whatsapp` — Real-time WhatsApp conversation management.
+
+- WebSocket-powered message delivery
+- Conversation list with tab filters (all, unassigned, mine)
+- Lead sidebar with tag management and contact linking
+- "CRM ↗" shortcut opens Customer 360 CRM tab
+
+---
+
+### Performance Metrics Dashboard
+
+`/admin/dashboard` — Agent and team performance metrics.
+
+Config-driven from [`src/lib/metrics.config.ts`](src/lib/metrics.config.ts). Add one entry to the `METRICS` array (key must match the `metric_type` the backend stores) and it automatically appears in summary cards, charts, leaderboard, and CSV exports.
+
+---
+
+## Project Structure
 
 ```
 src/
-  app/             # routes: /login /dashboard /leaderboard /analytics /profile /settings
+  app/admin/
+    contacts/          # Contact Hub (/contacts) + Customer 360 (/contacts/[id])
+    crm/               # CRM Pipeline + sub-pages (analytics, followups, import…)
+    whatsapp/          # WhatsApp Inbox
+    dashboard/         # Performance metrics dashboard
+    employees/         # Employee management (admin only)
+    …
+
   components/
-    charts/         # ProgressBarChart, TrendLineChart, GaugeChart (Recharts)
-    layout/          # AppShell, Sidebar, ProtectedRoute
-    ui/                # MetricCard, Leaderboard, DataTable, Skeleton, ErrorBoundary, ErrorMessage, DateRangeFilter
-  context/         # AuthContext (session/JWT), ThemeContext (dark/light)
-  hooks/             # useFetch (polling + retry), useMetrics (role-scoped data)
-  lib/                # api.ts (fetch client w/ retry), metrics.config.ts, csv.ts
-  types/             # shared TS interfaces matching backend response shapes
+    contacts/          # Customer 360 components
+      tabs/            # ProfileTab, ConversationTab, TimelineTab, CrmTab, TasksTab, NotesTab
+      ActivityPanel    # Right sidebar (status, priority, next task, tags, quick actions)
+      ContactHeader    # Contact identity block at top of page
+      ContactTabNav    # Tab navigation bar
+    layout/            # Navbar (with GlobalSearch), Sidebar, CrmSubNav
+    whatsapp/          # ChatPane, LeadSidebar, MediaPreviewModal
+    ui/                # ErrorBoundary, Skeleton, UndoToast, FollowUpForm
+    common/            # Shared components
+
+  contexts/
+    Customer360Context # Single provider for all Customer 360 data
+    InboxContext       # WhatsApp conversation state
+    WebSocketContext   # Real-time connection management
+    AuthContext        # Session and JWT
+    ThemeContext       # Dark / light mode
+
+  hooks/
+    useContactMutations  # Contact field updates, CRM mutations
+    useMetrics           # Role-scoped performance metrics
+    useRealTime          # Polling with visibility awareness
+    useWebSocket         # WebSocket connection hook
+
+  lib/
+    contacts/types.ts    # ContactDetail, TabId, CONTACT_TABS, Followup types
+    api.ts               # Fetch client with retry and auth
+    metrics.config.ts    # Metric definitions (config-driven dashboard)
 ```
 
-## Role-based views
+---
 
-- **admin**: dashboard/profile/analytics (own data) + leaderboard (all employees) + `/api/metrics/all`
-- **manager**: same as admin minus the all-employees raw feed; leaderboard shows team summary
-- **telecaller**: dashboard/profile/analytics for their own metrics only; leaderboard is hidden
+## Role-Based Access
 
-`ProtectedRoute` (used by `AppShell`) redirects unauthenticated users to `/login` and
-redirects users without an allowed role away from restricted pages (e.g. `/leaderboard`).
+| Role | Access |
+|---|---|
+| `superadmin` | Full access to all modules |
+| `admin` | CRM, Contacts, WhatsApp, own metrics |
+| `manager` | Team metrics, CRM, Contacts, WhatsApp |
+| `telecaller` | Own metrics, WhatsApp, Contacts |
 
-## Known gaps / follow-ups
+`ProtectedRoute` (via `AppShell`) redirects unauthenticated users to `/login`.
 
-- The backend's `/login` route supports an optional TOTP 2FA step (`requiresTOTP`); this UI
-  does not yet have a 2FA entry screen - it assumes 2FA is not enabled for the logging-in user.
-- "Remember login state" relies on the backend's `refreshToken` cookie (30-day) but there is no
-  automatic refresh-token exchange wired up yet; once the 1h `accessToken` expires, the user is
-  prompted to log in again rather than being silently refreshed.
-- CSV export and date-range filtering operate on the currently loaded page of data (up to 90 days
-  via `/api/metrics/my`), not a server-side paginated export.
+---
+
+## Engineering Rules
+
+See [`CLAUDE.md`](CLAUDE.md) for permanent engineering rules including:
+- Customer 360 Boundary Rule
+- Frozen Tab Architecture
+- Commit Discipline Rules
+- Architecture Principles
+
+See [`docs/phase2/`](docs/phase2/) for Phase 2 architecture decisions.
+
+---
+
+## Known Limitations
+
+- **2FA login screen** — Backend supports TOTP; frontend assumes 2FA is disabled.
+- **Refresh token auto-renewal** — After the 1-hour access token expires, user is redirected to `/login` rather than silently renewed.
+- **Documents tab** — Phase 3 placeholder; shows "Coming Soon".
+- **AI Health Score** — Shows "— / 100, AI not enabled"; Phase 3 integration point.
+
+---
 
 ## Deployment (Vercel)
 
-1. Push this `dashboard/` folder as (or to) its own Vercel project root.
+1. Push the `dashboard/` folder as (or to) its own Vercel project root.
 2. Set `NEXT_PUBLIC_API_URL` to your deployed backend's HTTPS URL in Vercel's project env vars.
 3. Set the backend's `FRONTEND_URL` to your Vercel deployment URL, and ensure cookies use
    `Secure` (already conditional on `NODE_ENV=production` in the backend).
+
+---
+
+## Release History
+
+| Version | Description |
+|---|---|
+| v2.1.0-phase2 | Customer 360, Global Search, CRM migration, Tasks, Navigation |
+| v2.0.x | CRM Foundation, WhatsApp WebSocket, production hardening |
+| v1.x | Performance metrics dashboard, basic CRM, attendance |

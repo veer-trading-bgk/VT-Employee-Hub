@@ -5,7 +5,7 @@
 # APForce Engineering Rules
 
 These rules are permanent. They apply to every session, every commit, and every code review.
-Do not override them without an explicit architecture decision recorded in `docs/phase2/`.
+Do not override them without an explicit architecture decision recorded in `docs/phase2/CUSTOMER_360_ARCHITECTURE.md`.
 
 ---
 
@@ -79,7 +79,7 @@ The documentation is the contract.
 
 If implementation discovers that a document is wrong, update the document first (or in the same commit), so code and documentation never diverge.
 
-`docs/phase2/IMPLEMENTATION_PLAN.md` and `docs/phase2/CUSTOMER_360_ARCHITECTURE.md` are the authoritative references for Phase 2 scope and architecture.
+[`docs/phase2/IMPLEMENTATION_PLAN.md`](docs/phase2/IMPLEMENTATION_PLAN.md) and [`docs/phase2/CUSTOMER_360_ARCHITECTURE.md`](docs/phase2/CUSTOMER_360_ARCHITECTURE.md) are the authoritative references for Phase 2 scope and architecture.
 
 ---
 
