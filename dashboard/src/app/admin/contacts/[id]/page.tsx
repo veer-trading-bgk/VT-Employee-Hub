@@ -110,7 +110,7 @@ function ContactDetailPageInner() {
   const router = useRouter();
 
   const rawTab = searchParams.get('tab') ?? 'profile';
-  const from   = searchParams.get('from') as 'hub' | 'inbox' | 'crm' | null;
+  const from   = searchParams.get('from') as 'hub' | 'inbox' | 'crm' | 'search' | null;
 
   const activeTab: TabId = VALID_TAB_IDS.includes(rawTab as TabId)
     ? (rawTab as TabId)
@@ -123,7 +123,11 @@ function ContactDetailPageInner() {
     router.replace(`/admin/contacts/${id}?${params.toString()}`);
   }
 
-  const backLabel = from === 'inbox' ? 'Inbox' : from === 'crm' ? 'CRM' : 'Contact Hub';
+  const backLabel =
+    from === 'inbox'  ? 'Inbox' :
+    from === 'crm'    ? 'CRM' :
+    from === 'search' ? 'Search' :
+    'Contact Hub';
 
   return (
     <>

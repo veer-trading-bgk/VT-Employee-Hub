@@ -7,6 +7,7 @@ import { useTheme } from '@/context/ThemeContext';
 import { useUIStore } from '@/store/uiStore';
 import { getInitials } from '@/utils/formatters';
 import { ROLE_LABELS, ROLE_COLORS } from '@/utils/permissions';
+import { GlobalSearch } from './GlobalSearch';
 import type { Role } from '@/types';
 
 /* ── Icons ───────────────────────────────────────────────────────── */
@@ -61,6 +62,14 @@ function MoonIcon() {
   );
 }
 
+function SearchIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+    </svg>
+  );
+}
+
 /* ── Helpers ─────────────────────────────────────────────────────── */
 function relativeTime(date: Date): string {
   const diff = Date.now() - date.getTime();
@@ -98,7 +107,8 @@ export function Navbar({ title, showBack, backLabel }: NavbarProps) {
   const router = useRouter();
   const unread = notifications.filter((n) => !n.read).length;
 
-  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifOpen, setNotifOpen]   = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -112,12 +122,24 @@ export function Navbar({ title, showBack, backLabel }: NavbarProps) {
     return () => document.removeEventListener('mousedown', onOutside);
   }, [notifOpen]);
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setSearchOpen((o) => !o);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
   const handleBellClick = () => {
     setNotifOpen((o) => !o);
     if (unread > 0) markAllRead();
   };
 
   return (
+    <>
     <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-slate-200 bg-white/95 px-3 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/95">
 
       {/* ── Left ── */}
@@ -152,6 +174,16 @@ export function Navbar({ title, showBack, backLabel }: NavbarProps) {
 
       {/* ── Right ── */}
       <div className="flex items-center gap-1">
+
+        {/* Global search */}
+        <button
+          onClick={() => setSearchOpen(true)}
+          aria-label="Search (⌘K)"
+          title="Search (⌘K)"
+          className={btn}
+        >
+          <SearchIcon />
+        </button>
 
         {/* Dark / light toggle */}
         <button
@@ -248,5 +280,7 @@ export function Navbar({ title, showBack, backLabel }: NavbarProps) {
         </button>
       </div>
     </header>
+    {searchOpen && <GlobalSearch onClose={() => setSearchOpen(false)} />}
+    </>
   );
 }

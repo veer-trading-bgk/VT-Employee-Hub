@@ -462,7 +462,7 @@ function ContactHubContent() {
 
   return (
     <div className="flex h-screen flex-col bg-slate-50 dark:bg-slate-950">
-      <Navbar />
+      <Navbar title="Contact Hub" />
 
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* ── Page header ──────────────────────────────────────────────── */}
@@ -854,7 +854,7 @@ export default function ContactHubPage() {
     <ErrorBoundary>
       <Suspense fallback={
         <div className="flex h-screen flex-col bg-slate-50 dark:bg-slate-950">
-          <Navbar />
+          <Navbar title="Contact Hub" />
           <div className="flex flex-1 items-center justify-center">
             <p className="text-sm text-slate-400 dark:text-slate-500">Loading contacts…</p>
           </div>
