@@ -224,6 +224,7 @@ function ContactHubContent() {
 
   // ── Add Contact modal state ───────────────────────────────────────────────
   const [showAddModal, setShowAddModal] = useState(false);
+  const [isPromotingUnknown, setIsPromotingUnknown] = useState(false);
   const [addDupeWarning, setAddDupeWarning] = useState<{ existingLeadId: string; existingName: string } | null>(null);
   const [addForm, setAddForm] = useState({ name: '', phone: '', email: '', source: 'manual', stage: '' });
 
@@ -399,6 +400,7 @@ function ContactHubContent() {
       qc.invalidateQueries({ queryKey: ['contacts'] });
       setShowAddModal(false);
       setAddDupeWarning(null);
+      setIsPromotingUnknown(false);
       setAddForm({ name: '', phone: '', email: '', source: 'manual', stage: '' });
       toast.success('Contact added');
     },
@@ -498,12 +500,15 @@ function ContactHubContent() {
     }
   }
 
-  // Navigate to Customer 360; pass ?from=hub so back button label reads "Contact Hub"
+  // Navigate to Customer 360 for leads; for unknown inbox contacts open Add modal to promote them
   const openContact = useCallback((c: Contact) => {
     if (c.leadId) {
       router.push(`/admin/contacts/${c.leadId}?from=hub`);
     } else {
-      router.push(`/admin/whatsapp?phone=${encodeURIComponent(c.phone)}`);
+      setAddForm({ name: c.name ?? c.displayName ?? '', phone: c.phone, email: '', source: 'whatsapp', stage: '' });
+      setAddDupeWarning(null);
+      setIsPromotingUnknown(true);
+      setShowAddModal(true);
     }
   }, [router]);
 
@@ -604,7 +609,7 @@ function ContactHubContent() {
                 {total} total
               </span>
               <button
-                onClick={() => { setShowAddModal(true); setAddDupeWarning(null); setAddForm((f) => ({ ...f, stage: stages[0]?.key ?? '' })); }}
+                onClick={() => { setShowAddModal(true); setAddDupeWarning(null); setIsPromotingUnknown(false); setAddForm({ name: '', phone: '', email: '', source: 'manual', stage: stages[0]?.key ?? '' }); }}
                 className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-700 transition"
               >
                 + New Contact
@@ -977,13 +982,21 @@ function ContactHubContent() {
       {/* ── Add Contact Modal ─────────────────────────────────────────────── */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          onClick={() => { setShowAddModal(false); setAddDupeWarning(null); }}>
+          onClick={() => { setShowAddModal(false); setAddDupeWarning(null); setIsPromotingUnknown(false); }}>
           <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900"
             onClick={(e) => e.stopPropagation()}>
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-base font-semibold text-slate-900 dark:text-white">New Contact</h2>
-              <button onClick={() => { setShowAddModal(false); setAddDupeWarning(null); }} className="text-slate-400 hover:text-slate-600">✕</button>
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white">
+                {isPromotingUnknown ? 'Save as Contact' : 'New Contact'}
+              </h2>
+              <button onClick={() => { setShowAddModal(false); setAddDupeWarning(null); setIsPromotingUnknown(false); }} className="text-slate-400 hover:text-slate-600">✕</button>
             </div>
+
+            {isPromotingUnknown && !addDupeWarning && (
+              <div className="mb-3 rounded-xl border border-indigo-100 bg-indigo-50 px-3 py-2 text-xs text-indigo-700 dark:border-indigo-900/30 dark:bg-indigo-900/10 dark:text-indigo-300">
+                This is an inbox-only contact. Saving will create a full contact profile.
+              </div>
+            )}
 
             {addDupeWarning && (
               <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 dark:border-amber-900/30 dark:bg-amber-900/10">
@@ -1034,7 +1047,7 @@ function ContactHubContent() {
             </div>
 
             <div className="mt-5 flex justify-end gap-2">
-              <button onClick={() => { setShowAddModal(false); setAddDupeWarning(null); }}
+              <button onClick={() => { setShowAddModal(false); setAddDupeWarning(null); setIsPromotingUnknown(false); }}
                 className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">
                 Cancel
               </button>

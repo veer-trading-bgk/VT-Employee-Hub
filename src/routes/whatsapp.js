@@ -851,6 +851,10 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
     // Non-admin employees see only leads assigned to them
     const visibleLeads = isAdmin ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id);
 
+    // Dedup: suppress unknown contacts whose phone already exists as a LEAD record
+    const leadPhones = new Set(leadItems.map((l) => l.phone).filter(Boolean));
+    const dedupedUnknown = unknownItems.filter((u) => !leadPhones.has(u.phone));
+
     // Build counts before filtering
     const counts = { open: 0, unassigned: 0, resolved: 0, unread: 0 };
     visibleLeads.forEach((l) => {
@@ -858,7 +862,7 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
       if (counts[s] !== undefined) counts[s]++;
       if ((l.unreadCount ?? 0) > 0) counts.unread++;
     });
-    unknownItems.forEach((u) => {
+    dedupedUnknown.forEach((u) => {
       counts.unassigned++;
       if ((u.unreadCount ?? 0) > 0) counts.unread++;
     });
@@ -888,7 +892,7 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
         createdAt: l.createdAt,
         unreadCount: l.unreadCount ?? 0,
       })),
-      ...unknownItems.map((u) => ({
+      ...dedupedUnknown.map((u) => ({
         type: 'unknown',
         phone: u.phone,
         name: u.agentName ?? u.waName ?? null,

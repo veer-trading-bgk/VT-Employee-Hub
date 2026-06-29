@@ -96,10 +96,13 @@ router.get('/', authMiddleware, async (req, res, next) => {
       } while (lk2);
     }
 
+    // Dedup: if a phone already exists as a LEAD, suppress the INBOX CONTACT record for it
+    const leadPhones = new Set(leadItems.map((l) => l.phone).filter(Boolean));
+
     // Merge and normalise; non-admin employees see only their assigned leads
     let contacts = [
       ...(isAdmin ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id)).map(normaliseLead),
-      ...inboxItems.map(normaliseInbox),
+      ...inboxItems.filter((u) => !leadPhones.has(u.phone)).map(normaliseInbox),
     ];
 
     // Sort by most recent activity first
