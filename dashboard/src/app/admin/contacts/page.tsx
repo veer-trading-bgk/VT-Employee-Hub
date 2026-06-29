@@ -162,6 +162,12 @@ function Pagination({ page, pages, total, pageSize, onChange }: {
   );
 }
 
+const SOURCES_ADD = ['manual', 'referral', 'whatsapp', 'walk_in', 'social', 'webinar', 'whatsapp_ai'];
+const SOURCE_ADD_LABELS: Record<string, string> = {
+  manual: 'Manual', referral: 'Referral', whatsapp: 'WhatsApp',
+  walk_in: 'Walk-in', social: 'Social', webinar: 'Webinar', whatsapp_ai: 'WA AI',
+};
+
 // ── Inner page — uses useSearchParams; must be wrapped in Suspense ────────────
 function ContactHubContent() {
   const router = useRouter();
@@ -180,6 +186,11 @@ function ContactHubContent() {
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  // ── Add Contact modal state ───────────────────────────────────────────────
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addDupeWarning, setAddDupeWarning] = useState<{ existingLeadId: string; existingName: string } | null>(null);
+  const [addForm, setAddForm] = useState({ name: '', phone: '', email: '', source: 'manual', stage: '' });
 
   // Tag selector state — which contact's tag selector is open + screen position
   const [selectorState, setSelectorState] = useState<{
@@ -324,6 +335,35 @@ function ContactHubContent() {
         body: JSON.stringify({ label, color }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tag-catalog'] }),
+  });
+
+  // ── Add contact mutation ──────────────────────────────────────────────────
+  const addContactMutation = useMutation({
+    mutationFn: async (body: typeof addForm) => {
+      try {
+        return await apiFetch('/api/crm/leads', {
+          method: 'POST',
+          retries: 0,
+          body: JSON.stringify({ ...body, phone: body.phone.replace(/\D/g, '') }),
+        });
+      } catch (err: any) {
+        if (err?.status === 409) {
+          const b = err.body ?? {};
+          setAddDupeWarning({ existingLeadId: b.existingLeadId ?? '', existingName: b.existingName ?? 'an existing lead' });
+        }
+        throw err;
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['contacts'] });
+      setShowAddModal(false);
+      setAddDupeWarning(null);
+      setAddForm({ name: '', phone: '', email: '', source: 'manual', stage: '' });
+      toast.success('Contact added');
+    },
+    onError: (err: any) => {
+      if (err?.status !== 409) toast.error('Failed to add contact');
+    },
   });
 
   // ── Bulk delete mutation ──────────────────────────────────────────────────
@@ -478,6 +518,12 @@ function ContactHubContent() {
               <span className="rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400">
                 {total} total
               </span>
+              <button
+                onClick={() => { setShowAddModal(true); setAddDupeWarning(null); setAddForm((f) => ({ ...f, stage: stages[0]?.key ?? '' })); }}
+                className="rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-700 transition"
+              >
+                + New Contact
+              </button>
             </div>
           </div>
 
@@ -829,6 +875,81 @@ function ContactHubContent() {
                 className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
               >
                 {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Add Contact Modal ─────────────────────────────────────────────── */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => { setShowAddModal(false); setAddDupeWarning(null); }}>
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl dark:bg-slate-900"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-base font-semibold text-slate-900 dark:text-white">New Contact</h2>
+              <button onClick={() => { setShowAddModal(false); setAddDupeWarning(null); }} className="text-slate-400 hover:text-slate-600">✕</button>
+            </div>
+
+            {addDupeWarning && (
+              <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 dark:border-amber-900/30 dark:bg-amber-900/10">
+                <span className="text-amber-500 mt-0.5">⚠</span>
+                <div className="text-xs text-amber-800 dark:text-amber-300">
+                  <span className="font-semibold">Phone already exists</span> as{' '}
+                  <span className="font-semibold">{addDupeWarning.existingName}</span>.{' '}
+                  {addDupeWarning.existingLeadId && (
+                    <button className="underline hover:text-amber-600"
+                      onClick={() => { setShowAddModal(false); router.push(`/admin/contacts/${addDupeWarning.existingLeadId}`); }}>
+                      Open contact →
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <input placeholder="Full Name *" value={addForm.name}
+                  onChange={(e) => setAddForm((f) => ({ ...f, name: e.target.value }))}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
+                <div>
+                  <input placeholder="10-digit mobile *" value={addForm.phone}
+                    onChange={(e) => { setAddForm((f) => ({ ...f, phone: e.target.value })); setAddDupeWarning(null); }}
+                    className={`w-full rounded-lg border px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:bg-slate-800 dark:text-white ${addForm.phone && addForm.phone.replace(/\D/g, '').length !== 10 ? 'border-red-300 dark:border-red-700' : 'border-slate-200 dark:border-slate-700'}`} />
+                  {addForm.phone && addForm.phone.replace(/\D/g, '').length !== 10 && (
+                    <p className="mt-0.5 text-[10px] text-red-500">Enter 10-digit mobile</p>
+                  )}
+                </div>
+              </div>
+
+              <input placeholder="Email (optional)" value={addForm.email}
+                onChange={(e) => setAddForm((f) => ({ ...f, email: e.target.value }))}
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white" />
+
+              <div className="grid grid-cols-2 gap-3">
+                <select value={addForm.stage} onChange={(e) => setAddForm((f) => ({ ...f, stage: e.target.value }))}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white">
+                  <option value="">Select stage</option>
+                  {stages.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+                </select>
+                <select value={addForm.source} onChange={(e) => setAddForm((f) => ({ ...f, source: e.target.value }))}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white">
+                  {SOURCES_ADD.map((s) => <option key={s} value={s}>{SOURCE_ADD_LABELS[s]}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => { setShowAddModal(false); setAddDupeWarning(null); }}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300">
+                Cancel
+              </button>
+              <button
+                onClick={() => addContactMutation.mutate(addForm)}
+                disabled={!addForm.name.trim() || addForm.phone.replace(/\D/g, '').length !== 10 || addContactMutation.isPending}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">
+                {addContactMutation.isPending ? 'Adding…' : 'Add Contact'}
               </button>
             </div>
           </div>

@@ -110,6 +110,7 @@ export default function AdminCrmPage() {
   const [listPage, setListPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkStage, setBulkStage] = useState('');
+  const [confirmDeleteLead, setConfirmDeleteLead] = useState<{ leadId: string; name: string } | null>(null);
 
   const debouncedSearch = useDebounce(search, 300);
   const debouncedAssignee = useDebounce(filterAssignee, 300);
@@ -244,6 +245,17 @@ export default function AdminCrmPage() {
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['crm-leads'] }); setSelectedIds(new Set()); },
     onError: () => toast.error('Failed to delete leads'),
+  });
+
+  const deleteSingleMutation = useMutation({
+    mutationFn: (leadId: string) => apiFetch(`/api/crm/leads/${leadId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['crm-leads'] });
+      queryClient.invalidateQueries({ queryKey: ['contacts'] });
+      setConfirmDeleteLead(null);
+      toast.success('Lead deleted');
+    },
+    onError: () => toast.error('Failed to delete lead'),
   });
 
   // Reset list pagination when filters or view change
@@ -572,6 +584,15 @@ export default function AdminCrmPage() {
                               >
                                 →
                               </button>
+
+                              {/* Delete */}
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setConfirmDeleteLead({ leadId: lead.leadId, name: lead.name }); }}
+                                title="Delete lead"
+                                className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-300 transition hover:bg-red-50 hover:text-red-500 dark:text-slate-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
+                              >
+                                🗑
+                              </button>
                             </div>
                           </div>
                         );
@@ -665,10 +686,19 @@ export default function AdminCrmPage() {
                           </td>
                           <td className="px-4 py-3 text-xs text-slate-400">{timeSince(lead.updatedAt)}</td>
                           <td className="px-4 py-3">
-                            <Link href={`/admin/contacts/${lead.leadId}?from=crm`}
-                              className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-600 hover:border-indigo-300 hover:bg-indigo-100 dark:border-indigo-900/50 dark:bg-indigo-900/20 dark:text-indigo-400 dark:hover:bg-indigo-900/40">
-                              Customer 360 →
-                            </Link>
+                            <div className="flex items-center gap-2">
+                              <Link href={`/admin/contacts/${lead.leadId}?from=crm`}
+                                className="rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-600 hover:border-indigo-300 hover:bg-indigo-100 dark:border-indigo-900/50 dark:bg-indigo-900/20 dark:text-indigo-400 dark:hover:bg-indigo-900/40">
+                                Customer 360 →
+                              </Link>
+                              <button
+                                onClick={() => setConfirmDeleteLead({ leadId: lead.leadId, name: lead.name })}
+                                title="Delete lead"
+                                className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-300 transition hover:bg-red-50 hover:text-red-500 dark:text-slate-600 dark:hover:bg-red-900/20 dark:hover:text-red-400"
+                              >
+                                🗑
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );
@@ -698,6 +728,37 @@ export default function AdminCrmPage() {
           )}
         </div>
       </div>
+
+      {/* Delete Confirm Dialog */}
+      {confirmDeleteLead && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={() => setConfirmDeleteLead(null)}>
+          <div className="mx-4 w-full max-w-sm rounded-xl bg-white p-6 shadow-2xl dark:bg-slate-900"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
+              <span className="text-lg">🗑</span>
+            </div>
+            <h3 className="mb-1 text-base font-semibold text-slate-900 dark:text-white">
+              Delete {confirmDeleteLead.name}?
+            </h3>
+            <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">
+              This will permanently remove the lead and all associated data. This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmDeleteLead(null)}
+                disabled={deleteSingleMutation.isPending}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300">
+                Cancel
+              </button>
+              <button onClick={() => deleteSingleMutation.mutate(confirmDeleteLead.leadId)}
+                disabled={deleteSingleMutation.isPending}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50">
+                {deleteSingleMutation.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add Lead Modal */}
       {showAddForm && (

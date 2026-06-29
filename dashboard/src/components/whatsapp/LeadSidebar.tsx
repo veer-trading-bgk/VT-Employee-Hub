@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
+import { useMutation } from '@tanstack/react-query';
 import { useInbox, avatarLetters, CHAT_STATUS_CHIP } from '@/contexts/InboxContext';
 import { apiFetch } from '@/lib/api';
 
@@ -11,11 +12,32 @@ export function LeadSidebar() {
     selected, currentLead, liveStage, liveAssignedTo, liveTags, stageObj,
     stages, employees, tagCatalog, tagById, editingName, nameInput,
     setEditingName, setNameInput, stageMutation, assignMutation, tagMutation,
-    noteMutation, qc, showSidebar, windowExpired, nameMutation,
+    noteMutation, qc, showSidebar, windowExpired, nameMutation, selectConv,
   } = useInbox();
   const [newTag, setNewTag] = useState('');
   const [addingTag, setAddingTag] = useState(false);
   const [quickNote, setQuickNote] = useState('');
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (!selected) return;
+      if (selected.type === 'lead' && selected.leadId) {
+        await apiFetch(`/api/crm/leads/${selected.leadId}`, { method: 'DELETE' });
+      } else {
+        await apiFetch(`/api/contacts/unknown/${encodeURIComponent(selected.phone)}`, { method: 'DELETE' });
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+      qc.invalidateQueries({ queryKey: ['contacts'] });
+      qc.invalidateQueries({ queryKey: ['crm-leads'] });
+      selectConv(null);
+      setConfirmDelete(false);
+      toast.success('Contact deleted');
+    },
+    onError: () => toast.error('Failed to delete contact'),
+  });
 
   async function handleSidebarAddTag() {
     const label = newTag.trim();
@@ -173,6 +195,49 @@ export function LeadSidebar() {
           </div>
         </div>
       </div>
+
+      {/* Delete contact */}
+      <div className="mt-auto border-t border-slate-100 p-4 dark:border-slate-800">
+        <button
+          onClick={() => setConfirmDelete(true)}
+          className="w-full rounded-lg border border-red-200 bg-red-50 py-2 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/10 dark:text-red-400 dark:hover:bg-red-900/20"
+        >
+          🗑 Delete Contact
+        </button>
+      </div>
+
+      {/* Delete confirmation dialog */}
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
+          onClick={() => setConfirmDelete(false)}>
+          <div className="mx-4 w-full max-w-sm rounded-xl bg-white p-6 shadow-2xl dark:bg-slate-900"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-red-100 dark:bg-red-900/30">
+              <span className="text-lg">🗑</span>
+            </div>
+            <h3 className="mb-1 text-base font-semibold text-slate-900 dark:text-white">
+              Delete {currentLead?.name ?? selected.displayName ?? selected.phone}?
+            </h3>
+            <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">
+              {selected.type === 'lead'
+                ? 'This will permanently remove the lead, all messages, notes, and data. Cannot be undone.'
+                : 'This will remove the contact and all message history. Cannot be undone.'}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmDelete(false)}
+                disabled={deleteMutation.isPending}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300">
+                Cancel
+              </button>
+              <button onClick={() => deleteMutation.mutate()}
+                disabled={deleteMutation.isPending}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50">
+                {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
