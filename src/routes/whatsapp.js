@@ -818,19 +818,22 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
       return l.assignedTo ? 'open' : 'unassigned';
     }
 
-    // Known leads with WhatsApp messages
-    const leadItems = [];
+    // All CRM leads — used for dedup (must include leads with no WhatsApp history yet)
+    const allLeadItems = [];
     let lk1;
     do {
       const r = await dynamodb.scan({
         TableName: TABLE,
-        FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND attribute_exists(lastMessageAt)',
+        FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta',
         ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA' },
         ...(lk1 && { ExclusiveStartKey: lk1 }),
       }).promise();
-      leadItems.push(...(r.Items ?? []));
+      allLeadItems.push(...(r.Items ?? []));
       lk1 = r.LastEvaluatedKey;
     } while (lk1);
+
+    // Only leads with WhatsApp message history appear in the inbox conversation list
+    const leadItems = allLeadItems.filter((l) => l.lastMessageAt);
 
     // Unknown contacts — only admin sees unassigned inbox contacts
     const unknownItems = [];
@@ -851,8 +854,9 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
     // Non-admin employees see only leads assigned to them
     const visibleLeads = isAdmin ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id);
 
-    // Dedup: suppress unknown contacts whose phone already exists as a LEAD record
-    const leadPhones = new Set(leadItems.map((l) => l.phone).filter(Boolean));
+    // Dedup: suppress unknown contacts whose phone already exists as ANY CRM lead
+    // Uses allLeadItems (not leadItems) so newly-created leads without message history still suppress the INBOX# record
+    const leadPhones = new Set(allLeadItems.map((l) => l.phone).filter(Boolean));
     const dedupedUnknown = unknownItems.filter((u) => !leadPhones.has(u.phone));
 
     // Build counts before filtering
