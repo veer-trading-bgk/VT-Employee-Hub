@@ -76,12 +76,21 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
         // On 401, attempt a silent token refresh once then replay the request.
         // Skip if this is already the retry-after-refresh to avoid infinite loop.
         if (res.status === 401 && !_isRetryAfterRefresh && path !== '/api/auth/refresh') {
+          // Capture before the refresh attempt: _tryRefreshToken sets _memToken on success
+          // but leaves it unchanged on failure, so we need the pre-attempt value.
+          const hadToken = !!_memToken;
           const refreshed = await _tryRefreshToken();
           if (refreshed) {
             return apiFetch<T>(path, { ...options, _isRetryAfterRefresh: true });
           }
-          // Refresh failed — token is truly gone. Signal logout to the app.
-          window.dispatchEvent(new CustomEvent('auth:expired'));
+          // Only signal logout when we had an active session that is now gone.
+          // If hadToken is false (e.g. api.me() on the login page), 401 means
+          // "not authenticated" — expected, not an expired session. Dispatching here
+          // would incorrectly call logout() and router.push('/login') while already
+          // on /login, causing a visible page blink.
+          if (hadToken) {
+            window.dispatchEvent(new CustomEvent('auth:expired'));
+          }
         }
 
         throw new ApiClientError(message, res.status, errorBody);
