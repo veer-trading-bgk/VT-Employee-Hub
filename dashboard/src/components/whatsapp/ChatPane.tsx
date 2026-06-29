@@ -833,7 +833,7 @@ export function ChatPane() {
                 </button>
               )}
               {selected.type === 'lead' && (
-                <Link href={`/admin/crm/${selected.leadId}`}
+                <Link href={`/admin/contacts/${selected.leadId}?tab=crm&from=inbox`}
                   className="hidden rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800 sm:block">
                   CRM ↗
                 </Link>

@@ -456,7 +456,7 @@ export default function AdminCrmPage() {
                             onDragEnd={() => { dragLeadId.current = null; setDragOverStage(null); }}
                           >
                             {/* Card body — clickable to open lead */}
-                            <Link href={`/admin/crm/${lead.leadId}`} className="block p-3">
+                            <Link href={`/admin/contacts/${lead.leadId}?from=crm`} className="block p-3">
 
                               {/* Name + avatar */}
                               <div className="flex items-start justify-between gap-2">
@@ -659,7 +659,7 @@ export default function AdminCrmPage() {
                           </td>
                           <td className="px-4 py-3 text-xs text-slate-400">{timeSince(lead.updatedAt)}</td>
                           <td className="px-4 py-3">
-                            <Link href={`/admin/crm/${lead.leadId}`}
+                            <Link href={`/admin/contacts/${lead.leadId}?from=crm`}
                               className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-indigo-600 hover:border-indigo-300 hover:bg-indigo-50 dark:border-slate-700">
                               Open →
                             </Link>
@@ -710,7 +710,7 @@ export default function AdminCrmPage() {
                   <span className="font-semibold">Duplicate phone detected.</span> This number already exists as{' '}
                   <span className="font-semibold">{duplicateWarning.existingName}</span>.{' '}
                   {duplicateWarning.existingLeadId && (
-                    <Link href={`/admin/crm/${duplicateWarning.existingLeadId}`}
+                    <Link href={`/admin/contacts/${duplicateWarning.existingLeadId}?from=crm`}
                       className="underline hover:text-amber-600"
                       onClick={() => { setShowAddForm(false); setDuplicateWarning(null); }}>
                       Open existing lead →

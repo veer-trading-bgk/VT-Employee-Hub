@@ -147,7 +147,7 @@ export default function FollowupsPage() {
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <Link href={`/admin/crm/${fu.leadId}`}
+                          <Link href={`/admin/contacts/${fu.leadId}?tab=tasks&from=crm`}
                             className="text-sm font-semibold text-slate-900 hover:text-indigo-600 dark:text-white dark:hover:text-indigo-400">
                             {fu.leadName ?? fu.leadId}
                           </Link>
@@ -158,7 +158,7 @@ export default function FollowupsPage() {
                         </div>
                         {fu.note && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{fu.note}</p>}
                       </div>
-                      <Link href={`/admin/crm/${fu.leadId}`}
+                      <Link href={`/admin/contacts/${fu.leadId}?tab=tasks&from=crm`}
                         className="flex-shrink-0 rounded-lg border border-slate-200 px-2.5 py-1 text-xs text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800">
                         Open →
                       </Link>
