@@ -382,6 +382,15 @@ export default function ContactHubPage() {
     }
   }
 
+  // Navigate to Customer 360 for leads; fall back to Inbox for inbox-only contacts
+  const openContact = useCallback((c: Contact) => {
+    if (c.leadId) {
+      router.push(`/admin/contacts/${c.leadId}`);
+    } else {
+      router.push(`/admin/whatsapp?phone=${encodeURIComponent(c.phone)}`);
+    }
+  }, [router]);
+
   const openChat = useCallback((c: Contact) => {
     if (c.type === 'lead' && c.leadId) {
       router.push(`/admin/whatsapp?leadId=${c.leadId}`);
@@ -591,7 +600,8 @@ export default function ContactHubPage() {
 
                   return (
                     <tr key={`${c.type}-${c.id}`}
-                      className="group transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                      onClick={() => openContact(c)}
+                      className="group cursor-pointer transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
 
                       {/* Checkbox — row selection */}
                       <td className="px-4 py-3">
