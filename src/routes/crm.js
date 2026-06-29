@@ -214,6 +214,8 @@ router.post('/leads', authMiddleware, rateLimit(30, 60_000), async (req, res, ne
     // Strip non-digits from phone before schema validation so +91/spaces/dashes are accepted
     const body = { ...req.body };
     if (body.phone) body.phone = String(body.phone).replace(/\D/g, '');
+    if (body.email === '') body.email = null;
+    if (body.closureDeadline === '') body.closureDeadline = null;
     const parsed = createLeadSchema.safeParse(body);
     if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
     const { name, phone, email, productInterest, source, notes, assignedTo, assignedToName, closureDeadline, tags, stage } = body;
@@ -582,12 +584,18 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
 });
 
 // ── DELETE /api/crm/leads/:id — soft-delete (sets deletedAt, never purges) ─────
-router.delete('/leads/:id', authMiddleware, checkRole(['admin', 'manager']), rateLimit(10, 60_000), async (req, res, next) => {
+router.delete('/leads/:id', authMiddleware, rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const PK = leadPK(req.user.companyId, req.params.id);
     const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
     if (!existing.Item) return res.status(404).json({ error: 'Lead not found' });
     if (existing.Item.deletedAt) return res.status(410).json({ error: 'Lead already deleted' });
+
+    // admin/manager/team_lead can delete any lead; employees can only delete leads assigned to them
+    const selfOnlyRoles = ['agent', 'telecaller', 'intern'];
+    if (selfOnlyRoles.includes(req.user.role) && existing.Item.assignedTo !== req.user.id) {
+      return res.status(403).json({ error: 'You can only delete leads assigned to you' });
+    }
 
     await dynamodb.update({
       TableName: TABLE,

@@ -152,7 +152,7 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
 // ── DELETE /api/contacts/unknown/:phone — remove an INBOX# CONTACT record ────────
 // Hard-deletes the inbox-only (unknown) contact record for the given phone.
 // Safe: only touches INBOX#, never a CRM LEAD# record.
-router.delete('/unknown/:phone', authMiddleware, checkRole(['admin', 'manager']), rateLimit(30, 60_000), async (req, res, next) => {
+router.delete('/unknown/:phone', authMiddleware, rateLimit(30, 60_000), async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
     const phone = to10Digit(req.params.phone);
