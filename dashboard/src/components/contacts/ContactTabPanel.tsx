@@ -1,9 +1,23 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { ProfileTab } from './tabs/ProfileTab';
 import { ConversationTab } from './tabs/ConversationTab';
 import { CrmTab } from './tabs/CrmTab';
 import type { TabId, ContactDetail } from '@/lib/contacts/types';
+
+// Lazy-loaded: defers parsing until the tab is first opened
+const TimelineTab = dynamic(
+  () => import('./tabs/TimelineTab').then((m) => ({ default: m.TimelineTab })),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center">
+        <p className="text-sm text-slate-400 dark:text-slate-500">Loading timeline…</p>
+      </div>
+    ),
+  }
+);
 
 function ComingSoonPanel({ tab }: { tab: string }) {
   return (
@@ -37,7 +51,7 @@ export function ContactTabPanel({ activeTab, contactId, contact }: ContactTabPan
     >
       {activeTab === 'profile'      && <ProfileTab contact={contact} leadId={contactId} />}
       {activeTab === 'conversation' && <ConversationTab key={contactId} />}
-      {activeTab === 'timeline'     && <ComingSoonPanel tab="Timeline" />}
+      {activeTab === 'timeline'     && <TimelineTab key={contactId} />}
       {activeTab === 'crm'          && <CrmTab key={contactId} />}
       {activeTab === 'tasks'        && <ComingSoonPanel tab="Tasks" />}
       {activeTab === 'notes'        && <ComingSoonPanel tab="Notes" />}
