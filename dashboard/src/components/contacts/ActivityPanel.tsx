@@ -1,6 +1,7 @@
 'use client';
 
 import { useCustomer360 } from '@/contexts/Customer360Context';
+import type { ContactDetail } from '@/lib/contacts/types';
 
 const STATUS_STYLES: Record<string, string> = {
   open:       'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
@@ -8,17 +9,45 @@ const STATUS_STYLES: Record<string, string> = {
   resolved:   'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400',
 };
 
+function derivePriority(contact: ContactDetail): 'hot' | 'warm' | 'cold' {
+  if (contact.closureDeadline) {
+    const daysLeft = Math.ceil(
+      (new Date(contact.closureDeadline).getTime() - Date.now()) / 86_400_000
+    );
+    if (daysLeft >= 0 && daysLeft <= 7) return 'hot';
+  }
+  if (!contact.lastInboundAt) return 'cold';
+  const daysSince = (Date.now() - new Date(contact.lastInboundAt).getTime()) / 86_400_000;
+  if (daysSince < 1) return 'hot';
+  if (daysSince < 7) return 'warm';
+  return 'cold';
+}
+
+const PRIORITY_STYLES = {
+  hot:  { label: 'Hot',  cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' },
+  warm: { label: 'Warm', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' },
+  cold: { label: 'Cold', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400' },
+} as const;
+
+function fmtDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-IN', {
+    day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata',
+  });
+}
+
 interface ActivityPanelProps {
   className?: string;
 }
 
 export function ActivityPanel({ className = '' }: ActivityPanelProps) {
-  const { contact, stageObj, timeline } = useCustomer360();
+  const { contact, stageObj, timeline, nextFollowup } = useCustomer360();
 
   if (!contact) return null;
 
   const chatStatus = contact.chatStatus ?? 'open';
   const recentActivity = [...timeline].reverse().slice(0, 3);
+  const priority = derivePriority(contact);
+  const priorityStyle = PRIORITY_STYLES[priority];
 
   function copyPhone() {
     navigator.clipboard.writeText(contact!.phone).catch(() => {});
@@ -62,6 +91,16 @@ export function ActivityPanel({ className = '' }: ActivityPanelProps) {
           </span>
         </section>
 
+        {/* ── Priority ────────────────────────────────────── */}
+        <section aria-labelledby="panel-priority">
+          <h3 id="panel-priority" className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+            Priority
+          </h3>
+          <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${priorityStyle.cls}`}>
+            {priorityStyle.label}
+          </span>
+        </section>
+
         {/* ── Lead Stage ──────────────────────────────────── */}
         <section aria-labelledby="panel-stage">
           <h3 id="panel-stage" className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
@@ -93,8 +132,28 @@ export function ActivityPanel({ className = '' }: ActivityPanelProps) {
           ) : (
             <p className="text-xs text-slate-400">No deadline set</p>
           )}
-          {/* Tasks slot: Commit 4 */}
           <div data-slot="activity-panel-tasks" className="hidden" aria-hidden="true" />
+        </section>
+
+        {/* ── Next Follow-up ───────────────────────────────── */}
+        <section aria-labelledby="panel-followup">
+          <h3 id="panel-followup" className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+            Next Follow-up
+          </h3>
+          {nextFollowup ? (
+            <div>
+              <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                {fmtDate(nextFollowup.date)}
+              </p>
+              {nextFollowup.note && (
+                <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                  {nextFollowup.note}
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-slate-400">None scheduled</p>
+          )}
         </section>
 
         {/* ── Tags ────────────────────────────────────────── */}

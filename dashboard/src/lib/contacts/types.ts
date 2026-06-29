@@ -1,5 +1,14 @@
 // ── Shared types for Customer 360 ────────────────────────────────────────────
 
+export interface Followup {
+  leadId: string;
+  leadName?: string;
+  leadPhone?: string;
+  date: string;
+  note?: string;
+  done?: boolean;
+}
+
 export interface ContactDetail {
   PK?: string;
   leadId: string;
@@ -20,6 +29,9 @@ export interface ContactDetail {
   updatedAt: string;
   convertedAt?: string | null;
   messageCount?: number;
+  // Reserved — Phase 2 Deal Tracking
+  expectedValue?: number | null;
+  probability?: number | null;
   // Reserved — Phase 2 AI
   healthScore?: number | null;
   // Reserved — Phase 2 Customer Journey

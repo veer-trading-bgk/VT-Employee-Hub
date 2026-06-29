@@ -99,6 +99,23 @@ export function useContactMutations(leadId: string) {
     onError: () => toast.error('Failed to update contact'),
   });
 
+  const updateCrm = useMutation({
+    mutationFn: (data: Partial<{
+      source: string;
+      productInterest: string[];
+      closureDeadline: string | null;
+      notes: string;
+      expectedValue: number | null;
+      probability: number | null;
+    }>) =>
+      apiFetch(`/api/crm/leads/${leadId}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: invalidateContact,
+    onError: () => toast.error('Failed to update CRM data'),
+  });
+
   return {
     changeStage,
     reassign,
@@ -108,5 +125,6 @@ export function useContactMutations(leadId: string) {
     createTask,
     completeTask,
     updateField,
+    updateCrm,
   };
 }

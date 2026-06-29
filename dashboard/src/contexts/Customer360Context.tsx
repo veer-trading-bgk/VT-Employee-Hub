@@ -9,7 +9,7 @@ import {
 } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import type { ContactDetail, ContactMessage, TimelineItem, ContactDetailResponse } from '@/lib/contacts/types';
+import type { ContactDetail, ContactMessage, TimelineItem, ContactDetailResponse, Followup } from '@/lib/contacts/types';
 
 export interface PipelineStage {
   key: string;
@@ -29,6 +29,9 @@ export interface Customer360ContextValue {
   isLoading: boolean;
   isError: boolean;
   refresh: () => void;
+  followups: Followup[];
+  nextFollowup: Followup | null;
+  refreshFollowups: () => void;
 }
 
 const Customer360Context = createContext<Customer360ContextValue | null>(null);
@@ -66,6 +69,16 @@ export function Customer360Provider({ leadId, children }: Customer360ProviderPro
     staleTime: 10 * 60_000,
   });
 
+  const { data: followupsData } = useQuery({
+    queryKey: ['crm-followups', leadId],
+    queryFn: () =>
+      apiFetch<{ success: boolean; followups: Followup[] }>(
+        `/api/crm/followups?days=60&leadId=${leadId}`
+      ).catch(() => ({ success: true, followups: [] as Followup[] })),
+    staleTime: 30_000,
+    enabled: !!leadId,
+  });
+
   const contact = data?.lead ?? null;
   const stages = pipelineData?.stages ?? [];
   const messages = (data?.messages ?? []) as ContactMessage[];
@@ -88,6 +101,14 @@ export function Customer360Provider({ leadId, children }: Customer360ProviderPro
     qc.invalidateQueries({ queryKey: ['contact', leadId] });
   }, [qc, leadId]);
 
+  const refreshFollowups = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ['crm-followups', leadId] });
+  }, [qc, leadId]);
+
+  const rawFollowups: Followup[] = followupsData?.followups ?? [];
+  const nextFollowup: Followup | null =
+    [...rawFollowups].filter((f) => !f.done).sort((a, b) => a.date.localeCompare(b.date))[0] ?? null;
+
   const value = useMemo<Customer360ContextValue>(
     () => ({
       leadId,
@@ -101,9 +122,12 @@ export function Customer360Provider({ leadId, children }: Customer360ProviderPro
       isLoading,
       isError,
       refresh,
+      followups: rawFollowups,
+      nextFollowup,
+      refreshFollowups,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [leadId, data, pipelineData, isLoading, isError, refresh],
+    [leadId, data, pipelineData, followupsData, isLoading, isError, refresh, refreshFollowups],
   );
 
   return (
