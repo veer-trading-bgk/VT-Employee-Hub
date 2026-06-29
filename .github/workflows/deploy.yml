@@ -26,6 +26,11 @@ jobs:
       - name: Install production dependencies
         run: npm ci --omit=dev
 
+      - name: Verify critical modules present
+        run: |
+          ls node_modules/serverless-http || { echo "❌ serverless-http missing from node_modules — aborting"; exit 1; }
+          echo "✅ serverless-http present"
+
       - name: Package Lambda zip
         run: |
           zip -r deployment.zip src/ package.json node_modules/ \
@@ -33,15 +38,25 @@ jobs:
             --exclude "node_modules/.cache/*" \
             --exclude "node_modules/aws-sdk/dist-tools/*"
 
-      - name: Deploy to Lambda
+      - name: Upload zip to S3
+        run: |
+          aws s3 cp deployment.zip s3://apforce-wa-media/vt-employee-bot-api.zip
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ap-south-1
+
+      - name: Deploy to Lambda from S3
         run: |
           aws lambda update-function-code \
             --function-name vt-employee-bot-api \
-            --zip-file fileb://deployment.zip \
+            --s3-bucket apforce-wa-media \
+            --s3-key vt-employee-bot-api.zip \
             --region ap-south-1
           aws lambda update-function-code \
             --function-name vt-employee-bot-ws \
-            --zip-file fileb://deployment.zip \
+            --s3-bucket apforce-wa-media \
+            --s3-key vt-employee-bot-api.zip \
             --region ap-south-1
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
