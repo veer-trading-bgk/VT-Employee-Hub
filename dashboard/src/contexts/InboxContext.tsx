@@ -440,7 +440,11 @@ export function InboxProvider({ children }: { children: React.ReactNode }) {
     mutationFn: (assignedTo: string) => apiFetch(`/api/crm/leads/${selected!.leadId}/assign`, {
       method: 'PUT', body: JSON.stringify({ assignedTo, assignedToName: employees.find((e) => e.id === assignedTo)?.name }),
     }),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      // Lead moves to 'open' status after assignment — switch tab so it stays visible
+      if (activeTab === 'unassigned') setActiveTab('open');
+      invalidate();
+    },
   });
 
   const tagMutation = useMutation({

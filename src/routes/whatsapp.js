@@ -810,7 +810,7 @@ router.post('/send', authMiddleware, rateLimit(20, 60_000), async (req, res, nex
 router.get('/inbox', authMiddleware, async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
-    const isAdmin = req.user.role === 'admin';
+    const canViewAll = ['admin', 'superadmin', 'manager'].includes(req.user.role);
     const statusFilter = req.query.status ?? 'all'; // open | unassigned | resolved | all
 
     function effectiveStatus(l) {
@@ -835,9 +835,9 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
     // Only leads with WhatsApp message history appear in the inbox conversation list
     const leadItems = allLeadItems.filter((l) => l.lastMessageAt);
 
-    // Unknown contacts — only admin sees unassigned inbox contacts
+    // Unknown contacts — admin/manager sees unassigned inbox contacts
     const unknownItems = [];
-    if (isAdmin) {
+    if (canViewAll) {
       let lk2;
       do {
         const r = await dynamodb.scan({
@@ -851,8 +851,8 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
       } while (lk2);
     }
 
-    // Non-admin employees see only leads assigned to them
-    const visibleLeads = isAdmin ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id);
+    // Admin/manager/superadmin see all leads; other roles see only their own assigned leads
+    const visibleLeads = canViewAll ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id);
 
     // Dedup: suppress unknown contacts whose phone already exists as ANY CRM lead
     // Uses allLeadItems (not leadItems) so newly-created leads without message history still suppress the INBOX# record
