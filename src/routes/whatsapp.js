@@ -464,11 +464,15 @@ function writeMediaIndex(companyId, contactKey, item) {
 
 // ── POST /api/whatsapp/webhook — inbound messages + delivery/read statuses ────
 router.post('/webhook', async (req, res) => {
-  res.sendStatus(200);
+  logger.info(`webhook recv field=${req.body?.entry?.[0]?.changes?.[0]?.field} msgs=${req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.length ?? 0} statuses=${req.body?.entry?.[0]?.changes?.[0]?.value?.statuses?.length ?? 0}`);
+  // res.sendStatus(200) is called at the END of this handler so that
+  // notifyCompany() (WS push) fires inside the active Lambda invocation.
+  // Resolving serverless-http's response earlier freezes the execution
+  // context and suspends all async work until the next warm request.
   try {
     const entry = req.body?.entry?.[0];
     const change = entry?.changes?.[0];
-    if (change?.field !== 'messages') return;
+    if (change?.field !== 'messages') { res.sendStatus(200); return; }
 
     const phoneNumberId = change.value?.metadata?.phone_number_id;
     const messages = change.value?.messages ?? [];
@@ -482,6 +486,7 @@ router.post('/webhook', async (req, res) => {
     // Resolve company once per webhook entry — scopes all lead lookups and inbox writes
     const wabaConfig = phoneNumberId ? await getCompanyByPhoneNumberId(phoneNumberId) : null;
     const webhookCompanyId = wabaConfig?.companyId ?? null;
+    logger.info(`webhook resolved companyId=${webhookCompanyId ?? 'UNRESOLVED'} phoneNumberId=${phoneNumberId ?? 'NONE'}`);
     if (!webhookCompanyId) {
       logger.warn(`Webhook received for unrecognised phoneNumberId: ${phoneNumberId ?? '(none)'} — no company configured for this number`);
     }
@@ -632,6 +637,7 @@ router.post('/webhook', async (req, res) => {
               ExpressionAttributeValues: { ':s': 'open' },
             }).promise().catch(() => {});
           }
+          logger.info(`[wh:${waMessageId}] notifyCompany firing companyId=${webhookCompanyId}`);
           await notifyCompany(webhookCompanyId, {
             event: 'whatsapp_message',
             conversationId: lead.leadId,
@@ -640,21 +646,24 @@ router.post('/webhook', async (req, res) => {
             message: { SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem },
           }).catch(() => {});
           logger.info(`[wh:${waMessageId}] notified (lead) total=${Date.now()-t0}ms`);
-          // Archive media AFTER WS push so the user sees the message immediately.
-          // Lambda stays alive here — s3Key is reliably written before handler resolves.
+          // S3 media archive is fire-and-forget — does not block the response or the
+          // WS push. The MSG# item is already visible to the browser; s3Key is patched
+          // in asynchronously. If Lambda freezes before this completes, it resumes on
+          // the next warm invocation (the item already exists so dedupPut is a no-op).
           if (mediaId) {
-            const s3Key = await storeInboundMedia(wabaConfig?.accessToken, mediaId, mimeType, webhookCompanyId);
-            if (s3Key) {
-              await dynamodb.update({
-                TableName: TABLE,
-                Key: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}` },
-                UpdateExpression: 'SET s3Key = :sk',
-                ExpressionAttributeValues: { ':sk': s3Key },
-              }).promise().catch(() => {});
-            }
+            storeInboundMedia(wabaConfig?.accessToken, mediaId, mimeType, webhookCompanyId)
+              .then((s3Key) => {
+                if (!s3Key) return;
+                return dynamodb.update({
+                  TableName: TABLE,
+                  Key: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}` },
+                  UpdateExpression: 'SET s3Key = :sk',
+                  ExpressionAttributeValues: { ':sk': s3Key },
+                }).promise();
+              })
+              .catch(() => {});
           }
           // Fire-and-forget: create/update CONV# entity for this WhatsApp thread.
-          // Does not affect message delivery, WS push, or existing lead data.
           resolveForLead(webhookCompanyId, lead.PK, phone10, { text, timestamp }).catch(() => {});
         }
       } else {
@@ -693,6 +702,7 @@ router.post('/webhook', async (req, res) => {
             UpdateExpression: 'SET lastActivityAt = :now',
             ExpressionAttributeValues: { ':now': new Date().toISOString() },
           }).promise().catch(() => {});
+          logger.info(`[wh:${waMessageId}] notifyCompany firing companyId=${companyId} (inbox path)`);
           await notifyCompany(companyId, {
             event: 'whatsapp_message',
             conversationId: null,
@@ -704,15 +714,17 @@ router.post('/webhook', async (req, res) => {
           }).catch(() => {});
           logger.info(`[wh:${waMessageId}] notified (inbox) total=${Date.now()-t0}ms`);
           if (mediaId) {
-            const s3Key = await storeInboundMedia(wabaConfig?.accessToken, mediaId, mimeType, webhookCompanyId);
-            if (s3Key) {
-              await dynamodb.update({
-                TableName: TABLE,
-                Key: { PK, SK: `MSG#${timestamp}#${waMessageId}` },
-                UpdateExpression: 'SET s3Key = :sk',
-                ExpressionAttributeValues: { ':sk': s3Key },
-              }).promise().catch(() => {});
-            }
+            storeInboundMedia(wabaConfig?.accessToken, mediaId, mimeType, webhookCompanyId)
+              .then((s3Key) => {
+                if (!s3Key) return;
+                return dynamodb.update({
+                  TableName: TABLE,
+                  Key: { PK, SK: `MSG#${timestamp}#${waMessageId}` },
+                  UpdateExpression: 'SET s3Key = :sk',
+                  ExpressionAttributeValues: { ':sk': s3Key },
+                }).promise();
+              })
+              .catch(() => {});
           }
           // Fire-and-forget: create/update CONV# entity for this unknown-contact thread.
           resolveForInbox(companyId, phone10, { inboxPK: PK, text, timestamp, waName }).catch(() => {});
@@ -733,6 +745,10 @@ router.post('/webhook', async (req, res) => {
   } catch (err) {
     logger.error('WhatsApp webhook error', err);
   }
+  // Always ACK Meta — even on error, so Meta does not retry.
+  // Placed here so notifyCompany() fires inside the active Lambda invocation
+  // before serverless-http resolves and Lambda freezes the execution context.
+  res.sendStatus(200);
 });
 
 // ── POST /api/whatsapp/send ────────────────────────────────────────────────────
