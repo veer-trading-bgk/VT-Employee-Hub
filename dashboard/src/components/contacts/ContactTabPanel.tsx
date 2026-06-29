@@ -56,9 +56,6 @@ export function ContactTabPanel({ activeTab, contactId, contact }: ContactTabPan
       {activeTab === 'tasks'        && <ComingSoonPanel tab="Tasks" />}
       {activeTab === 'notes'        && <ComingSoonPanel tab="Notes" />}
       {activeTab === 'documents'    && <ComingSoonPanel tab="Documents" />}
-      {activeTab === 'campaigns'    && <ComingSoonPanel tab="Campaigns" />}
-      {activeTab === 'automation'   && <ComingSoonPanel tab="Automation" />}
-      {activeTab === 'ai'           && <ComingSoonPanel tab="AI" />}
     </div>
   );
 }

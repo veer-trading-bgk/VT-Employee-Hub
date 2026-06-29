@@ -101,6 +101,19 @@ export function ActivityPanel({ className = '' }: ActivityPanelProps) {
           </span>
         </section>
 
+        {/* ── AI Health Score ─────────────────────────────── */}
+        <section aria-labelledby="panel-health" data-slot="activity-panel-ai-health">
+          <h3 id="panel-health" className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+            Health Score
+          </h3>
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-400 dark:bg-slate-800 dark:text-slate-500">
+              — / 100
+            </span>
+            <span className="text-[10px] text-slate-400 dark:text-slate-500">AI not enabled</span>
+          </div>
+        </section>
+
         {/* ── Lead Stage ──────────────────────────────────── */}
         <section aria-labelledby="panel-stage">
           <h3 id="panel-stage" className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">

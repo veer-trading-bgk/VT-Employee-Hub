@@ -87,14 +87,10 @@ export type TabId =
   | 'crm'
   | 'tasks'
   | 'notes'
-  | 'documents'
-  | 'campaigns'
-  | 'automation'
-  | 'ai';
+  | 'documents';
 
 export const VALID_TAB_IDS: TabId[] = [
-  'profile', 'conversation', 'timeline', 'crm', 'tasks',
-  'notes', 'documents', 'campaigns', 'automation', 'ai',
+  'profile', 'conversation', 'timeline', 'crm', 'tasks', 'notes', 'documents',
 ];
 
 export const CONTACT_TABS: { id: TabId; label: string; mobileLabel: string }[] = [
@@ -105,7 +101,4 @@ export const CONTACT_TABS: { id: TabId; label: string; mobileLabel: string }[] =
   { id: 'tasks',        label: 'Tasks',         mobileLabel: 'Tasks'   },
   { id: 'notes',        label: 'Notes',         mobileLabel: 'Notes'   },
   { id: 'documents',    label: 'Documents',     mobileLabel: 'Docs'    },
-  { id: 'campaigns',    label: 'Campaigns',     mobileLabel: 'Camp.'   },
-  { id: 'automation',   label: 'Automation',    mobileLabel: 'Auto.'   },
-  { id: 'ai',           label: 'AI',            mobileLabel: 'AI'      },
 ];
