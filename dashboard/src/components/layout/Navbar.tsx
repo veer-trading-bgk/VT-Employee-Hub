@@ -88,9 +88,10 @@ const btn =
 interface NavbarProps {
   title?: string;
   showBack?: boolean;
+  backLabel?: string;
 }
 
-export function Navbar({ title, showBack }: NavbarProps) {
+export function Navbar({ title, showBack, backLabel }: NavbarProps) {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { notifications, markAllRead, clearNotifications, toggleSidebar, toggleMobileSidebar } = useUIStore();
@@ -125,6 +126,11 @@ export function Navbar({ title, showBack }: NavbarProps) {
           <button onClick={() => router.back()} aria-label="Go back" className={btn}>
             <ChevronLeft />
           </button>
+        )}
+        {showBack && backLabel && (
+          <span className="ml-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+            {backLabel}
+          </span>
         )}
 
         <button onClick={toggleMobileSidebar} aria-label="Open menu" className={`${btn} md:hidden`}>

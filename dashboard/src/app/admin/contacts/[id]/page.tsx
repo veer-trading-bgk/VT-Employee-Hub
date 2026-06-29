@@ -110,18 +110,30 @@ function ContactDetailPageInner() {
   const router = useRouter();
 
   const rawTab = searchParams.get('tab') ?? 'profile';
+  const from   = searchParams.get('from') as 'hub' | 'inbox' | null;
+
   const activeTab: TabId = VALID_TAB_IDS.includes(rawTab as TabId)
     ? (rawTab as TabId)
     : 'profile';
 
+  // Preserve all existing URL params (including `from`) when switching tabs
   function onTabChange(tab: TabId) {
-    router.replace(`/admin/contacts/${id}?tab=${tab}`);
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('tab', tab);
+    router.replace(`/admin/contacts/${id}?${params.toString()}`);
   }
 
+  const backLabel = from === 'inbox' ? 'Inbox' : 'Contact Hub';
+
   return (
-    <Customer360Provider leadId={id}>
-      <Customer360PageContent activeTab={activeTab} onTabChange={onTabChange} />
-    </Customer360Provider>
+    <>
+      <Navbar showBack backLabel={backLabel} />
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <Customer360Provider leadId={id}>
+          <Customer360PageContent activeTab={activeTab} onTabChange={onTabChange} />
+        </Customer360Provider>
+      </div>
+    </>
   );
 }
 
@@ -130,12 +142,16 @@ export default function ContactDetailPage() {
   return (
     <ErrorBoundary>
       <div className="flex h-screen flex-col bg-slate-50 dark:bg-slate-950">
-        <Navbar showBack />
-        <div className="flex flex-1 flex-col overflow-hidden">
-          <Suspense fallback={<PageSkeleton />}>
-            <ContactDetailPageInner />
-          </Suspense>
-        </div>
+        <Suspense fallback={
+          <>
+            <Navbar showBack />
+            <div className="flex flex-1 flex-col overflow-hidden">
+              <PageSkeleton />
+            </div>
+          </>
+        }>
+          <ContactDetailPageInner />
+        </Suspense>
       </div>
     </ErrorBoundary>
   );

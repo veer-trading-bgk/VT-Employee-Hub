@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, useCallback, useRef, useMemo, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Navbar } from '@/components/layout/Navbar';
 import { TagBadge } from '@/components/tags/TagBadge';
@@ -162,21 +162,24 @@ function Pagination({ page, pages, total, pageSize, onChange }: {
   );
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────────
-export default function ContactHubPage() {
+// ── Inner page — uses useSearchParams; must be wrapped in Suspense ────────────
+function ContactHubContent() {
   const router = useRouter();
+  const sp = useSearchParams();
   const qc = useQueryClient();
+
+  // ── Filter + sort state — initialized from URL for browser-back restoration ─
+  const [searchInput, setSearchInput] = useState(() => sp.get('q') ?? '');
+  const [search, setSearch]           = useState(() => sp.get('q') ?? '');
+  const [sourceFilter, setSourceFilter] = useState(() => sp.get('source') ?? '');
+  const [stageFilter, setStageFilter]   = useState(() => sp.get('stage') ?? '');
+  const [tagFilter, setTagFilter]       = useState(() => sp.get('tag') ?? '');
+  const [page, setPage]                 = useState(() => Number(sp.get('page') ?? '1'));
+  const [sortBy, setSortBy]             = useState(() => sp.get('sort') ?? '');
+  const [sortDir, setSortDir]           = useState<'asc' | 'desc'>(() => (sp.get('dir') ?? 'asc') as 'asc' | 'desc');
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
-
-  // Filter state
-  const [searchInput, setSearchInput] = useState('');
-  const [search, setSearch]           = useState('');
-  const [sourceFilter, setSourceFilter] = useState('');
-  const [stageFilter, setStageFilter]   = useState('');
-  const [tagFilter, setTagFilter]       = useState('');
-  const [page, setPage]               = useState(1);
 
   // Tag selector state — which contact's tag selector is open + screen position
   const [selectorState, setSelectorState] = useState<{
@@ -185,14 +188,33 @@ export default function ContactHubPage() {
     left: number;
   } | null>(null);
 
-  // Debounce search
+  // Keyboard navigation refs — one entry per rendered row
+  const rowRefs = useRef<(HTMLTableRowElement | null)[]>([]);
+
+  // ── URL sync — write filter state to URL so browser back restores it ─────────
+  // Skip on first mount (URL already reflects initial values); write on every change.
+  const mounted = useRef(false);
   useEffect(() => {
-    const t = setTimeout(() => { setSearch(searchInput); setPage(1); }, 300);
+    if (!mounted.current) { mounted.current = true; return; }
+    const params = new URLSearchParams();
+    if (search)            params.set('q', search);
+    if (sourceFilter)      params.set('source', sourceFilter);
+    if (stageFilter)       params.set('stage', stageFilter);
+    if (tagFilter)         params.set('tag', tagFilter);
+    if (page > 1)          params.set('page', String(page));
+    if (sortBy)            params.set('sort', sortBy);
+    if (sortDir !== 'asc') params.set('dir', sortDir);
+    const qs = params.toString();
+    router.replace(qs ? `/admin/contacts?${qs}` : '/admin/contacts', { scroll: false });
+  // router is stable; excluded from deps intentionally
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, sourceFilter, stageFilter, tagFilter, page, sortBy, sortDir]);
+
+  // Debounce search input → apply search + reset to page 1 + clear selection
+  useEffect(() => {
+    const t = setTimeout(() => { setSearch(searchInput); setPage(1); setSelectedIds(new Set()); }, 300);
     return () => clearTimeout(t);
   }, [searchInput]);
-
-  // Reset page on filter change
-  useEffect(() => { setPage(1); }, [sourceFilter, stageFilter, tagFilter]);
 
   // Escape closes delete confirm dialog
   useEffect(() => {
@@ -228,14 +250,31 @@ export default function ContactHubPage() {
     staleTime: 2 * 60_000,
   });
 
-  const contacts     = data?.contacts ?? [];
-  const total        = data?.total ?? 0;
-  const pages        = data?.pages ?? 1;
-  const stages       = pipelineData?.stages ?? [];
-  const tagCatalog   = tagCatalogData?.tags ?? [];
+  const contacts   = useMemo(() => data?.contacts ?? [], [data]);
+  const total      = data?.total ?? 0;
+  const pages      = data?.pages ?? 1;
+  const stages     = pipelineData?.stages ?? [];
+  const tagCatalog = useMemo(() => tagCatalogData?.tags ?? [], [tagCatalogData]);
 
-  // Clear selection when contacts page/filter result changes
-  useEffect(() => { setSelectedIds(new Set()); }, [data]);
+  // ── Client-side sort (current page only — no API changes needed) ──────────
+  const sortedContacts = useMemo(() => {
+    if (!sortBy) return contacts;
+    return [...contacts].sort((a, b) => {
+      const av = (a as unknown as Record<string, unknown>)[sortBy] ?? '';
+      const bv = (b as unknown as Record<string, unknown>)[sortBy] ?? '';
+      const cmp = String(av).localeCompare(String(bv));
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }, [contacts, sortBy, sortDir]);
+
+  function handleSort(key: string) {
+    if (sortBy === key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortBy(key);
+      setSortDir('asc');
+    }
+  }
 
   // ── Stage mutation ────────────────────────────────────────────────────────
   const stageMutation = useMutation({
@@ -313,12 +352,10 @@ export default function ContactHubPage() {
   const allSelected = allRowIds.length > 0 && allRowIds.every((id) => selectedIds.has(id));
   const someSelected = selectedIds.size > 0 && !allSelected;
 
-  // Lead contacts: soft-deleted via DELETE /api/crm/leads/:id
   const selectedLeadIds = contacts
     .filter((c) => selectedIds.has(`${c.type}-${c.id}`) && c.type === 'lead' && c.leadId)
     .map((c) => c.leadId as string);
 
-  // Unknown/inbox contacts: hard-deleted via DELETE /api/contacts/unknown/:phone
   const selectedUnknownPhones = contacts
     .filter((c) => selectedIds.has(`${c.type}-${c.id}`) && c.type === 'unknown' && c.phone)
     .map((c) => c.phone);
@@ -352,7 +389,6 @@ export default function ContactHubPage() {
 
   function handleToggleTag(contact: Contact, tagId: string) {
     const isApplied = contact.tags.includes(tagId);
-    // Update selector state optimistically so checkboxes respond instantly
     setSelectorState((s) =>
       s && s.contact.id === contact.id && s.contact.type === contact.type
         ? {
@@ -377,15 +413,14 @@ export default function ContactHubPage() {
   async function handleCreateTag(contact: Contact, label: string, color: string) {
     const res = await createTagMutation.mutateAsync({ label, color });
     if (res?.tag) {
-      // Immediately apply the newly created tag to the triggering contact
       handleToggleTag({ ...contact, tags: contact.tags }, res.tag.id);
     }
   }
 
-  // Navigate to Customer 360 for leads; fall back to Inbox for inbox-only contacts
+  // Navigate to Customer 360; pass ?from=hub so back button label reads "Contact Hub"
   const openContact = useCallback((c: Contact) => {
     if (c.leadId) {
-      router.push(`/admin/contacts/${c.leadId}`);
+      router.push(`/admin/contacts/${c.leadId}?from=hub`);
     } else {
       router.push(`/admin/whatsapp?phone=${encodeURIComponent(c.phone)}`);
     }
@@ -400,19 +435,22 @@ export default function ContactHubPage() {
   }, [router]);
 
   const exportCsv = () => {
-    const rows = contacts.map((c: any) => ({
-      Name: c.name ?? '',
-      Phone: c.phone ?? '',
-      Email: c.email ?? '',
-      Stage: c.stage ?? '',
-      Source: c.source ?? '',
-      Tags: (c.tags ?? []).join('; '),
+    type CsvRow = Record<string, string>;
+    const rows: CsvRow[] = contacts.map((c) => ({
+      Name:     c.name ?? '',
+      Phone:    c.phone ?? '',
+      Email:    c.email ?? '',
+      Stage:    c.stage ?? '',
+      Source:   c.source ?? '',
+      Tags:     c.tags.join('; '),
       Assigned: c.assignedToName ?? '',
-      Updated: c.updatedAt ? new Date(c.updatedAt).toLocaleDateString('en-IN') : '',
     }));
     if (rows.length === 0) return;
     const headers = Object.keys(rows[0]);
-    const csv = [headers.join(','), ...rows.map((r: any) => headers.map((h: string) => `"${(r[h] ?? '').toString().replace(/"/g, '""')}"`).join(','))].join('\n');
+    const csv = [
+      headers.join(','),
+      ...rows.map((r) => headers.map((h) => `"${(r[h] ?? '').replace(/"/g, '""')}"`).join(',')),
+    ].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = `contacts-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
@@ -423,7 +461,6 @@ export default function ContactHubPage() {
   const anyFilter = !!(searchInput || sourceFilter || stageFilter || tagFilter);
 
   return (
-    <ErrorBoundary>
     <div className="flex h-screen flex-col bg-slate-50 dark:bg-slate-950">
       <Navbar />
 
@@ -464,7 +501,8 @@ export default function ContactHubPage() {
             </div>
 
             {/* Source filter */}
-            <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value)}
+            <select value={sourceFilter}
+              onChange={(e) => { setSourceFilter(e.target.value); setPage(1); setSelectedIds(new Set()); }}
               className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
               <option value="">All Sources</option>
               {Object.entries(SOURCE_CONFIG).map(([k, v]) => (
@@ -473,7 +511,8 @@ export default function ContactHubPage() {
             </select>
 
             {/* Status filter */}
-            <select value={stageFilter} onChange={(e) => setStageFilter(e.target.value)}
+            <select value={stageFilter}
+              onChange={(e) => { setStageFilter(e.target.value); setPage(1); setSelectedIds(new Set()); }}
               className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
               <option value="">All Statuses</option>
               {stages.map((s) => (
@@ -482,7 +521,8 @@ export default function ContactHubPage() {
             </select>
 
             {/* Tag filter */}
-            <select value={tagFilter} onChange={(e) => setTagFilter(e.target.value)}
+            <select value={tagFilter}
+              onChange={(e) => { setTagFilter(e.target.value); setPage(1); setSelectedIds(new Set()); }}
               className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
               <option value="">All Tags</option>
               {tagCatalog.map((t) => (
@@ -493,7 +533,7 @@ export default function ContactHubPage() {
             {/* Clear filters */}
             {anyFilter && (
               <button
-                onClick={() => { setSearchInput(''); setSourceFilter(''); setStageFilter(''); setTagFilter(''); }}
+                onClick={() => { setSearchInput(''); setSourceFilter(''); setStageFilter(''); setTagFilter(''); setPage(1); setSelectedIds(new Set()); }}
                 className="text-xs text-slate-400 underline hover:text-slate-600 dark:hover:text-slate-200"
               >
                 Clear all
@@ -533,7 +573,7 @@ export default function ContactHubPage() {
                   style={{ backgroundColor: tag.color + '20', color: tag.color, borderColor: tag.color + '50' }}
                 >
                   {tag.label}
-                  <button onClick={() => setTagFilter('')} className="opacity-60 hover:opacity-100">×</button>
+                  <button onClick={() => { setTagFilter(''); setPage(1); setSelectedIds(new Set()); }} className="opacity-60 hover:opacity-100">×</button>
                 </span>
               </div>
             ) : null;
@@ -556,8 +596,14 @@ export default function ContactHubPage() {
                 </th>
                 {COLUMNS.map((col) => (
                   <th key={col.key}
-                    className={`border-b border-slate-200 px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:text-slate-400 ${COLUMN_CLS[col.key] ?? ''}`}>
+                    onClick={col.sortable ? () => handleSort(col.key) : undefined}
+                    className={`border-b border-slate-200 px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:text-slate-400 ${COLUMN_CLS[col.key] ?? ''} ${col.sortable ? 'cursor-pointer select-none hover:text-slate-700 dark:hover:text-slate-300' : ''}`}>
                     {col.label}
+                    {col.sortable && (
+                      <span className="ml-1 text-slate-300 dark:text-slate-600">
+                        {sortBy === col.key ? (sortDir === 'asc' ? '↑' : '↓') : '⇅'}
+                      </span>
+                    )}
                   </th>
                 ))}
                 <th className="border-b border-slate-200 px-3 py-3 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:text-slate-400">
@@ -579,7 +625,7 @@ export default function ContactHubPage() {
                     <td className="px-3 py-3"><div className="h-3 w-6 rounded bg-slate-200 dark:bg-slate-700" /></td>
                   </tr>
                 ))
-              ) : contacts.length === 0 ? (
+              ) : sortedContacts.length === 0 ? (
                 <tr>
                   <td colSpan={COLUMNS.length + 2} className="py-16 text-center text-slate-400">
                     <p className="mb-2 text-4xl">📭</p>
@@ -588,7 +634,7 @@ export default function ContactHubPage() {
                   </td>
                 </tr>
               ) : (
-                contacts.map((c) => {
+                sortedContacts.map((c, idx) => {
                   const stageObj  = stages.find((s) => s.key === c.stage);
                   const color     = avatarColor(c.displayName);
                   const resolvedTags = c.tags
@@ -600,8 +646,15 @@ export default function ContactHubPage() {
 
                   return (
                     <tr key={`${c.type}-${c.id}`}
+                      ref={(el) => { rowRefs.current[idx] = el; }}
+                      tabIndex={0}
                       onClick={() => openContact(c)}
-                      className="group cursor-pointer transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { openContact(c); return; }
+                        if (e.key === 'ArrowDown') { e.preventDefault(); rowRefs.current[idx + 1]?.focus(); }
+                        if (e.key === 'ArrowUp')   { e.preventDefault(); rowRefs.current[idx - 1]?.focus(); }
+                      }}
+                      className="group cursor-pointer transition-colors hover:bg-slate-50 focus-visible:bg-indigo-50 focus-visible:outline-none dark:hover:bg-slate-800/50 dark:focus-visible:bg-indigo-950/30">
 
                       {/* Checkbox — row selection */}
                       <td className="px-4 py-3">
@@ -710,7 +763,7 @@ export default function ContactHubPage() {
                       {/* Send Message */}
                       <td className="px-3 py-3">
                         <button
-                          onClick={() => openChat(c)}
+                          onClick={(e) => { e.stopPropagation(); openChat(c); }}
                           title="Open WhatsApp chat"
                           className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 transition hover:bg-emerald-100 dark:bg-emerald-900/20 dark:text-emerald-400 dark:hover:bg-emerald-900/40"
                         >
@@ -730,7 +783,8 @@ export default function ContactHubPage() {
 
         {/* ── Pagination ────────────────────────────────────────────────────── */}
         <div className="bg-white dark:bg-slate-900">
-          <Pagination page={page} pages={pages} total={total} pageSize={50} onChange={setPage} />
+          <Pagination page={page} pages={pages} total={total} pageSize={50}
+            onChange={(p) => { setPage(p); setSelectedIds(new Set()); }} />
         </div>
       </div>
 
@@ -791,6 +845,23 @@ export default function ContactHubPage() {
         </div>
       )}
     </div>
+  );
+}
+
+// ── Page root — wraps inner with Suspense (required for useSearchParams) ──────
+export default function ContactHubPage() {
+  return (
+    <ErrorBoundary>
+      <Suspense fallback={
+        <div className="flex h-screen flex-col bg-slate-50 dark:bg-slate-950">
+          <Navbar />
+          <div className="flex flex-1 items-center justify-center">
+            <p className="text-sm text-slate-400 dark:text-slate-500">Loading contacts…</p>
+          </div>
+        </div>
+      }>
+        <ContactHubContent />
+      </Suspense>
     </ErrorBoundary>
   );
 }
