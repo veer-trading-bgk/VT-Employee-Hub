@@ -388,10 +388,36 @@ router.get('/leads/:id', authMiddleware, async (req, res, next) => {
       Limit: MSG_PAGE + 1,
     };
     if (before) msgQuery.ExclusiveStartKey = { PK, SK: before };
-    const msgRes = await dynamodb.query(msgQuery).promise();
-    const allMsgs = msgRes.Items ?? [];
-    const hasMore = allMsgs.length > MSG_PAGE;
-    const messages = allMsgs.slice(0, MSG_PAGE).reverse();
+
+    // Also fetch pre-promotion INBOX# messages in parallel.
+    // When a CRM lead is created from an unknown WhatsApp contact, the earlier
+    // messages are stored under INBOX#companyId#phone MSG# (not LEAD# MSG#).
+    // Merging them here ensures conversation history is never truncated.
+    const [msgRes, inboxMsgRes] = await Promise.all([
+      dynamodb.query(msgQuery).promise(),
+      meta.phone
+        ? dynamodb.query({
+            TableName: TABLE,
+            KeyConditionExpression: 'PK = :pk AND begins_with(SK, :pfx)',
+            ExpressionAttributeValues: {
+              ':pk': `INBOX#${companyId}#${to10Digit(meta.phone)}`,
+              ':pfx': 'MSG#',
+            },
+          }).promise().catch(() => ({ Items: [] }))
+        : Promise.resolve({ Items: [] }),
+    ]);
+
+    const leadMsgs = msgRes.Items ?? [];
+    const inboxMsgs = inboxMsgRes.Items ?? [];
+    const hasMore = leadMsgs.length > MSG_PAGE;
+
+    // Merge INBOX# pre-promotion history with LEAD# messages.
+    // Dedup by SK (LEAD# record wins on collision), sort ascending (chronological).
+    const seenSKs = new Set(leadMsgs.map((m) => m.SK));
+    const messages = [
+      ...inboxMsgs.filter((m) => !seenSKs.has(m.SK)),
+      ...leadMsgs.slice(0, MSG_PAGE),
+    ].sort((a, b) => a.SK.localeCompare(b.SK));
 
     const noteRes = await dynamodb.query({
       TableName: TABLE,
@@ -400,7 +426,8 @@ router.get('/leads/:id', authMiddleware, async (req, res, next) => {
     }).promise();
     const internalNotes = (noteRes.Items ?? []).sort((a, b) => a.SK.localeCompare(b.SK));
 
-    const nextCursor = hasMore ? (messages[0]?.SK ?? null) : null;
+    // nextCursor for LEAD# pagination (oldest SK in the current lead page)
+    const nextCursor = hasMore ? (leadMsgs.slice(0, MSG_PAGE).at(-1)?.SK ?? null) : null;
     res.json({ success: true, lead: meta, messages, internalNotes, hasMore, nextCursor });
   } catch (err) {
     logger.error('crm/leads/:id GET error', err);

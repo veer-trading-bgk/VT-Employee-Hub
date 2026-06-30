@@ -866,6 +866,15 @@ function UnknownContactAssignPicker({
       const newLeadId = created?.lead?.leadId;
       if (!newLeadId) throw new Error('No leadId returned');
 
+      // Bridge message cache: copy INBOX# messages (keyed by phone) to the new
+      // lead's cache key so the thread doesn't go blank while the refetch resolves.
+      // GET /api/crm/leads/:id now also merges INBOX# messages server-side, so the
+      // refetch will return the same complete history.
+      const existingMsgs = qc.getQueryData<{ messages: WaMessage[] }>(['wa-conv', conversation.phone]);
+      if (existingMsgs) {
+        qc.setQueryData(['wa-conv', newLeadId], existingMsgs);
+      }
+
       // Optimistic cache update: move conversation from Unassigned → Open immediately
       // so the list doesn't blank out while the server refetch resolves.
       // The backend fix (copying lastMessageAt from INBOX# into the new LEAD#) ensures
