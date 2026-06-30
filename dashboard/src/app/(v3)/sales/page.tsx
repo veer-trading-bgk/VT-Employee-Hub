@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { List, LayoutGrid, Plus, GripVertical, MoreHorizontal, ArrowRight } from 'lucide-react';
+import { List, LayoutGrid, Plus, GripVertical, ArrowRight, Phone, User } from 'lucide-react';
 import {
   DndContext,
   DragEndEvent,
@@ -21,10 +21,15 @@ import { Badge } from '@/components/v3/ui/Badge';
 import { Avatar } from '@/components/v3/ui/Avatar';
 import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { SkeletonCard } from '@/components/v3/ui/Skeleton';
+import { Drawer, DrawerFooter } from '@/components/v3/ui/Drawer';
+import { Input } from '@/components/v3/ui/Input';
+import { Table, type TableColumn, type SortDirection } from '@/components/v3/ui/Table';
 import { cn } from '@/lib/cn';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, ApiClientError } from '@/lib/api';
 import type { Contact, Stage } from '@/types/v3';
 import { STAGE_LABELS } from '@/types/v3';
+import { useAuth } from '@/context/AuthContext';
+import { toV3Role } from '@/types/v3';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 
@@ -48,11 +53,13 @@ const STAGE_COLORS: Record<Stage, string> = {
   lost:       'border-t-error-500',
 };
 
-// ── Kanban Card ───────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function contactName(c: Contact): string {
   return c.displayName ?? c.name ?? c.phone ?? '';
 }
+
+// ── Kanban Card ───────────────────────────────────────────────────────────────
 
 function KanbanCard({
   contact,
@@ -195,8 +202,6 @@ function KanbanBoard({ contacts }: { contacts: Contact[] }) {
 
   const stageMutation = useMutation({
     mutationFn: async ({ contact, stage }: { contact: Contact; stage: Stage }) => {
-      // Leads use the CRM endpoint (fires automations + writes stage history)
-      // Unknown contacts fall back to the contacts stage endpoint
       if (contact.type === 'lead' || (contact.leadId ?? null) !== null) {
         return apiFetch(`/api/crm/leads/${contact.id}/stage`, {
           method: 'PUT',
@@ -228,7 +233,6 @@ function KanbanBoard({ contacts }: { contacts: Contact[] }) {
     const newStage = over.id as Stage;
 
     if (contact && newStage !== contact.stage) {
-      // Optimistic update
       qc.setQueryData<Contact[]>(['sales-contacts'], (old = []) =>
         old.map((c) => (c.id === contact.id ? { ...c, stage: newStage } : c)),
       );
@@ -255,11 +259,205 @@ function KanbanBoard({ contacts }: { contacts: Contact[] }) {
   );
 }
 
+// ── List view columns ─────────────────────────────────────────────────────────
+
+function buildListColumns(): TableColumn<Contact>[] {
+  return [
+    {
+      key: 'name',
+      header: 'Name',
+      sortable: true,
+      cell: (row) => (
+        <Link href={`/customers/${row.id}`} className="flex items-center gap-2.5 group">
+          <Avatar name={contactName(row)} size={32} />
+          <div>
+            <p className="font-medium text-neutral-900 group-hover:text-primary-600 dark:text-neutral-100">
+              {contactName(row)}
+            </p>
+            <p className="text-xs text-neutral-500">{row.phone}</p>
+          </div>
+        </Link>
+      ),
+    },
+    {
+      key: 'stage',
+      header: 'Stage',
+      sortable: true,
+      width: 'w-36',
+      cell: (row) => (
+        <Badge variant="stage" stage={row.stage}>
+          {STAGE_LABELS[row.stage] ?? row.stage}
+        </Badge>
+      ),
+    },
+    {
+      key: 'owner',
+      header: 'Assigned to',
+      width: 'w-40',
+      cell: (row) => (
+        <span className="text-sm text-neutral-700 dark:text-neutral-300">
+          {row.assignedToName ?? row.ownerName ?? '—'}
+        </span>
+      ),
+    },
+    {
+      key: 'lastActivity',
+      header: 'Last activity',
+      width: 'w-32',
+      cell: (row) => {
+        const ts = row.lastMessageAt ?? row.createdAt;
+        return (
+          <span className="text-sm text-neutral-500">
+            {ts ? format(new Date(ts), 'd MMM yyyy') : '—'}
+          </span>
+        );
+      },
+    },
+  ];
+}
+
+// ── Add Lead drawer ───────────────────────────────────────────────────────────
+
+function AddLeadDrawer({
+  open,
+  onClose,
+  onSuccess,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [name,  setName]  = useState('');
+  const [phone, setPhone] = useState('');
+  const [stage, setStage] = useState<Stage>('new_lead');
+  const [notes, setNotes] = useState('');
+
+  function reset() {
+    setName(''); setPhone(''); setStage('new_lead'); setNotes('');
+  }
+
+  const addMutation = useMutation({
+    mutationFn: async () =>
+      apiFetch('/api/crm/leads', {
+        method: 'POST',
+        body: JSON.stringify({ name: name.trim(), phone: phone.trim(), stage, notes: notes.trim() }),
+      }),
+    onSuccess: () => {
+      toast.success('Lead added');
+      reset();
+      onSuccess();
+      onClose();
+    },
+    onError: (err) => {
+      if (err instanceof ApiClientError && err.status === 409) {
+        toast.error('A lead with this phone number already exists');
+      } else {
+        toast.error('Failed to add lead');
+      }
+    },
+  });
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim()) { toast.error('Name is required'); return; }
+    if (!phone.trim()) { toast.error('Phone is required'); return; }
+    addMutation.mutate();
+  }
+
+  function handleClose() {
+    reset();
+    onClose();
+  }
+
+  return (
+    <Drawer
+      open={open}
+      onClose={handleClose}
+      title="Add Lead"
+      description="Create a new lead in the pipeline"
+      footer={
+        <DrawerFooter>
+          <Button variant="secondary" size="md" onClick={handleClose} type="button">
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            size="md"
+            loading={addMutation.isPending}
+            disabled={!name.trim() || !phone.trim()}
+            onClick={handleSubmit}
+          >
+            Add Lead
+          </Button>
+        </DrawerFooter>
+      }
+    >
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <Input
+          label="Full name"
+          required
+          placeholder="e.g. Rahul Sharma"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          iconLeft={<User className="h-4 w-4" />}
+          autoFocus
+        />
+        <Input
+          label="Phone number"
+          required
+          placeholder="10-digit mobile number"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          iconLeft={<Phone className="h-4 w-4" />}
+          type="tel"
+          phonePrefix
+        />
+
+        <div className="space-y-1.5">
+          <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+            Stage
+          </label>
+          <select
+            value={stage}
+            onChange={(e) => setStage(e.target.value as Stage)}
+            className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+          >
+            {STAGE_ORDER.map((s) => (
+              <option key={s} value={s}>{STAGE_LABELS[s]}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
+            Notes <span className="text-neutral-400 font-normal">(optional)</span>
+          </label>
+          <textarea
+            rows={3}
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Any initial notes about this lead…"
+            className="w-full resize-none rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+          />
+        </div>
+      </form>
+    </Drawer>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function SalesPage() {
   const router = useRouter();
+  const qc = useQueryClient();
+  const { user } = useAuth();
   const [view, setView] = useState<'kanban' | 'list'>('kanban');
+  const [showAddLead, setShowAddLead] = useState(false);
+  const [sortKey, setSortKey] = useState('name');
+  const [sortDir, setSortDir] = useState<SortDirection>('asc');
+
+  const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
+  const canCreate = ['owner', 'admin', 'manager', 'sales'].includes(v3Role);
 
   const { data: contacts = [], isLoading } = useQuery<Contact[]>({
     queryKey: ['sales-contacts'],
@@ -269,6 +467,8 @@ export default function SalesPage() {
     },
     staleTime: 30_000,
   });
+
+  const listColumns = buildListColumns();
 
   return (
     <div className="flex h-full flex-col">
@@ -286,6 +486,7 @@ export default function SalesPage() {
               Follow-ups
             </Button>
           </Link>
+
           {/* View toggle */}
           <div className="flex rounded-lg border border-neutral-200 p-0.5 dark:border-neutral-700">
             <button
@@ -315,33 +516,65 @@ export default function SalesPage() {
               List
             </button>
           </div>
-          <Button size="sm" iconLeft={<Plus className="h-4 w-4" />}>
-            Add Lead
-          </Button>
+
+          {canCreate && (
+            <Button
+              size="sm"
+              iconLeft={<Plus className="h-4 w-4" />}
+              onClick={() => setShowAddLead(true)}
+            >
+              Add Lead
+            </Button>
+          )}
         </div>
       </div>
 
       {/* Content */}
       {isLoading ? (
-        <div className="flex gap-3 p-4 overflow-x-auto">
-          {STAGE_ORDER.map((s) => (
-            <div key={s} className="w-[240px] shrink-0 space-y-2">
-              <SkeletonCard />
-              <SkeletonCard />
-            </div>
-          ))}
-        </div>
+        view === 'kanban' ? (
+          <div className="flex gap-3 p-4 overflow-x-auto">
+            {STAGE_ORDER.map((s) => (
+              <div key={s} className="w-[240px] shrink-0 space-y-2">
+                <SkeletonCard />
+                <SkeletonCard />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="p-4">
+            <SkeletonCard />
+          </div>
+        )
       ) : contacts.length === 0 ? (
         <EmptyState
           icon={LayoutGrid}
           title="No leads yet"
           description="Add your first lead to start tracking the pipeline"
-          action={{ label: 'Add Lead', onClick: () => {} }}
+          action={canCreate ? { label: 'Add Lead', onClick: () => setShowAddLead(true) } : undefined}
           className="flex-1"
         />
-      ) : (
+      ) : view === 'kanban' ? (
         <KanbanBoard contacts={contacts} />
+      ) : (
+        <div className="flex-1 overflow-auto">
+          <Table
+            columns={listColumns}
+            data={contacts}
+            keyExtractor={(row) => row.id}
+            sortKey={sortKey}
+            sortDir={sortDir}
+            onSort={(key, dir) => { setSortKey(key); setSortDir(dir); }}
+            onRowClick={(row) => router.push(`/customers/${row.id}`)}
+          />
+        </div>
       )}
+
+      {/* Add Lead drawer */}
+      <AddLeadDrawer
+        open={showAddLead}
+        onClose={() => setShowAddLead(false)}
+        onSuccess={() => qc.invalidateQueries({ queryKey: ['sales-contacts'] })}
+      />
     </div>
   );
 }
