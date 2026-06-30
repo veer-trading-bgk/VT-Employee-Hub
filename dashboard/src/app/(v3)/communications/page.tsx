@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, Suspense } from 'react';
 import {
   MessageSquare, Search, Send, MoreHorizontal, Phone,
   CheckCheck, Check, Clock, AlertCircle, Plus, X, ChevronLeft,
+  Paperclip, FileText,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Avatar } from '@/components/v3/ui/Avatar';
@@ -13,7 +14,7 @@ import { Select } from '@/components/v3/ui/Select';
 import { SkeletonRow, Skeleton } from '@/components/v3/ui/Skeleton';
 import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { cn } from '@/lib/cn';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, getMemoryToken } from '@/lib/api';
 import { format, isToday, isYesterday } from 'date-fns';
 import { STAGE_LABELS } from '@/types/v3';
 import { wsClient } from '@/lib/wsClient';
@@ -45,7 +46,9 @@ interface WaMessage {
   direction: 'inbound' | 'outbound';
   content: string;
   timestamp: string;
-  type?: string;
+  type?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'template';
+  s3Key?: string;
+  mediaId?: string;
   mediaUrl?: string;
   mimeType?: string;
   filename?: string;
@@ -78,6 +81,76 @@ function DeliveryIcon({ status }: { status?: WaMessage['msgStatus'] }) {
   if (status === 'sent')      return <Check className="h-3.5 w-3.5 text-white/60" aria-label="Sent" />;
   if (status === 'failed')    return <AlertCircle className="h-3.5 w-3.5 text-red-300" aria-label="Failed" />;
   return <Clock className="h-3.5 w-3.5 text-white/40" aria-label="Pending" />;
+}
+
+// ── Media renderer ────────────────────────────────────────────────────────────
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
+
+function MediaRenderer({ message, isOut }: { message: WaMessage; isOut: boolean }) {
+  const { data: url, isLoading } = useQuery<string | null>({
+    queryKey: ['media-url', message.s3Key ?? message.mediaId ?? message.mediaUrl],
+    queryFn: async () => {
+      // Prefer S3 presigned URL (fastest, streams directly, no Lambda limit)
+      if (message.s3Key) {
+        const d = await apiFetch<{ url: string }>(`/api/whatsapp/s3-url?key=${encodeURIComponent(message.s3Key)}`);
+        return d.url;
+      }
+      // Legacy outbound mediaUrl
+      if (message.mediaUrl) return message.mediaUrl;
+      // Inbound where S3 write hasn't completed yet — proxy through Lambda
+      if (message.mediaId) {
+        const token = getMemoryToken();
+        const res = await fetch(`${API_BASE}/api/whatsapp/media/${message.mediaId}`, {
+          credentials: 'include',
+          ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+        });
+        if (!res.ok) throw new Error('Media unavailable');
+        const blob = await res.blob();
+        return URL.createObjectURL(blob);
+      }
+      return null;
+    },
+    enabled: !!(message.s3Key || message.mediaId || message.mediaUrl),
+    staleTime: 50 * 60_000,
+    retry: 2,
+  });
+
+  const textColor = isOut ? 'text-white/80' : 'text-neutral-500';
+
+  if (isLoading) {
+    return <div className="h-12 w-40 animate-pulse rounded-lg bg-white/20" />;
+  }
+
+  const type = message.type;
+  const mime = message.mimeType ?? '';
+
+  if (!url) {
+    return <p className={cn('text-xs italic', textColor)}>Media unavailable</p>;
+  }
+
+  if (type === 'image' || mime.startsWith('image/')) {
+    return (
+      <a href={url} target="_blank" rel="noreferrer">
+        <img src={url} alt={message.filename ?? 'image'}
+          className="max-w-full rounded-lg max-h-64 object-contain cursor-zoom-in" />
+      </a>
+    );
+  }
+  if (type === 'video' || mime.startsWith('video/')) {
+    return <video src={url} controls className="max-w-full rounded-lg max-h-64" />;
+  }
+  if (type === 'audio' || mime.startsWith('audio/')) {
+    return <audio src={url} controls className="w-full min-w-[220px]" />;
+  }
+  // document / sticker / unknown
+  return (
+    <a href={url} target="_blank" rel="noreferrer" download={message.filename ?? 'file'}
+      className={cn('flex items-center gap-2 text-sm underline', isOut ? 'text-white' : 'text-primary-600')}>
+      <FileText className="h-4 w-4 shrink-0" />
+      {message.filename ?? 'Download file'}
+    </a>
+  );
 }
 
 // ── Conversation List ─────────────────────────────────────────────────────────
@@ -244,17 +317,27 @@ function ConversationList({
 
 function MessageBubble({ message }: { message: WaMessage }) {
   const isOut = message.direction === 'outbound';
+  const isMedia = message.type && message.type !== 'text' && message.type !== 'template';
+  const hasMediaSource = !!(message.s3Key || message.mediaId || message.mediaUrl);
+
   return (
     <div className={cn('mb-1.5 flex', isOut ? 'justify-end' : 'justify-start')}>
       <div
         className={cn(
-          'max-w-[70%] rounded-2xl px-3 py-2 text-sm shadow-sm',
+          'max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-sm',
           isOut
             ? 'bg-primary-600 text-white rounded-br-sm'
             : 'bg-white text-neutral-900 border border-neutral-200 rounded-bl-sm dark:bg-neutral-800 dark:text-neutral-100 dark:border-neutral-700',
         )}
       >
-        {message.content && <p className="whitespace-pre-wrap break-words">{message.content}</p>}
+        {isMedia && hasMediaSource && (
+          <div className="mb-1">
+            <MediaRenderer message={message} isOut={isOut} />
+          </div>
+        )}
+        {message.content && message.content !== `[${message.type}]` && (
+          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+        )}
         <div className={cn('mt-0.5 flex items-center gap-1', isOut ? 'justify-end' : 'justify-start')}>
           <span className={cn('text-[9px]', isOut ? 'text-white/70' : 'text-neutral-400')}>
             {msgTime(message.timestamp)}
@@ -277,8 +360,11 @@ function ThreadPane({
 }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const convKey = conversation.leadId ?? conversation.phone;
   const displayName = convDisplayName(conversation);
@@ -351,6 +437,51 @@ function ThreadPane({
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
+
+  async function handleFileSelect(file: File) {
+    setUploadFile(file);
+    setIsUploading(true);
+    try {
+      // 1. Get presigned S3 PUT URL
+      const { uploadUrl, key } = await apiFetch<{ uploadUrl: string; key: string }>(
+        `/api/whatsapp/upload-url?mimeType=${encodeURIComponent(file.type)}&filename=${encodeURIComponent(file.name)}&fileSize=${file.size}`,
+      );
+
+      // 2. PUT file directly to S3 (no auth header — presigned URL handles access)
+      const s3Res = await fetch(uploadUrl, {
+        method: 'PUT',
+        body: file,
+        headers: { 'Content-Type': file.type },
+      });
+      if (!s3Res.ok) throw new Error('S3 upload failed');
+
+      // 3. Tell backend to send from S3 → Meta → recipient
+      const body: Record<string, string> = {
+        s3Key: key,
+        mimeType: file.type,
+        filename: file.name,
+        ...(draft.trim() ? { caption: draft.trim() } : {}),
+      };
+      if (conversation.type === 'lead' && conversation.PK) {
+        body.leadPK = conversation.PK;
+      } else {
+        body.phone = conversation.phone;
+      }
+
+      await apiFetch('/api/whatsapp/upload-send', { method: 'POST', body: JSON.stringify(body) });
+
+      setDraft('');
+      qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+      toast.success('Media sent');
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to send media');
+    } finally {
+      setIsUploading(false);
+      setUploadFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
 
   function handleSend() {
     if (!draft.trim()) return;
@@ -426,7 +557,35 @@ function ThreadPane({
 
       {/* Reply bar */}
       <div className="border-t border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
+        {/* Upload progress indicator */}
+        {isUploading && uploadFile && (
+          <div className="mb-2 flex items-center gap-2 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-700 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-300">
+            <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary-600 border-t-transparent" />
+            Uploading {uploadFile.name}…
+          </div>
+        )}
         <div className="flex items-end gap-2">
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) handleFileSelect(file);
+            }}
+          />
+          {/* Paperclip button */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isUploading || sendMutation.isPending}
+            title="Attach image, video, audio or document"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-neutral-200 text-neutral-500 hover:bg-neutral-50 hover:text-neutral-700 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800 dark:text-neutral-400"
+          >
+            <Paperclip className="h-4 w-4" />
+          </button>
           <textarea
             ref={textareaRef}
             value={draft}
@@ -441,13 +600,13 @@ function ThreadPane({
             variant="primary"
             size="sm"
             onClick={handleSend}
-            disabled={!draft.trim()}
+            disabled={!draft.trim() || isUploading}
             loading={sendMutation.isPending}
             iconLeft={<Send className="h-4 w-4" />}
             aria-label="Send message"
           />
         </div>
-        <p className="mt-1.5 text-[10px] text-neutral-400">WhatsApp · Enter to send</p>
+        <p className="mt-1.5 text-[10px] text-neutral-400">WhatsApp · Enter to send · 📎 attach image, video, audio, PDF</p>
       </div>
     </div>
   );
