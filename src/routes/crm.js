@@ -350,12 +350,9 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
       assignedTo: item.assignedTo,
     }).catch((e) => logger.warn('automation error: ' + e.message));
 
+    // Await before responding — same Lambda-freeze reason as lead_assigned.
+    await notifyCompany(companyId, { event: 'lead_created', leadId, stage: defaultStage }).catch(() => {});
     res.status(201).json({ success: true, lead: item });
-    notifyCompany(companyId, {
-      event: 'lead_created',
-      leadId,
-      stage: defaultStage,
-    }).catch(() => {});
   } catch (err) {
     logger.error('crm/leads POST error', err);
     next(err);
@@ -535,8 +532,10 @@ router.put('/leads/:id/assign', authMiddleware, checkRole(['admin', 'manager']),
     }).promise();
 
     await logAudit(req.user.id, 'crm_lead_assigned', req.params.id, 'success', req.ip, { assignedTo });
+    // Await before responding — Lambda may freeze the container immediately after
+    // res.json(), making fire-and-forget after the response unreliable.
+    await notifyCompany(companyId, { event: 'lead_assigned', leadId: req.params.id, assignedTo, assignedToName }).catch(() => {});
     res.json({ success: true, assignedTo, assignedToName });
-    notifyCompany(companyId, { event: 'lead_assigned', leadId: req.params.id, assignedTo, assignedToName }).catch(() => {});
   } catch (err) {
     logger.error('crm/leads/:id/assign error', err);
     next(err);
