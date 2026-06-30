@@ -20,6 +20,21 @@ function contactCompanyGsiPK(companyId)   { return `CONTACT#${companyId}`; }
 function phoneLockPK(companyId, phoneE164) { return `PHONE#${companyId}#${phoneE164}`; }
 function phoneLockSK()                      { return 'LOCK'; }
 
+// Lead phone uniqueness lock — written atomically alongside the LEAD# item via TransactWrite.
+// Prevents concurrent requests from creating two leads for the same phoneNorm.
+// Distinct prefix from Contact phone lock (Contact uses E.164; Lead uses 10-digit phoneNorm).
+// PK = LEAD_PHONE#${companyId}#${phoneNorm}  SK = LOCK
+// NOTE: When a lead is hard-deleted, this lock must also be deleted. See crm.js DELETE handler.
+function leadPhoneLockPK(companyId, phoneNorm) { return `LEAD_PHONE#${companyId}#${phoneNorm}`; }
+function leadPhoneLockSK()                      { return 'LOCK'; }
+
+// Idempotency lock — written atomically with every CustomerIdentityService resolveOrCreate() call.
+// Prevents duplicate interactions and double enrichment on webhook retry storms.
+// TTL: 24 hours. DynamoDB TTL must be enabled on the 'ttl' attribute.
+// PK = IDEM#${companyId}#${sha256HexKey}  SK = LOCK
+function idemPK(companyId, sha256HexKey) { return `IDEM#${companyId}#${sha256HexKey}`; }
+function idemSK()                         { return 'LOCK'; }
+
 // Conversation entity
 // Base:  PK = CONV#${companyId}#${conversationId}  SK = CONV#META
 // GSI1 (ConvByCompany):   convCompanyPK PK | lastActivityAt SK
@@ -86,9 +101,15 @@ module.exports = {
   contactPK,
   contactSK,
   contactCompanyGsiPK,
-  // Phone uniqueness lock
+  // Contact phone uniqueness lock
   phoneLockPK,
   phoneLockSK,
+  // Lead phone uniqueness lock (CustomerIdentityService)
+  leadPhoneLockPK,
+  leadPhoneLockSK,
+  // Idempotency lock (CustomerIdentityService)
+  idemPK,
+  idemSK,
   // Conversation
   conversationPK,
   conversationSK,

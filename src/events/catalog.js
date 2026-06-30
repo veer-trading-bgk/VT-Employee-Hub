@@ -49,6 +49,11 @@ const E = {
   FOLLOWUP_CREATED:             'followup_created',
   FOLLOWUP_COMPLETED:           'followup_completed',
 
+  // ── Customer Journey (Phase 2) ────────────────────────────────────────────
+  // Fired by CustomerIdentityService on every resolveOrCreate() call.
+  // Recorded once per touch regardless of create vs. enrich.
+  TOUCH_RECEIVED:               'touch_received',
+
   // ── Task (Phase 2) ────────────────────────────────────────────────────────
   TASK_CREATED:                 'task_created',
   TASK_COMPLETED:               'task_completed',
