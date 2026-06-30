@@ -52,7 +52,7 @@ const FLAT_ITEMS: NavItem[] = [
   { href: '/home',           label: 'My Work',       icon: <Home className="h-5 w-5" />,          roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/inbox',          label: 'Inbox',          icon: <MessageSquare className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/customers',      label: 'Customers',      icon: <Users className="h-5 w-5" />,         roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
-  { href: '/sales',          label: 'Sales',          icon: <TrendingUp className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager', 'sales'] },
+  { href: '/sales',          label: 'Sales CRM',      icon: <TrendingUp className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager', 'sales'] },
 ];
 
 // Team group — HR / workforce items

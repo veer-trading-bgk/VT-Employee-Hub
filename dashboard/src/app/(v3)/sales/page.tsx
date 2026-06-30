@@ -1,9 +1,12 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { List, LayoutGrid, Plus, GripVertical, ArrowRight, Phone, User } from 'lucide-react';
+import {
+  List, LayoutGrid, Plus, GripVertical, ArrowRight,
+  User, Search, X, ChevronDown,
+} from 'lucide-react';
 import {
   DndContext,
   DragEndEvent,
@@ -31,9 +34,9 @@ import { STAGE_LABELS } from '@/types/v3';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role } from '@/types/v3';
 import { toast } from 'sonner';
-import { format } from 'date-fns';
+import { format, subDays } from 'date-fns';
 
-// ── Stage order (column order in Kanban) ─────────────────────────────────────
+// ── Stage config ──────────────────────────────────────────────────────────────
 
 const STAGE_ORDER: Stage[] = [
   'new_lead',
@@ -59,16 +62,55 @@ function contactName(c: Contact): string {
   return c.displayName ?? c.name ?? c.phone ?? '';
 }
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface EmployeeItem { id: string; name: string; role: string; }
+type DateFilter = '' | '7d' | '30d' | '90d';
+
+interface Filters {
+  search: string;
+  stage: Stage | '';
+  owner: string;
+  tags: string[];       // tag IDs
+  dateAdded: DateFilter;
+}
+
+const EMPTY_FILTERS: Filters = { search: '', stage: '', owner: '', tags: [], dateAdded: '' };
+
+// ── Drag preview card (no useDraggable hook — safe inside DragOverlay) ────────
+
+function KanbanDragPreview({ contact }: { contact: Contact }) {
+  const assignee = contact.assignedToName ?? contact.ownerName ?? null;
+
+  return (
+    <div className="w-[232px] rounded-lg border border-primary-300 bg-white p-3 dark:border-primary-700 dark:bg-neutral-900">
+      <div className="flex items-start gap-2.5">
+        <Avatar name={contactName(contact)} size={32} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
+            {contactName(contact)}
+          </p>
+          <p className="text-xs text-neutral-500">{contact.phone}</p>
+        </div>
+      </div>
+      <div className="mt-2.5 flex items-center justify-between gap-2">
+        {assignee ? (
+          <Avatar name={assignee} size={20} title={assignee} />
+        ) : (
+          <span className="text-xs text-neutral-400">Unassigned</span>
+        )}
+        {(contact.tags ?? []).slice(0, 1).map((tag) => (
+          <Badge key={tag} variant="default" className="text-[10px]">{tag}</Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Kanban Card ───────────────────────────────────────────────────────────────
 
-function KanbanCard({
-  contact,
-  isDragging = false,
-}: {
-  contact: Contact;
-  isDragging?: boolean;
-}) {
-  const { attributes, listeners, setNodeRef, transform, isDragging: dragActive } = useDraggable({
+function KanbanCard({ contact }: { contact: Contact }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: contact.id,
     data: { contact },
   });
@@ -84,63 +126,56 @@ function KanbanCard({
       ref={setNodeRef}
       style={style}
       className={cn(
-        'group relative rounded-lg border border-neutral-200 bg-white p-3 shadow-sm',
+        'group relative rounded-lg border border-neutral-200 bg-white shadow-sm',
         'dark:border-neutral-800 dark:bg-neutral-900',
-        dragActive ? 'opacity-40' : 'opacity-100',
+        'transition-[opacity,shadow] duration-150',
+        isDragging ? 'opacity-30 shadow-none' : 'opacity-100 hover:shadow-md',
       )}
     >
-      {/* Drag handle */}
+      {/* Drag grip */}
       <button
         {...listeners}
         {...attributes}
-        className="absolute right-2 top-2 hidden h-6 w-6 cursor-grab items-center justify-center rounded text-neutral-300 hover:bg-neutral-100 group-hover:flex dark:hover:bg-neutral-800"
+        className="absolute right-2 top-2 z-10 hidden h-6 w-6 cursor-grab items-center justify-center rounded text-neutral-300 hover:bg-neutral-100 group-hover:flex active:cursor-grabbing dark:hover:bg-neutral-800"
         aria-label="Drag to reorder"
       >
         <GripVertical className="h-4 w-4" aria-hidden />
       </button>
 
-      {/* Contact info */}
-      <Link href={`/customers/${contact.id}`} className="block" tabIndex={-1}>
+      {/* Clickable card body */}
+      <Link href={`/customers/${contact.id}`} className="block p-3" tabIndex={isDragging ? -1 : 0}>
         <div className="flex items-start gap-2.5">
           <Avatar name={contactName(contact)} size={32} />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100 hover:text-primary-600">
+            <p className="truncate text-sm font-medium text-neutral-900 hover:text-primary-600 dark:text-neutral-100">
               {contactName(contact)}
             </p>
             <p className="text-xs text-neutral-500">{contact.phone}</p>
           </div>
         </div>
+        <div className="mt-2.5 flex items-center justify-between gap-2">
+          {assignee ? (
+            <Avatar name={assignee} size={20} title={assignee} />
+          ) : (
+            <span className="text-xs text-neutral-400">Unassigned</span>
+          )}
+          {(contact.tags ?? []).slice(0, 1).map((tag) => (
+            <Badge key={tag} variant="default" className="text-[10px]">{tag}</Badge>
+          ))}
+        </div>
       </Link>
-
-      {/* Footer */}
-      <div className="mt-2.5 flex items-center justify-between gap-2">
-        {assignee ? (
-          <Avatar name={assignee} size={20} title={assignee} />
-        ) : (
-          <span className="text-xs text-neutral-400">Unassigned</span>
-        )}
-        {(contact.tags ?? []).slice(0, 1).map((tag) => (
-          <Badge key={tag} variant="default" className="text-[10px]">{tag}</Badge>
-        ))}
-      </div>
     </div>
   );
 }
 
 // ── Kanban Column ─────────────────────────────────────────────────────────────
 
-function KanbanColumn({
-  stage,
-  contacts,
-}: {
-  stage: Stage;
-  contacts: Contact[];
-}) {
+function KanbanColumn({ stage, contacts }: { stage: Stage; contacts: Contact[] }) {
   const { isOver, setNodeRef } = useDroppable({ id: stage });
 
   return (
     <div className="flex w-[240px] shrink-0 flex-col" ref={setNodeRef}>
-      {/* Column header */}
+      {/* Header */}
       <div
         className={cn(
           'rounded-t-lg border border-b-0 border-neutral-200 bg-white px-3 py-2.5 border-t-2',
@@ -166,22 +201,28 @@ function KanbanColumn({
         </div>
       </div>
 
-      {/* Cards drop zone */}
+      {/* Drop zone */}
       <div
         className={cn(
-          'flex-1 rounded-b-lg border border-neutral-200 bg-neutral-50 p-2 space-y-2 min-h-[120px] transition-colors',
-          isOver && 'bg-primary-50 border-primary-200 dark:bg-primary-900/10',
-          'dark:border-neutral-800 dark:bg-neutral-900/50',
+          'flex-1 rounded-b-lg border border-neutral-200 bg-neutral-50 p-2 space-y-2 min-h-[160px]',
+          'transition-colors duration-150',
+          isOver
+            ? 'bg-primary-50 border-primary-300 dark:bg-primary-900/15 dark:border-primary-700'
+            : 'dark:border-neutral-800 dark:bg-neutral-900/50',
         )}
       >
         {contacts.map((c) => (
           <KanbanCard key={c.id} contact={c} />
         ))}
         {contacts.length === 0 && (
-          <div className={cn(
-            'flex h-16 items-center justify-center rounded-lg border-2 border-dashed text-xs text-neutral-400 transition-colors',
-            isOver ? 'border-primary-300 text-primary-500' : 'border-neutral-200 dark:border-neutral-800',
-          )}>
+          <div
+            className={cn(
+              'flex h-20 items-center justify-center rounded-lg border-2 border-dashed text-xs transition-colors duration-150',
+              isOver
+                ? 'border-primary-300 text-primary-500 dark:border-primary-700'
+                : 'border-neutral-200 text-neutral-400 dark:border-neutral-800',
+            )}
+          >
             Drop here
           </div>
         )}
@@ -200,10 +241,19 @@ function KanbanBoard({ contacts }: { contacts: Contact[] }) {
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
   );
 
+  // ── Stage mutation with proper rollback ────────────────────────────────────
+  //
+  // Bug fix: use `contact.leadId ?? contact.id` for the CRM endpoint.
+  // The Contact interface documents `id` as "leadId for leads, 10-digit phone
+  // for unknowns", but some API responses return contacts where `type` is
+  // undefined yet `leadId` is the correct ULID. Using the explicit `leadId`
+  // field avoids routing to a wrong URL when `id` happens to be a phone number.
   const stageMutation = useMutation({
     mutationFn: async ({ contact, stage }: { contact: Contact; stage: Stage }) => {
       if (contact.type === 'lead' || (contact.leadId ?? null) !== null) {
-        return apiFetch(`/api/crm/leads/${contact.id}/stage`, {
+        // Prefer explicit leadId; fall back to id only when leadId is absent
+        const leadId = contact.leadId ?? contact.id;
+        return apiFetch(`/api/crm/leads/${leadId}/stage`, {
           method: 'PUT',
           body: JSON.stringify({ stage }),
         });
@@ -213,9 +263,32 @@ function KanbanBoard({ contacts }: { contacts: Contact[] }) {
         body: JSON.stringify({ phone: contact.phone, stage }),
       });
     },
-    onError: () => {
+    onMutate: async ({ contact, stage }) => {
+      // Cancel any outgoing refetches (avoid race condition with optimistic update)
+      await qc.cancelQueries({ queryKey: ['sales-contacts'] });
+      // Snapshot previous value for rollback
+      const previous = qc.getQueryData<Contact[]>(['sales-contacts']);
+      // Apply optimistic update
+      qc.setQueryData<Contact[]>(['sales-contacts'], (old = []) =>
+        old.map((c) => (c.id === contact.id ? { ...c, stage } : c)),
+      );
+      return { previous };
+    },
+    onError: (error, _vars, context) => {
+      // Rollback to pre-drag state
+      if (context?.previous !== undefined) {
+        qc.setQueryData(['sales-contacts'], context.previous);
+      }
+      const is429 = error instanceof ApiClientError && error.status === 429;
+      toast.error(
+        is429
+          ? 'Too many stage changes — wait a moment and try again'
+          : 'Failed to update stage',
+      );
+    },
+    onSettled: () => {
+      // Always refetch after mutation (success or error) to sync with server
       qc.invalidateQueries({ queryKey: ['sales-contacts'] });
-      toast.error('Failed to update stage');
     },
   });
 
@@ -233,9 +306,6 @@ function KanbanBoard({ contacts }: { contacts: Contact[] }) {
     const newStage = over.id as Stage;
 
     if (contact && newStage !== contact.stage) {
-      qc.setQueryData<Contact[]>(['sales-contacts'], (old = []) =>
-        old.map((c) => (c.id === contact.id ? { ...c, stage: newStage } : c)),
-      );
       stageMutation.mutate({ contact, stage: newStage });
     }
   }
@@ -252,14 +322,27 @@ function KanbanBoard({ contacts }: { contacts: Contact[] }) {
           <KanbanColumn key={stage} stage={stage} contacts={grouped[stage] ?? []} />
         ))}
       </div>
+
+      {/* Lifted card overlay — scale + shadow for "picked up" feel */}
       <DragOverlay>
-        {activeContact && <KanbanCard contact={activeContact} isDragging />}
+        {activeContact && (
+          <div
+            style={{
+              transform: 'scale(1.02)',
+              boxShadow: '0 20px 25px -5px rgba(0,0,0,0.12), 0 8px 10px -6px rgba(0,0,0,0.06)',
+              borderRadius: 8,
+              cursor: 'grabbing',
+            }}
+          >
+            <KanbanDragPreview contact={activeContact} />
+          </div>
+        )}
       </DragOverlay>
     </DndContext>
   );
 }
 
-// ── List view columns ─────────────────────────────────────────────────────────
+// ── List columns ──────────────────────────────────────────────────────────────
 
 function buildListColumns(): TableColumn<Contact>[] {
   return [
@@ -316,6 +399,149 @@ function buildListColumns(): TableColumn<Contact>[] {
   ];
 }
 
+// ── Filter bar ────────────────────────────────────────────────────────────────
+
+function FilterBar({
+  filters,
+  onChange,
+  v3Role,
+}: {
+  filters: Filters;
+  onChange: (patch: Partial<Filters>) => void;
+  v3Role: string;
+}) {
+  const isAdmin = ['owner', 'admin'].includes(v3Role);
+
+  const { data: employeesData } = useQuery({
+    queryKey: ['employees-list'],
+    queryFn: () => apiFetch<{ employees: EmployeeItem[] }>('/api/admin/employees'),
+    enabled: isAdmin,
+    staleTime: 5 * 60_000,
+  });
+  const employees = employeesData?.employees ?? [];
+
+  const { data: tagCatalogData } = useQuery({
+    queryKey: ['tag-catalog'],
+    queryFn: () =>
+      apiFetch<{ success: boolean; tags: Array<{ id: string; label: string; color: string }> }>(
+        '/api/tags',
+      ),
+    staleTime: 5 * 60_000,
+  });
+  const tagCatalog = tagCatalogData?.tags ?? [];
+
+  const activeCount = [
+    filters.search,
+    filters.stage,
+    filters.owner,
+    filters.tags.length > 0,
+    filters.dateAdded,
+  ].filter(Boolean).length;
+
+  const selectCls =
+    'h-8 rounded-lg border border-neutral-200 bg-white pl-2.5 pr-7 text-xs text-neutral-700 appearance-none focus:border-primary-600 focus:outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200';
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-b border-neutral-200 bg-neutral-50 px-4 py-2.5 dark:border-neutral-800 dark:bg-neutral-950/60">
+      {/* Search */}
+      <div className="relative flex-1 min-w-40 max-w-56">
+        <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" />
+        <input
+          value={filters.search}
+          onChange={(e) => onChange({ search: e.target.value })}
+          placeholder="Search name or phone…"
+          className="h-8 w-full rounded-lg border border-neutral-200 bg-white pl-8 pr-3 text-xs text-neutral-700 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+        />
+        {filters.search && (
+          <button
+            onClick={() => onChange({ search: '' })}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
+
+      {/* Stage filter */}
+      <div className="relative">
+        <select
+          value={filters.stage}
+          onChange={(e) => onChange({ stage: e.target.value as Stage | '' })}
+          className={selectCls}
+        >
+          <option value="">All Stages</option>
+          {STAGE_ORDER.map((s) => (
+            <option key={s} value={s}>{STAGE_LABELS[s]}</option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-neutral-400" />
+      </div>
+
+      {/* Owner filter — admin/owner only */}
+      {isAdmin && employees.length > 0 && (
+        <div className="relative">
+          <select
+            value={filters.owner}
+            onChange={(e) => onChange({ owner: e.target.value })}
+            className={selectCls}
+          >
+            <option value="">All Owners</option>
+            {employees.map((emp) => (
+              <option key={emp.id} value={emp.id}>{emp.name}</option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-neutral-400" />
+        </div>
+      )}
+
+      {/* Tags filter */}
+      {tagCatalog.length > 0 && (
+        <div className="relative">
+          <select
+            value={filters.tags[0] ?? ''}
+            onChange={(e) =>
+              onChange({ tags: e.target.value ? [e.target.value] : [] })
+            }
+            className={selectCls}
+          >
+            <option value="">All Tags</option>
+            {tagCatalog.map((t) => (
+              <option key={t.id} value={t.id}>{t.label}</option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-neutral-400" />
+        </div>
+      )}
+
+      {/* Date added filter */}
+      <div className="relative">
+        <select
+          value={filters.dateAdded}
+          onChange={(e) => onChange({ dateAdded: e.target.value as DateFilter })}
+          className={selectCls}
+        >
+          <option value="">Any Date</option>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+          <option value="90d">Last 90 days</option>
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-neutral-400" />
+      </div>
+
+      {/* Clear all */}
+      {activeCount > 0 && (
+        <button
+          onClick={() => onChange(EMPTY_FILTERS)}
+          className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-error-600 hover:bg-error-50 dark:hover:bg-error-900/20"
+        >
+          <X className="h-3 w-3" />
+          Clear {activeCount > 1 ? `(${activeCount})` : ''}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ── Add Lead drawer ───────────────────────────────────────────────────────────
 
 function AddLeadDrawer({
@@ -339,7 +565,6 @@ function AddLeadDrawer({
     setNameError(''); setPhoneError('');
   }
 
-  // Strip non-digits and validate exactly 10 digits (Indian mobile)
   function cleanPhone(raw: string): string {
     return raw.replace(/\D/g, '');
   }
@@ -371,7 +596,7 @@ function AddLeadDrawer({
         method: 'POST',
         body: JSON.stringify({
           name:  name.trim(),
-          phone: cleanPhone(phone),   // send only digits
+          phone: cleanPhone(phone),
           stage,
           notes: notes.trim(),
         }),
@@ -387,7 +612,6 @@ function AddLeadDrawer({
         if (err.status === 409) {
           setPhoneError('A lead with this phone number already exists');
         } else {
-          // Surface the actual backend message (e.g. "Validation failed")
           const detail = (err.body?.details as Array<{ message: string }> | undefined)?.[0]?.message;
           toast.error(detail ?? err.message ?? 'Failed to add lead');
         }
@@ -491,10 +715,11 @@ export default function SalesPage() {
   const router = useRouter();
   const qc = useQueryClient();
   const { user } = useAuth();
-  const [view, setView] = useState<'kanban' | 'list'>('kanban');
+  const [view, setView]           = useState<'kanban' | 'list'>('kanban');
   const [showAddLead, setShowAddLead] = useState(false);
-  const [sortKey, setSortKey] = useState('name');
-  const [sortDir, setSortDir] = useState<SortDirection>('asc');
+  const [sortKey, setSortKey]     = useState('name');
+  const [sortDir, setSortDir]     = useState<SortDirection>('asc');
+  const [filters, setFilters]     = useState<Filters>(EMPTY_FILTERS);
 
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   const canCreate = ['owner', 'admin', 'manager', 'sales'].includes(v3Role);
@@ -508,18 +733,64 @@ export default function SalesPage() {
     staleTime: 30_000,
   });
 
+  // Client-side filter — all ops are O(n) on max 500 contacts
+  const filteredContacts = useMemo(() => {
+    const cutoff = filters.dateAdded
+      ? subDays(new Date(), parseInt(filters.dateAdded, 10))
+      : null;
+
+    return contacts.filter((c) => {
+      // Search by name or phone
+      if (filters.search) {
+        const q = filters.search.toLowerCase();
+        const name = contactName(c).toLowerCase();
+        if (!name.includes(q) && !c.phone.includes(filters.search)) return false;
+      }
+      // Stage filter
+      if (filters.stage && c.stage !== filters.stage) return false;
+      // Owner filter (match by assignedTo id OR name)
+      if (filters.owner) {
+        const ownerMatch =
+          c.assignedTo === filters.owner ||
+          c.assignedToName === filters.owner ||
+          c.ownerName === filters.owner;
+        if (!ownerMatch) return false;
+      }
+      // Tag filter (any of selected tags)
+      if (filters.tags.length > 0) {
+        const contactTags = c.tags ?? [];
+        if (!filters.tags.some((t) => contactTags.includes(t))) return false;
+      }
+      // Date range filter
+      if (cutoff && c.createdAt) {
+        if (new Date(c.createdAt) < cutoff) return false;
+      }
+      return true;
+    });
+  }, [contacts, filters]);
+
+  function patchFilter(patch: Partial<Filters>) {
+    setFilters((prev) => ({ ...prev, ...patch }));
+  }
+
   const listColumns = buildListColumns();
+  const hasActiveFilters = Object.values(filters).some((v) => (Array.isArray(v) ? v.length > 0 : !!v));
 
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950">
         <div>
-          <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Sales</h1>
+          <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Sales CRM</h1>
           <p className="text-sm text-neutral-500">
-            {contacts.length} contacts across {STAGE_ORDER.length} stages
+            {isLoading
+              ? 'Loading…'
+              : hasActiveFilters
+              ? `${filteredContacts.length} of ${contacts.length} leads`
+              : `${contacts.length} leads across ${STAGE_ORDER.length} stages`}
           </p>
         </div>
+
         <div className="flex items-center gap-2">
           <Link href="/sales/followups">
             <Button variant="secondary" size="sm" iconRight={<ArrowRight className="h-4 w-4" />}>
@@ -527,33 +798,39 @@ export default function SalesPage() {
             </Button>
           </Link>
 
-          {/* View toggle */}
-          <div className="flex rounded-lg border border-neutral-200 p-0.5 dark:border-neutral-700">
+          {/* ── View toggle — icon only with tooltips ─────────────────────── */}
+          <div
+            className="flex rounded-lg border border-neutral-200 p-0.5 dark:border-neutral-700"
+            role="group"
+            aria-label="View mode"
+          >
             <button
               onClick={() => setView('kanban')}
-              className={cn(
-                'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors',
-                view === 'kanban'
-                  ? 'bg-primary-600 text-white'
-                  : 'text-neutral-600 hover:text-neutral-900 dark:text-neutral-400',
-              )}
+              title="Kanban View"
+              aria-label="Kanban View"
               aria-pressed={view === 'kanban'}
+              className={cn(
+                'flex h-8 w-8 items-center justify-center rounded-md transition-all duration-150',
+                view === 'kanban'
+                  ? 'bg-neutral-900 text-white shadow-sm dark:bg-neutral-100 dark:text-neutral-900'
+                  : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800',
+              )}
             >
-              <LayoutGrid className="h-3.5 w-3.5" aria-hidden />
-              Kanban
+              <LayoutGrid className="h-4 w-4" aria-hidden />
             </button>
             <button
               onClick={() => setView('list')}
-              className={cn(
-                'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors',
-                view === 'list'
-                  ? 'bg-primary-600 text-white'
-                  : 'text-neutral-600 hover:text-neutral-900 dark:text-neutral-400',
-              )}
+              title="List View"
+              aria-label="List View"
               aria-pressed={view === 'list'}
+              className={cn(
+                'flex h-8 w-8 items-center justify-center rounded-md transition-all duration-150',
+                view === 'list'
+                  ? 'bg-neutral-900 text-white shadow-sm dark:bg-neutral-100 dark:text-neutral-900'
+                  : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800',
+              )}
             >
-              <List className="h-3.5 w-3.5" aria-hidden />
-              List
+              <List className="h-4 w-4" aria-hidden />
             </button>
           </div>
 
@@ -569,7 +846,10 @@ export default function SalesPage() {
         </div>
       </div>
 
-      {/* Content */}
+      {/* ── Filter bar ─────────────────────────────────────────────────────── */}
+      <FilterBar filters={filters} onChange={patchFilter} v3Role={v3Role} />
+
+      {/* ── Content ────────────────────────────────────────────────────────── */}
       {isLoading ? (
         view === 'kanban' ? (
           <div className="flex gap-3 p-4 overflow-x-auto">
@@ -585,21 +865,31 @@ export default function SalesPage() {
             <SkeletonCard />
           </div>
         )
-      ) : contacts.length === 0 ? (
+      ) : filteredContacts.length === 0 ? (
         <EmptyState
           icon={LayoutGrid}
-          title="No leads yet"
-          description="Add your first lead to start tracking the pipeline"
-          action={canCreate ? { label: 'Add Lead', onClick: () => setShowAddLead(true) } : undefined}
+          title={hasActiveFilters ? 'No leads match your filters' : 'No leads yet'}
+          description={
+            hasActiveFilters
+              ? 'Try adjusting or clearing your filters'
+              : 'Add your first lead to start tracking the pipeline'
+          }
+          action={
+            hasActiveFilters
+              ? { label: 'Clear filters', onClick: () => setFilters(EMPTY_FILTERS) }
+              : canCreate
+              ? { label: 'Add Lead', onClick: () => setShowAddLead(true) }
+              : undefined
+          }
           className="flex-1"
         />
       ) : view === 'kanban' ? (
-        <KanbanBoard contacts={contacts} />
+        <KanbanBoard contacts={filteredContacts} />
       ) : (
         <div className="flex-1 overflow-auto">
           <Table
             columns={listColumns}
-            data={contacts}
+            data={filteredContacts}
             keyExtractor={(row) => row.id}
             sortKey={sortKey}
             sortDir={sortDir}
@@ -609,7 +899,7 @@ export default function SalesPage() {
         </div>
       )}
 
-      {/* Add Lead drawer */}
+      {/* ── Add Lead drawer ────────────────────────────────────────────────── */}
       <AddLeadDrawer
         open={showAddLead}
         onClose={() => setShowAddLead(false)}
