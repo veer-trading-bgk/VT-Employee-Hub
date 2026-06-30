@@ -20,7 +20,7 @@ import { Select } from '@/components/v3/ui/Select';
 import { SkeletonRow, Skeleton } from '@/components/v3/ui/Skeleton';
 import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { cn } from '@/lib/cn';
-import { apiFetch, getMemoryToken } from '@/lib/api';
+import { apiFetch, getMemoryToken, ApiClientError } from '@/lib/api';
 import { format, isToday, isYesterday } from 'date-fns';
 import { STAGE_LABELS } from '@/types/v3';
 import { wsClient } from '@/lib/wsClient';
@@ -930,8 +930,61 @@ function UnknownContactAssignPicker({
       onTabSwitch?.('open');
       onInboxRefresh();
       toast.success('Contact created and assigned');
-    } catch {
-      toast.error('Failed to assign contact');
+    } catch (err) {
+      // 409 = this phone already has a CRM lead. Link the inbox conversation to
+      // the existing lead instead of creating a duplicate.
+      if (err instanceof ApiClientError && err.status === 409) {
+        const existingLeadId = err.body?.existingLeadId as string | undefined;
+        const existingName   = err.body?.existingName   as string | undefined;
+
+        if (existingLeadId) {
+          // Copy message cache to the existing lead key so the thread stays populated.
+          const existingMsgs = qc.getQueryData<{ messages: WaMessage[] }>(['wa-conv', conversation.phone]);
+          if (existingMsgs) qc.setQueryData(['wa-conv', existingLeadId], existingMsgs);
+
+          // Move this conversation from Unassigned into Open under the existing lead.
+          const linkedConv: WaConversation = {
+            ...conversation,
+            leadId: existingLeadId,
+            type: 'lead',
+            chatStatus: 'open',
+          };
+          qc.setQueryData<{ conversations: WaConversation[]; counts: Record<string, number> }>(
+            ['wa-inbox', 'open'],
+            (old) => {
+              if (!old) return old;
+              return {
+                conversations: [linkedConv, ...old.conversations.filter((c) => c.phone !== conversation.phone)],
+                counts: { ...old.counts, open: (old.counts.open ?? 0) + 1 },
+              };
+            },
+          );
+          qc.setQueryData<{ conversations: WaConversation[]; counts: Record<string, number> }>(
+            ['wa-inbox', 'unassigned'],
+            (old) => {
+              if (!old) return old;
+              return {
+                conversations: old.conversations.filter((c) => c.phone !== conversation.phone),
+                counts: { ...old.counts, unassigned: Math.max(0, (old.counts.unassigned ?? 0) - 1) },
+              };
+            },
+          );
+
+          onConvUpdate?.({ leadId: existingLeadId, type: 'lead', chatStatus: 'open' });
+          onTabSwitch?.('open');
+          onInboxRefresh();
+          toast.info(
+            existingName
+              ? `This contact already exists as "${existingName}". Conversation linked to existing contact.`
+              : 'This contact already exists. Conversation linked to existing contact.',
+          );
+        } else {
+          // 409 but no leadId in body — unusual; tell user without being generic.
+          toast.warning('This contact already exists in the system. Refresh the inbox to find them.');
+        }
+      } else {
+        toast.error('Failed to assign contact');
+      }
     } finally {
       setIsPending(false);
       setEditing(false);

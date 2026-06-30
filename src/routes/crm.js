@@ -225,12 +225,26 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
 
     const companyId = req.user.companyId;
     const cleanPhone = String(phone).replace(/\D/g, '');
+    // phoneNorm is the canonical phone identity across the platform.
+    // phone stores the original format for display; phoneNorm is used for all dedup checks.
+    // Every lead creation path (manual, inbox, API, webhook, automation, CSV) must use this.
+    const normPhone = to10Digit(cleanPhone);
 
-    // Duplicate phone check — exclude soft-deleted leads
-    const dupCheck = await dynamodb.scan({
+    // Duplicate detection uses phoneNorm (canonical 10-digit) so that +91-prefixed,
+    // 12-digit, and plain 10-digit entries for the same number all resolve to the same key.
+    // Using the raw `phone` field would miss cross-format duplicates (e.g. WA sends
+    // 919866141993 while a manual entry stores 9866141993 — same subscriber, different bytes).
+    //
+    // Uses the company-phone-index GSI (companyId + phoneNorm) — O(1) vs full-table scan.
+    // Platform rule: phoneNorm is the canonical matching identity. Every lead creation path
+    // (manual, inbox, API, webhook, CSV, automation) must compute normPhone and use this check.
+    const dupCheck = await dynamodb.query({
       TableName: TABLE,
-      FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND phone = :ph AND attribute_not_exists(deletedAt)',
-      ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA', ':ph': cleanPhone },
+      IndexName: 'company-phone-index',
+      KeyConditionExpression: 'companyId = :cid AND phoneNorm = :norm',
+      FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
+      ExpressionAttributeValues: { ':cid': companyId, ':norm': normPhone, ':meta': 'METADATA' },
+      Limit: 1,
     }).promise();
     if ((dupCheck.Items?.length ?? 0) > 0) {
       const existing = dupCheck.Items[0];
@@ -299,7 +313,7 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
       companyId,
       name: name.trim(),
       phone: cleanPhone,
-      phoneNorm: to10Digit(cleanPhone),
+      phoneNorm: normPhone,
       email: email?.trim() ?? null,
       productInterest: productInterest ?? [],
       source: source ?? 'manual',
