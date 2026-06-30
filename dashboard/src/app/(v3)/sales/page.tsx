@@ -327,30 +327,70 @@ function AddLeadDrawer({
   onClose: () => void;
   onSuccess: () => void;
 }) {
-  const [name,  setName]  = useState('');
-  const [phone, setPhone] = useState('');
-  const [stage, setStage] = useState<Stage>('new_lead');
-  const [notes, setNotes] = useState('');
+  const [name,       setName]       = useState('');
+  const [phone,      setPhone]      = useState('');
+  const [stage,      setStage]      = useState<Stage>('new_lead');
+  const [notes,      setNotes]      = useState('');
+  const [nameError,  setNameError]  = useState('');
+  const [phoneError, setPhoneError] = useState('');
 
   function reset() {
     setName(''); setPhone(''); setStage('new_lead'); setNotes('');
+    setNameError(''); setPhoneError('');
+  }
+
+  // Strip non-digits and validate exactly 10 digits (Indian mobile)
+  function cleanPhone(raw: string): string {
+    return raw.replace(/\D/g, '');
+  }
+
+  function validateForm(): boolean {
+    let valid = true;
+    if (!name.trim()) {
+      setNameError('Name is required');
+      valid = false;
+    } else {
+      setNameError('');
+    }
+    const digits = cleanPhone(phone);
+    if (!digits) {
+      setPhoneError('Phone is required');
+      valid = false;
+    } else if (digits.length !== 10) {
+      setPhoneError(`Must be 10 digits — you entered ${digits.length}`);
+      valid = false;
+    } else {
+      setPhoneError('');
+    }
+    return valid;
   }
 
   const addMutation = useMutation({
     mutationFn: async () =>
       apiFetch('/api/crm/leads', {
         method: 'POST',
-        body: JSON.stringify({ name: name.trim(), phone: phone.trim(), stage, notes: notes.trim() }),
+        body: JSON.stringify({
+          name:  name.trim(),
+          phone: cleanPhone(phone),   // send only digits
+          stage,
+          notes: notes.trim(),
+        }),
       }),
     onSuccess: () => {
-      toast.success('Lead added');
+      toast.success('Lead added successfully');
       reset();
       onSuccess();
       onClose();
     },
     onError: (err) => {
-      if (err instanceof ApiClientError && err.status === 409) {
-        toast.error('A lead with this phone number already exists');
+      if (err instanceof ApiClientError) {
+        if (err.status === 409) {
+          setPhoneError('A lead with this phone number already exists');
+        } else {
+          // Surface the actual backend message (e.g. "Validation failed")
+          const detail = (err.body?.details as Array<{ message: string }> | undefined)?.[0]?.message;
+          toast.error(detail ?? err.message ?? 'Failed to add lead');
+        }
       } else {
         toast.error('Failed to add lead');
       }
@@ -359,8 +399,7 @@ function AddLeadDrawer({
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim()) { toast.error('Name is required'); return; }
-    if (!phone.trim()) { toast.error('Phone is required'); return; }
+    if (!validateForm()) return;
     addMutation.mutate();
   }
 
@@ -384,7 +423,6 @@ function AddLeadDrawer({
             variant="primary"
             size="md"
             loading={addMutation.isPending}
-            disabled={!name.trim() || !phone.trim()}
             onClick={handleSubmit}
           >
             Add Lead
@@ -398,19 +436,21 @@ function AddLeadDrawer({
           required
           placeholder="e.g. Rahul Sharma"
           value={name}
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => { setName(e.target.value); if (nameError) setNameError(''); }}
           iconLeft={<User className="h-4 w-4" />}
+          error={nameError}
           autoFocus
         />
         <Input
           label="Phone number"
           required
-          placeholder="10-digit mobile number"
+          placeholder="9876543210"
+          hint="10-digit mobile number (without +91)"
           value={phone}
-          onChange={(e) => setPhone(e.target.value)}
-          iconLeft={<Phone className="h-4 w-4" />}
+          onChange={(e) => { setPhone(e.target.value); if (phoneError) setPhoneError(''); }}
           type="tel"
           phonePrefix
+          error={phoneError}
         />
 
         <div className="space-y-1.5">
