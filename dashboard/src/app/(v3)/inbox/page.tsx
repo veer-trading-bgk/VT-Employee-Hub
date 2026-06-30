@@ -337,6 +337,18 @@ function ConversationList({
     return () => wsClient.off('whatsapp_message', handler);
   }, [qc, activeTab]);
 
+  // Real-time: lead assigned or created → refresh inbox immediately so the
+  // assigned employee sees the conversation without waiting for the 30s poll.
+  useEffect(() => {
+    const handler = () => { qc.invalidateQueries({ queryKey: ['wa-inbox'] }); };
+    wsClient.on('lead_assigned', handler);
+    wsClient.on('lead_created', handler);
+    return () => {
+      wsClient.off('lead_assigned', handler);
+      wsClient.off('lead_created', handler);
+    };
+  }, [qc]);
+
   const filtered = conversations.filter((c) => {
     if (!search) return true;
     const name = convDisplayName(c).toLowerCase();

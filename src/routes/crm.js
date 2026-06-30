@@ -536,6 +536,7 @@ router.put('/leads/:id/assign', authMiddleware, checkRole(['admin', 'manager']),
 
     await logAudit(req.user.id, 'crm_lead_assigned', req.params.id, 'success', req.ip, { assignedTo });
     res.json({ success: true, assignedTo, assignedToName });
+    notifyCompany(companyId, { event: 'lead_assigned', leadId: req.params.id, assignedTo, assignedToName }).catch(() => {});
   } catch (err) {
     logger.error('crm/leads/:id/assign error', err);
     next(err);
