@@ -1,12 +1,13 @@
 'use client';
 
-import { useState, useRef, useEffect, Suspense } from 'react';
+import { useState, useRef, useEffect, useCallback, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import {
   MessageSquare, Search, Send, MoreHorizontal, Phone,
   CheckCheck, Check, Clock, AlertCircle, Plus, X, ChevronLeft,
   Paperclip, FileText, Download, ZoomIn, Tag as TagIcon,
+  Loader2, ChevronDown,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { TagBadge } from '@/components/tags/TagBadge';
@@ -28,6 +29,9 @@ import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role } from '@/types/v3';
 import { OwnerSelect } from '@/components/v3/ui/OwnerSelect';
+import { useEmployeesList } from '@/hooks/useEmployeesList';
+import { assignmentKey } from '@/hooks/useOwnerAssign';
+import type { AssignmentRecord } from '@/hooks/useOwnerAssign';
 
 // ── V2 API shapes (backend response shapes, never invented) ───────────────────
 
@@ -811,14 +815,128 @@ function ThreadPane({
   );
 }
 
+// ── Unknown-contact employee picker ──────────────────────────────────────────
+// Creates a CRM lead from an INBOX# unknown contact and assigns it in one step.
+
+function UnknownContactAssignPicker({
+  conversation,
+  onConvUpdate,
+  onInboxRefresh,
+}: {
+  conversation: WaConversation;
+  onConvUpdate?: (u: Partial<WaConversation>) => void;
+  onInboxRefresh: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [isPending, setIsPending] = useState(false);
+  const selectRef = useRef<HTMLSelectElement>(null);
+  const { employees, isLoading } = useEmployeesList({ enabled: editing });
+
+  useEffect(() => {
+    if (editing && selectRef.current) {
+      selectRef.current.focus();
+      try { selectRef.current.showPicker?.(); } catch { /* ignore */ }
+    }
+  }, [editing]);
+
+  async function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const employeeId = e.target.value;
+    if (!employeeId) { setEditing(false); return; }
+    const employee = employees.find((emp) => emp.id === employeeId);
+    if (!employee) { setEditing(false); return; }
+
+    setIsPending(true);
+    try {
+      const created = await apiFetch<{ success: boolean; lead: { leadId: string } }>(
+        '/api/crm/leads',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            phone: conversation.phone,
+            name: conversation.name ?? conversation.displayName ?? conversation.phone,
+            source: 'whatsapp',
+            assignedTo: employeeId,
+            assignedToName: employee.name,
+          }),
+        },
+      );
+      const newLeadId = created?.lead?.leadId;
+      if (!newLeadId) throw new Error('No leadId returned');
+
+      onConvUpdate?.({
+        leadId: newLeadId,
+        type: 'lead',
+        assignedTo: employeeId,
+        assignedToName: employee.name,
+        chatStatus: 'open',
+      });
+      onInboxRefresh();
+      toast.success('Contact created and assigned');
+    } catch {
+      toast.error('Failed to assign contact');
+    } finally {
+      setIsPending(false);
+      setEditing(false);
+    }
+  }
+
+  if (isPending) {
+    return (
+      <div className="flex items-center gap-2">
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-primary-600" aria-hidden />
+        <span className="text-sm text-neutral-500">Assigning…</span>
+      </div>
+    );
+  }
+
+  if (editing) {
+    return (
+      <div className="relative" onClick={(e) => e.stopPropagation()}>
+        <select
+          ref={selectRef}
+          defaultValue=""
+          onChange={handleChange}
+          onBlur={() => setEditing(false)}
+          disabled={isLoading}
+          aria-label="Assign owner"
+          className="w-full appearance-none rounded-md border border-primary-400 bg-white py-1 pl-2 pr-7 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 dark:bg-neutral-900 dark:border-primary-600 dark:text-neutral-100"
+        >
+          <option value="" disabled>
+            {isLoading ? 'Loading…' : 'Select employee'}
+          </option>
+          {employees.map((emp) => (
+            <option key={emp.id} value={emp.id}>{emp.name}</option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" aria-hidden />
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+      className="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+      title="Click to assign"
+    >
+      <Avatar name="?" size={20} />
+      <span className="flex-1 text-sm text-neutral-500">Unassigned — click to assign</span>
+      <ChevronDown className="h-3.5 w-3.5 text-neutral-400 opacity-0 group-hover:opacity-60 transition-opacity" aria-hidden />
+    </button>
+  );
+}
+
 // ── Snapshot Panel ────────────────────────────────────────────────────────────
 
 function CustomerSnapshotPanel({
   conversation,
   onClose,
+  onConvUpdate,
 }: {
   conversation: WaConversation;
   onClose: () => void;
+  onConvUpdate?: (u: Partial<WaConversation>) => void;
 }) {
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -827,6 +945,20 @@ function CustomerSnapshotPanel({
   const STAGE_OPTIONS = Object.entries(STAGE_LABELS).map(([value, label]) => ({ value, label }));
   const displayName = convDisplayName(conversation);
   const [showTagSelector, setShowTagSelector] = useState(false);
+
+  // Subscribe to live assignment cache — updates immediately when useOwnerAssign fires
+  const { data: cachedAssign } = useQuery<AssignmentRecord>({
+    queryKey: assignmentKey(conversation.leadId ?? '__no_lead__'),
+    enabled: false,
+    staleTime: Infinity,
+    gcTime: 30 * 60_000,
+  });
+
+  // Derive chatStatus: if we just assigned someone, treat as 'open' even before inbox refetch
+  const effectiveChatStatus: WaConversation['chatStatus'] =
+    cachedAssign?.assignedTo && conversation.chatStatus === 'unassigned'
+      ? 'open'
+      : conversation.chatStatus;
 
   const stageMutation = useMutation({
     mutationFn: (stage: string) => {
@@ -992,7 +1124,7 @@ function CustomerSnapshotPanel({
           </div>
         </div>
 
-        {/* Assigned to — editable for leads; read-only for unknowns */}
+        {/* Assigned to — editable for leads and (via create-CRM-lead) for unknown contacts */}
         <div>
           <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-400">Assigned to</p>
           {conversation.leadId ? (
@@ -1004,28 +1136,34 @@ function CustomerSnapshotPanel({
               canEdit={canEditOwner}
               onSuccess={() => qc.invalidateQueries({ queryKey: ['wa-inbox'] })}
             />
+          ) : canEditOwner ? (
+            <UnknownContactAssignPicker
+              conversation={conversation}
+              onConvUpdate={onConvUpdate}
+              onInboxRefresh={() => qc.invalidateQueries({ queryKey: ['wa-inbox'] })}
+            />
           ) : (
             <p className="text-sm text-neutral-500">
-              {conversation.assignedToName ?? 'Unassigned (unknown contact)'}
+              {conversation.assignedToName ?? 'Unassigned'}
             </p>
           )}
         </div>
 
-        {/* Chat status */}
+        {/* Chat status — reads effectiveChatStatus so badge updates immediately after assignment */}
         <div>
           <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-400">Status</p>
           <span className={cn(
             'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium',
-            conversation.chatStatus === 'open'       ? 'bg-success-50 text-success-700 dark:bg-success-900/20 dark:text-success-300' :
-            conversation.chatStatus === 'resolved'   ? 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400' :
-                                                       'bg-warning-50 text-warning-700 dark:bg-warning-900/20 dark:text-warning-300',
+            effectiveChatStatus === 'open'       ? 'bg-success-50 text-success-700 dark:bg-success-900/20 dark:text-success-300' :
+            effectiveChatStatus === 'resolved'   ? 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400' :
+                                                   'bg-warning-50 text-warning-700 dark:bg-warning-900/20 dark:text-warning-300',
           )}>
             <span className={cn(
               'h-1.5 w-1.5 rounded-full',
-              conversation.chatStatus === 'open'       ? 'bg-success-500' :
-              conversation.chatStatus === 'resolved'   ? 'bg-neutral-400' : 'bg-warning-500',
+              effectiveChatStatus === 'open'       ? 'bg-success-500' :
+              effectiveChatStatus === 'resolved'   ? 'bg-neutral-400' : 'bg-warning-500',
             )} />
-            {conversation.chatStatus === 'open' ? 'Open' : conversation.chatStatus === 'resolved' ? 'Resolved' : 'Unassigned'}
+            {effectiveChatStatus === 'open' ? 'Open' : effectiveChatStatus === 'resolved' ? 'Resolved' : 'Unassigned'}
           </span>
         </div>
 
@@ -1276,6 +1414,10 @@ function CommunicationsContent() {
   const [activeConv, setActiveConv] = useState<WaConversation | null>(null);
   const [snapshotOpen, setSnapshotOpen] = useState(false);
 
+  const handleConvUpdate = useCallback((updates: Partial<WaConversation>) => {
+    setActiveConv((prev) => prev ? { ...prev, ...updates } : null);
+  }, []);
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* Mode switcher */}
@@ -1334,7 +1476,7 @@ function CommunicationsContent() {
           {/* Column 3: Contact panel — always visible on xl+, toggled on smaller screens */}
           {activeConv && (
             <div className={cn('w-[320px] shrink-0', !snapshotOpen && 'hidden xl:block')}>
-              <CustomerSnapshotPanel conversation={activeConv} onClose={() => setSnapshotOpen(false)} />
+              <CustomerSnapshotPanel conversation={activeConv} onClose={() => setSnapshotOpen(false)} onConvUpdate={handleConvUpdate} />
             </div>
           )}
         </div>
