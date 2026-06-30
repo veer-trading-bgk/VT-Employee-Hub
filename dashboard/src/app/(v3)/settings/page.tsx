@@ -716,6 +716,182 @@ function AuditSection() {
   );
 }
 
+// ── Tags section ──────────────────────────────────────────────────────────────
+
+interface TagEntry { id: string; label: string; color: string; }
+
+const TAG_PALETTE = [
+  '#ef4444', '#f97316', '#f59e0b', '#eab308',
+  '#22c55e', '#10b981', '#06b6d4', '#3b82f6',
+  '#6366f1', '#8b5cf6', '#ec4899', '#64748b',
+];
+
+function TagsSection() {
+  const qc = useQueryClient();
+  const [search, setSearch] = useState('');
+  const [newLabel, setNewLabel] = useState('');
+  const [newColor, setNewColor] = useState('#6366f1');
+  const [showPalette, setShowPalette] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ['tag-catalog'],
+    queryFn: () => apiFetch<{ success: boolean; tags: TagEntry[] }>('/api/tags'),
+    staleTime: 60_000,
+  });
+  const tags = data?.tags ?? [];
+  const filtered = tags.filter((t) => t.label.toLowerCase().includes(search.toLowerCase()));
+
+  const createMut = useMutation({
+    mutationFn: ({ label, color }: { label: string; color: string }) =>
+      apiFetch('/api/tags', { method: 'POST', body: JSON.stringify({ label, color }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tag-catalog'] });
+      setNewLabel('');
+      setCreating(false);
+      toast.success('Tag created');
+    },
+    onError: () => toast.error('Failed to create tag'),
+  });
+
+  const canCreate =
+    newLabel.trim().length > 0 &&
+    !tags.some((t) => t.label.toLowerCase() === newLabel.trim().toLowerCase());
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">Tag Manager</h2>
+        <p className="text-sm text-neutral-500">Centrally manage all contact tags. Tags created here are available across Inbox, Customers, Sales, and Automation.</p>
+      </div>
+
+      {/* Create new tag */}
+      <Card>
+        <p className="mb-3 text-sm font-semibold text-neutral-800 dark:text-neutral-200">Create New Tag</p>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex-1 min-w-40">
+            <label className="mb-1 block text-xs font-medium text-neutral-500">Tag name</label>
+            <input
+              value={newLabel}
+              onChange={(e) => setNewLabel(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && canCreate && !creating) { setCreating(true); createMut.mutate({ label: newLabel.trim(), color: newColor }); } }}
+              placeholder="e.g. Hot Lead, VIP, Follow Up"
+              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary-600 focus:ring-1 focus:ring-primary-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-neutral-500">Color</label>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPalette((v) => !v)}
+                className="relative h-9 w-9 rounded-lg border-2 border-white shadow transition hover:scale-105"
+                style={{ backgroundColor: newColor }}
+                title="Pick color"
+              />
+              {showPalette && (
+                <div className="flex flex-wrap gap-1.5 rounded-xl border border-neutral-200 bg-white p-2 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+                  {TAG_PALETTE.map((c) => (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => { setNewColor(c); setShowPalette(false); }}
+                      className="h-6 w-6 rounded-full transition hover:scale-110"
+                      style={{
+                        backgroundColor: c,
+                        outline: newColor === c ? `2px solid ${c}` : 'none',
+                        outlineOffset: '2px',
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <Button
+            onClick={() => { setCreating(true); createMut.mutate({ label: newLabel.trim(), color: newColor }); }}
+            disabled={!canCreate || createMut.isPending}
+            loading={createMut.isPending}
+          >
+            Create Tag
+          </Button>
+        </div>
+        {newLabel.trim() && (
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-xs text-neutral-400">Preview:</span>
+            <span
+              className="inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold"
+              style={{ backgroundColor: newColor + '20', color: newColor, borderColor: newColor + '50' }}
+            >
+              {newLabel.trim()}
+            </span>
+          </div>
+        )}
+      </Card>
+
+      {/* Tag list */}
+      <Card noPadding>
+        <div className="flex items-center gap-3 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search tags…"
+              className="h-8 w-full rounded-lg border border-neutral-200 bg-white pl-8 pr-3 text-sm focus:border-primary-600 focus:outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+            />
+          </div>
+          <span className="shrink-0 text-xs text-neutral-400">{tags.length} tags</span>
+          <button onClick={() => refetch()} className="shrink-0 text-neutral-400 hover:text-neutral-600" title="Refresh">
+            <RefreshCw className="h-4 w-4" />
+          </button>
+        </div>
+
+        {isLoading && (
+          <div className="space-y-2 p-4">
+            {[0,1,2].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
+        )}
+
+        {isError && (
+          <div className="py-8 text-center">
+            <p className="text-sm text-error-600 dark:text-error-400">Failed to load tags</p>
+            <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+          </div>
+        )}
+
+        {!isLoading && !isError && (
+          <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
+            {filtered.length === 0 ? (
+              <li className="py-10 text-center text-sm text-neutral-400">
+                {search ? 'No tags match your search' : 'No tags yet — create your first one above'}
+              </li>
+            ) : (
+              filtered.map((tag) => (
+                <li key={tag.id} className="flex items-center gap-3 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-800/40">
+                  <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: tag.color }} />
+                  <span
+                    className="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold"
+                    style={{ backgroundColor: tag.color + '20', color: tag.color, borderColor: tag.color + '50' }}
+                  >
+                    {tag.label}
+                  </span>
+                  <span className="flex-1 text-sm text-neutral-700 dark:text-neutral-300">{tag.label}</span>
+                  <span className="font-mono text-[10px] text-neutral-300 dark:text-neutral-600">{tag.id?.slice(0, 8)}</span>
+                </li>
+              ))
+            )}
+          </ul>
+        )}
+      </Card>
+
+      <p className="text-xs text-neutral-400">
+        Tags are shared across all modules. Newly created tags are immediately available in Inbox, Customer360, Broadcast filters, and Automation workflows.
+      </p>
+    </div>
+  );
+}
+
 // ── Stub sections ─────────────────────────────────────────────────────────────
 
 function StubSection({ title, description }: { title: string; description: string }) {
@@ -761,7 +937,7 @@ function SettingsPageInner() {
       case 'security':      return <StubSection title="Security" description="Password, 2FA, and session management" />;
       case 'organisation':  return <StubSection title="Organisation" description="Company name, logo, and timezone" />;
       case 'pipeline':      return <StubSection title="Pipeline Stages" description="Customise your sales pipeline stages" />;
-      case 'tags':          return <StubSection title="Tags" description="Create and manage contact tags" />;
+      case 'tags':          return <TagsSection />;
       case 'workflows':     return <StubSection title="Workflow settings" description="Default workflow behaviour" />;
       case 'integrations':  return <StubSection title="Integrations" description="Connect to third-party tools" />;
       case 'billing':       return <StubSection title="Billing & Plan" description="Subscription and payment details" />;
