@@ -2,22 +2,123 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ── V3 Surface & Stage Tokens (CSS custom properties) ─────────────── */
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --background-subtle: #F8FAFC;
+  --foreground: #0F172A;
+  --surface: #ffffff;
+  --surface-subtle: #F8FAFC;
+  --border: #E2E8F0;
+  --border-strong: #CBD5E1;
+  --ring: #2563EB;
+
+  /* APForce Pipeline Stage Tokens */
+  --stage-new-lead-bg: #F1F5F9;
+  --stage-new-lead-text: #475569;
+  --stage-contacted-bg: #EFF6FF;
+  --stage-contacted-text: #1D4ED8;
+  --stage-interested-bg: #FFFBEB;
+  --stage-interested-text: #B45309;
+  --stage-kyc-done-bg: #F5F3FF;
+  --stage-kyc-done-text: #6D28D9;
+  --stage-demat-done-bg: #F0FDF4;
+  --stage-demat-done-text: #15803D;
+  --stage-lost-bg: #FEF2F2;
+  --stage-lost-text: #B91C1C;
 }
 
+.dark {
+  --background: #0F172A;
+  --background-subtle: #1E293B;
+  --foreground: #F1F5F9;
+  --surface: #1E293B;
+  --surface-subtle: #334155;
+  --border: #334155;
+  --border-strong: #475569;
+  --ring: #3B82F6;
+}
+
+/* ── V3 Design Token Registration (Tailwind utilities + CSS vars) ──── */
 @theme inline {
+  /* Fonts */
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-geist-mono);
+
+  /* Surface aliases (picks up dark-mode via :root/.dark vars) */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-surface: var(--surface);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  /* Primary Blue */
+  --color-primary-50: #EFF6FF;
+  --color-primary-100: #DBEAFE;
+  --color-primary-200: #BFDBFE;
+  --color-primary-300: #93C5FD;
+  --color-primary-400: #60A5FA;
+  --color-primary-500: #3B82F6;
+  --color-primary-600: #2563EB;
+  --color-primary-700: #1D4ED8;
+  --color-primary-800: #1E40AF;
+  --color-primary-900: #1E3A8A;
+
+  /* Neutral Slate */
+  --color-neutral-50: #F8FAFC;
+  --color-neutral-100: #F1F5F9;
+  --color-neutral-200: #E2E8F0;
+  --color-neutral-300: #CBD5E1;
+  --color-neutral-400: #94A3B8;
+  --color-neutral-500: #64748B;
+  --color-neutral-600: #475569;
+  --color-neutral-700: #334155;
+  --color-neutral-800: #1E293B;
+  --color-neutral-900: #0F172A;
+
+  /* Success Green */
+  --color-success-50: #F0FDF4;
+  --color-success-100: #DCFCE7;
+  --color-success-500: #22C55E;
+  --color-success-600: #16A34A;
+  --color-success-700: #15803D;
+
+  /* Warning Amber */
+  --color-warning-50: #FFFBEB;
+  --color-warning-100: #FEF3C7;
+  --color-warning-500: #F59E0B;
+  --color-warning-600: #D97706;
+  --color-warning-700: #B45309;
+
+  /* Error Red */
+  --color-error-50: #FEF2F2;
+  --color-error-100: #FEE2E2;
+  --color-error-500: #EF4444;
+  --color-error-600: #DC2626;
+  --color-error-700: #B91C1C;
+
+  /* Z-index layers */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-drawer: 300;
+  --z-palette: 400;
+  --z-toast: 500;
+  --z-critical: 600;
+
+  /* Animation durations */
+  --duration-fast: 100ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+  --duration-slower: 500ms;
+
+  /* Custom shadow for drawer overlay */
+  --shadow-drawer: 0 25px 50px -12px rgb(0 0 0 / 0.25);
 }
 
 /* ── Base ──────────────────────────────────────────────────────────── */
 html {
   scroll-behavior: smooth;
-  /* Prevent font size inflation on orientation change (iOS) */
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
@@ -25,16 +126,14 @@ html {
 body {
   background: var(--background);
   color: var(--foreground);
-  /* Use the loaded Geist font; system stack as fallback */
-  font-family: var(--font-geist-sans, system-ui, -apple-system, sans-serif);
+  font-family: var(--font-inter, system-ui, -apple-system, sans-serif);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
 /*
-  Scoped theme transition — apply colour/border transitions only to
-  interactive and container elements, not every DOM node.
-  This avoids painting cost on deep trees while keeping dark-mode smooth.
+  Scoped theme transitions — interactive elements only,
+  to avoid painting every DOM node on theme switch.
 */
 button,
 a,
@@ -52,21 +151,20 @@ nav,
   transition-timing-function: ease;
 }
 
-/* ── Selection colour ──────────────────────────────────────────────── */
+/* ── Selection ─────────────────────────────────────────────────────── */
 ::selection {
-  background-color: #6366f1;
+  background-color: #2563EB;
   color: #fff;
 }
 
-/* ── Focus ring (keyboard nav / accessibility) ─────────────────────── */
+/* ── Focus ring (WCAG 2.1 AA — 2px visible focus for keyboard nav) ── */
 :focus-visible {
-  outline: 2px solid #6366f1;
+  outline: 2px solid #2563EB;
   outline-offset: 2px;
   border-radius: 4px;
 }
 
-
-/* ── Thin scrollbar for sidebar and overflow panels ───────────────── */
+/* ── Thin scrollbar (sidebar + overflow panels) ────────────────────── */
 .scrollbar-thin {
   scrollbar-width: thin;
   scrollbar-color: #475569 transparent;
@@ -76,4 +174,34 @@ nav,
 .scrollbar-thin::-webkit-scrollbar-thumb {
   background-color: #475569;
   border-radius: 9999px;
+}
+
+/* ── Skip-to-content (accessibility) ──────────────────────────────── */
+.skip-nav {
+  position: absolute;
+  left: -9999px;
+  top: 1rem;
+  z-index: 9999;
+  padding: 0.5rem 1rem;
+  background: #2563EB;
+  color: white;
+  font-size: 0.875rem;
+  font-weight: 600;
+  border-radius: 6px;
+  text-decoration: none;
+}
+.skip-nav:focus {
+  left: 1rem;
+}
+
+/* ── Reduced motion ────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
