@@ -22,11 +22,15 @@ const FIELD_CLS = 'flex flex-col gap-1.5';
 const LABEL_CLS = 'text-sm font-medium text-neutral-700 dark:text-neutral-200';
 
 const SOURCE_OPTIONS = [
-  { value: 'manual',   label: 'Manual' },
-  { value: 'referral', label: 'Referral' },
-  { value: 'website',  label: 'Website' },
-  { value: 'form',     label: 'Form' },
-  { value: 'whatsapp', label: 'WhatsApp' },
+  { value: 'manual',    label: 'Manual' },
+  { value: 'referral',  label: 'Referral' },
+  { value: 'website',   label: 'Website' },
+  { value: 'whatsapp',  label: 'WhatsApp' },
+  { value: 'walk_in',   label: 'Walk-in' },
+  { value: 'social',    label: 'Social Media' },
+  { value: 'webinar',   label: 'Webinar' },
+  { value: 'facebook',  label: 'Facebook' },
+  { value: 'instagram', label: 'Instagram' },
 ];
 
 export interface NewContactDrawerProps {

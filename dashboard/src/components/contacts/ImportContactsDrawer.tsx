@@ -192,7 +192,7 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
           try {
             await apiFetch('/api/crm/leads', {
               method: 'POST',
-              body: JSON.stringify({ name, phone, email, source: 'csv' }),
+              body: JSON.stringify({ name, phone, email, source: 'import' }),
             });
             res.imported++;
           } catch (err: any) {
