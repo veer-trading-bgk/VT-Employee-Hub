@@ -266,6 +266,32 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
       }
     }
 
+    // When creating a lead from an unknown WhatsApp inbox contact, copy its message
+    // history into the new LEAD# record. The inbox query (whatsapp.js:836) gates on
+    // lastMessageAt — without it the new lead is excluded from leadItems while the
+    // dedup logic simultaneously suppresses the originating INBOX# record (line 860),
+    // making the conversation invisible in all tabs until a new WA message arrives.
+    let inboxHistory = {};
+    if (source === 'whatsapp') {
+      try {
+        const inboxR = await dynamodb.get({
+          TableName: TABLE,
+          Key: { PK: `INBOX#${companyId}#${to10Digit(cleanPhone)}`, SK: 'CONTACT' },
+        }).promise();
+        if (inboxR.Item?.lastMessageAt) {
+          inboxHistory = {
+            lastMessageAt:        inboxR.Item.lastMessageAt,
+            lastMessagePreview:   inboxR.Item.lastMessagePreview ?? '',
+            lastMessageDirection: inboxR.Item.lastMessageDirection ?? 'inbound',
+            lastInboundAt:        inboxR.Item.lastMessageAt,
+            unreadCount:          inboxR.Item.unreadCount ?? 0,
+          };
+        }
+      } catch (e) {
+        logger.warn('inbox→lead history copy failed: ' + e.message);
+      }
+    }
+
     const item = {
       PK: leadPK(companyId, leadId),
       SK: 'METADATA',
@@ -305,6 +331,9 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
       // Append-only audit arrays (Phase 2 — populated by service layer, not API directly)
       ownerHistory:      [],  // [{ employeeId, name, assignedAt, assignedBy }]
       leadSourceHistory: [],  // [{ source, sourceId, recordedAt, recordedBy }]
+
+      // WhatsApp message history copied from INBOX# (only when source='whatsapp')
+      ...inboxHistory,
     };
 
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();

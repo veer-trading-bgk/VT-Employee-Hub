@@ -829,6 +829,7 @@ function UnknownContactAssignPicker({
   onInboxRefresh: () => void;
   onTabSwitch?: (t: ConvTab) => void;
 }) {
+  const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [isPending, setIsPending] = useState(false);
   const selectRef = useRef<HTMLSelectElement>(null);
@@ -864,6 +865,39 @@ function UnknownContactAssignPicker({
       );
       const newLeadId = created?.lead?.leadId;
       if (!newLeadId) throw new Error('No leadId returned');
+
+      // Optimistic cache update: move conversation from Unassigned → Open immediately
+      // so the list doesn't blank out while the server refetch resolves.
+      // The backend fix (copying lastMessageAt from INBOX# into the new LEAD#) ensures
+      // the server refetch also returns this conversation correctly.
+      const optimisticConv: WaConversation = {
+        ...conversation,
+        leadId: newLeadId,
+        type: 'lead',
+        assignedTo: employeeId,
+        assignedToName: employee.name,
+        chatStatus: 'open',
+      };
+      qc.setQueryData<{ conversations: WaConversation[]; counts: Record<string, number> }>(
+        ['wa-inbox', 'open'],
+        (old) => {
+          if (!old) return old;
+          return {
+            conversations: [optimisticConv, ...old.conversations.filter((c) => c.phone !== conversation.phone)],
+            counts: { ...old.counts, open: (old.counts.open ?? 0) + 1 },
+          };
+        },
+      );
+      qc.setQueryData<{ conversations: WaConversation[]; counts: Record<string, number> }>(
+        ['wa-inbox', 'unassigned'],
+        (old) => {
+          if (!old) return old;
+          return {
+            conversations: old.conversations.filter((c) => c.phone !== conversation.phone),
+            counts: { ...old.counts, unassigned: Math.max(0, (old.counts.unassigned ?? 0) - 1) },
+          };
+        },
+      );
 
       onConvUpdate?.({
         leadId: newLeadId,
