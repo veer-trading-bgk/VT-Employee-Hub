@@ -25,6 +25,9 @@ import { STAGE_LABELS } from '@/types/v3';
 import { wsClient } from '@/lib/wsClient';
 import type { WsMessage } from '@/lib/wsClient';
 import { toast } from 'sonner';
+import { useAuth } from '@/context/AuthContext';
+import { toV3Role } from '@/types/v3';
+import { OwnerSelect } from '@/components/v3/ui/OwnerSelect';
 
 // ── V2 API shapes (backend response shapes, never invented) ───────────────────
 
@@ -41,6 +44,7 @@ interface WaConversation {
   lastMessageDirection?: 'inbound' | 'outbound';
   lastInboundAt?: string | null;
   unreadCount?: number;
+  assignedTo?: string | null;
   assignedToName?: string | null;
   stage?: string | null;
   tags?: string[];
@@ -817,6 +821,9 @@ function CustomerSnapshotPanel({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
+  const canEditOwner = ['owner', 'admin'].includes(v3Role);
   const STAGE_OPTIONS = Object.entries(STAGE_LABELS).map(([value, label]) => ({ value, label }));
   const displayName = convDisplayName(conversation);
   const [showTagSelector, setShowTagSelector] = useState(false);
@@ -845,7 +852,6 @@ function CustomerSnapshotPanel({
     queryKey: ['tag-catalog'],
     queryFn: () => apiFetch<{ success: boolean; tags: Tag[] }>('/api/tags'),
     staleTime: 5 * 60_000,
-    enabled: !!conversation.leadId,
   });
   const tagCatalog = tagCatalogData?.tags ?? [];
 
@@ -858,7 +864,11 @@ function CustomerSnapshotPanel({
     mutationFn: ({ add, remove }: { add: string[]; remove: string[] }) =>
       apiFetch('/api/tags/contacts', {
         method: 'PUT',
-        body: JSON.stringify({ leadId: conversation.leadId, add, remove }),
+        body: JSON.stringify({
+          ...(conversation.leadId ? { leadId: conversation.leadId } : { phone: conversation.phone }),
+          add,
+          remove,
+        }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['wa-inbox'] });
@@ -931,66 +941,75 @@ function CustomerSnapshotPanel({
           </div>
         )}
 
-        {/* Tags — full add/remove (lead contacts only) */}
-        {conversation.leadId && (
-          <div>
-            <div className="mb-1.5 flex items-center justify-between">
-              <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">Tags</p>
-              <button
-                onClick={() => setShowTagSelector((v) => !v)}
-                className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20"
-              >
-                <TagIcon className="h-3 w-3" />
-                {showTagSelector ? 'Done' : 'Add'}
-              </button>
-            </div>
-            <div className="relative">
-              <div className="flex flex-wrap gap-1 min-h-[20px]">
-                {contactTags.map((tag) => (
-                  <TagBadge
-                    key={tag.id}
-                    tag={tag}
-                    onRemove={(e) => {
-                      e.stopPropagation();
-                      tagMut.mutate({ add: [], remove: [tag.id] });
-                    }}
-                  />
-                ))}
-                {contactTags.length === 0 && !showTagSelector && (
-                  <span className="text-xs text-neutral-400">No tags yet</span>
-                )}
-              </div>
-              {showTagSelector && (
-                <div className="absolute left-0 top-full z-20 mt-1">
-                  <TagSelector
-                    catalogTags={tagCatalog}
-                    selectedIds={contactTagIds}
-                    loading={tagCatalogLoading}
-                    onToggle={(tagId) => {
-                      const isSelected = contactTagIds.includes(tagId);
-                      tagMut.mutate({ add: isSelected ? [] : [tagId], remove: isSelected ? [tagId] : [] });
-                    }}
-                    onCreate={async (label, color) => {
-                      const res = await createTagMut.mutateAsync({ label, color });
-                      if (res.tag?.id) {
-                        tagMut.mutate({ add: [res.tag.id], remove: [] });
-                      }
-                    }}
-                    onClose={() => setShowTagSelector(false)}
-                  />
-                </div>
+        {/* Tags — available for all contacts (leads and unknown) */}
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">Tags</p>
+            <button
+              onClick={() => setShowTagSelector((v) => !v)}
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20"
+            >
+              <TagIcon className="h-3 w-3" />
+              {showTagSelector ? 'Done' : 'Add / Edit'}
+            </button>
+          </div>
+          <div className="relative">
+            <div className="flex flex-wrap gap-1 min-h-[20px]">
+              {contactTags.map((tag) => (
+                <TagBadge
+                  key={tag.id}
+                  tag={tag}
+                  onRemove={(e) => {
+                    e.stopPropagation();
+                    tagMut.mutate({ add: [], remove: [tag.id] });
+                  }}
+                />
+              ))}
+              {contactTags.length === 0 && !showTagSelector && (
+                <span className="text-xs text-neutral-400">No tags yet — click Add / Edit</span>
               )}
             </div>
+            {showTagSelector && (
+              <div className="absolute left-0 top-full z-20 mt-1">
+                <TagSelector
+                  catalogTags={tagCatalog}
+                  selectedIds={contactTagIds}
+                  loading={tagCatalogLoading}
+                  onToggle={(tagId) => {
+                    const isSelected = contactTagIds.includes(tagId);
+                    tagMut.mutate({ add: isSelected ? [] : [tagId], remove: isSelected ? [tagId] : [] });
+                  }}
+                  onCreate={async (label, color) => {
+                    const res = await createTagMut.mutateAsync({ label, color });
+                    if (res.tag?.id) {
+                      tagMut.mutate({ add: [res.tag.id], remove: [] });
+                    }
+                  }}
+                  onClose={() => setShowTagSelector(false)}
+                />
+              </div>
+            )}
           </div>
-        )}
+        </div>
 
-        {/* Assigned to */}
-        {conversation.assignedToName && (
-          <div>
-            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-400">Assigned to</p>
-            <p className="text-sm text-neutral-900 dark:text-neutral-100">{conversation.assignedToName}</p>
-          </div>
-        )}
+        {/* Assigned to — editable for leads; read-only for unknowns */}
+        <div>
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-400">Assigned to</p>
+          {conversation.leadId ? (
+            <OwnerSelect
+              contactId={conversation.leadId}
+              isLead
+              currentOwnerName={conversation.assignedToName}
+              currentOwnerId={conversation.assignedTo}
+              canEdit={canEditOwner}
+              onSuccess={() => qc.invalidateQueries({ queryKey: ['wa-inbox'] })}
+            />
+          ) : (
+            <p className="text-sm text-neutral-500">
+              {conversation.assignedToName ?? 'Unassigned (unknown contact)'}
+            </p>
+          )}
+        </div>
 
         {/* Chat status */}
         <div>

@@ -19,6 +19,8 @@ export interface OwnerSelectProps {
   /** Compact mode for table cells; full mode for sidebar / overview panels. */
   compact?: boolean;
   className?: string;
+  /** Called after a successful assignment (useful for invalidating module-specific caches). */
+  onSuccess?: () => void;
 }
 
 /**
@@ -40,6 +42,7 @@ export function OwnerSelect({
   canEdit,
   compact = false,
   className,
+  onSuccess,
 }: OwnerSelectProps) {
   const [editing, setEditing] = useState(false);
   const selectRef = useRef<HTMLSelectElement>(null);
@@ -67,7 +70,7 @@ export function OwnerSelect({
 
     assign(
       { employeeId: employee.id, employeeName: employee.name },
-      { onSettled: () => setEditing(false) },
+      { onSettled: () => setEditing(false), onSuccess: () => onSuccess?.() },
     );
   }
 
