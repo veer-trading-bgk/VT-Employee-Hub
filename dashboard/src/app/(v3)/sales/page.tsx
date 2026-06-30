@@ -50,6 +50,10 @@ const STAGE_COLORS: Record<Stage, string> = {
 
 // ── Kanban Card ───────────────────────────────────────────────────────────────
 
+function contactName(c: Contact): string {
+  return c.displayName ?? c.name ?? c.phone ?? '';
+}
+
 function KanbanCard({
   contact,
   isDragging = false,
@@ -65,6 +69,8 @@ function KanbanCard({
   const style = transform
     ? { transform: `translate(${transform.x}px,${transform.y}px)` }
     : undefined;
+
+  const assignee = contact.assignedToName ?? contact.ownerName ?? null;
 
   return (
     <div
@@ -89,10 +95,10 @@ function KanbanCard({
       {/* Contact info */}
       <Link href={`/customers/${contact.id}`} className="block" tabIndex={-1}>
         <div className="flex items-start gap-2.5">
-          <Avatar name={contact.name} size={32} />
+          <Avatar name={contactName(contact)} size={32} />
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100 hover:text-primary-600">
-              {contact.name}
+              {contactName(contact)}
             </p>
             <p className="text-xs text-neutral-500">{contact.phone}</p>
           </div>
@@ -101,12 +107,12 @@ function KanbanCard({
 
       {/* Footer */}
       <div className="mt-2.5 flex items-center justify-between gap-2">
-        {contact.ownerName ? (
-          <Avatar name={contact.ownerName} size={20} title={contact.ownerName} />
+        {assignee ? (
+          <Avatar name={assignee} size={20} title={assignee} />
         ) : (
           <span className="text-xs text-neutral-400">Unassigned</span>
         )}
-        {contact.tags.slice(0, 1).map((tag) => (
+        {(contact.tags ?? []).slice(0, 1).map((tag) => (
           <Badge key={tag} variant="default" className="text-[10px]">{tag}</Badge>
         ))}
       </div>
@@ -188,10 +194,18 @@ function KanbanBoard({ contacts }: { contacts: Contact[] }) {
   );
 
   const stageMutation = useMutation({
-    mutationFn: async ({ id, stage }: { id: string; stage: Stage }) => {
-      return apiFetch(`/api/contacts/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ stage }),
+    mutationFn: async ({ contact, stage }: { contact: Contact; stage: Stage }) => {
+      // Leads use the CRM endpoint (fires automations + writes stage history)
+      // Unknown contacts fall back to the contacts stage endpoint
+      if (contact.type === 'lead' || (contact.leadId ?? null) !== null) {
+        return apiFetch(`/api/crm/leads/${contact.id}/stage`, {
+          method: 'PUT',
+          body: JSON.stringify({ stage }),
+        });
+      }
+      return apiFetch('/api/contacts/stage', {
+        method: 'PUT',
+        body: JSON.stringify({ phone: contact.phone, stage }),
       });
     },
     onError: () => {
@@ -218,7 +232,7 @@ function KanbanBoard({ contacts }: { contacts: Contact[] }) {
       qc.setQueryData<Contact[]>(['sales-contacts'], (old = []) =>
         old.map((c) => (c.id === contact.id ? { ...c, stage: newStage } : c)),
       );
-      stageMutation.mutate({ id: contact.id, stage: newStage });
+      stageMutation.mutate({ contact, stage: newStage });
     }
   }
 

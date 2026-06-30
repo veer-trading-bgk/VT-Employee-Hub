@@ -59,21 +59,26 @@ export const STAGE_LABELS: Record<Stage, string> = {
   lost:        'Lost',
 };
 
-// V3 Contact entity (CONTACT# in DynamoDB)
+// V3 Contact entity — shape returned by /api/contacts and /api/crm/leads
 export interface Contact {
-  id: string;                   // ULID
-  name: string;
-  phone: string;                // E.164 format
-  email?: string;
+  id: string;                        // leadId for leads, 10-digit phone for unknowns
+  type?: 'lead' | 'unknown';         // backend type discriminator
+  leadId?: string | null;            // ULID (same as id for leads, null for unknowns)
+  displayName?: string;              // always populated: name ?? waName ?? phone
+  name: string;                      // may be null at runtime despite the type; use displayName ?? name ?? phone
+  phone: string;
+  email?: string | null;
   stage: Stage;
-  ownerId?: string;
-  ownerName?: string;
+  assignedTo?: string | null;
+  assignedToName?: string | null;    // backend field name (previously wrongly typed as ownerName)
+  ownerId?: string;                  // alias kept for backward compat
+  ownerName?: string;                // alias kept for backward compat
   tags: string[];
-  companyId: string;
-  chatStatus: 'open' | 'resolved' | 'pending' | 'unassigned';
-  lastMessageAt?: string;       // ISO 8601
-  createdAt: string;
-  updatedAt: string;
+  companyId?: string;
+  chatStatus?: 'open' | 'resolved' | 'pending' | 'unassigned';
+  lastMessageAt?: string;
+  createdAt?: string;
+  updatedAt?: string;                // NOT returned by current API; use lastMessageAt ?? createdAt
 }
 
 // V3 Follow-up entity (FOLLOWUP# in DynamoDB)

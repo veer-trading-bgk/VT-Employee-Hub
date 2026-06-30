@@ -9,7 +9,6 @@ import {
   Trash2,
   UserCheck,
   Tag,
-  Filter,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/v3/ui/Button';
@@ -49,7 +48,11 @@ const PAGE_SIZE = 50;
 
 // ── Column definitions ────────────────────────────────────────────────────────
 
-function buildColumns(onOpenContact: (c: Contact) => void): TableColumn<Contact>[] {
+function contactDisplayName(row: Contact): string {
+  return row.displayName ?? row.name ?? row.phone ?? '';
+}
+
+function buildColumns(): TableColumn<Contact>[] {
   return [
     {
       key: 'name',
@@ -57,10 +60,10 @@ function buildColumns(onOpenContact: (c: Contact) => void): TableColumn<Contact>
       sortable: true,
       cell: (row) => (
         <Link href={`/customers/${row.id}`} className="flex items-center gap-2.5 group">
-          <Avatar name={row.name} size={32} />
+          <Avatar name={contactDisplayName(row)} size={32} />
           <div>
             <p className="font-medium text-neutral-900 group-hover:text-primary-600 dark:text-neutral-100">
-              {row.name}
+              {contactDisplayName(row)}
             </p>
             <p className="text-xs text-neutral-500">{row.phone}</p>
           </div>
@@ -74,7 +77,7 @@ function buildColumns(onOpenContact: (c: Contact) => void): TableColumn<Contact>
       width: 'w-32',
       cell: (row) => (
         <Badge variant="stage" stage={row.stage}>
-          {STAGE_LABELS[row.stage]}
+          {STAGE_LABELS[row.stage] ?? row.stage}
         </Badge>
       ),
     },
@@ -85,7 +88,7 @@ function buildColumns(onOpenContact: (c: Contact) => void): TableColumn<Contact>
       width: 'w-40',
       cell: (row) => (
         <span className="text-sm text-neutral-700 dark:text-neutral-300">
-          {row.ownerName ?? '—'}
+          {row.assignedToName ?? row.ownerName ?? '—'}
         </span>
       ),
     },
@@ -95,29 +98,32 @@ function buildColumns(onOpenContact: (c: Contact) => void): TableColumn<Contact>
       width: 'w-48',
       cell: (row) => (
         <div className="flex flex-wrap gap-1">
-          {row.tags.slice(0, 2).map((tag) => (
+          {(row.tags ?? []).slice(0, 2).map((tag) => (
             <Badge key={tag} variant="default" className="text-[10px]">
               {tag}
             </Badge>
           ))}
-          {row.tags.length > 2 && (
+          {(row.tags ?? []).length > 2 && (
             <Badge variant="default" className="text-[10px]">
-              +{row.tags.length - 2}
+              +{(row.tags ?? []).length - 2}
             </Badge>
           )}
         </div>
       ),
     },
     {
-      key: 'updatedAt',
-      header: 'Last updated',
-      sortable: true,
+      key: 'lastActivity',
+      header: 'Last activity',
+      sortable: false,
       width: 'w-32',
-      cell: (row) => (
-        <span className="text-sm text-neutral-500">
-          {format(new Date(row.updatedAt), 'd MMM yyyy')}
-        </span>
-      ),
+      cell: (row) => {
+        const ts = row.lastMessageAt ?? row.createdAt;
+        return (
+          <span className="text-sm text-neutral-500">
+            {ts ? format(new Date(ts), 'd MMM yyyy') : '—'}
+          </span>
+        );
+      },
     },
   ];
 }
@@ -147,12 +153,11 @@ function CustomersContent() {
   const { data, isLoading } = useQuery<ContactsResponse>({
     queryKey,
     queryFn: async () => {
+      // Backend expects 'q' not 'search'; backend doesn't sort so sortKey/sortDir are cache-only
       const params = new URLSearchParams({
-        search,
+        ...(search && { q: search }),
         page: String(page),
         pageSize: String(pageSize),
-        sortKey,
-        sortDir: sortDir ?? 'desc',
         ...(stageFilter && { stage: stageFilter }),
       });
       return apiFetch<ContactsResponse>(`/api/contacts?${params}`);
@@ -161,19 +166,25 @@ function CustomersContent() {
     placeholderData: { contacts: [], total: 0, page: 1, pageSize: PAGE_SIZE },
   });
 
+  // Bulk delete: route each selected contact to the correct backend endpoint
   const bulkDeleteMutation = useMutation({
     mutationFn: async (ids: string[]) => {
-      return apiFetch('/api/contacts/bulk-delete', {
-        method: 'POST',
-        body: JSON.stringify({ ids }),
-      });
+      const allContacts = data?.contacts ?? [];
+      const targets = allContacts.filter((c) => ids.includes(c.id));
+      await Promise.all(
+        targets.map((c) =>
+          c.type === 'lead' || (c.leadId ?? null) !== null
+            ? apiFetch(`/api/crm/leads/${c.id}`, { method: 'DELETE' })
+            : apiFetch(`/api/contacts/unknown/${c.phone}`, { method: 'DELETE' }),
+        ),
+      );
     },
     onSuccess: () => {
       toast.success(`Deleted ${selectedIds.size} contacts`);
       setSelectedIds(new Set());
       qc.invalidateQueries({ queryKey: ['contacts'] });
     },
-    onError: () => toast.error('Bulk delete failed'),
+    onError: () => toast.error('Delete failed — you may not have permission to remove some contacts'),
   });
 
   function handleSort(key: string, dir: SortDirection) {
@@ -183,11 +194,11 @@ function CustomersContent() {
   }
 
   function handleBulkDelete() {
-    if (!window.confirm(`Delete ${selectedIds.size} contacts? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete ${selectedIds.size} contact${selectedIds.size !== 1 ? 's' : ''}? This cannot be undone.`)) return;
     bulkDeleteMutation.mutate([...selectedIds]);
   }
 
-  const columns = buildColumns((c) => router.push(`/customers/${c.id}`));
+  const columns = buildColumns();
 
   const filterChips = stageFilter
     ? [{ key: 'stage', label: 'Stage', value: STAGE_LABELS[stageFilter as Stage] ?? stageFilter }]

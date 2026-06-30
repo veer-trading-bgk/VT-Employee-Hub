@@ -528,6 +528,35 @@ function ThreadPane({
 
   const messages = data?.messages ?? [];
 
+  // Mark conversation as read when opened (clears unread badge + sends read receipts)
+  useEffect(() => {
+    if ((conversation.unreadCount ?? 0) === 0) return;
+    if (conversation.type === 'lead' && conversation.leadId) {
+      apiFetch(`/api/whatsapp/inbox/${conversation.leadId}/mark-read`, { method: 'POST' })
+        .then(() => qc.invalidateQueries({ queryKey: ['wa-inbox'] }))
+        .catch(() => {});
+    } else if (conversation.type === 'unknown') {
+      apiFetch(`/api/whatsapp/inbox/unknown/${conversation.phone}/mark-read`, { method: 'POST' })
+        .then(() => qc.invalidateQueries({ queryKey: ['wa-inbox'] }))
+        .catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convKey]);
+
+  // Resolve / Reopen conversation (only available for CRM leads, not unknown contacts)
+  const resolveMutation = useMutation({
+    mutationFn: async () => {
+      if (!conversation.leadId) return;
+      const isOpen = conversation.chatStatus === 'open' || conversation.chatStatus === 'unassigned';
+      await apiFetch(`/api/whatsapp/inbox/${conversation.leadId}/${isOpen ? 'resolve' : 'reopen'}`, { method: 'PUT' });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+      toast.success(conversation.chatStatus === 'resolved' ? 'Conversation reopened' : 'Conversation resolved');
+    },
+    onError: () => toast.error('Failed to update conversation status'),
+  });
+
   // Real-time: refetch when a WA message arrives for this conversation
   useEffect(() => {
     const handler = (wsMsg: WsMessage) => {
@@ -667,6 +696,22 @@ function ThreadPane({
           <p className="text-xs text-neutral-500">{conversation.phone}</p>
         </div>
         <div className="flex items-center gap-1">
+          {conversation.leadId && (
+            <Button
+              variant="ghost"
+              size="sm"
+              loading={resolveMutation.isPending}
+              onClick={() => resolveMutation.mutate()}
+              className={cn(
+                'text-xs font-medium',
+                conversation.chatStatus === 'resolved'
+                  ? 'text-success-600 hover:text-success-700'
+                  : 'text-neutral-500 hover:text-neutral-700',
+              )}
+            >
+              {conversation.chatStatus === 'resolved' ? 'Reopen' : 'Resolve'}
+            </Button>
+          )}
           <Button variant="ghost" size="sm" iconLeft={<Phone className="h-4 w-4" />} aria-label="Call contact" />
           <Button variant="ghost" size="sm" iconLeft={<MoreHorizontal className="h-4 w-4" />} aria-label="More options" />
         </div>
@@ -767,8 +812,29 @@ function CustomerSnapshotPanel({
   conversation: WaConversation;
   onClose: () => void;
 }) {
+  const qc = useQueryClient();
   const STAGE_OPTIONS = Object.entries(STAGE_LABELS).map(([value, label]) => ({ value, label }));
   const displayName = convDisplayName(conversation);
+
+  const stageMutation = useMutation({
+    mutationFn: (stage: string) => {
+      if (conversation.leadId) {
+        return apiFetch(`/api/crm/leads/${conversation.leadId}/stage`, {
+          method: 'PUT',
+          body: JSON.stringify({ stage }),
+        });
+      }
+      return apiFetch('/api/contacts/stage', {
+        method: 'PUT',
+        body: JSON.stringify({ phone: conversation.phone, stage }),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+      toast.success('Stage updated');
+    },
+    onError: () => toast.error('Failed to update stage'),
+  });
 
   return (
     <div className="flex h-full flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950">
@@ -805,8 +871,9 @@ function CustomerSnapshotPanel({
             <Select
               options={STAGE_OPTIONS}
               value={conversation.stage ?? ''}
-              onChange={() => {}}
+              onChange={(e) => stageMutation.mutate(e.target.value)}
               aria-label="Contact stage"
+              disabled={stageMutation.isPending}
             />
           </div>
         )}
