@@ -2,7 +2,7 @@
 
 import { useState, useRef, useCallback } from 'react';
 import {
-  Upload, FileText, CheckCircle2, XCircle, AlertTriangle, ChevronRight,
+  Upload, FileText, CheckCircle2, XCircle, AlertTriangle, Download as DownloadIcon,
 } from 'lucide-react';
 import { Drawer, DrawerFooter } from '@/components/v3/ui/Drawer';
 import { Button } from '@/components/v3/ui/Button';
@@ -11,17 +11,18 @@ import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/cn';
 
 // ── CSV parser ────────────────────────────────────────────────────────────────
+// Handles: quoted fields, embedded commas, escaped quotes, BOM, CRLF
 
 function parseLine(line: string): string[] {
   const cells: string[] = [];
-  let inQuotes = false;
+  let inQ = false;
   let cell = '';
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') { cell += '"'; i++; }
-      else inQuotes = !inQuotes;
-    } else if (ch === ',' && !inQuotes) {
+      if (inQ && line[i + 1] === '"') { cell += '"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === ',' && !inQ) {
       cells.push(cell.trim()); cell = '';
     } else {
       cell += ch;
@@ -31,44 +32,64 @@ function parseLine(line: string): string[] {
   return cells;
 }
 
-function parseCSV(text: string): { headers: string[]; rows: Record<string, string>[] } {
+function parseCSV(raw: string): { headers: string[]; rows: Record<string, string>[] } {
+  // Strip BOM if present (common in Excel-exported CSV)
+  const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
   const lines = text.trim().split(/\r?\n/);
   if (lines.length < 2) return { headers: [], rows: [] };
-  const headers = parseLine(lines[0]);
-  const rows = lines.slice(1)
+  const headers = parseLine(lines[0]).map((h) => h.trim());
+  const rows = lines
+    .slice(1)
     .filter((l) => l.trim())
     .map((line) => {
       const vals = parseLine(line);
-      return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? '']));
+      return Object.fromEntries(headers.map((h, i) => [h, (vals[i] ?? '').trim()]));
     });
   return { headers, rows };
 }
 
-function detectCol(headers: string[], candidates: string[]): string {
-  return (
-    candidates
-      .map((c) => headers.find((h) => h.toLowerCase().replace(/[^a-z]/g, '') === c.replace(/[^a-z]/g, '')))
-      .find(Boolean) ?? ''
-  );
+// Fuzzy column name matching — handles Name/Full Name/Customer Name/Lead Name etc.
+function detectCol(headers: string[], patterns: RegExp[]): string {
+  for (const pat of patterns) {
+    const match = headers.find((h) => pat.test(h.toLowerCase()));
+    if (match) return match;
+  }
+  return '';
+}
+
+const PHONE_PATTERNS  = [/^phone/, /^mobile/, /^contact/, /^number/, /^ph$/, /^mob$/];
+const NAME_PATTERNS   = [/^name/, /^full.?name/, /^customer/, /^lead/, /^person/];
+const EMAIL_PATTERNS  = [/^email/, /^mail/, /^e.?mail/];
+
+// ── Template download ─────────────────────────────────────────────────────────
+
+function downloadTemplate() {
+  const csv = 'Name,Phone,Email\nRahul Sharma,9876543210,rahul@example.com\nPriya Patel,9123456789,';
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'contacts_template.csv'; a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type Step = 'upload' | 'map' | 'importing' | 'done';
+type Step = 'upload' | 'preview' | 'importing' | 'done';
 
-interface ParsedData {
-  headers: string[];
-  rows: Record<string, string>[];
-  colName:  string;
+interface Detected {
+  headers:  string[];
+  rows:     Record<string, string>[];
   colPhone: string;
+  colName:  string;
   colEmail: string;
+  fileName: string;
 }
 
 interface ImportResult {
-  imported:  number;
+  imported:   number;
   duplicates: number;
-  errors:    number;
-  errorRows: string[];
+  errors:     number;
+  errorPhones: string[];
 }
 
 export interface ImportContactsDrawerProps {
@@ -81,53 +102,62 @@ export interface ImportContactsDrawerProps {
 export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProps) {
   const qc = useQueryClient();
 
-  const [step,      setStep]      = useState<Step>('upload');
-  const [parsed,    setParsed]    = useState<ParsedData | null>(null);
-  const [colName,   setColName]   = useState('');
-  const [colPhone,  setColPhone]  = useState('');
-  const [colEmail,  setColEmail]  = useState('');
-  const [progress,  setProgress]  = useState(0);
-  const [total,     setTotal]     = useState(0);
-  const [result,    setResult]    = useState<ImportResult | null>(null);
-  const [dragOver,  setDragOver]  = useState(false);
-  const [fileName,  setFileName]  = useState('');
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [step,     setStep]     = useState<Step>('upload');
+  const [detected, setDetected] = useState<Detected | null>(null);
+  const [parseErr, setParseErr] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [total,    setTotal]    = useState(0);
+  const [result,   setResult]   = useState<ImportResult | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef  = useRef<HTMLInputElement>(null);
   const abortRef = useRef(false);
 
-  function resetAll() {
-    setStep('upload'); setParsed(null); setColName(''); setColPhone('');
-    setColEmail(''); setProgress(0); setTotal(0); setResult(null);
-    setFileName(''); abortRef.current = false;
+  function reset() {
+    setStep('upload'); setDetected(null); setParseErr('');
+    setProgress(0); setTotal(0); setResult(null); abortRef.current = false;
   }
 
   function handleClose() {
-    if (step === 'importing') return; // block close mid-import
-    resetAll();
+    if (step === 'importing') return;
+    reset();
     onClose();
   }
 
   function processFile(file: File) {
-    if (!file.name.endsWith('.csv')) {
-      alert('Please upload a .csv file');
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+      setParseErr('Please upload a .csv file');
       return;
     }
-    setFileName(file.name);
+    setParseErr('');
     const reader = new FileReader();
     reader.onload = (e) => {
       const text = e.target?.result as string;
       const { headers, rows } = parseCSV(text);
-      if (!headers.length || !rows.length) {
-        alert('CSV is empty or could not be parsed');
+
+      if (!headers.length) {
+        setParseErr('Could not read this file. Make sure it is a valid CSV with column headers on the first row.');
         return;
       }
-      const detectedName  = detectCol(headers, ['name', 'fullname', 'contactname', 'customername', 'leadname']);
-      const detectedPhone = detectCol(headers, ['phone', 'mobile', 'phonenumber', 'mobilenumber', 'contact']);
-      const detectedEmail = detectCol(headers, ['email', 'emailaddress', 'mail']);
-      setParsed({ headers, rows, colName: detectedName, colPhone: detectedPhone, colEmail: detectedEmail });
-      setColName(detectedName);
-      setColPhone(detectedPhone);
-      setColEmail(detectedEmail);
-      setStep('map');
+      if (!rows.length) {
+        setParseErr('The file has no data rows. Add at least one contact and try again.');
+        return;
+      }
+
+      const colPhone = detectCol(headers, PHONE_PATTERNS);
+      const colName  = detectCol(headers, NAME_PATTERNS);
+      const colEmail = detectCol(headers, EMAIL_PATTERNS);
+
+      if (!colPhone) {
+        setParseErr(
+          `We couldn't find a phone number column. ` +
+          `Your file has these columns: ${headers.join(', ')}. ` +
+          `Rename one to "Phone" and try again, or use our template.`
+        );
+        return;
+      }
+
+      setDetected({ headers, rows, colPhone, colName, colEmail, fileName: file.name });
+      setStep('preview');
     };
     reader.readAsText(file);
   }
@@ -140,48 +170,40 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
   }, []);
 
   async function startImport() {
-    if (!parsed || !colPhone) return;
-    const rows = parsed.rows.filter((r) => r[colPhone]?.trim());
-    setTotal(rows.length);
+    if (!detected) return;
+    const { rows, colPhone, colName, colEmail } = detected;
+    const validRows = rows.filter((r) => r[colPhone]?.trim());
+
+    setTotal(validRows.length);
     setProgress(0);
     setStep('importing');
     abortRef.current = false;
 
-    const res: ImportResult = { imported: 0, duplicates: 0, errors: 0, errorRows: [] };
+    const res: ImportResult = { imported: 0, duplicates: 0, errors: 0, errorPhones: [] };
 
-    // batch: 5 concurrent requests, pause 200ms between batches to avoid rate-limit
     const BATCH = 5;
-    for (let i = 0; i < rows.length; i += BATCH) {
+    for (let i = 0; i < validRows.length; i += BATCH) {
       if (abortRef.current) break;
-      const batch = rows.slice(i, i + BATCH);
       await Promise.all(
-        batch.map(async (row) => {
-          const name  = colName  ? (row[colName]  ?? '').trim() : '';
-          const phone = (row[colPhone] ?? '').trim();
-          const email = colEmail ? (row[colEmail] ?? '').trim() : '';
+        validRows.slice(i, i + BATCH).map(async (row) => {
+          const phone = row[colPhone].trim();
+          const name  = colName  ? (row[colName]?.trim()  || phone) : phone;
+          const email = colEmail ? (row[colEmail]?.trim() || null)  : null;
           try {
             await apiFetch('/api/crm/leads', {
               method: 'POST',
-              body: JSON.stringify({
-                name:   name || phone, // use phone as fallback name
-                phone,
-                email:  email || null,
-                source: 'csv',
-              }),
+              body: JSON.stringify({ name, phone, email, source: 'csv' }),
             });
             res.imported++;
           } catch (err: any) {
-            if (err?.status === 409 || String(err?.message).includes('409')) {
-              res.duplicates++;
-            } else {
-              res.errors++;
-              if (res.errorRows.length < 5) res.errorRows.push(phone);
-            }
+            const is409 = err?.status === 409 || String(err?.message ?? '').includes('409');
+            if (is409) { res.duplicates++; }
+            else        { res.errors++; if (res.errorPhones.length < 5) res.errorPhones.push(phone); }
           }
         }),
       );
-      setProgress(Math.min(i + BATCH, rows.length));
-      if (i + BATCH < rows.length) await new Promise((r) => setTimeout(r, 150));
+      setProgress(Math.min(i + BATCH, validRows.length));
+      if (i + BATCH < validRows.length) await new Promise((r) => setTimeout(r, 150));
     }
 
     setResult(res);
@@ -189,69 +211,60 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
     if (res.imported > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
   }
 
-  // ── Render helpers ──────────────────────────────────────────────────────────
-
-  const SEL_CLS =
-    'h-9 w-full rounded-lg border border-neutral-200 bg-white px-3 text-sm ' +
-    'focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 ' +
-    'dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200';
-
-  function ColSelect({ label, value, onChange }: {
-    label: string; value: string; onChange: (v: string) => void;
-  }) {
-    return (
-      <div className="flex flex-col gap-1.5">
-        <label className="text-sm font-medium text-neutral-700 dark:text-neutral-200">{label}</label>
-        <select value={value} onChange={(e) => onChange(e.target.value)} className={SEL_CLS}>
-          <option value="">— Skip —</option>
-          {parsed?.headers.map((h) => <option key={h} value={h}>{h}</option>)}
-        </select>
-      </div>
-    );
-  }
+  // ── Helpers ─────────────────────────────────────────────────────────────────
 
   const pct = total > 0 ? Math.round((progress / total) * 100) : 0;
+  const validCount = detected?.rows.filter((r) => r[detected.colPhone]?.trim()).length ?? 0;
+
+  const previewRows = detected
+    ? detected.rows
+        .filter((r) => r[detected.colPhone]?.trim())
+        .slice(0, 5)
+    : [];
+
+  // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
     <Drawer
       open={open}
       onClose={handleClose}
       title="Import Contacts"
-      description="Upload a CSV file to bulk-import contacts"
+      description="Upload a CSV file to bulk-add contacts to your CRM"
       width={520}
       footer={
-        step === 'upload' ? undefined :
-        step === 'map' ? (
+        step === 'preview' ? (
           <DrawerFooter>
-            <Button variant="secondary" size="md" onClick={resetAll} type="button">Back</Button>
-            <Button
-              variant="primary"
-              size="md"
-              onClick={startImport}
-              disabled={!colPhone}
-            >
-              Import {parsed?.rows.filter((r) => r[colPhone]?.trim()).length ?? 0} Contacts
+            <Button variant="secondary" size="md" onClick={reset} type="button">
+              Back
+            </Button>
+            <Button variant="primary" size="md" onClick={startImport}>
+              Import {validCount} Contact{validCount !== 1 ? 's' : ''}
             </Button>
           </DrawerFooter>
-        ) :
-        step === 'done' ? (
+        ) : step === 'done' ? (
           <DrawerFooter>
-            <Button variant="secondary" size="md" onClick={resetAll} type="button">Import Another</Button>
-            <Button variant="primary" size="md" onClick={handleClose}>Done</Button>
+            <Button variant="secondary" size="md" onClick={reset} type="button">
+              Import Another File
+            </Button>
+            <Button variant="primary" size="md" onClick={handleClose}>
+              Done
+            </Button>
           </DrawerFooter>
         ) : undefined
       }
     >
-      {/* ── Step: Upload ─────────────────────────────────────────────────── */}
+      {/* ── Upload ─────────────────────────────────────────────────────────── */}
       {step === 'upload' && (
-        <div className="flex flex-col gap-6">
+        <div className="flex flex-col gap-5">
+          {/* Drop zone */}
           <div
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={handleDrop}
             onClick={() => fileRef.current?.click()}
             className={cn(
-              'flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed p-10 transition-colors',
+              'flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl',
+              'border-2 border-dashed p-10 transition-colors',
               dragOver
                 ? 'border-primary-500 bg-primary-50 dark:bg-primary-950'
                 : 'border-neutral-300 hover:border-primary-400 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900',
@@ -262,9 +275,10 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
             </div>
             <div className="text-center">
               <p className="font-medium text-neutral-800 dark:text-neutral-200">
-                Drop your CSV here or <span className="text-primary-600">browse</span>
+                Drop your CSV here, or{' '}
+                <span className="text-primary-600 underline-offset-2 hover:underline">browse</span>
               </p>
-              <p className="mt-1 text-sm text-neutral-500">Supports .csv files — UTF-8 encoding recommended</p>
+              <p className="mt-1 text-sm text-neutral-500">.csv files only</p>
             </div>
           </div>
           <input
@@ -272,154 +286,204 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
             type="file"
             accept=".csv"
             className="hidden"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) processFile(f); }}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) processFile(f); e.target.value = ''; }}
           />
 
-          {/* Template hint */}
-          <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-800 dark:bg-neutral-900">
-            <p className="mb-2 text-sm font-medium text-neutral-700 dark:text-neutral-200">Expected CSV format</p>
-            <code className="block rounded bg-neutral-100 px-3 py-2 text-xs text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
-              Name,Phone,Email<br />
-              Rahul Sharma,9876543210,rahul@email.com<br />
-              Priya Patel,9123456789,
+          {/* Error */}
+          {parseErr && (
+            <div className="flex gap-3 rounded-xl border border-error-100 bg-error-50 p-4">
+              <XCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-error-600" />
+              <p className="text-sm text-error-700">{parseErr}</p>
+            </div>
+          )}
+
+          {/* Template */}
+          <div className="rounded-xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-700 dark:bg-neutral-900">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
+                  Need a template?
+                </p>
+                <p className="mt-0.5 text-sm text-neutral-500">
+                  Download our ready-to-fill CSV. Only Phone is required — Name and Email are optional.
+                </p>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                iconLeft={<DownloadIcon className="h-3.5 w-3.5" />}
+                onClick={downloadTemplate}
+                type="button"
+                className="flex-shrink-0"
+              >
+                Template
+              </Button>
+            </div>
+            <code className="mt-3 block rounded-lg bg-neutral-100 px-3 py-2 text-xs text-neutral-500 dark:bg-neutral-800">
+              Name, Phone, Email<br />
+              Rahul Sharma, 9876543210, rahul@mail.com<br />
+              Priya Patel, 9123456789,
             </code>
-            <p className="mt-2 text-xs text-neutral-500">
-              Column names are auto-detected. Only Phone is required — Name and Email are optional.
-            </p>
           </div>
         </div>
       )}
 
-      {/* ── Step: Map columns ─────────────────────────────────────────────── */}
-      {step === 'map' && parsed && (
+      {/* ── Preview ─────────────────────────────────────────────────────────── */}
+      {step === 'preview' && detected && (
         <div className="flex flex-col gap-5">
-          <div className="flex items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-900">
+          {/* File info */}
+          <div className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-900">
             <FileText className="h-4 w-4 flex-shrink-0 text-neutral-400" />
-            <p className="text-sm text-neutral-700 dark:text-neutral-300">{fileName}</p>
-            <span className="ml-auto text-xs text-neutral-400">{parsed.rows.length} rows detected</span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium text-neutral-700 dark:text-neutral-300">
+                {detected.fileName}
+              </p>
+              <p className="text-xs text-neutral-400">
+                {validCount} contacts ready to import
+                {detected.rows.length - validCount > 0 &&
+                  ` · ${detected.rows.length - validCount} rows skipped (no phone)`}
+              </p>
+            </div>
           </div>
 
-          <div>
-            <h3 className="mb-3 text-sm font-semibold text-neutral-800 dark:text-neutral-200">
-              Map CSV columns to contact fields
-            </h3>
-            <div className="flex flex-col gap-3">
-              <ColSelect label="Phone *" value={colPhone} onChange={setColPhone} />
-              <ColSelect label="Name"    value={colName}  onChange={setColName} />
-              <ColSelect label="Email"   value={colEmail} onChange={setColEmail} />
-            </div>
-            {!colPhone && (
-              <p className="mt-2 text-xs text-error-600">Phone column is required to import</p>
+          {/* Detected column badges */}
+          <div className="flex flex-wrap gap-2">
+            <span className="rounded-full bg-success-50 px-3 py-1 text-xs font-medium text-success-700">
+              ✓ Phone → {detected.colPhone}
+            </span>
+            {detected.colName && (
+              <span className="rounded-full bg-success-50 px-3 py-1 text-xs font-medium text-success-700">
+                ✓ Name → {detected.colName}
+              </span>
+            )}
+            {!detected.colName && (
+              <span className="rounded-full bg-warning-50 px-3 py-1 text-xs font-medium text-warning-700">
+                No name column — phone will be used as name
+              </span>
+            )}
+            {detected.colEmail && (
+              <span className="rounded-full bg-success-50 px-3 py-1 text-xs font-medium text-success-700">
+                ✓ Email → {detected.colEmail}
+              </span>
             )}
           </div>
 
-          {/* Preview */}
+          {/* Preview table */}
           <div>
-            <h3 className="mb-2 text-sm font-semibold text-neutral-800 dark:text-neutral-200">
-              Preview (first 5 rows)
-            </h3>
-            <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-700">
-              <table className="min-w-full text-xs">
-                <thead className="bg-neutral-50 dark:bg-neutral-800">
-                  <tr>
-                    {['Name', 'Phone', 'Email'].map((h) => (
-                      <th key={h} className="px-3 py-2 text-left font-medium text-neutral-500">{h}</th>
-                    ))}
+            <p className="mb-2 text-sm font-semibold text-neutral-700 dark:text-neutral-200">
+              Preview — first {Math.min(5, validCount)} contacts
+            </p>
+            <div className="overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800">
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-neutral-500 uppercase tracking-wide">Name</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-neutral-500 uppercase tracking-wide">Phone</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-neutral-500 uppercase tracking-wide">Email</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                  {parsed.rows.slice(0, 5).map((row, i) => (
-                    <tr key={i}>
-                      <td className="px-3 py-2 text-neutral-700 dark:text-neutral-300">
-                        {colName ? row[colName] : <span className="text-neutral-400 italic">—</span>}
+                  {previewRows.map((row, i) => (
+                    <tr key={i} className="bg-white dark:bg-neutral-900">
+                      <td className="px-4 py-2.5 text-neutral-700 dark:text-neutral-300">
+                        {detected.colName ? (row[detected.colName] || <span className="text-neutral-400 italic text-xs">—</span>) : (
+                          <span className="text-neutral-400 italic text-xs">will use phone</span>
+                        )}
                       </td>
-                      <td className="px-3 py-2 font-medium text-neutral-800 dark:text-neutral-200">
-                        {colPhone ? row[colPhone] : <span className="text-error-500">missing</span>}
+                      <td className="px-4 py-2.5 font-medium text-neutral-900 dark:text-neutral-100 tabular-nums">
+                        {row[detected.colPhone]}
                       </td>
-                      <td className="px-3 py-2 text-neutral-500">
-                        {colEmail ? row[colEmail] || '—' : '—'}
+                      <td className="px-4 py-2.5 text-neutral-500 text-xs">
+                        {detected.colEmail ? (row[detected.colEmail] || '—') : '—'}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {validCount > 5 && (
+                <div className="border-t border-neutral-100 bg-neutral-50 px-4 py-2 text-xs text-neutral-400 dark:border-neutral-800 dark:bg-neutral-800">
+                  + {validCount - 5} more contacts
+                </div>
+              )}
             </div>
           </div>
+
+          <p className="rounded-lg bg-neutral-50 px-4 py-3 text-sm text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
+            All contacts will be created with source <strong>CSV</strong> and auto-assigned by your round-robin rules.
+            Duplicate phone numbers will be skipped automatically.
+          </p>
         </div>
       )}
 
-      {/* ── Step: Importing ───────────────────────────────────────────────── */}
+      {/* ── Importing ───────────────────────────────────────────────────────── */}
       {step === 'importing' && (
-        <div className="flex flex-col items-center gap-6 py-8">
-          <div className="relative flex h-20 w-20 items-center justify-center">
-            <svg className="absolute inset-0 -rotate-90" viewBox="0 0 80 80">
-              <circle cx="40" cy="40" r="36" fill="none" stroke="currentColor"
+        <div className="flex flex-col items-center gap-6 py-10">
+          <div className="relative flex h-24 w-24 items-center justify-center">
+            <svg className="absolute inset-0 -rotate-90" viewBox="0 0 96 96">
+              <circle cx="48" cy="48" r="42" fill="none" stroke="currentColor"
                 className="text-neutral-200 dark:text-neutral-700" strokeWidth="6" />
-              <circle cx="40" cy="40" r="36" fill="none" stroke="currentColor"
+              <circle cx="48" cy="48" r="42" fill="none" stroke="currentColor"
                 className="text-primary-600" strokeWidth="6"
-                strokeDasharray={`${2 * Math.PI * 36}`}
-                strokeDashoffset={`${2 * Math.PI * 36 * (1 - pct / 100)}`}
+                strokeDasharray={`${2 * Math.PI * 42}`}
+                strokeDashoffset={`${2 * Math.PI * 42 * (1 - pct / 100)}`}
                 strokeLinecap="round"
                 style={{ transition: 'stroke-dashoffset 0.3s ease' }}
               />
             </svg>
-            <span className="text-lg font-bold text-neutral-800 dark:text-neutral-200">{pct}%</span>
+            <span className="text-xl font-bold text-neutral-800 dark:text-neutral-200">{pct}%</span>
           </div>
           <div className="text-center">
-            <p className="font-medium text-neutral-800 dark:text-neutral-200">Importing contacts…</p>
-            <p className="mt-1 text-sm text-neutral-500">{progress} of {total} processed</p>
+            <p className="font-semibold text-neutral-800 dark:text-neutral-200">Importing…</p>
+            <p className="mt-1 text-sm text-neutral-500">{progress} of {total} contacts processed</p>
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => { abortRef.current = true; }}
-          >
+          <Button variant="secondary" size="sm" onClick={() => { abortRef.current = true; }}>
             Cancel
           </Button>
         </div>
       )}
 
-      {/* ── Step: Done ────────────────────────────────────────────────────── */}
+      {/* ── Done ────────────────────────────────────────────────────────────── */}
       {step === 'done' && result && (
-        <div className="flex flex-col gap-4 py-4">
+        <div className="flex flex-col gap-4 py-2">
           <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-3 rounded-xl border border-success-100 bg-success-50 px-4 py-3">
-              <CheckCircle2 className="h-5 w-5 flex-shrink-0 text-success-600" />
+            {/* Imported */}
+            <div className="flex items-center gap-4 rounded-xl border border-success-100 bg-success-50 px-4 py-4">
+              <CheckCircle2 className="h-6 w-6 flex-shrink-0 text-success-600" />
               <div>
                 <p className="font-semibold text-success-700">
-                  {result.imported} contacts imported
+                  {result.imported} contact{result.imported !== 1 ? 's' : ''} imported
                 </p>
-                <p className="text-sm text-success-600">
-                  Successfully added to your CRM
-                </p>
+                <p className="text-sm text-success-600">Successfully added to your CRM</p>
               </div>
             </div>
 
+            {/* Duplicates */}
             {result.duplicates > 0 && (
-              <div className="flex items-center gap-3 rounded-xl border border-warning-100 bg-warning-50 px-4 py-3">
-                <AlertTriangle className="h-5 w-5 flex-shrink-0 text-warning-600" />
+              <div className="flex items-center gap-4 rounded-xl border border-warning-100 bg-warning-50 px-4 py-4">
+                <AlertTriangle className="h-6 w-6 flex-shrink-0 text-warning-600" />
                 <div>
                   <p className="font-semibold text-warning-700">
-                    {result.duplicates} duplicates skipped
+                    {result.duplicates} duplicate{result.duplicates !== 1 ? 's' : ''} skipped
                   </p>
-                  <p className="text-sm text-warning-600">
-                    These phone numbers already exist in your CRM
-                  </p>
+                  <p className="text-sm text-warning-600">These phone numbers already exist in your CRM</p>
                 </div>
               </div>
             )}
 
+            {/* Errors */}
             {result.errors > 0 && (
-              <div className="flex items-center gap-3 rounded-xl border border-error-100 bg-error-50 px-4 py-3">
-                <XCircle className="h-5 w-5 flex-shrink-0 text-error-600" />
+              <div className="flex items-center gap-4 rounded-xl border border-error-100 bg-error-50 px-4 py-4">
+                <XCircle className="h-6 w-6 flex-shrink-0 text-error-600" />
                 <div>
                   <p className="font-semibold text-error-700">
-                    {result.errors} rows failed
+                    {result.errors} row{result.errors !== 1 ? 's' : ''} failed
                   </p>
-                  {result.errorRows.length > 0 && (
-                    <p className="mt-1 font-mono text-xs text-error-600">
-                      {result.errorRows.join(', ')}
-                      {result.errors > result.errorRows.length ? ` + ${result.errors - result.errorRows.length} more` : ''}
+                  {result.errorPhones.length > 0 && (
+                    <p className="mt-0.5 font-mono text-xs text-error-600">
+                      {result.errorPhones.join(', ')}
+                      {result.errors > result.errorPhones.length
+                        ? ` + ${result.errors - result.errorPhones.length} more`
+                        : ''}
                     </p>
                   )}
                 </div>
@@ -427,12 +491,13 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
             )}
           </div>
 
-          <div className="rounded-lg border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-900">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-neutral-500">Total processed</span>
+          {/* Stats */}
+          <div className="rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-3 dark:border-neutral-700 dark:bg-neutral-900">
+            <div className="flex justify-between text-sm">
+              <span className="text-neutral-500">Total rows processed</span>
               <span className="font-medium text-neutral-800 dark:text-neutral-200">{total}</span>
             </div>
-            <div className="mt-1 flex items-center justify-between text-sm">
+            <div className="mt-1.5 flex justify-between text-sm">
               <span className="text-neutral-500">Success rate</span>
               <span className="font-medium text-neutral-800 dark:text-neutral-200">
                 {total > 0 ? Math.round(((result.imported + result.duplicates) / total) * 100) : 0}%
