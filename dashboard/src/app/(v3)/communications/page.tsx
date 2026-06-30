@@ -302,10 +302,24 @@ function ConversationList({
   const conversations = data?.conversations ?? [];
   const counts = data?.counts ?? {};
 
-  // Real-time: new WA message → refresh conversation list
+  // Request browser notification permission once
   useEffect(() => {
-    const handler = () => {
+    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+  }, []);
+
+  // Real-time: new WA message → refresh list + notify
+  useEffect(() => {
+    const handler = (msg: WsMessage) => {
       qc.invalidateQueries({ queryKey: ['wa-inbox', activeTab] });
+      if (msg.direction !== 'inbound') return;
+      const sender = (msg.name as string) || (msg.phone as string) || 'Customer';
+      const body = (msg.content as string) || 'New WhatsApp message';
+      toast.info(`New message from ${sender}`, { description: body.slice(0, 80), duration: 5000 });
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        new Notification(`APForce: ${sender}`, { body: body.slice(0, 100), icon: '/favicon.ico' });
+      }
     };
     wsClient.on('whatsapp_message', handler);
     return () => wsClient.off('whatsapp_message', handler);
@@ -643,9 +657,10 @@ function ThreadPane({
       <div className="flex items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
         <Avatar name={displayName} size={32} />
         <div className="min-w-0 flex-1">
+          {/* On xl+ (panel always visible) this acts as a label; on smaller screens it opens the panel */}
           <button
             onClick={onOpenSnapshot}
-            className="text-sm font-semibold text-neutral-900 hover:text-primary-600 dark:text-neutral-100"
+            className="text-sm font-semibold text-neutral-900 hover:text-primary-600 dark:text-neutral-100 xl:cursor-default xl:hover:text-neutral-900 xl:dark:hover:text-neutral-100"
           >
             {displayName}
           </button>
@@ -759,10 +774,11 @@ function CustomerSnapshotPanel({
     <div className="flex h-full flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950">
       <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
         <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Contact Info</p>
+        {/* Close button — only on smaller screens; on xl the panel is always pinned */}
         <button
           onClick={onClose}
-          aria-label="Close"
-          className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          aria-label="Close panel"
+          className="xl:hidden flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
         >
           <X className="h-4 w-4" aria-hidden />
         </button>
@@ -813,6 +829,53 @@ function CustomerSnapshotPanel({
             <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-400">Assigned to</p>
             <p className="text-sm text-neutral-900 dark:text-neutral-100">{conversation.assignedToName}</p>
           </div>
+        )}
+
+        {/* Chat status */}
+        <div>
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-400">Status</p>
+          <span className={cn(
+            'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium',
+            conversation.chatStatus === 'open'       ? 'bg-success-50 text-success-700 dark:bg-success-900/20 dark:text-success-300' :
+            conversation.chatStatus === 'resolved'   ? 'bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400' :
+                                                       'bg-warning-50 text-warning-700 dark:bg-warning-900/20 dark:text-warning-300',
+          )}>
+            <span className={cn(
+              'h-1.5 w-1.5 rounded-full',
+              conversation.chatStatus === 'open'       ? 'bg-success-500' :
+              conversation.chatStatus === 'resolved'   ? 'bg-neutral-400' : 'bg-warning-500',
+            )} />
+            {conversation.chatStatus === 'open' ? 'Open' : conversation.chatStatus === 'resolved' ? 'Resolved' : 'Unassigned'}
+          </span>
+        </div>
+
+        {/* WhatsApp opt-in indicator */}
+        <div>
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-400">WhatsApp</p>
+          <div className="flex items-center gap-1.5">
+            <span className="h-1.5 w-1.5 rounded-full bg-success-500" />
+            <span className="text-xs text-neutral-600 dark:text-neutral-400">Opted in</span>
+          </div>
+        </div>
+
+        {/* Internal notes */}
+        <div>
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-400">Internal Notes</p>
+          <textarea
+            placeholder="Add a note visible only to your team…"
+            rows={3}
+            className="w-full resize-none rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600/20 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:placeholder:text-neutral-600"
+          />
+        </div>
+
+        {/* View full profile */}
+        {conversation.leadId && (
+          <a
+            href={`/customers/${conversation.leadId}`}
+            className="block w-full rounded-lg border border-neutral-200 py-2 text-center text-xs font-medium text-primary-600 hover:bg-primary-50 dark:border-neutral-700 dark:hover:bg-primary-900/10"
+          >
+            Open full profile →
+          </a>
         )}
       </div>
     </div>
@@ -1088,9 +1151,9 @@ function CommunicationsContent() {
             </div>
           )}
 
-          {/* Column 3: Snapshot */}
-          {activeConv && snapshotOpen && (
-            <div className="w-[320px] shrink-0">
+          {/* Column 3: Contact panel — always visible on xl+, toggled on smaller screens */}
+          {activeConv && (
+            <div className={cn('w-[320px] shrink-0', !snapshotOpen && 'hidden xl:block')}>
               <CustomerSnapshotPanel conversation={activeConv} onClose={() => setSnapshotOpen(false)} />
             </div>
           )}
