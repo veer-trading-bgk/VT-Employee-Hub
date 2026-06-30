@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { useState, Suspense } from 'react';
 import {
   Home,
@@ -37,7 +37,6 @@ interface NavItem {
   icon: React.ReactNode;
   roles: V3Role[];
   badge?: number;
-  tabParam?: string;
 }
 
 interface NavGroup {
@@ -63,12 +62,12 @@ const TEAM_GROUP: NavGroup = {
   icon: <Briefcase className="h-5 w-5" />,
   roles: ['owner', 'admin', 'manager', 'sales', 'support'],
   items: [
-    { href: '/settings', tabParam: 'employees', label: 'Employees',     icon: <UserCog className="h-5 w-5" />,      roles: ['owner', 'admin'] },
-    { href: '/settings', tabParam: 'targets',   label: 'Metric Target', icon: <Target className="h-5 w-5" />,       roles: ['owner', 'admin', 'manager'] },
-    { href: '/settings', tabParam: 'audit',     label: 'Audit Log',     icon: <ScrollText className="h-5 w-5" />,   roles: ['owner', 'admin'] },
-    { href: '/entry',                           label: 'Daily Entry',   icon: <PenLine className="h-5 w-5" />,      roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
-    { href: '/attendance',                      label: 'Attendance',    icon: <CalendarDays className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
-    { href: '/compensation',                    label: 'Compensation',  icon: <Wallet className="h-5 w-5" />,       roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+    { href: '/employees',     label: 'Employees',     icon: <UserCog className="h-5 w-5" />,      roles: ['owner', 'admin'] },
+    { href: '/metric-target', label: 'Metric Target', icon: <Target className="h-5 w-5" />,       roles: ['owner', 'admin', 'manager'] },
+    { href: '/audit-log',     label: 'Audit Log',     icon: <ScrollText className="h-5 w-5" />,   roles: ['owner', 'admin'] },
+    { href: '/entry',         label: 'Daily Entry',   icon: <PenLine className="h-5 w-5" />,      roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+    { href: '/attendance',    label: 'Attendance',    icon: <CalendarDays className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+    { href: '/compensation',  label: 'Compensation',  icon: <Wallet className="h-5 w-5" />,       roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   ],
 };
 
@@ -94,7 +93,6 @@ function V3SidebarInner({
   onMobileClose,
 }: V3SidebarProps) {
   const pathname = usePathname();
-  const searchParams = useSearchParams();
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
   const [teamOpen, setTeamOpen] = useState(true);
@@ -102,18 +100,11 @@ function V3SidebarInner({
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
 
   function isActiveItem(item: NavItem): boolean {
-    if (item.tabParam) {
-      return pathname === item.href && searchParams.get('tab') === item.tabParam;
-    }
-    // Settings flat item: only active when no tab is set
-    if (item.href === '/settings') {
-      return pathname === '/settings' && !searchParams.get('tab');
-    }
     return pathname === item.href || pathname.startsWith(item.href + '/');
   }
 
   function itemHref(item: NavItem): string {
-    return item.tabParam ? `${item.href}?tab=${item.tabParam}` : item.href;
+    return item.href;
   }
 
   function renderNavItem(item: NavItem) {
