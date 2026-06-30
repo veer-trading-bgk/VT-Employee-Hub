@@ -213,7 +213,7 @@ export default function FollowupsPage() {
                   <Avatar name={f.contactName ?? '?'} size={32} />
                   <div className="min-w-0 flex-1">
                     <Link
-                      href={`/customers/${f.contactId}?tab=followups`}
+                      href={`/contacts/${f.contactId}?tab=followups`}
                       className="text-sm font-medium text-neutral-900 hover:text-primary-600 dark:text-neutral-100"
                     >
                       {f.contactName ?? f.contactId}

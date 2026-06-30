@@ -88,7 +88,7 @@ interface MyWorkData {
 const CHECKLIST_ITEMS = [
   { id: 'profile',    label: 'Complete your profile',          href: '/settings/profile'      },
   { id: 'whatsapp',   label: 'Connect WhatsApp Business',      href: '/settings/whatsapp'     },
-  { id: 'contact',    label: 'Add your first contact',         href: '/customers'             },
+  { id: 'contact',    label: 'Add your first contact',         href: '/contacts'             },
   { id: 'followup',   label: 'Schedule a follow-up',           href: '/sales/followups'       },
 ];
 
@@ -250,7 +250,7 @@ function OverdueFollowupsSection({ items, loading }: { items: OverdueFollowup[];
           {items.slice(0, 5).map((item) => (
             <li key={item.id}>
               <Link
-                href={`/customers/${item.contactId}?tab=followups`}
+                href={`/contacts/${item.contactId}?tab=followups`}
                 className="flex items-start gap-3 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-800/30 transition-colors border-b border-neutral-100 dark:border-neutral-800/50 last:border-0"
               >
                 <Avatar name={item.contactName} size={32} />
@@ -311,7 +311,7 @@ function TodaysFollowupsSection({ items, loading }: { items: Followup[]; loading
           {items.slice(0, 5).map((item) => (
             <li key={item.id}>
               <Link
-                href={`/customers/${item.contactId}?tab=followups`}
+                href={`/contacts/${item.contactId}?tab=followups`}
                 className="flex items-start gap-3 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-800/30 transition-colors border-b border-neutral-100 dark:border-neutral-800/50 last:border-0"
               >
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-warning-50 dark:bg-warning-900/20">
@@ -347,7 +347,7 @@ function RecentContactsSection({ items, loading }: { items: RecentContact[]; loa
               Recently active
             </h2>
           </div>
-          <Link href="/customers" className="text-xs font-medium text-primary-600 hover:text-primary-700">
+          <Link href="/contacts" className="text-xs font-medium text-primary-600 hover:text-primary-700">
             All contacts
           </Link>
         </div>
@@ -368,7 +368,7 @@ function RecentContactsSection({ items, loading }: { items: RecentContact[]; loa
           {items.slice(0, 5).map((item) => (
             <li key={item.id}>
               <Link
-                href={`/customers/${item.id}`}
+                href={`/contacts/${item.id}`}
                 className="flex items-center gap-3 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-800/30 transition-colors border-b border-neutral-100 dark:border-neutral-800/50 last:border-0"
               >
                 <Avatar name={item.name} size={32} />
@@ -515,7 +515,7 @@ export default function MyWorkPage() {
                 label="New contacts"
                 value={data?.kpis.newContacts ?? 0}
                 icon={<Users className="h-5 w-5" aria-hidden />}
-                href="/customers"
+                href="/contacts"
               />
             </div>
 
@@ -528,7 +528,7 @@ export default function MyWorkPage() {
                 {[
                   ['G then H', 'My Work'],
                   ['G then C', 'Communications'],
-                  ['G then U', 'Customers'],
+                  ['G then U', 'Contacts'],
                   ['G then S', 'Sales'],
                   ['Cmd+K', 'Command Palette'],
                   ['/', 'Quick Actions'],

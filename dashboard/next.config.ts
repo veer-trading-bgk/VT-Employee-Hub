@@ -3,6 +3,10 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   async redirects() {
     return [
+      // Customers → Contacts rename (308 permanent so clients cache them)
+      { source: '/customers',           destination: '/contacts',           permanent: true },
+      { source: '/customers/:path*',    destination: '/contacts/:path*',    permanent: true },
+
       // Legacy V2 deep-link redirects — 308 permanent so clients cache them
       { source: '/employee/dashboard',       destination: '/home',          permanent: true },
       { source: '/employee/crm',             destination: '/sales',         permanent: true },
@@ -11,7 +15,7 @@ const nextConfig: NextConfig = {
       { source: '/employee/compensation',    destination: '/compensation',  permanent: true },
       { source: '/employee/achievements',    destination: '/home',          permanent: true },
       { source: '/admin/dashboard',          destination: '/home',          permanent: true },
-      { source: '/admin/contacts',           destination: '/customers',     permanent: true },
+      { source: '/admin/contacts',           destination: '/contacts',      permanent: true },
       { source: '/admin/analytics',          destination: '/analytics',     permanent: true },
       { source: '/admin/bulk-entry',         destination: '/entry',         permanent: true },
       { source: '/admin/attendance',         destination: '/attendance',    permanent: true },
@@ -27,7 +31,7 @@ const nextConfig: NextConfig = {
       { source: '/team-lead/add-entry',      destination: '/entry',         permanent: true },
       { source: '/leaderboard',              destination: '/analytics',     permanent: true },
       { source: '/profile',                  destination: '/settings',      permanent: true },
-      { source: '/dashboard',                destination: '/home',          permanent: true },
+      { source: '/dashboard',               destination: '/home',          permanent: true },
     ];
   },
 };

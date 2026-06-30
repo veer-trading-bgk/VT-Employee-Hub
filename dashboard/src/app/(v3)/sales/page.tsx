@@ -274,7 +274,7 @@ function KanbanCard({
 
       {/* Card body */}
       <Link
-        href={`/customers/${contact.id}`}
+        href={`/contacts/${contact.id}`}
         className={cn('block p-3', bulkMode && 'pl-8')}
         tabIndex={isDragging ? -1 : 0}
         onClick={(e) => bulkMode && e.preventDefault()}
@@ -616,7 +616,7 @@ function buildListColumns(tagMap: Map<string, Tag>): TableColumn<Contact>[] {
       header: 'Name',
       sortable: true,
       cell: (row) => (
-        <Link href={`/customers/${row.id}`} className="flex items-center gap-2.5 group">
+        <Link href={`/contacts/${row.id}`} className="flex items-center gap-2.5 group">
           <div className="relative shrink-0">
             <Avatar name={contactName(row)} size={32} />
           </div>
@@ -1187,7 +1187,7 @@ export default function SalesPage() {
             sortKey={sortKey}
             sortDir={sortDir}
             onSort={(key, dir) => { setSortKey(key); setSortDir(dir); }}
-            onRowClick={(row) => router.push(`/customers/${row.id}`)}
+            onRowClick={(row) => router.push(`/contacts/${row.id}`)}
           />
         </div>
       )}

@@ -22,7 +22,7 @@ export const V3_NAV_PERMISSIONS: Record<string, V3Role[]> = {
   '/home':           ['owner', 'admin', 'manager', 'sales', 'support'],
   '/entry':          ['owner', 'admin', 'manager', 'sales', 'support'],
   '/communications': ['owner', 'admin', 'manager', 'sales', 'support'],
-  '/customers':      ['owner', 'admin', 'manager', 'sales', 'support'],
+  '/contacts':       ['owner', 'admin', 'manager', 'sales', 'support'],
   '/sales':          ['owner', 'admin', 'manager', 'sales'],
   '/attendance':     ['owner', 'admin', 'manager', 'sales', 'support'],
   '/compensation':   ['owner', 'admin', 'manager', 'sales', 'support'],

@@ -11,7 +11,7 @@ const BOTTOM_NAV = [
   { href: '/home',           label: 'Home',  icon: <Home className="h-5 w-5" />,          roles: ['owner', 'admin', 'manager', 'sales', 'support'] as V3Role[] },
   { href: '/entry',          label: 'Entry', icon: <PenLine className="h-5 w-5" />,        roles: ['owner', 'admin', 'manager', 'sales', 'support'] as V3Role[] },
   { href: '/communications', label: 'Comms', icon: <MessageSquare className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] as V3Role[] },
-  { href: '/customers',      label: 'Cust.', icon: <Users className="h-5 w-5" />,         roles: ['owner', 'admin', 'manager', 'sales', 'support'] as V3Role[] },
+  { href: '/contacts',       label: 'Cont.', icon: <Users className="h-5 w-5" />,         roles: ['owner', 'admin', 'manager', 'sales', 'support'] as V3Role[] },
   { href: '/sales',          label: 'Sales', icon: <TrendingUp className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager'] as V3Role[] },
 ];
 

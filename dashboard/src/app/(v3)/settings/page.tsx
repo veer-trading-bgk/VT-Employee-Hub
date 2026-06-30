@@ -762,7 +762,7 @@ function TagsSection() {
     <div className="space-y-5">
       <div>
         <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">Tag Manager</h2>
-        <p className="text-sm text-neutral-500">Centrally manage all contact tags. Tags created here are available across Inbox, Customers, Sales, and Automation.</p>
+        <p className="text-sm text-neutral-500">Centrally manage all contact tags. Tags created here are available across Inbox, Contacts, Sales, and Automation.</p>
       </div>
 
       {/* Create new tag */}

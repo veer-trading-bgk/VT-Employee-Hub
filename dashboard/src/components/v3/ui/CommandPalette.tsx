@@ -34,7 +34,7 @@ export function CommandPalette() {
   const ALL_COMMANDS: CommandItem[] = [
     { id: 'home',          label: 'My Work',       icon: <Home className="h-4 w-4" />,          action: () => navigate('/home'),           group: 'Navigate', shortcut: 'G H' },
     { id: 'comms',         label: 'Communications', icon: <MessageSquare className="h-4 w-4" />, action: () => navigate('/communications'), group: 'Navigate', shortcut: 'G C' },
-    { id: 'customers',     label: 'Customers',     icon: <Users className="h-4 w-4" />,          action: () => navigate('/customers'),      group: 'Navigate', shortcut: 'G U' },
+    { id: 'contacts',      label: 'Contacts',      icon: <Users className="h-4 w-4" />,          action: () => navigate('/contacts'),       group: 'Navigate', shortcut: 'G U' },
     { id: 'sales',         label: 'Sales',         icon: <TrendingUp className="h-4 w-4" />,     action: () => navigate('/sales'),          group: 'Navigate', shortcut: 'G S' },
     { id: 'analytics',     label: 'Analytics',     icon: <BarChart3 className="h-4 w-4" />,      action: () => navigate('/analytics'),      group: 'Navigate', shortcut: 'G A' },
     { id: 'automation',    label: 'Automation',    icon: <Zap className="h-4 w-4" />,            action: () => navigate('/automation'),     group: 'Navigate' },

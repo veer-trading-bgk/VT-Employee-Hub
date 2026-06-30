@@ -896,7 +896,7 @@ function CustomerSnapshotPanel({
         {/* Identity */}
         <div className="flex flex-col items-center gap-2 text-center">
           {conversation.leadId ? (
-            <Link href={`/customers/${conversation.leadId}`} title="Open Customer360">
+            <Link href={`/contacts/${conversation.leadId}`} title="Open Customer360">
               <Avatar name={displayName} size={48} className="cursor-pointer hover:ring-2 hover:ring-primary-400 hover:ring-offset-1 transition" />
             </Link>
           ) : (
@@ -905,7 +905,7 @@ function CustomerSnapshotPanel({
           <div>
             {conversation.leadId ? (
               <Link
-                href={`/customers/${conversation.leadId}`}
+                href={`/contacts/${conversation.leadId}`}
                 className="font-semibold text-neutral-900 hover:text-primary-600 dark:text-neutral-100 dark:hover:text-primary-400 transition-colors"
               >
                 {displayName}
@@ -1032,7 +1032,7 @@ function CustomerSnapshotPanel({
         {/* Open Customer360 */}
         {conversation.leadId && (
           <Link
-            href={`/customers/${conversation.leadId}`}
+            href={`/contacts/${conversation.leadId}`}
             className="block w-full rounded-lg border border-neutral-200 py-2 text-center text-xs font-medium text-primary-600 hover:bg-primary-50 dark:border-neutral-700 dark:hover:bg-primary-900/10"
           >
             Open Customer 360 →
