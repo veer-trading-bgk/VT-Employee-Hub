@@ -1,10 +1,11 @@
 'use client';
 
 import { useState, useRef, useEffect, Suspense } from 'react';
+import { createPortal } from 'react-dom';
 import {
   MessageSquare, Search, Send, MoreHorizontal, Phone,
   CheckCheck, Check, Clock, AlertCircle, Plus, X, ChevronLeft,
-  Paperclip, FileText,
+  Paperclip, FileText, Download, ZoomIn,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Avatar } from '@/components/v3/ui/Avatar';
@@ -83,22 +84,87 @@ function DeliveryIcon({ status }: { status?: WaMessage['msgStatus'] }) {
   return <Clock className="h-3.5 w-3.5 text-white/40" aria-label="Pending" />;
 }
 
+// ── Lightbox ──────────────────────────────────────────────────────────────────
+
+interface LightboxItem { url: string; type: 'image' | 'video'; filename?: string }
+
+function Lightbox({ item, onClose }: { item: LightboxItem; onClose: () => void }) {
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener('keydown', handler);
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/90 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      {/* Toolbar */}
+      <div className="absolute top-4 right-4 flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+        <a
+          href={item.url}
+          download={item.filename ?? 'media'}
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+          title="Download"
+        >
+          <Download className="h-4 w-4" />
+        </a>
+        <button
+          onClick={onClose}
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+          title="Close (Esc)"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Media */}
+      <div onClick={(e) => e.stopPropagation()} className="flex max-h-[90vh] max-w-[90vw] flex-col items-center gap-3">
+        {item.type === 'image' ? (
+          <img
+            src={item.url}
+            alt={item.filename ?? 'image'}
+            className="max-h-[85vh] max-w-[88vw] rounded-xl object-contain shadow-2xl"
+            draggable={false}
+          />
+        ) : (
+          <video
+            src={item.url}
+            controls
+            autoPlay
+            className="max-h-[85vh] max-w-[88vw] rounded-xl shadow-2xl"
+          />
+        )}
+        {item.filename && (
+          <p className="text-xs text-white/50">{item.filename}</p>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 // ── Media renderer ────────────────────────────────────────────────────────────
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
 
 function MediaRenderer({ message, isOut }: { message: WaMessage; isOut: boolean }) {
+  const [lightbox, setLightbox] = useState<LightboxItem | null>(null);
+
   const { data: url, isLoading } = useQuery<string | null>({
     queryKey: ['media-url', message.s3Key ?? message.mediaId ?? message.mediaUrl],
     queryFn: async () => {
-      // Prefer S3 presigned URL (fastest, streams directly, no Lambda limit)
       if (message.s3Key) {
         const d = await apiFetch<{ url: string }>(`/api/whatsapp/s3-url?key=${encodeURIComponent(message.s3Key)}`);
         return d.url;
       }
-      // Legacy outbound mediaUrl
       if (message.mediaUrl) return message.mediaUrl;
-      // Inbound where S3 write hasn't completed yet — proxy through Lambda
       if (message.mediaId) {
         const token = getMemoryToken();
         const res = await fetch(`${API_BASE}/api/whatsapp/media/${message.mediaId}`, {
@@ -119,7 +185,12 @@ function MediaRenderer({ message, isOut }: { message: WaMessage; isOut: boolean 
   const textColor = isOut ? 'text-white/80' : 'text-neutral-500';
 
   if (isLoading) {
-    return <div className="h-12 w-40 animate-pulse rounded-lg bg-white/20" />;
+    return (
+      <div className={cn(
+        'h-40 w-56 animate-pulse rounded-xl',
+        isOut ? 'bg-white/20' : 'bg-neutral-200 dark:bg-neutral-700',
+      )} />
+    );
   }
 
   const type = message.type;
@@ -131,24 +202,75 @@ function MediaRenderer({ message, isOut }: { message: WaMessage; isOut: boolean 
 
   if (type === 'image' || mime.startsWith('image/')) {
     return (
-      <a href={url} target="_blank" rel="noreferrer">
-        <img src={url} alt={message.filename ?? 'image'}
-          className="max-w-full rounded-lg max-h-64 object-contain cursor-zoom-in" />
-      </a>
+      <>
+        <button
+          type="button"
+          onClick={() => setLightbox({ url, type: 'image', filename: message.filename })}
+          className="group relative block overflow-hidden rounded-xl"
+          title="Click to view"
+        >
+          <img
+            src={url}
+            alt={message.filename ?? 'image'}
+            className="max-h-60 max-w-[260px] rounded-xl object-cover"
+            draggable={false}
+          />
+          <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/0 transition-colors group-hover:bg-black/20">
+            <ZoomIn className="h-6 w-6 text-white opacity-0 drop-shadow-lg transition-opacity group-hover:opacity-100" />
+          </div>
+        </button>
+        {lightbox && <Lightbox item={lightbox} onClose={() => setLightbox(null)} />}
+      </>
     );
   }
+
   if (type === 'video' || mime.startsWith('video/')) {
-    return <video src={url} controls className="max-w-full rounded-lg max-h-64" />;
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setLightbox({ url, type: 'video', filename: message.filename })}
+          className="group relative block overflow-hidden rounded-xl"
+          title="Click to play"
+        >
+          <video
+            src={url}
+            className="max-h-48 max-w-[260px] rounded-xl object-cover pointer-events-none"
+            preload="metadata"
+          />
+          <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-black/30 transition-colors group-hover:bg-black/50">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/90 shadow-lg">
+              <svg className="h-5 w-5 text-neutral-900 ml-0.5" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            </div>
+          </div>
+        </button>
+        {lightbox && <Lightbox item={lightbox} onClose={() => setLightbox(null)} />}
+      </>
+    );
   }
+
   if (type === 'audio' || mime.startsWith('audio/')) {
     return <audio src={url} controls className="w-full min-w-[220px]" />;
   }
-  // document / sticker / unknown
+
+  // document / sticker / unknown — download button, no new tab
   return (
-    <a href={url} target="_blank" rel="noreferrer" download={message.filename ?? 'file'}
-      className={cn('flex items-center gap-2 text-sm underline', isOut ? 'text-white' : 'text-primary-600')}>
+    <a
+      href={url}
+      download={message.filename ?? 'file'}
+      onClick={(e) => e.stopPropagation()}
+      className={cn(
+        'flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors',
+        isOut
+          ? 'border-white/30 text-white hover:bg-white/10'
+          : 'border-neutral-200 text-neutral-700 hover:bg-neutral-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800',
+      )}
+    >
       <FileText className="h-4 w-4 shrink-0" />
-      {message.filename ?? 'Download file'}
+      <span className="truncate max-w-[180px]">{message.filename ?? 'Download file'}</span>
+      <Download className="h-3.5 w-3.5 shrink-0 opacity-60" />
     </a>
   );
 }
@@ -315,10 +437,14 @@ function ConversationList({
 
 // ── Message Bubble ────────────────────────────────────────────────────────────
 
+// Content is a backend-generated placeholder — suppress it when media renders
+const PLACEHOLDER_RE = /^\[(image|video|audio|document|sticker|voice|Broadcast:|Template:)/i;
+
 function MessageBubble({ message }: { message: WaMessage }) {
   const isOut = message.direction === 'outbound';
-  const isMedia = message.type && message.type !== 'text' && message.type !== 'template';
+  const isMedia = !!(message.type && message.type !== 'text' && message.type !== 'template');
   const hasMediaSource = !!(message.s3Key || message.mediaId || message.mediaUrl);
+  const showText = message.content && !(isMedia && PLACEHOLDER_RE.test(message.content));
 
   return (
     <div className={cn('mb-1.5 flex', isOut ? 'justify-end' : 'justify-start')}>
@@ -331,11 +457,16 @@ function MessageBubble({ message }: { message: WaMessage }) {
         )}
       >
         {isMedia && hasMediaSource && (
-          <div className="mb-1">
+          <div className={cn(showText ? 'mb-1.5' : '')}>
             <MediaRenderer message={message} isOut={isOut} />
           </div>
         )}
-        {message.content && message.content !== `[${message.type}]` && (
+        {isMedia && !hasMediaSource && (
+          <p className={cn('text-xs italic', isOut ? 'text-white/70' : 'text-neutral-400')}>
+            {message.content || `[${message.type ?? 'media'}]`}
+          </p>
+        )}
+        {showText && (
           <p className="whitespace-pre-wrap break-words">{message.content}</p>
         )}
         <div className={cn('mt-0.5 flex items-center gap-1', isOut ? 'justify-end' : 'justify-start')}>
