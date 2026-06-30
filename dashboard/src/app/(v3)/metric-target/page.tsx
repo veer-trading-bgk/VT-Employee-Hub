@@ -31,6 +31,9 @@ export default function MetricTargetPage() {
     staleTime: 5 * 60_000,
   });
 
+  // Only re-run when server data changes — metrics is excluded because
+  // useMetricsConfig returns a new array reference on every render (.map()),
+  // including metrics in deps would cause an infinite setForm → re-render loop.
   useEffect(() => {
     if (data?.data) {
       const merged: Record<string, TargetEntry> = {};
@@ -45,7 +48,8 @@ export default function MetricTargetPage() {
       setForm(merged);
       setDirty(false);
     }
-  }, [data?.data, metrics]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.data]);
 
   const saveMut = useMutation({
     mutationFn: () => apiFetch('/api/admin/targets', { method: 'PUT', body: JSON.stringify({ targets: form }) }),

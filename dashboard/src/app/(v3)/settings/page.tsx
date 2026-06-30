@@ -386,7 +386,8 @@ function TargetsSection() {
       setForm(merged);
       setDirty(false);
     }
-  }, [data?.data, metrics]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.data]);
 
   const saveMut = useMutation({
     mutationFn: () => apiFetch('/api/admin/targets', { method: 'PUT', body: JSON.stringify({ targets: form }) }),
