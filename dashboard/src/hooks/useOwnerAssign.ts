@@ -51,10 +51,10 @@ export function useOwnerAssign(contactId: string) {
   const qc = useQueryClient();
 
   return useMutation<unknown, Error, AssignPayload, MutationContext>({
-    mutationFn: ({ employeeId }) =>
+    mutationFn: ({ employeeId, employeeName }) =>
       apiFetch(`/api/crm/leads/${contactId}/assign`, {
         method: 'PUT',
-        body: JSON.stringify({ assignedTo: employeeId }),
+        body: JSON.stringify({ assignedTo: employeeId, assignedToName: employeeName }),
       }),
 
     onMutate: async ({ employeeId, employeeName }) => {

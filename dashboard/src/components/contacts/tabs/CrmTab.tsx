@@ -394,7 +394,12 @@ function CrmPanel() {
                 </label>
                 <select
                   value={contact.assignedTo}
-                  onChange={(e) => reassign.mutate(e.target.value)}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    if (!id) return;
+                    const name = employees.find((em) => em.id === id)?.name ?? null;
+                    reassign.mutate({ id, name });
+                  }}
                   disabled={reassign.isPending}
                   className={`${selectCls} w-full`}
                   aria-label="Assigned employee"

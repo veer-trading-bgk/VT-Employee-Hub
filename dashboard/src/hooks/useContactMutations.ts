@@ -24,10 +24,10 @@ export function useContactMutations(leadId: string) {
   });
 
   const reassign = useMutation({
-    mutationFn: (assignedTo: string) =>
+    mutationFn: ({ id, name }: { id: string; name: string | null }) =>
       apiFetch(`/api/crm/leads/${leadId}/assign`, {
         method: 'PUT',
-        body: JSON.stringify({ assignedTo }),
+        body: JSON.stringify({ assignedTo: id, assignedToName: name }),
       }),
     onSuccess: invalidateContact,
     onError: () => toast.error('Failed to reassign contact'),
