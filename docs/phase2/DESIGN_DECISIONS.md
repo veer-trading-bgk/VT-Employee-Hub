@@ -178,3 +178,48 @@ The key insight is that these screens are *operational views* — different lens
 **Reasoning:** Phase 2 is focused on building the Customer 360 page. Reorganising the navigation is a separate concern. The navigation reorganisation requires UI testing, user expectation management, and potentially role-based route changes. Deferring it to Phase 3 keeps Phase 2 focused and reduces the risk of regression. The "Customers" sidebar group clearly groups Inbox, Contact Hub, and CRM Pipeline together, which already communicates that they are related.
 
 **Consequences:** Phase 3 will evaluate merging CRM Pipeline into Contact Hub as a view mode. The audit finding is documented but deferred.
+
+---
+
+## ADR-011 — phoneNorm is the Canonical Phone Identity
+
+**Decision:** `phoneNorm` is the platform-wide canonical identifier for a phone number. Every module that creates, imports, syncs, or updates a contact or lead must compute and persist `phoneNorm`. All duplicate detection must compare `phoneNorm`, never raw phone strings.
+
+**Context:** Phone numbers enter APForce through multiple paths — WhatsApp inbox, manual CRM entry, web forms, Meta Lead Ads webhooks, CSV import, and future automations and integrations. Each path can receive the same subscriber's number in different formats: `+91 9866141993`, `919866141993`, `9866141993`. String comparison on the raw `phone` field treats these as different subscribers, allowing duplicate leads for the same person. This was discovered in production where inbox-assigned contacts (12-digit WA format) and manually created leads (10-digit) for the same number coexisted as separate records.
+
+**Identity Model:**
+
+| Field | Role | Usage |
+|---|---|---|
+| `leadId` | Primary system identifier | All foreign keys, URL params, query keys |
+| `phoneNorm` | Canonical matching identifier | All duplicate detection, GSI lookups, inbox dedup |
+| `phone` | Original display value | Stored as-is for display only. Never used for comparison. |
+
+**Normalization function:** `to10Digit(p)` in `src/utils/phone.js` — strips non-digits, removes Indian country code prefix `91`, returns a 10-digit string. This is the single normalizer. No other normalization function may be used for lead phone identity.
+
+**Rule:** Every lead creation and update path must:
+1. Compute `normPhone = to10Digit(cleanPhone)` immediately after stripping non-digits.
+2. Write `phoneNorm: normPhone` to the DynamoDB item.
+3. Use the `company-phone-index` GSI (`KeyConditionExpression: 'companyId = :cid AND phoneNorm = :norm'`) for duplicate detection — not a `FilterExpression` scan on the raw `phone` field.
+
+**Covered paths (as of 2026-06-30):**
+
+| Path | File | Status |
+|---|---|---|
+| Manual lead creation (`POST /api/crm/leads`) | `src/routes/crm.js` | ✅ Compliant — GSI dedup |
+| Lead phone update (`PUT /api/crm/leads/:id`) | `src/routes/crm.js` | ✅ Compliant — GSI dedup |
+| CSV bulk import (`POST /api/crm/import`) | `src/routes/crm.js` | ✅ Compliant — phoneNorm map key |
+| Web form submission (`POST /api/forms/:id/submit`) | `src/routes/forms.js` | ✅ Compliant — GSI dedup |
+| Meta Lead Ads webhook (`POST /api/forms/meta-leads/webhook`) | `src/routes/forms.js` | ✅ Compliant — GSI dedup |
+| WhatsApp message webhook (lead lookup) | `src/routes/whatsapp.js` | ✅ Compliant — GSI on phoneNorm |
+| WhatsApp inbox dedup (lead→inbox suppression) | `src/routes/whatsapp.js` | ✅ Compliant — leadPhones set on phoneNorm |
+| Inbox assignment (unknown contact → CRM lead) | `dashboard/src/app/(v3)/inbox/page.tsx` | ✅ Compliant — delegates to POST /api/crm/leads |
+
+**Future integration rule:** Any future feature — CSV import, REST API, third-party webhook, automation, broadcast import, CRM integration — that accepts a phone number and creates or updates a lead must follow this rule before it is merged. Code review checkers: look for `FilterExpression` containing `phone = :ph` and reject it; the correct pattern is a GSI query on `phoneNorm`.
+
+**Alternatives considered:**
+- Compare raw phone strings (rejected — format-dependent, misses cross-format duplicates)
+- Store and compare E.164 format (rejected — ContactService uses E.164 internally, but lead records use 10-digit; mixing formats across the two entity types creates confusion)
+- Use a transactional phone-lock item for atomic uniqueness (considered — not needed for current write volumes; the GSI query + conditional put is sufficient)
+
+**Consequences:** The `company-phone-index` GSI must be ACTIVE before any new environment goes to production. The `backfill-phone-norm.js` script must be run on any existing table that predates this rule to populate `phoneNorm` on legacy records. The `find-duplicate-leads.js` audit script can be used to detect any records that slipped through before the rule was enforced.

@@ -470,12 +470,16 @@ router.put('/leads/:id', authMiddleware, rateLimit(30, 60_000), async (req, res,
     if (updates.phone) {
       updates.phone = String(updates.phone).replace(/\D/g, '');
       updates.phoneNorm = to10Digit(updates.phone);
-      // Reject if another lead in this company already owns this phone
-      if (updates.phone !== existing.Item.phone) {
-        const dupCheck = await dynamodb.scan({
+      // Dedup: compare phoneNorm (canonical 10-digit) so +91-prefixed and plain 10-digit
+      // formats for the same subscriber are treated as identical.
+      if (updates.phoneNorm !== (existing.Item.phoneNorm || to10Digit(existing.Item.phone))) {
+        const dupCheck = await dynamodb.query({
           TableName: TABLE,
-          FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND phone = :ph AND attribute_not_exists(deletedAt)',
-          ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA', ':ph': updates.phone },
+          IndexName: 'company-phone-index',
+          KeyConditionExpression: 'companyId = :cid AND phoneNorm = :norm',
+          FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
+          ExpressionAttributeValues: { ':cid': companyId, ':norm': updates.phoneNorm, ':meta': 'METADATA' },
+          Limit: 2,
         }).promise();
         const conflict = (dupCheck.Items ?? []).find((l) => l.leadId !== req.params.id);
         if (conflict) {
@@ -858,9 +862,11 @@ router.post('/import', authMiddleware, checkRole(['admin', 'manager']), async (r
     const stageKeys = new Set(stages.map((s) => s.key));
     const finalStage = defaultStage && stageKeys.has(defaultStage) ? defaultStage : stages[0]?.key ?? 'new_lead';
 
-    // Build phone→existing-lead map for duplicate detection
+    // Build phoneNorm→existing-lead map for duplicate detection.
+    // Keyed on phoneNorm (canonical 10-digit) so cross-format duplicates are caught
+    // (e.g. import row has 919866141993, existing lead stored 9866141993 — same subscriber).
     const existingLeads = await scanAllLeads(companyId);
-    const phoneMap = new Map(existingLeads.map((l) => [l.phone, l]));
+    const phoneMap = new Map(existingLeads.map((l) => [l.phoneNorm || to10Digit(l.phone), l]));
 
     // Resolve all text tag labels → catalog IDs before processing leads.
     // CSV tags and importTag arrive as plain strings (e.g. "vip"), but
@@ -918,7 +924,7 @@ router.post('/import', authMiddleware, checkRole(['admin', 'manager']), async (r
             return;
           }
 
-          const existing = phoneMap.get(phone);
+          const existing = phoneMap.get(to10Digit(phone));
           if (existing && duplicateAction === 'skip') {
             results.skipped++;
             return;

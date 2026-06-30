@@ -5,6 +5,7 @@ const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
+const { to10Digit } = require('../utils/phone');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -128,6 +129,7 @@ router.post('/:id/submit', async (req, res, next) => {
     }
     const cleanPhone = String(phone).replace(/\D/g, '');
     if (cleanPhone.length < 7) return res.status(400).json({ error: 'Invalid phone number' });
+    const normPhone = to10Digit(cleanPhone);
 
     const companyId = form.companyId;
     const stages = await getPipelineStages(companyId);
@@ -153,7 +155,7 @@ router.post('/:id/submit', async (req, res, next) => {
     const item = {
       PK: leadPK(companyId, leadId), SK: 'METADATA',
       leadId, companyId,
-      name: name.trim(), phone: cleanPhone,
+      name: name.trim(), phone: cleanPhone, phoneNorm: normPhone,
       email: email?.trim() ?? null,
       productInterest: Array.isArray(productInterest) ? productInterest : [],
       source: form.source ?? 'web_form',
@@ -169,11 +171,15 @@ router.post('/:id/submit', async (req, res, next) => {
       formId: form.id,
     };
 
-    // Check duplicate phone
-    const existing = await dynamodb.scan({
+    // Dedup via company-phone-index GSI on phoneNorm — catches cross-format duplicates
+    // (e.g. form submits 919866141993 but an existing lead is stored as 9866141993).
+    const existing = await dynamodb.query({
       TableName: TABLE,
-      FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND phone = :ph',
-      ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA', ':ph': cleanPhone },
+      IndexName: 'company-phone-index',
+      KeyConditionExpression: 'companyId = :cid AND phoneNorm = :norm',
+      FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
+      ExpressionAttributeValues: { ':cid': companyId, ':norm': normPhone, ':meta': 'METADATA' },
+      Limit: 1,
     }).promise();
     if ((existing.Items?.length ?? 0) > 0) {
       return res.status(409).json({ error: 'This phone number is already in the system', duplicate: true });
@@ -246,6 +252,7 @@ router.post('/meta-leads/webhook', async (req, res, next) => {
         const email = fields.email ?? null;
 
         if (!phone || phone.length < 7) continue;
+        const normPhone = to10Digit(phone);
 
         // Find companyId by page ID (scan CONFIG#FORM# items for meta_page_id match)
         const formScan = await dynamodb.scan({
@@ -261,11 +268,14 @@ router.post('/meta-leads/webhook', async (req, res, next) => {
         const stages = await getPipelineStages(companyId);
         const defaultStage = form.defaultStage ?? stages[0]?.key ?? 'new_lead';
 
-        // Deduplicate
-        const dupCheck = await dynamodb.scan({
+        // Deduplicate via GSI on phoneNorm — O(1) and format-invariant
+        const dupCheck = await dynamodb.query({
           TableName: TABLE,
-          FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND phone = :ph',
-          ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA', ':ph': phone },
+          IndexName: 'company-phone-index',
+          KeyConditionExpression: 'companyId = :cid AND phoneNorm = :norm',
+          FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
+          ExpressionAttributeValues: { ':cid': companyId, ':norm': normPhone, ':meta': 'METADATA' },
+          Limit: 1,
         }).promise();
         if ((dupCheck.Items?.length ?? 0) > 0) continue;
 
@@ -289,7 +299,7 @@ router.post('/meta-leads/webhook', async (req, res, next) => {
           TableName: TABLE,
           Item: {
             PK: leadPK(companyId, leadId), SK: 'METADATA',
-            leadId, companyId, name, phone, email,
+            leadId, companyId, name, phone, phoneNorm: normPhone, email,
             productInterest: [], source: 'meta_lead_ads',
             notes: `Meta Lead Ads: leadgen_id=${lead.leadgen_id}`,
             stage: defaultStage, tags: ['meta-ads'],

@@ -854,9 +854,11 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
     // Admin/manager/superadmin see all leads; other roles see only their own assigned leads
     const visibleLeads = canViewAll ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id);
 
-    // Dedup: suppress unknown contacts whose phone already exists as ANY CRM lead
-    // Uses allLeadItems (not leadItems) so newly-created leads without message history still suppress the INBOX# record
-    const leadPhones = new Set(allLeadItems.map((l) => l.phone).filter(Boolean));
+    // Dedup: suppress unknown contacts whose phoneNorm already exists as ANY CRM lead.
+    // Uses phoneNorm (canonical 10-digit) on both sides so cross-format matches are caught:
+    // a lead stored as 919866141993 will suppress an INBOX record keyed as 9866141993.
+    // u.phone is already phone10 (to10Digit output from the webhook receive path).
+    const leadPhones = new Set(allLeadItems.map((l) => l.phoneNorm || to10Digit(l.phone)).filter(Boolean));
     const dedupedUnknown = unknownItems.filter((u) => !leadPhones.has(u.phone));
 
     // Build counts before filtering
