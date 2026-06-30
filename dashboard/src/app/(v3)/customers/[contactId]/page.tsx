@@ -719,7 +719,7 @@ function Customer360Content({ contactId }: { contactId: string }) {
             <div className="flex items-center justify-between text-sm">
               <span className="text-neutral-500">Created</span>
               <span className="text-neutral-700 dark:text-neutral-300">
-                {format(new Date(contact.createdAt), 'd MMM yyyy')}
+                {contact.createdAt ? format(new Date(contact.createdAt), 'd MMM yyyy') : '—'}
               </span>
             </div>
           </div>
