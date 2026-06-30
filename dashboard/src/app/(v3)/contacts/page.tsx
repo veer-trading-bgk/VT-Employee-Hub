@@ -30,6 +30,8 @@ import { toast } from 'sonner';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { OwnerSelect } from '@/components/v3/ui/OwnerSelect';
+import { NewContactDrawer } from '@/components/contacts/NewContactDrawer';
+import { ImportContactsDrawer } from '@/components/contacts/ImportContactsDrawer';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -46,6 +48,65 @@ const STAGE_OPTIONS = (Object.entries(STAGE_LABELS) as [Stage, string][]).map(([
 }));
 
 const PAGE_SIZE = 50;
+
+// ── CSV export ─────────────────────────────────────────────────────────────────
+
+function escapeCell(v: string | null | undefined): string {
+  return `"${String(v ?? '').replace(/"/g, '""')}"`;
+}
+
+async function exportContactsCSV(
+  search: string,
+  stageFilter: string,
+  onProgress?: (pct: number) => void,
+): Promise<void> {
+  const PAGE = 100; // contacts endpoint cap
+  const rows: Contact[] = [];
+  let page = 1;
+  let total = Infinity;
+
+  while (rows.length < total) {
+    const params = new URLSearchParams({
+      ...(search      && { q: search }),
+      ...(stageFilter && { stage: stageFilter }),
+      page:     String(page),
+      pageSize: String(PAGE),
+    });
+    const res = await apiFetch<ContactsResponse>(`/api/contacts?${params}`);
+    rows.push(...res.contacts);
+    total = res.total;
+    onProgress?.(Math.min(100, Math.round((rows.length / total) * 100)));
+    if (res.contacts.length < PAGE) break;
+    page++;
+  }
+
+  if (rows.length === 0) { toast.info('No contacts to export'); return; }
+
+  const headers = ['Name', 'Phone', 'Email', 'Stage', 'Assigned To', 'Tags', 'Source', 'Created At'];
+  const csvRows = rows.map((c) => [
+    c.displayName ?? c.name ?? '',
+    c.phone ?? '',
+    c.email ?? '',
+    STAGE_LABELS[c.stage as Stage] ?? c.stage ?? '',
+    c.assignedToName ?? '',
+    (c.tags ?? []).join('; '),
+    (c as any).source ?? '',
+    c.createdAt ? format(new Date(c.createdAt), 'd MMM yyyy') : '',
+  ]);
+
+  const csv = [headers, ...csvRows]
+    .map((r) => r.map(escapeCell).join(','))
+    .join('\n');
+
+  const blob = new Blob(['﻿' + csv, ''], { type: 'text/csv;charset=utf-8;' }); // BOM for Excel
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `contacts_${format(new Date(), 'yyyy-MM-dd')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast.success(`Exported ${rows.length} contact${rows.length !== 1 ? 's' : ''}`);
+}
 
 // ── Column definitions ────────────────────────────────────────────────────────
 
@@ -150,6 +211,10 @@ function ContactsContent() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [stageFilter, setStageFilter] = useState<string>('');
 
+  const [newContactOpen, setNewContactOpen] = useState(false);
+  const [importOpen,     setImportOpen]     = useState(false);
+  const [exporting,      setExporting]      = useState(false);
+
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   const canCreate    = ['owner', 'admin', 'manager', 'sales'].includes(v3Role);
   const canImport    = ['owner', 'admin', 'manager'].includes(v3Role);
@@ -204,6 +269,17 @@ function ContactsContent() {
     bulkDeleteMutation.mutate([...selectedIds]);
   }
 
+  async function handleExport() {
+    setExporting(true);
+    try {
+      await exportContactsCSV(search, stageFilter);
+    } catch {
+      toast.error('Export failed');
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const columns = buildColumns(canEditOwner);
 
   const filterChips = stageFilter
@@ -211,161 +287,174 @@ function ContactsContent() {
     : [];
 
   return (
-    <div className="flex h-full flex-col">
-      {/* Page header */}
-      <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950">
-        <div>
-          <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Contacts</h1>
-          {data && (
-            <p className="text-sm text-neutral-500">
-              {data.total.toLocaleString()} contacts
-            </p>
+    <>
+      <div className="flex h-full flex-col">
+        {/* Page header */}
+        <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950">
+          <div>
+            <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Contacts</h1>
+            {data && (
+              <p className="text-sm text-neutral-500">
+                {data.total.toLocaleString()} contacts
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {canImport && (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  iconLeft={<Upload className="h-4 w-4" />}
+                  onClick={() => setImportOpen(true)}
+                  aria-label="Import contacts"
+                >
+                  Import
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  iconLeft={<Download className="h-4 w-4" />}
+                  onClick={handleExport}
+                  loading={exporting}
+                  aria-label="Export contacts"
+                >
+                  Export
+                </Button>
+              </>
+            )}
+            {canCreate && (
+              <Button
+                variant="primary"
+                size="sm"
+                iconLeft={<UserPlus className="h-4 w-4" />}
+                onClick={() => setNewContactOpen(true)}
+              >
+                New Contact
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Toolbar */}
+        <div className="flex items-center gap-3 border-b border-neutral-200 bg-white px-6 py-3 dark:border-neutral-800 dark:bg-neutral-950">
+          <SearchBar
+            value={search}
+            onChange={(v) => { setSearch(v); setPage(1); }}
+            placeholder="Search by name, phone, email…"
+            className="w-80"
+          />
+
+          {/* Stage filter */}
+          <select
+            value={stageFilter}
+            onChange={(e) => { setStageFilter(e.target.value); setPage(1); }}
+            className="h-9 rounded-lg border border-neutral-200 bg-white px-3 text-sm text-neutral-700 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+            aria-label="Filter by stage"
+          >
+            <option value="">All stages</option>
+            {STAGE_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+
+          <FilterBar
+            chips={filterChips}
+            onRemoveChip={(key) => {
+              if (key === 'stage') setStageFilter('');
+            }}
+            onClearAll={() => setStageFilter('')}
+            className="flex-1"
+          />
+        </div>
+
+        {/* Table */}
+        <div className="flex-1 overflow-auto">
+          {isLoading ? (
+            <SkeletonTable rows={10} />
+          ) : (
+            <Table
+              columns={columns}
+              data={data?.contacts ?? []}
+              keyExtractor={(row) => row.id}
+              selectable
+              selectedIds={selectedIds}
+              onSelectChange={setSelectedIds}
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={handleSort}
+              onRowClick={(row) => router.push(`/contacts/${row.id}`)}
+              emptyState={
+                <EmptyState
+                  icon={UserPlus}
+                  title={search ? 'No contacts match your search' : 'No contacts yet'}
+                  description={
+                    search
+                      ? 'Try a different search term'
+                      : 'Import a CSV or add your first contact manually'
+                  }
+                  action={canCreate ? { label: 'Add contact', onClick: () => setNewContactOpen(true) } : undefined}
+                  secondaryAction={canImport ? { label: 'Import CSV', onClick: () => setImportOpen(true) } : undefined}
+                />
+              }
+              bulkActions={
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    iconLeft={<UserCheck className="h-4 w-4" />}
+                    disabled={selectedIds.size === 0}
+                    onClick={() => toast.info('Bulk assign coming soon')}
+                  >
+                    Assign
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    iconLeft={<Tag className="h-4 w-4" />}
+                    disabled={selectedIds.size === 0}
+                    onClick={() => toast.info('Bulk tag coming soon')}
+                  >
+                    Tag
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    iconLeft={<Trash2 className="h-4 w-4" />}
+                    disabled={selectedIds.size === 0}
+                    loading={bulkDeleteMutation.isPending}
+                    onClick={handleBulkDelete}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              }
+            />
           )}
         </div>
-        <div className="flex items-center gap-2">
-          {canImport && (
-            <>
-              <Button
-                variant="secondary"
-                size="sm"
-                iconLeft={<Upload className="h-4 w-4" />}
-                onClick={() => toast.info('CSV import coming soon')}
-                aria-label="Import contacts"
-              >
-                Import
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                iconLeft={<Download className="h-4 w-4" />}
-                onClick={() => toast.info('CSV export coming soon')}
-                aria-label="Export contacts"
-              >
-                Export
-              </Button>
-            </>
-          )}
-          {canCreate && (
-            <Button
-              variant="primary"
-              size="sm"
-              iconLeft={<UserPlus className="h-4 w-4" />}
-              onClick={() => toast.info('Add contact coming soon')}
-            >
-              New Contact
-            </Button>
-          )}
-        </div>
-      </div>
 
-      {/* Toolbar */}
-      <div className="flex items-center gap-3 border-b border-neutral-200 bg-white px-6 py-3 dark:border-neutral-800 dark:bg-neutral-950">
-        <SearchBar
-          value={search}
-          onChange={(v) => { setSearch(v); setPage(1); }}
-          placeholder="Search by name, phone, email…"
-          className="w-80"
-        />
-
-        {/* Stage filter */}
-        <select
-          value={stageFilter}
-          onChange={(e) => { setStageFilter(e.target.value); setPage(1); }}
-          className="h-9 rounded-lg border border-neutral-200 bg-white px-3 text-sm text-neutral-700 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
-          aria-label="Filter by stage"
-        >
-          <option value="">All stages</option>
-          {STAGE_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
-        </select>
-
-        <FilterBar
-          chips={filterChips}
-          onRemoveChip={(key) => {
-            if (key === 'stage') setStageFilter('');
-          }}
-          onClearAll={() => setStageFilter('')}
-          className="flex-1"
-        />
-      </div>
-
-      {/* Table */}
-      <div className="flex-1 overflow-auto">
-        {isLoading ? (
-          <SkeletonTable rows={10} />
-        ) : (
-          <Table
-            columns={columns}
-            data={data?.contacts ?? []}
-            keyExtractor={(row) => row.id}
-            selectable
-            selectedIds={selectedIds}
-            onSelectChange={setSelectedIds}
-            sortKey={sortKey}
-            sortDir={sortDir}
-            onSort={handleSort}
-            onRowClick={(row) => router.push(`/contacts/${row.id}`)}
-            emptyState={
-              <EmptyState
-                icon={UserPlus}
-                title={search ? 'No contacts match your search' : 'No contacts yet'}
-                description={
-                  search
-                    ? 'Try a different search term'
-                    : 'Import a CSV or add your first contact manually'
-                }
-                action={canCreate ? { label: 'Add contact', onClick: () => toast.info('Add contact coming soon') } : undefined}
-                secondaryAction={canImport ? { label: 'Import CSV', onClick: () => toast.info('CSV import coming soon') } : undefined}
-              />
-            }
-            bulkActions={
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  iconLeft={<UserCheck className="h-4 w-4" />}
-                  disabled={selectedIds.size === 0}
-                  onClick={() => toast.info('Bulk assign coming soon')}
-                >
-                  Assign
-                </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  iconLeft={<Tag className="h-4 w-4" />}
-                  disabled={selectedIds.size === 0}
-                  onClick={() => toast.info('Bulk tag coming soon')}
-                >
-                  Tag
-                </Button>
-                <Button
-                  size="sm"
-                  variant="danger"
-                  iconLeft={<Trash2 className="h-4 w-4" />}
-                  disabled={selectedIds.size === 0}
-                  loading={bulkDeleteMutation.isPending}
-                  onClick={handleBulkDelete}
-                >
-                  Delete
-                </Button>
-              </div>
-            }
+        {/* Pagination */}
+        {data && data.total > 0 && (
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={data.total}
+            onPageChange={setPage}
+            onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
           />
         )}
       </div>
 
-      {/* Pagination */}
-      {data && data.total > 0 && (
-        <Pagination
-          page={page}
-          pageSize={pageSize}
-          total={data.total}
-          onPageChange={setPage}
-          onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
-        />
-      )}
-    </div>
+      {/* Drawers */}
+      <NewContactDrawer
+        open={newContactOpen}
+        onClose={() => setNewContactOpen(false)}
+      />
+      <ImportContactsDrawer
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+      />
+    </>
   );
 }
 
