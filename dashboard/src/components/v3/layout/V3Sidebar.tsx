@@ -1,8 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
+import { useState, Suspense } from 'react';
 import {
   Home,
   MessageSquare,
@@ -14,16 +14,22 @@ import {
   Bell,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
   PenLine,
   CalendarDays,
   Wallet,
   ShieldCheck,
+  Briefcase,
+  UserCog,
+  Target,
+  ScrollText,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Avatar } from '@/components/v3/ui/Avatar';
 import { Badge } from '@/components/v3/ui/Badge';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role, V3_NAV_PERMISSIONS, V3_ROLE_LABELS, type V3Role } from '@/types/v3';
+import { toV3Role, V3_ROLE_LABELS, type V3Role } from '@/types/v3';
 
 interface NavItem {
   href: string;
@@ -31,23 +37,50 @@ interface NavItem {
   icon: React.ReactNode;
   roles: V3Role[];
   badge?: number;
+  tabParam?: string;
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { href: '/home',           label: 'My Work',        icon: <Home className="h-5 w-5" />,          roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
-  { href: '/entry',          label: 'Daily Entry',     icon: <PenLine className="h-5 w-5" />,       roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
-  { href: '/communications', label: 'Communications',  icon: <MessageSquare className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
-  { href: '/customers',      label: 'Customers',       icon: <Users className="h-5 w-5" />,         roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
-  { href: '/sales',          label: 'Sales',           icon: <TrendingUp className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager', 'sales'] },
-  { href: '/attendance',     label: 'Attendance',      icon: <CalendarDays className="h-5 w-5" />,  roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
-  { href: '/compensation',   label: 'Compensation',    icon: <Wallet className="h-5 w-5" />,        roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
-  { href: '/analytics',      label: 'Analytics',       icon: <BarChart3 className="h-5 w-5" />,     roles: ['owner', 'admin', 'manager'] },
-  { href: '/automation',     label: 'Automation',      icon: <Zap className="h-5 w-5" />,           roles: ['owner', 'admin'] },
-  { href: '/platform',       label: 'Platform',        icon: <ShieldCheck className="h-5 w-5" />,   roles: ['owner'] },
-  { href: '/settings',       label: 'Settings',        icon: <Settings className="h-5 w-5" />,      roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+interface NavGroup {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  roles: V3Role[];
+  items: NavItem[];
+}
+
+// Flat top-level items (no group)
+const FLAT_ITEMS: NavItem[] = [
+  { href: '/home',           label: 'My Work',       icon: <Home className="h-5 w-5" />,          roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+  { href: '/communications', label: 'Communications', icon: <MessageSquare className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+  { href: '/customers',      label: 'Customers',      icon: <Users className="h-5 w-5" />,         roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+  { href: '/sales',          label: 'Sales',          icon: <TrendingUp className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager', 'sales'] },
 ];
 
-const SEPARATOR_BEFORE = new Set(['/attendance', '/analytics', '/platform', '/settings']);
+// Team group — HR / workforce items
+const TEAM_GROUP: NavGroup = {
+  id: 'team',
+  label: 'Team',
+  icon: <Briefcase className="h-5 w-5" />,
+  roles: ['owner', 'admin', 'manager', 'sales', 'support'],
+  items: [
+    { href: '/settings', tabParam: 'employees', label: 'Employees',     icon: <UserCog className="h-5 w-5" />,      roles: ['owner', 'admin'] },
+    { href: '/settings', tabParam: 'targets',   label: 'Metric Target', icon: <Target className="h-5 w-5" />,       roles: ['owner', 'admin', 'manager'] },
+    { href: '/settings', tabParam: 'audit',     label: 'Audit Log',     icon: <ScrollText className="h-5 w-5" />,   roles: ['owner', 'admin'] },
+    { href: '/entry',                           label: 'Daily Entry',   icon: <PenLine className="h-5 w-5" />,      roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+    { href: '/attendance',                      label: 'Attendance',    icon: <CalendarDays className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+    { href: '/compensation',                    label: 'Compensation',  icon: <Wallet className="h-5 w-5" />,       roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+  ],
+};
+
+// Bottom flat items (after Team group)
+const BOTTOM_ITEMS: NavItem[] = [
+  { href: '/analytics',  label: 'Analytics',  icon: <BarChart3 className="h-5 w-5" />,   roles: ['owner', 'admin', 'manager'] },
+  { href: '/automation', label: 'Automation', icon: <Zap className="h-5 w-5" />,         roles: ['owner', 'admin'] },
+  { href: '/platform',   label: 'Platform',   icon: <ShieldCheck className="h-5 w-5" />, roles: ['owner'] },
+  { href: '/settings',   label: 'Settings',   icon: <Settings className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+];
+
+const SEPARATOR_BEFORE_BOTTOM = new Set(['/platform', '/settings']);
 
 interface V3SidebarProps {
   onNotificationsClick?: () => void;
@@ -55,21 +88,71 @@ interface V3SidebarProps {
   onMobileClose?: () => void;
 }
 
-export function V3Sidebar({
+function V3SidebarInner({
   onNotificationsClick,
   unreadNotifications = 0,
   onMobileClose,
 }: V3SidebarProps) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { user, logout } = useAuth();
   const [collapsed, setCollapsed] = useState(false);
+  const [teamOpen, setTeamOpen] = useState(true);
 
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const visibleItems = NAV_ITEMS.filter((item) => item.roles.includes(v3Role));
 
-  function isActive(href: string) {
-    return pathname === href || pathname.startsWith(href + '/');
+  function isActiveItem(item: NavItem): boolean {
+    if (item.tabParam) {
+      return pathname === item.href && searchParams.get('tab') === item.tabParam;
+    }
+    // Settings flat item: only active when no tab is set
+    if (item.href === '/settings') {
+      return pathname === '/settings' && !searchParams.get('tab');
+    }
+    return pathname === item.href || pathname.startsWith(item.href + '/');
   }
+
+  function itemHref(item: NavItem): string {
+    return item.tabParam ? `${item.href}?tab=${item.tabParam}` : item.href;
+  }
+
+  function renderNavItem(item: NavItem) {
+    if (!item.roles.includes(v3Role)) return null;
+    const active = isActiveItem(item);
+    const href = itemHref(item);
+
+    return (
+      <Link
+        key={href}
+        href={href}
+        onClick={onMobileClose}
+        title={collapsed ? item.label : undefined}
+        aria-current={active ? 'page' : undefined}
+        className={cn(
+          'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
+          collapsed && 'justify-center px-2',
+          active
+            ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
+            : 'text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100',
+        )}
+      >
+        <span className={cn('shrink-0', active ? 'text-primary-600 dark:text-primary-400' : '')}>{item.icon}</span>
+        {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
+        {!collapsed && item.badge != null && item.badge > 0 && (
+          <Badge variant="primary" className="ml-auto text-[10px] h-5 min-w-[20px] justify-center">
+            {item.badge > 99 ? '99+' : item.badge}
+          </Badge>
+        )}
+      </Link>
+    );
+  }
+
+  // Check if any Team item is visible for this role
+  const visibleTeamItems = TEAM_GROUP.items.filter((i) => i.roles.includes(v3Role));
+  const showTeam = visibleTeamItems.length > 0;
+
+  // Check if any Team item is active (to auto-open group)
+  const teamHasActive = visibleTeamItems.some(isActiveItem);
 
   return (
     <aside
@@ -91,49 +174,66 @@ export function V3Sidebar({
         )}
       </div>
 
-      {/* Nav items */}
+      {/* Nav */}
       <nav className="scrollbar-thin flex-1 overflow-y-auto px-2 py-3 space-y-0.5" aria-label="Main navigation">
-        {visibleItems.map((item, i) => {
-          const active = isActive(item.href);
-          const showSeparator = SEPARATOR_BEFORE.has(item.href) && i > 0;
 
-          return (
-            <div key={item.href}>
-              {showSeparator && (
-                <div className="my-2 border-t border-neutral-200 dark:border-neutral-800" aria-hidden />
+        {/* Top flat items */}
+        {FLAT_ITEMS.map((item) => renderNavItem(item))}
+
+        {/* Team group */}
+        {showTeam && (
+          <div className="pt-1">
+            <div className={cn('my-1 border-t border-neutral-200 dark:border-neutral-800')} aria-hidden />
+
+            {/* Group header */}
+            <button
+              onClick={() => setTeamOpen((o) => !o)}
+              title={collapsed ? 'Team' : undefined}
+              className={cn(
+                'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors',
+                collapsed ? 'justify-center px-2' : '',
+                teamHasActive
+                  ? 'text-primary-600 dark:text-primary-400'
+                  : 'text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300',
               )}
-              <Link
-                href={item.href}
-                onClick={onMobileClose}
-                title={collapsed ? item.label : undefined}
-                aria-current={active ? 'page' : undefined}
-                className={cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
-                  collapsed && 'justify-center px-2',
-                  active
-                    ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
-                    : 'text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100',
-                )}
-              >
-                <span className={cn('shrink-0', active ? 'text-primary-600' : '')}>{item.icon}</span>
-                {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
-                {!collapsed && item.badge != null && item.badge > 0 && (
-                  <Badge variant="primary" className="ml-auto text-[10px] h-5 min-w-[20px] justify-center">
-                    {item.badge > 99 ? '99+' : item.badge}
-                  </Badge>
-                )}
-                {collapsed && item.badge != null && item.badge > 0 && (
-                  <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-primary-600" />
-                )}
-              </Link>
-            </div>
-          );
-        })}
+              aria-expanded={teamOpen}
+            >
+              <span className="shrink-0">{TEAM_GROUP.icon}</span>
+              {!collapsed && (
+                <>
+                  <span className="flex-1 text-left">{TEAM_GROUP.label}</span>
+                  {teamOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                </>
+              )}
+            </button>
+
+            {/* Group items */}
+            {(teamOpen || collapsed) && (
+              <div className={cn('space-y-0.5', !collapsed && 'pl-2')}>
+                {visibleTeamItems.map((item) => renderNavItem(item))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Bottom flat items */}
+        <div className="pt-1">
+          <div className="my-1 border-t border-neutral-200 dark:border-neutral-800" aria-hidden />
+          {BOTTOM_ITEMS.map((item, i) => {
+            if (!item.roles.includes(v3Role)) return null;
+            const showSep = SEPARATOR_BEFORE_BOTTOM.has(item.href) && i > 0;
+            return (
+              <div key={item.href}>
+                {showSep && <div className="my-1 border-t border-neutral-200 dark:border-neutral-800" aria-hidden />}
+                {renderNavItem(item)}
+              </div>
+            );
+          })}
+        </div>
       </nav>
 
       {/* Bottom: Notifications + User */}
       <div className="border-t border-neutral-200 px-2 py-3 space-y-1 dark:border-neutral-800">
-        {/* Notifications */}
         <button
           onClick={onNotificationsClick}
           title={collapsed ? 'Notifications' : undefined}
@@ -158,7 +258,6 @@ export function V3Sidebar({
           )}
         </button>
 
-        {/* User info + collapse toggle */}
         <div className={cn('flex items-center gap-2 rounded-lg px-2 py-2', collapsed ? 'justify-center' : '')}>
           <Avatar name={user?.name ?? '?'} size={32} />
           {!collapsed && (
@@ -196,5 +295,13 @@ export function V3Sidebar({
         )}
       </button>
     </aside>
+  );
+}
+
+export function V3Sidebar(props: V3SidebarProps) {
+  return (
+    <Suspense fallback={null}>
+      <V3SidebarInner {...props} />
+    </Suspense>
   );
 }

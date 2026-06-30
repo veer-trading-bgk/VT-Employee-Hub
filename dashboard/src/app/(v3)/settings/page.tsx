@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import {
   User,
   Building2,
@@ -1685,12 +1686,20 @@ function StubSection({ title, description }: { title: string; description: strin
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function SettingsPage() {
+function SettingsPageInner() {
   const { user, logout } = useAuth();
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   const isAdmin = ['owner', 'admin'].includes(v3Role);
+  const searchParams = useSearchParams();
 
-  const [activeSection, setActiveSection] = useState<SettingsSection>('profile');
+  const initialSection = (searchParams.get('tab') as SettingsSection | null) ?? 'profile';
+  const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
+
+  // Sync tab when URL param changes (e.g. navigating from sidebar)
+  useEffect(() => {
+    const tab = searchParams.get('tab') as SettingsSection | null;
+    if (tab) setActiveSection(tab);
+  }, [searchParams]);
 
   const visibleSections = SECTIONS.filter((s) => !s.adminOnly || isAdmin);
 
@@ -1754,5 +1763,13 @@ export default function SettingsPage() {
         {renderContent()}
       </main>
     </div>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={null}>
+      <SettingsPageInner />
+    </Suspense>
   );
 }
