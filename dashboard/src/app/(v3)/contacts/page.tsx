@@ -29,6 +29,7 @@ import { toV3Role } from '@/types/v3';
 import { toast } from 'sonner';
 import Link from 'next/link';
 import { format } from 'date-fns';
+import { OwnerSelect } from '@/components/v3/ui/OwnerSelect';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -52,7 +53,7 @@ function contactDisplayName(row: Contact): string {
   return row.displayName ?? row.name ?? row.phone ?? '';
 }
 
-function buildColumns(): TableColumn<Contact>[] {
+function buildColumns(canEditOwner: boolean): TableColumn<Contact>[] {
   return [
     {
       key: 'name',
@@ -84,12 +85,17 @@ function buildColumns(): TableColumn<Contact>[] {
     {
       key: 'owner',
       header: 'Assigned to',
-      sortable: true,
-      width: 'w-40',
+      sortable: false,
+      width: 'w-48',
       cell: (row) => (
-        <span className="text-sm text-neutral-700 dark:text-neutral-300">
-          {row.assignedToName ?? row.ownerName ?? '—'}
-        </span>
+        <OwnerSelect
+          contactId={row.id}
+          isLead={row.type === 'lead' || !!row.leadId}
+          currentOwnerName={row.assignedToName ?? row.ownerName}
+          currentOwnerId={row.assignedTo ?? row.ownerId}
+          canEdit={canEditOwner}
+          compact
+        />
       ),
     },
     {
@@ -145,8 +151,9 @@ function ContactsContent() {
   const [stageFilter, setStageFilter] = useState<string>('');
 
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const canCreate = ['owner', 'admin', 'manager', 'sales'].includes(v3Role);
-  const canImport = ['owner', 'admin', 'manager'].includes(v3Role);
+  const canCreate    = ['owner', 'admin', 'manager', 'sales'].includes(v3Role);
+  const canImport    = ['owner', 'admin', 'manager'].includes(v3Role);
+  const canEditOwner = ['owner', 'admin'].includes(v3Role);
 
   const queryKey = ['contacts', { search, page, pageSize, sortKey, sortDir, stageFilter }];
 
@@ -197,7 +204,7 @@ function ContactsContent() {
     bulkDeleteMutation.mutate([...selectedIds]);
   }
 
-  const columns = buildColumns();
+  const columns = buildColumns(canEditOwner);
 
   const filterChips = stageFilter
     ? [{ key: 'stage', label: 'Stage', value: STAGE_LABELS[stageFilter as Stage] ?? stageFilter }]

@@ -18,6 +18,9 @@ import {
   Plus,
   User,
 } from 'lucide-react';
+import { OwnerSelect } from '@/components/v3/ui/OwnerSelect';
+import { useAuth } from '@/context/AuthContext';
+import { toV3Role } from '@/types/v3';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Avatar } from '@/components/v3/ui/Avatar';
 import { Badge } from '@/components/v3/ui/Badge';
@@ -126,7 +129,15 @@ function InlineField({
 
 // ── Overview Tab ──────────────────────────────────────────────────────────────
 
-function OverviewTab({ contact, onUpdate }: { contact: Contact; onUpdate: (patch: Partial<Contact>) => Promise<void> }) {
+function OverviewTab({
+  contact,
+  onUpdate,
+  canEditOwner,
+}: {
+  contact: Contact;
+  onUpdate: (patch: Partial<Contact>) => Promise<void>;
+  canEditOwner: boolean;
+}) {
   return (
     <div className="space-y-4 p-4">
       <Card>
@@ -178,10 +189,14 @@ function OverviewTab({ contact, onUpdate }: { contact: Contact; onUpdate: (patch
             />
           </div>
           <div>
-            <p className="mb-0.5 text-xs text-neutral-500">Assigned to</p>
-            <p className="text-sm text-neutral-900 dark:text-neutral-100">
-              {contact.ownerName ?? 'Unassigned'}
-            </p>
+            <p className="mb-1 text-xs text-neutral-500">Assigned to</p>
+            <OwnerSelect
+              contactId={contact.id}
+              isLead={contact.type === 'lead' || !!contact.leadId}
+              currentOwnerName={contact.assignedToName ?? contact.ownerName}
+              currentOwnerId={contact.assignedTo ?? contact.ownerId}
+              canEdit={canEditOwner}
+            />
           </div>
         </div>
       </Card>
@@ -531,6 +546,10 @@ function Contact360Content({ contactId }: { contactId: string }) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const qc = useQueryClient();
+  const { user } = useAuth();
+
+  const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
+  const canEditOwner = ['owner', 'admin'].includes(v3Role);
 
   const tabParam = searchParams.get('tab') as C360Tab | null;
   const [activeTab, setActiveTab] = useState<C360Tab>(tabParam ?? 'overview');
@@ -681,7 +700,7 @@ function Contact360Content({ contactId }: { contactId: string }) {
       <div className="flex flex-1 min-h-0">
         {/* Main tab area */}
         <div className="scrollbar-thin flex-1 overflow-y-auto" role="tabpanel">
-          {activeTab === 'overview'      && <OverviewTab contact={contact} onUpdate={handleUpdate} />}
+          {activeTab === 'overview'      && <OverviewTab contact={contact} onUpdate={handleUpdate} canEditOwner={canEditOwner} />}
           {activeTab === 'conversations' && <ConversationsTab contactId={contactId} />}
           {activeTab === 'notes'         && <NotesTab contactId={contactId} />}
           {activeTab === 'followups'     && <FollowupsTab contactId={contactId} />}
