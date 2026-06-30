@@ -4,8 +4,16 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { toast } from 'sonner';
 import type { Contact } from '@/types/v3';
+import {
+  assignmentKey,
+  broadcastAssignment,
+  type AssignmentRecord,
+} from '@/lib/assignmentBridge';
 
-// ContactsResponse shape used by the list pages
+// Re-export so consumers only need one import
+export type { AssignmentRecord };
+export { assignmentKey };
+
 interface ContactsListResponse {
   contacts: Contact[];
   total: number;
@@ -13,26 +21,31 @@ interface ContactsListResponse {
   pageSize: number;
 }
 
-interface AssignPayload {
+export interface AssignPayload {
   employeeId: string;
   employeeName: string;
 }
 
 interface MutationContext {
+  prevAssignment?: AssignmentRecord;
   prevContact?: Contact;
 }
 
 /**
- * Centralised owner-assignment mutation.
+ * Centralized owner-assignment mutation.
  *
- * Endpoint: PUT /api/crm/leads/{leadId}/assign  { assignedTo: employeeId }
+ * On mutate  → optimistically updates THREE layers simultaneously:
+ *   1. ['assignment', leadId]  — canonical single-source-of-truth (NEW)
+ *   2. ['contact', leadId]     — C360 single-contact view
+ *   3. ['contacts', ...]       — Contacts list (all paginated variants)
+ *   4. ['sales-contacts']      — Sales CRM flat list
  *
- * Optimistically updates three caches simultaneously:
- *   ['contact', contactId]  — Customer360 single-contact view
- *   ['contacts', ...]       — Contacts list page (all paginated variants)
- *   ['sales-contacts']      — Sales CRM kanban / list view
+ * On success → broadcasts via BroadcastChannel so every other open tab
+ *              updates without any API round-trip.
  *
- * On error: rolls back single-contact cache and refetches lists.
+ * On error   → rolls back ['assignment'] and ['contact']; refetches lists.
+ *
+ * Adding a new module? Just read ['assignment', leadId] — no changes here.
  */
 export function useOwnerAssign(contactId: string) {
   const qc = useQueryClient();
@@ -45,26 +58,38 @@ export function useOwnerAssign(contactId: string) {
       }),
 
     onMutate: async ({ employeeId, employeeName }) => {
-      // Cancel any in-flight fetches for the affected caches so they don't
-      // overwrite our optimistic update.
-      await qc.cancelQueries({ queryKey: ['contact', contactId] });
-
-      // Snapshot the previous single-contact state for rollback.
-      const prevContact = qc.getQueryData<Contact>(['contact', contactId]);
+      const newAssignment: AssignmentRecord = {
+        assignedTo: employeeId,
+        assignedToName: employeeName,
+      };
 
       const patch: Partial<Contact> = {
         assignedTo: employeeId,
         assignedToName: employeeName,
-        ownerName: employeeName,     // backward-compat alias
-        ownerId: employeeId,         // backward-compat alias
+        ownerName: employeeName,
+        ownerId: employeeId,
       };
 
-      // 1. Customer360 single-contact cache
+      // Cancel in-flight queries that could overwrite optimistic data
+      await Promise.all([
+        qc.cancelQueries({ queryKey: assignmentKey(contactId) }),
+        qc.cancelQueries({ queryKey: ['contact', contactId] }),
+      ]);
+
+      // Snapshot for rollback
+      const prevAssignment = qc.getQueryData<AssignmentRecord>(assignmentKey(contactId));
+      const prevContact    = qc.getQueryData<Contact>(['contact', contactId]);
+
+      // 1. Assignment cache — the new single source of truth
+      //    All components reading ['assignment', contactId] re-render immediately
+      qc.setQueryData<AssignmentRecord>(assignmentKey(contactId), newAssignment);
+
+      // 2. C360 single-contact cache — kept for backward compat
       qc.setQueryData<Contact>(['contact', contactId], (old) =>
         old ? { ...old, ...patch } : old,
       );
 
-      // 2. Contacts list cache — all paginated variants share the prefix ['contacts']
+      // 3. Contacts list — all paginated variants share the ['contacts'] prefix
       qc.setQueriesData<ContactsListResponse>(
         { queryKey: ['contacts'] },
         (old) =>
@@ -78,29 +103,39 @@ export function useOwnerAssign(contactId: string) {
             : old,
       );
 
-      // 3. Sales CRM flat contact array
+      // 4. Sales CRM flat contact array
       qc.setQueryData<Contact[]>(['sales-contacts'], (old) =>
-        old
-          ? old.map((c) => (c.id === contactId ? { ...c, ...patch } : c))
-          : old,
+        old ? old.map((c) => (c.id === contactId ? { ...c, ...patch } : c)) : old,
       );
 
-      return { prevContact };
+      return { prevAssignment, prevContact };
     },
 
-    onSuccess: () => {
+    onSuccess: (_data, { employeeId, employeeName }) => {
       toast.success('Owner updated');
-      // Refetch the authoritative single-contact record to pick up any
-      // server-side side-effects (e.g. audit trail fields).
+      // Invalidate C360 to pick up any server-side side-effects
       qc.invalidateQueries({ queryKey: ['contact', contactId] });
+      // Cross-tab broadcast: other open tabs update ['assignment', contactId]
+      // in their own QueryClient without any API call
+      broadcastAssignment(contactId, {
+        assignedTo: employeeId,
+        assignedToName: employeeName,
+      });
     },
 
     onError: (_err, _vars, ctx) => {
-      // Roll back the single-contact cache to the pre-mutation snapshot.
+      // Roll back assignment cache
+      if (ctx?.prevAssignment !== undefined) {
+        qc.setQueryData(assignmentKey(contactId), ctx.prevAssignment);
+      } else {
+        // It was never set before — remove the optimistic entry entirely
+        qc.removeQueries({ queryKey: assignmentKey(contactId) });
+      }
+      // Roll back C360 cache
       if (ctx?.prevContact) {
         qc.setQueryData(['contact', contactId], ctx.prevContact);
       }
-      // For list caches refetch is simpler and safer than reverting.
+      // Refetch list caches — simpler and safer than reverting map operations
       qc.invalidateQueries({ queryKey: ['contacts'] });
       qc.invalidateQueries({ queryKey: ['sales-contacts'] });
       toast.error('Failed to update owner — please try again');

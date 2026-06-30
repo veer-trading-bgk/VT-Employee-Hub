@@ -4,6 +4,7 @@ import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { QueryProvider } from "@/providers/QueryProvider";
+import { AssignmentBridgeProvider } from "@/providers/AssignmentBridgeProvider";
 import { WebSocketProvider } from "@/contexts/WebSocketContext";
 import { Toaster } from "sonner";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
@@ -56,15 +57,17 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col bg-slate-50 dark:bg-slate-950">
         <QueryProvider>
-          <ThemeProvider>
-            <AuthProvider>
-              <WebSocketProvider>
-                {children}
-                <Toaster richColors position="top-right" offset="4.5rem" />
-                <ServiceWorkerRegister />
-              </WebSocketProvider>
-            </AuthProvider>
-          </ThemeProvider>
+          <AssignmentBridgeProvider>
+            <ThemeProvider>
+              <AuthProvider>
+                <WebSocketProvider>
+                  {children}
+                  <Toaster richColors position="top-right" offset="4.5rem" />
+                  <ServiceWorkerRegister />
+                </WebSocketProvider>
+              </AuthProvider>
+            </ThemeProvider>
+          </AssignmentBridgeProvider>
         </QueryProvider>
       </body>
     </html>
