@@ -31,8 +31,8 @@ import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { Card } from '@/components/v3/ui/Card';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
-import type { Contact, Followup, Conversation, Message } from '@/types/v3';
-import { STAGE_LABELS, type Stage } from '@/types/v3';
+import type { Contact, Stage } from '@/types/v3';
+import { STAGE_LABELS } from '@/types/v3';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 
@@ -54,6 +54,59 @@ const STAGE_OPTIONS = (Object.entries(STAGE_LABELS) as [Stage, string][]).map(([
   value,
   label,
 }));
+
+// ── Backend data shapes ───────────────────────────────────────────────────────
+
+interface CrmLead {
+  leadId: string;
+  name: string;
+  phone: string;
+  email?: string | null;
+  stage: Stage;
+  assignedTo?: string | null;
+  assignedToName?: string | null;
+  notes?: string;
+  productInterest?: string;
+  source?: string;
+  tags?: string[];
+  closureDeadline?: string;
+  createdAt?: string;
+  chatStatus?: string;
+}
+
+interface CrmNote {
+  SK: string;
+  body?: string;
+  authorName?: string;
+  createdAt?: string;
+}
+
+interface CrmFollowup {
+  PK?: string;
+  date: string;
+  note?: string;
+  leadId: string;
+  assignedTo?: string;
+  done?: boolean;
+}
+
+function normalizeLead(lead: CrmLead): Contact {
+  return {
+    id: lead.leadId,
+    leadId: lead.leadId,
+    type: 'lead',
+    name: lead.name ?? '',
+    phone: lead.phone ?? '',
+    email: lead.email ?? null,
+    stage: lead.stage,
+    assignedTo: lead.assignedTo ?? null,
+    assignedToName: lead.assignedToName ?? null,
+    ownerName: lead.assignedToName ?? undefined,
+    ownerId: lead.assignedTo ?? undefined,
+    tags: lead.tags ?? [],
+    createdAt: lead.createdAt,
+  };
+}
 
 // ── Inline editable field ─────────────────────────────────────────────────────
 
@@ -132,10 +185,12 @@ function InlineField({
 function OverviewTab({
   contact,
   onUpdate,
+  onStageChange,
   canEditOwner,
 }: {
   contact: Contact;
   onUpdate: (patch: Partial<Contact>) => Promise<void>;
+  onStageChange: (stage: Stage) => Promise<void>;
   canEditOwner: boolean;
 }) {
   return (
@@ -184,7 +239,7 @@ function OverviewTab({
             <Select
               options={STAGE_OPTIONS}
               value={contact.stage}
-              onChange={(e) => onUpdate({ stage: e.target.value as Stage })}
+              onChange={(e) => onStageChange(e.target.value as Stage)}
               aria-label="Contact stage"
             />
           </div>
@@ -231,27 +286,44 @@ function OverviewTab({
 function FollowupsTab({ contactId }: { contactId: string }) {
   const qc = useQueryClient();
 
-  const { data: followups = [], isLoading } = useQuery<Followup[]>({
+  const { data: followups = [], isLoading } = useQuery<CrmFollowup[]>({
     queryKey: ['contact-followups', contactId],
     queryFn: async () => {
-      const data = await apiFetch<{ followups: Followup[] }>(`/api/contacts/${contactId}/followups`);
+      const data = await apiFetch<{ followups: CrmFollowup[] }>(
+        `/api/crm/followups?leadId=${contactId}&overdue=true&days=90`,
+      );
       return data.followups ?? [];
     },
     staleTime: 30_000,
   });
 
   const completeMutation = useMutation({
-    mutationFn: async (id: string) => {
-      return apiFetch(`/api/followups/${id}/complete`, { method: 'POST' });
+    mutationFn: async (followup: CrmFollowup) => {
+      return apiFetch(`/api/crm/followups/${followup.date}/${contactId}/done`, { method: 'PUT' });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['contact-followups', contactId] });
       toast.success('Follow-up marked complete');
     },
+    onError: () => toast.error('Failed to complete follow-up'),
   });
 
-  const upcoming = followups.filter((f) => !f.completedAt);
-  const completed = followups.filter((f) => f.completedAt);
+  const addMutation = useMutation({
+    mutationFn: async ({ date, note }: { date: string; note: string }) => {
+      return apiFetch(`/api/crm/leads/${contactId}/followup`, {
+        method: 'POST',
+        body: JSON.stringify({ date, note }),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['contact-followups', contactId] });
+      toast.success('Follow-up added');
+    },
+    onError: () => toast.error('Failed to add follow-up'),
+  });
+
+  const upcoming = followups.filter((f) => !f.done);
+  const completed = followups.filter((f) => f.done);
 
   if (isLoading) return <div className="space-y-2 p-4"><SkeletonText lines={4} /></div>;
 
@@ -261,7 +333,17 @@ function FollowupsTab({ contactId }: { contactId: string }) {
         <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
           Upcoming follow-ups
         </h3>
-        <Button size="sm" iconLeft={<Plus className="h-4 w-4" />}>
+        <Button
+          size="sm"
+          iconLeft={<Plus className="h-4 w-4" />}
+          onClick={() => {
+            const date = new Date();
+            date.setDate(date.getDate() + 1);
+            const dateStr = date.toISOString().slice(0, 10);
+            addMutation.mutate({ date: dateStr, note: 'Follow-up scheduled' });
+          }}
+          loading={addMutation.isPending}
+        >
           Add follow-up
         </Button>
       </div>
@@ -271,13 +353,20 @@ function FollowupsTab({ contactId }: { contactId: string }) {
           icon={Clock}
           title="No upcoming follow-ups"
           description="Schedule a call, meeting, or callback"
-          action={{ label: 'Add follow-up', onClick: () => {} }}
+          action={{
+            label: 'Add follow-up',
+            onClick: () => {
+              const date = new Date();
+              date.setDate(date.getDate() + 1);
+              addMutation.mutate({ date: date.toISOString().slice(0, 10), note: 'Follow-up' });
+            },
+          }}
         />
       ) : (
         <ul className="space-y-2" role="list">
           {upcoming.map((f) => (
             <li
-              key={f.id}
+              key={`${f.date}-${f.leadId}`}
               className="flex items-start gap-3 rounded-lg border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900"
             >
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-warning-50 dark:bg-warning-900/20">
@@ -285,17 +374,18 @@ function FollowupsTab({ contactId }: { contactId: string }) {
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-medium capitalize text-neutral-900 dark:text-neutral-100">
-                    {f.type}
+                  <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                    Follow-up
                   </p>
                   <p className="text-xs text-neutral-500">
-                    {format(new Date(f.dueAt), 'EEE, d MMM · h:mm a')}
+                    {format(new Date(f.date), 'EEE, d MMM yyyy')}
                   </p>
                 </div>
-                {f.notes && <p className="mt-0.5 text-xs text-neutral-500">{f.notes}</p>}
+                {f.note && <p className="mt-0.5 text-xs text-neutral-500">{f.note}</p>}
               </div>
               <button
-                onClick={() => completeMutation.mutate(f.id)}
+                onClick={() => completeMutation.mutate(f)}
+                disabled={completeMutation.isPending}
                 className="shrink-0 rounded p-1 text-neutral-400 hover:bg-success-50 hover:text-success-600"
                 aria-label="Mark complete"
               >
@@ -314,13 +404,13 @@ function FollowupsTab({ contactId }: { contactId: string }) {
           <ul className="space-y-1" role="list">
             {completed.map((f) => (
               <li
-                key={f.id}
+                key={`${f.date}-done`}
                 className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-neutral-400"
               >
                 <Check className="h-4 w-4 text-success-500 shrink-0" aria-hidden />
-                <span className="line-through capitalize">{f.type}</span>
+                <span className="line-through">Follow-up</span>
                 <span className="ml-auto text-xs">
-                  {format(new Date(f.completedAt!), 'd MMM')}
+                  {format(new Date(f.date), 'd MMM')}
                 </span>
               </li>
             ))}
@@ -333,60 +423,21 @@ function FollowupsTab({ contactId }: { contactId: string }) {
 
 // ── Notes Tab ─────────────────────────────────────────────────────────────────
 
-function NotesTab({ contactId }: { contactId: string }) {
-  const [draft, setDraft] = useState('');
-  const [saving, setSaving] = useState(false);
-  const qc = useQueryClient();
-
-  interface Note {
-    id: string;
-    body: string;
-    authorName: string;
-    createdAt: string;
-  }
-
-  const { data: notes = [] } = useQuery<Note[]>({
-    queryKey: ['contact-notes', contactId],
-    queryFn: async () => {
-      const data = await apiFetch<{ notes: Note[] }>(`/api/contacts/${contactId}/notes`);
-      return data.notes ?? [];
-    },
-    staleTime: 60_000,
-  });
-
-  async function addNote() {
-    if (!draft.trim()) return;
-    setSaving(true);
-    try {
-      await apiFetch(`/api/contacts/${contactId}/notes`, {
-        method: 'POST',
-        body: JSON.stringify({ body: draft }),
-      });
-      setDraft('');
-      qc.invalidateQueries({ queryKey: ['contact-notes', contactId] });
-    } catch {
-      toast.error('Failed to save note');
-    } finally {
-      setSaving(false);
-    }
-  }
-
+function NotesTab({ notes }: { notes: CrmNote[] }) {
   return (
     <div className="flex h-full flex-col gap-4 p-4">
       <div className="flex flex-col gap-2">
         <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="Add a note about this contact…"
+          placeholder="Note creation coming soon…"
           rows={3}
-          className="w-full resize-none rounded-lg border border-neutral-200 px-3 py-2 text-sm placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+          disabled
+          className="w-full resize-none rounded-lg border border-neutral-200 px-3 py-2 text-sm placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 disabled:opacity-50"
         />
         <Button
           size="sm"
-          onClick={addNote}
-          disabled={!draft.trim()}
-          loading={saving}
+          disabled
           className="self-end"
+          onClick={() => toast.info('Note creation coming soon')}
         >
           Save note
         </Button>
@@ -395,14 +446,14 @@ function NotesTab({ contactId }: { contactId: string }) {
       <ul className="space-y-3" role="list">
         {notes.map((note) => (
           <li
-            key={note.id}
+            key={note.SK}
             className="rounded-lg border border-neutral-200 bg-white p-3 dark:border-neutral-800 dark:bg-neutral-900"
           >
             <p className="text-sm text-neutral-900 dark:text-neutral-100 whitespace-pre-wrap">
-              {note.body}
+              {note.body ?? '—'}
             </p>
             <p className="mt-1.5 text-[10px] text-neutral-400">
-              {note.authorName} · {format(new Date(note.createdAt), 'd MMM yyyy, h:mm a')}
+              {note.authorName ?? 'Unknown'} · {note.createdAt ? format(new Date(note.createdAt), 'd MMM yyyy, h:mm a') : '—'}
             </p>
           </li>
         ))}
@@ -410,7 +461,7 @@ function NotesTab({ contactId }: { contactId: string }) {
           <EmptyState
             icon={FileText}
             title="No notes yet"
-            description="Add a note about this contact"
+            description="Internal notes will appear here"
             className="py-8"
           />
         )}
@@ -421,45 +472,37 @@ function NotesTab({ contactId }: { contactId: string }) {
 
 // ── Conversations Tab ─────────────────────────────────────────────────────────
 
-function ConversationsTab({ contactId }: { contactId: string }) {
-  const { data: convs = [] } = useQuery<Conversation[]>({
-    queryKey: ['contact-conversations', contactId],
-    queryFn: async () => {
-      const data = await apiFetch<{ conversations: Conversation[] }>(`/api/contacts/${contactId}/conversations`);
-      return data.conversations ?? [];
-    },
-    staleTime: 30_000,
-  });
-
+function ConversationsTab({ contactId, messageCount }: { contactId: string; messageCount: number }) {
   return (
-    <div className="p-4 space-y-3">
-      {convs.length === 0 ? (
+    <div className="p-4 space-y-4">
+      {messageCount === 0 ? (
         <EmptyState
           icon={MessageSquare}
           title="No conversations"
-          description="Start a WhatsApp conversation"
-          action={{ label: 'New conversation', onClick: () => {} }}
+          description="Start a WhatsApp conversation from the Inbox"
+          action={{
+            label: 'Open Inbox',
+            onClick: () => window.location.href = `/communications?contactId=${contactId}`,
+          }}
         />
       ) : (
-        convs.map((conv) => (
+        <div className="space-y-3">
+          <p className="text-sm text-neutral-600 dark:text-neutral-400">
+            {messageCount} message{messageCount !== 1 ? 's' : ''} in conversation
+          </p>
           <Link
-            key={conv.id}
             href={`/communications?contactId=${contactId}`}
             className="flex items-center gap-3 rounded-lg border border-neutral-200 bg-white p-3 hover:border-primary-300 hover:shadow-sm transition-all dark:border-neutral-800 dark:bg-neutral-900"
           >
-            <Badge variant={conv.status === 'open' ? 'success' : conv.status === 'pending' ? 'warning' : 'default'}>
-              {conv.status}
-            </Badge>
-            <p className="flex-1 text-sm text-neutral-700 dark:text-neutral-300">
-              {conv.lastMessagePreview || 'No messages'}
-            </p>
-            {conv.lastMessageAt && (
-              <span className="text-xs text-neutral-400">
-                {format(new Date(conv.lastMessageAt), 'd MMM')}
-              </span>
-            )}
+            <MessageSquare className="h-5 w-5 text-primary-600 shrink-0" aria-hidden />
+            <div className="flex-1">
+              <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                WhatsApp conversation
+              </p>
+              <p className="text-xs text-neutral-500">{messageCount} messages — click to open in Inbox</p>
+            </div>
           </Link>
-        ))
+        </div>
       )}
     </div>
   );
@@ -467,58 +510,20 @@ function ConversationsTab({ contactId }: { contactId: string }) {
 
 // ── Timeline Tab ──────────────────────────────────────────────────────────────
 
-function TimelineTab({ contactId }: { contactId: string }) {
-  interface TimelineEvent {
-    id: string;
-    type: string;
-    summary: string;
-    createdAt: string;
-    createdByName?: string;
-  }
-
-  const { data: events = [] } = useQuery<TimelineEvent[]>({
-    queryKey: ['contact-timeline', contactId],
-    queryFn: async () => {
-      const data = await apiFetch<{ events: TimelineEvent[] }>(`/api/contacts/${contactId}/timeline`);
-      return data.events ?? [];
-    },
-    staleTime: 60_000,
-  });
-
-  if (events.length === 0) {
-    return (
-      <EmptyState
-        icon={Activity}
-        title="No activity yet"
-        description="Activity will appear here as you interact with this contact"
-        className="py-12"
-      />
-    );
-  }
-
+function TimelineTab() {
   return (
-    <div className="p-4">
-      <ol className="relative border-l border-neutral-200 dark:border-neutral-800 space-y-4 ml-3">
-        {events.map((event) => (
-          <li key={event.id} className="pl-5 relative">
-            <span className="absolute -left-[5px] top-1 h-2.5 w-2.5 rounded-full border-2 border-white bg-neutral-400 dark:border-neutral-900 dark:bg-neutral-600" />
-            <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100">
-              {event.summary}
-            </p>
-            <p className="text-xs text-neutral-400 mt-0.5">
-              {event.createdByName && `${event.createdByName} · `}
-              {format(new Date(event.createdAt), 'd MMM yyyy, h:mm a')}
-            </p>
-          </li>
-        ))}
-      </ol>
-    </div>
+    <EmptyState
+      icon={Activity}
+      title="No activity yet"
+      description="Activity will appear here as you interact with this contact"
+      className="py-12"
+    />
   );
 }
 
 // ── Stub tabs ─────────────────────────────────────────────────────────────────
 
-function KYCTab({ contactId: _contactId }: { contactId: string }) {
+function KYCTab() {
   return (
     <EmptyState
       icon={Shield}
@@ -529,7 +534,7 @@ function KYCTab({ contactId: _contactId }: { contactId: string }) {
   );
 }
 
-function DocumentsTab({ contactId: _contactId }: { contactId: string }) {
+function DocumentsTab() {
   return (
     <EmptyState
       icon={FolderOpen}
@@ -537,6 +542,35 @@ function DocumentsTab({ contactId: _contactId }: { contactId: string }) {
       description="Shared WhatsApp media and uploaded files will appear here"
       className="py-12"
     />
+  );
+}
+
+// ── Unknown contact fallback ──────────────────────────────────────────────────
+
+function UnknownContactView({ contactId }: { contactId: string }) {
+  const router = useRouter();
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center gap-2 border-b border-neutral-200 bg-white px-6 py-3 dark:border-neutral-800 dark:bg-neutral-950">
+        <Link
+          href="/contacts"
+          className="flex items-center gap-1 text-sm text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300"
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden />
+          Contacts
+        </Link>
+        <span className="text-neutral-300">/</span>
+        <span className="text-sm text-neutral-500">{contactId}</span>
+      </div>
+      <div className="flex flex-1 items-center justify-center">
+        <EmptyState
+          icon={User}
+          title="Unknown contact"
+          description="This contact has sent messages but hasn't been added to the CRM yet. No profile data is available."
+          action={{ label: 'Go to Contacts', onClick: () => router.push('/contacts') }}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -554,39 +588,104 @@ function Contact360Content({ contactId }: { contactId: string }) {
   const tabParam = searchParams.get('tab') as C360Tab | null;
   const [activeTab, setActiveTab] = useState<C360Tab>(tabParam ?? 'overview');
 
+  // Unknown contacts are 10-digit phone numbers — they have no CRM lead record
+  const isUnknown = /^\d{10}$/.test(contactId);
+
+  // Fetch the full CRM lead response — store Contact in the canonical ['contact', contactId]
+  // cache (used by useOwnerAssign) and keep extra data in a separate key.
   const { data: contact, isLoading } = useQuery<Contact>({
     queryKey: ['contact', contactId],
     queryFn: async () => {
-      const data = await apiFetch<{ contact: Contact }>(`/api/contacts/${contactId}`);
-      return data.contact;
+      const res = await apiFetch<{
+        success: boolean;
+        lead: CrmLead;
+        messages: unknown[];
+        internalNotes: CrmNote[];
+      }>(`/api/crm/leads/${contactId}`);
+      // Store side-band data under a separate key so it doesn't conflict with the
+      // Contact shape that useOwnerAssign expects in ['contact', contactId].
+      qc.setQueryData(['contact-meta', contactId], {
+        internalNotes: res.internalNotes ?? [],
+        messageCount: (res.messages ?? []).length,
+      });
+      return normalizeLead(res.lead);
     },
     staleTime: 60_000,
+    enabled: !isUnknown,
   });
+
+  const { data: contactMeta } = useQuery<{ internalNotes: CrmNote[]; messageCount: number }>({
+    queryKey: ['contact-meta', contactId],
+    queryFn: () => ({ internalNotes: [], messageCount: 0 }),
+    enabled: false,  // populated as a side effect of the contact query above
+    staleTime: Infinity,
+  });
+
+  const internalNotes = contactMeta?.internalNotes ?? [];
+  const messageCount = contactMeta?.messageCount ?? 0;
 
   const updateMutation = useMutation({
     mutationFn: async (patch: Partial<Contact>) => {
-      return apiFetch<{ contact: Contact }>(`/api/contacts/${contactId}`, {
-        method: 'PATCH',
-        body: JSON.stringify(patch),
+      const { name, phone, email, tags } = patch;
+      const body: Record<string, unknown> = {};
+      if (name !== undefined) body.name = name;
+      if (phone !== undefined) body.phone = phone;
+      if (email !== undefined) body.email = email;
+      if (tags !== undefined) body.tags = tags;
+      return apiFetch(`/api/crm/leads/${contactId}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
       });
     },
     onMutate: async (patch) => {
       await qc.cancelQueries({ queryKey: ['contact', contactId] });
+      const prev = qc.getQueryData<Contact>(['contact', contactId]);
       qc.setQueryData<Contact>(['contact', contactId], (old) =>
         old ? { ...old, ...patch } : old,
       );
+      return { prev };
     },
-    onSuccess: (data) => {
-      qc.setQueryData(['contact', contactId], (data as { contact: Contact }).contact);
+    onSuccess: () => {
+      toast.success('Contact updated');
+      qc.invalidateQueries({ queryKey: ['contact', contactId] });
+      qc.invalidateQueries({ queryKey: ['contacts'] });
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(['contact', contactId], ctx.prev);
+      toast.error('Update failed');
+    },
+  });
+
+  const stageMutation = useMutation({
+    mutationFn: async (stage: Stage) => {
+      return apiFetch(`/api/crm/leads/${contactId}/stage`, {
+        method: 'PUT',
+        body: JSON.stringify({ stage }),
+      });
+    },
+    onMutate: async (stage) => {
+      await qc.cancelQueries({ queryKey: ['contact', contactId] });
+      qc.setQueryData<Contact>(['contact', contactId], (old) =>
+        old ? { ...old, stage } : old,
+      );
+    },
+    onSuccess: () => {
+      toast.success('Stage updated');
+      qc.invalidateQueries({ queryKey: ['contact', contactId] });
+      qc.invalidateQueries({ queryKey: ['contacts'] });
     },
     onError: () => {
       qc.invalidateQueries({ queryKey: ['contact', contactId] });
-      toast.error('Update failed');
+      toast.error('Stage update failed');
     },
   });
 
   async function handleUpdate(patch: Partial<Contact>) {
     await updateMutation.mutateAsync(patch);
+  }
+
+  async function handleStageChange(stage: Stage) {
+    await stageMutation.mutateAsync(stage);
   }
 
   function changeTab(tab: C360Tab) {
@@ -595,6 +694,8 @@ function Contact360Content({ contactId }: { contactId: string }) {
     params.set('tab', tab);
     router.replace(`/contacts/${contactId}?${params.toString()}`, { scroll: false });
   }
+
+  if (isUnknown) return <UnknownContactView contactId={contactId} />;
 
   if (isLoading) {
     return (
@@ -622,7 +723,7 @@ function Contact360Content({ contactId }: { contactId: string }) {
         <EmptyState
           icon={User}
           title="Contact not found"
-          description="This contact may have been deleted"
+          description="This contact may have been deleted or you may not have access"
           action={{ label: 'Go to Contacts', onClick: () => router.push('/contacts') }}
         />
       </div>
@@ -700,13 +801,13 @@ function Contact360Content({ contactId }: { contactId: string }) {
       <div className="flex flex-1 min-h-0">
         {/* Main tab area */}
         <div className="scrollbar-thin flex-1 overflow-y-auto" role="tabpanel">
-          {activeTab === 'overview'      && <OverviewTab contact={contact} onUpdate={handleUpdate} canEditOwner={canEditOwner} />}
-          {activeTab === 'conversations' && <ConversationsTab contactId={contactId} />}
-          {activeTab === 'notes'         && <NotesTab contactId={contactId} />}
+          {activeTab === 'overview'      && <OverviewTab contact={contact} onUpdate={handleUpdate} onStageChange={handleStageChange} canEditOwner={canEditOwner} />}
+          {activeTab === 'conversations' && <ConversationsTab contactId={contactId} messageCount={messageCount} />}
+          {activeTab === 'notes'         && <NotesTab notes={internalNotes} />}
           {activeTab === 'followups'     && <FollowupsTab contactId={contactId} />}
-          {activeTab === 'timeline'      && <TimelineTab contactId={contactId} />}
-          {activeTab === 'kyc'           && <KYCTab contactId={contactId} />}
-          {activeTab === 'documents'     && <DocumentsTab contactId={contactId} />}
+          {activeTab === 'timeline'      && <TimelineTab />}
+          {activeTab === 'kyc'           && <KYCTab />}
+          {activeTab === 'documents'     && <DocumentsTab />}
         </div>
 
         {/* Activity panel (280px, desktop only) */}
@@ -725,6 +826,12 @@ function Contact360Content({ contactId }: { contactId: string }) {
               <span className="text-neutral-500">Owner</span>
               <span className="font-medium text-neutral-900 dark:text-neutral-100">
                 {contact.ownerName ?? '—'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-neutral-500">Messages</span>
+              <span className="font-medium text-neutral-900 dark:text-neutral-100">
+                {messageCount}
               </span>
             </div>
             <div className="flex items-center justify-between text-sm">

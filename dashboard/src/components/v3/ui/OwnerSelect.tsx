@@ -108,7 +108,7 @@ export function OwnerSelect({
   // ── Editing (select open) ─────────────────────────────────────────────────
   if (editing) {
     return (
-      <div className={cn('relative', className)}>
+      <div className={cn('relative', className)} onClick={(e) => e.stopPropagation()}>
         <select
           ref={selectRef}
           defaultValue={currentOwnerId ?? ''}
@@ -147,7 +147,7 @@ export function OwnerSelect({
     return (
       <button
         type="button"
-        onClick={() => setEditing(true)}
+        onClick={(e) => { e.stopPropagation(); setEditing(true); }}
         className={cn(
           'group flex items-center gap-1 rounded px-1 py-0.5 text-left text-sm',
           'text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900',
@@ -168,7 +168,7 @@ export function OwnerSelect({
   return (
     <button
       type="button"
-      onClick={() => setEditing(true)}
+      onClick={(e) => { e.stopPropagation(); setEditing(true); }}
       className={cn(
         'group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left',
         'hover:bg-neutral-100 dark:hover:bg-neutral-800',
