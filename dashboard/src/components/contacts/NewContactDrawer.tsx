@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { ArrowRight } from 'lucide-react';
 import { Drawer, DrawerFooter } from '@/components/v3/ui/Drawer';
 import { Button } from '@/components/v3/ui/Button';
 import { Input } from '@/components/v3/ui/Input';
@@ -50,6 +52,7 @@ export function NewContactDrawer({ open, onClose }: NewContactDrawerProps) {
   const [assignedTo, setAssignedTo] = useState('');
   const [notes,      setNotes]      = useState('');
   const [errors,     setErrors]     = useState<Record<string, string>>({});
+  const [dupContact, setDupContact] = useState<{ name: string; id: string } | null>(null);
 
   const { data: empData } = useQuery({
     queryKey: ['admin-employees'],
@@ -90,8 +93,11 @@ export function NewContactDrawer({ open, onClose }: NewContactDrawerProps) {
       if (id) router.push(`/contacts/${id}`);
     },
     onError: (err: any) => {
-      if (err?.status === 409 || err?.message?.includes('409')) {
-        setErrors((p) => ({ ...p, phone: 'A contact with this phone number already exists' }));
+      if (err?.status === 409) {
+        const existingName = (err?.body?.existingName as string | undefined) ?? 'an existing contact';
+        const existingId   = (err?.body?.existingLeadId as string | undefined) ?? '';
+        setErrors((p) => ({ ...p, phone: ' ' })); // triggers red border on Input
+        setDupContact({ name: existingName, id: existingId });
       } else {
         toast.error('Failed to create contact — check your permissions');
       }
@@ -101,6 +107,7 @@ export function NewContactDrawer({ open, onClose }: NewContactDrawerProps) {
   function resetForm() {
     setName(''); setPhone(''); setEmail(''); setStage('');
     setSource('manual'); setAssignedTo(''); setNotes(''); setErrors({});
+    setDupContact(null);
   }
 
   function handleClose() {
@@ -167,11 +174,32 @@ export function NewContactDrawer({ open, onClose }: NewContactDrawerProps) {
           phonePrefix
           placeholder="9876543210"
           value={phone}
-          onChange={(e) => { setPhone(e.target.value); setErrors((p) => ({ ...p, phone: '' })); }}
-          error={errors.phone}
+          onChange={(e) => { setPhone(e.target.value); setErrors((p) => ({ ...p, phone: '' })); setDupContact(null); }}
+          error={dupContact ? ' ' : errors.phone}
           type="tel"
           inputMode="numeric"
         />
+
+        {dupContact && (
+          <div className="flex items-center gap-3 rounded-lg border border-error-100 bg-error-50 px-3 py-2.5 -mt-2">
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-error-700">
+                This number belongs to{' '}
+                <span className="font-semibold">"{dupContact.name}"</span>
+                {' '}in your CRM.
+              </p>
+            </div>
+            {dupContact.id && (
+              <Link
+                href={`/contacts/${dupContact.id}`}
+                onClick={onClose}
+                className="flex flex-shrink-0 items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700"
+              >
+                View contact <ArrowRight className="h-3 w-3" />
+              </Link>
+            )}
+          </div>
+        )}
 
         <Input
           label="Email"
