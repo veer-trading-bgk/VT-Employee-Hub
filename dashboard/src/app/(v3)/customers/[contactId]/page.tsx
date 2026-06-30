@@ -224,17 +224,15 @@ function FollowupsTab({ contactId }: { contactId: string }) {
   const { data: followups = [], isLoading } = useQuery<Followup[]>({
     queryKey: ['contact-followups', contactId],
     queryFn: async () => {
-      const res = await apiFetch(`/api/contacts/${contactId}/followups`) as Response;
-      const json = await res.json() as { followups: Followup[] };
-      return json.followups ?? [];
+      const data = await apiFetch<{ followups: Followup[] }>(`/api/contacts/${contactId}/followups`);
+      return data.followups ?? [];
     },
     staleTime: 30_000,
   });
 
   const completeMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await apiFetch(`/api/followups/${id}/complete`, { method: 'POST' }) as Response;
-      return res.json();
+      return apiFetch(`/api/followups/${id}/complete`, { method: 'POST' });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['contact-followups', contactId] });
@@ -340,9 +338,8 @@ function NotesTab({ contactId }: { contactId: string }) {
   const { data: notes = [] } = useQuery<Note[]>({
     queryKey: ['contact-notes', contactId],
     queryFn: async () => {
-      const res = await apiFetch(`/api/contacts/${contactId}/notes`) as Response;
-      const json = await res.json() as { notes: Note[] };
-      return json.notes ?? [];
+      const data = await apiFetch<{ notes: Note[] }>(`/api/contacts/${contactId}/notes`);
+      return data.notes ?? [];
     },
     staleTime: 60_000,
   });
@@ -420,9 +417,8 @@ function ConversationsTab({ contactId, contactName }: { contactId: string; conta
   const { data: convs = [] } = useQuery<Conversation[]>({
     queryKey: ['contact-conversations', contactId],
     queryFn: async () => {
-      const res = await apiFetch(`/api/contacts/${contactId}/conversations`) as Response;
-      const json = await res.json() as { conversations: Conversation[] };
-      return json.conversations ?? [];
+      const data = await apiFetch<{ conversations: Conversation[] }>(`/api/contacts/${contactId}/conversations`);
+      return data.conversations ?? [];
     },
     staleTime: 30_000,
   });
@@ -475,9 +471,8 @@ function TimelineTab({ contactId }: { contactId: string }) {
   const { data: events = [] } = useQuery<TimelineEvent[]>({
     queryKey: ['contact-timeline', contactId],
     queryFn: async () => {
-      const res = await apiFetch(`/api/contacts/${contactId}/timeline`) as Response;
-      const json = await res.json() as { events: TimelineEvent[] };
-      return json.events ?? [];
+      const data = await apiFetch<{ events: TimelineEvent[] }>(`/api/contacts/${contactId}/timeline`);
+      return data.events ?? [];
     },
     staleTime: 60_000,
   });
@@ -550,20 +545,18 @@ function Customer360Content({ contactId }: { contactId: string }) {
   const { data: contact, isLoading } = useQuery<Contact>({
     queryKey: ['contact', contactId],
     queryFn: async () => {
-      const res = await apiFetch(`/api/contacts/${contactId}`) as Response;
-      const json = await res.json() as { contact: Contact };
-      return json.contact;
+      const data = await apiFetch<{ contact: Contact }>(`/api/contacts/${contactId}`);
+      return data.contact;
     },
     staleTime: 60_000,
   });
 
   const updateMutation = useMutation({
     mutationFn: async (patch: Partial<Contact>) => {
-      const res = await apiFetch(`/api/contacts/${contactId}`, {
+      return apiFetch<{ contact: Contact }>(`/api/contacts/${contactId}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
-      }) as Response;
-      return res.json() as Promise<{ contact: Contact }>;
+      });
     },
     onMutate: async (patch) => {
       await qc.cancelQueries({ queryKey: ['contact', contactId] });

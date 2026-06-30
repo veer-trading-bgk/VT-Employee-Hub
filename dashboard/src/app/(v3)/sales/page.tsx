@@ -189,11 +189,10 @@ function KanbanBoard({ contacts }: { contacts: Contact[] }) {
 
   const stageMutation = useMutation({
     mutationFn: async ({ id, stage }: { id: string; stage: Stage }) => {
-      const res = await apiFetch(`/api/contacts/${id}`, {
+      return apiFetch(`/api/contacts/${id}`, {
         method: 'PATCH',
         body: JSON.stringify({ stage }),
-      }) as Response;
-      return res.json();
+      });
     },
     onError: () => {
       qc.invalidateQueries({ queryKey: ['sales-contacts'] });
@@ -251,9 +250,8 @@ export default function SalesPage() {
   const { data: contacts = [], isLoading } = useQuery<Contact[]>({
     queryKey: ['sales-contacts'],
     queryFn: async () => {
-      const res = await apiFetch('/api/contacts?pageSize=500') as Response;
-      const json = await res.json() as { contacts: Contact[] };
-      return json.contacts ?? [];
+      const data = await apiFetch<{ contacts: Contact[] }>('/api/contacts?pageSize=500');
+      return data.contacts ?? [];
     },
     staleTime: 30_000,
   });

@@ -32,9 +32,8 @@ export default function FollowupsPage() {
   const { data: followups = [], isLoading } = useQuery<Followup[]>({
     queryKey: ['followups', filter],
     queryFn: async () => {
-      const res = await apiFetch(`/api/followups?filter=${filter}`) as Response;
-      const json = await res.json() as { followups: Followup[] };
-      return json.followups ?? [];
+      const data = await apiFetch<{ followups: Followup[] }>(`/api/followups?filter=${filter}`);
+      return data.followups ?? [];
     },
     staleTime: 30_000,
     placeholderData: [],
@@ -42,8 +41,7 @@ export default function FollowupsPage() {
 
   const completeMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await apiFetch(`/api/followups/${id}/complete`, { method: 'POST' }) as Response;
-      return res.json();
+      return apiFetch(`/api/followups/${id}/complete`, { method: 'POST' });
     },
     onMutate: async (id) => {
       // Optimistic: remove from list
@@ -64,11 +62,10 @@ export default function FollowupsPage() {
   const snoozeMutation = useMutation({
     mutationFn: async ({ id, days }: { id: string; days: number }) => {
       const newDue = addDays(new Date(), days).toISOString();
-      const res = await apiFetch(`/api/followups/${id}`, {
+      return apiFetch(`/api/followups/${id}`, {
         method: 'PATCH',
         body: JSON.stringify({ dueAt: newDue }),
-      }) as Response;
-      return res.json();
+      });
     },
     onSuccess: () => {
       toast.success('Rescheduled +1 day');

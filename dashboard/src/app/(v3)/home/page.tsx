@@ -428,8 +428,7 @@ export default function MyWorkPage() {
   const { data, isLoading } = useQuery<MyWorkData>({
     queryKey: ['my-work', user?.id],
     queryFn: async () => {
-      const res = await apiFetch('/api/v3/my-work') as Response;
-      return res.json() as Promise<MyWorkData>;
+      return apiFetch<MyWorkData>('/api/v3/my-work');
     },
     staleTime: 60_000,
     // Return empty defaults so the page renders immediately

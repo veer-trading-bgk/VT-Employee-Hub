@@ -155,8 +155,7 @@ function CustomersContent() {
         sortDir: sortDir ?? 'desc',
         ...(stageFilter && { stage: stageFilter }),
       });
-      const res = await apiFetch(`/api/contacts?${params}`) as Response;
-      return res.json() as Promise<ContactsResponse>;
+      return apiFetch<ContactsResponse>(`/api/contacts?${params}`);
     },
     staleTime: 30_000,
     placeholderData: { contacts: [], total: 0, page: 1, pageSize: PAGE_SIZE },
@@ -164,11 +163,10 @@ function CustomersContent() {
 
   const bulkDeleteMutation = useMutation({
     mutationFn: async (ids: string[]) => {
-      const res = await apiFetch('/api/contacts/bulk-delete', {
+      return apiFetch('/api/contacts/bulk-delete', {
         method: 'POST',
         body: JSON.stringify({ ids }),
-      }) as Response;
-      return res.json();
+      });
     },
     onSuccess: () => {
       toast.success(`Deleted ${selectedIds.size} contacts`);

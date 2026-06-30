@@ -40,9 +40,8 @@ export default function AutomationPage() {
   const { data: workflows = [], isLoading } = useQuery<Workflow[]>({
     queryKey: ['workflows'],
     queryFn: async () => {
-      const res = await apiFetch('/api/workflows') as Response;
-      const json = await res.json() as { workflows: Workflow[] };
-      return json.workflows ?? [];
+      const data = await apiFetch<{ workflows: Workflow[] }>('/api/workflows');
+      return data.workflows ?? [];
     },
     staleTime: 60_000,
     placeholderData: [],
@@ -50,11 +49,10 @@ export default function AutomationPage() {
 
   const toggleMutation = useMutation({
     mutationFn: async ({ id, active }: { id: string; active: boolean }) => {
-      const res = await apiFetch(`/api/workflows/${id}`, {
+      return apiFetch(`/api/workflows/${id}`, {
         method: 'PATCH',
         body: JSON.stringify({ active }),
-      }) as Response;
-      return res.json();
+      });
     },
     onMutate: async ({ id, active }) => {
       qc.setQueryData<Workflow[]>(['workflows'], (old = []) =>

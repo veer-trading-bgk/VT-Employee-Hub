@@ -98,10 +98,7 @@ function ConversationList({
 
   const { data, isLoading } = useQuery<{ conversations: WaConversation[]; counts: Record<string, number> }>({
     queryKey: ['wa-inbox', activeTab],
-    queryFn: async () => {
-      const res = await apiFetch(`/api/whatsapp/inbox?status=${activeTab}`) as Response;
-      return res.json();
-    },
+    queryFn: () => apiFetch(`/api/whatsapp/inbox?status=${activeTab}`),
     staleTime: 15_000,
     refetchInterval: 30_000,
     placeholderData: { conversations: [], counts: {} },
@@ -288,13 +285,11 @@ function ThreadPane({
 
   const { data, isLoading } = useQuery<{ messages: WaMessage[] }>({
     queryKey: ['wa-conv', convKey],
-    queryFn: async () => {
+    queryFn: () => {
       if (conversation.type === 'lead' && conversation.leadId) {
-        const res = await apiFetch(`/api/crm/leads/${conversation.leadId}`) as Response;
-        return res.json();
+        return apiFetch(`/api/crm/leads/${conversation.leadId}`);
       }
-      const res = await apiFetch(`/api/whatsapp/inbox/unknown/${conversation.phone}/messages`) as Response;
-      return res.json();
+      return apiFetch(`/api/whatsapp/inbox/unknown/${conversation.phone}/messages`);
     },
     staleTime: 0,
     refetchInterval: 5_000,
@@ -318,19 +313,17 @@ function ThreadPane({
   }, [qc, convKey, conversation]);
 
   const sendMutation = useMutation({
-    mutationFn: async (text: string) => {
+    mutationFn: (text: string) => {
       if (conversation.type === 'lead' && conversation.PK) {
-        const res = await apiFetch('/api/whatsapp/send', {
+        return apiFetch('/api/whatsapp/send', {
           method: 'POST',
           body: JSON.stringify({ leadPK: conversation.PK, message: text }),
-        }) as Response;
-        return res.json();
+        });
       }
-      const res = await apiFetch(`/api/whatsapp/inbox/unknown/${conversation.phone}/send`, {
+      return apiFetch(`/api/whatsapp/inbox/unknown/${conversation.phone}/send`, {
         method: 'POST',
         body: JSON.stringify({ message: text }),
-      }) as Response;
-      return res.json();
+      });
     },
     onMutate: async (text) => {
       const optimistic: WaMessage = {
