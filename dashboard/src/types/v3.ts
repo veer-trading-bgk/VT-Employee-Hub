@@ -20,12 +20,16 @@ export function toV3Role(role: Role): V3Role {
 // V3 nav route permissions — items are not rendered if not permitted (never disabled)
 export const V3_NAV_PERMISSIONS: Record<string, V3Role[]> = {
   '/home':           ['owner', 'admin', 'manager', 'sales', 'support'],
+  '/entry':          ['owner', 'admin', 'manager', 'sales', 'support'],
   '/communications': ['owner', 'admin', 'manager', 'sales', 'support'],
   '/customers':      ['owner', 'admin', 'manager', 'sales', 'support'],
   '/sales':          ['owner', 'admin', 'manager', 'sales'],
+  '/attendance':     ['owner', 'admin', 'manager', 'sales', 'support'],
+  '/compensation':   ['owner', 'admin', 'manager', 'sales', 'support'],
   '/analytics':      ['owner', 'admin', 'manager'],
   '/automation':     ['owner', 'admin'],
-  '/settings':       ['owner', 'admin', 'manager'],
+  '/platform':       ['owner'],
+  '/settings':       ['owner', 'admin', 'manager', 'sales', 'support'],
 };
 
 // V3 role display labels

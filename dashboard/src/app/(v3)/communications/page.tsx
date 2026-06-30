@@ -536,54 +536,281 @@ function CustomerSnapshotPanel({
   );
 }
 
+// ── Broadcast section ─────────────────────────────────────────────────────────
+
+interface WaTemplate { id: string; name: string; templateName: string; variables: string[]; bodyPreview: string; }
+interface CrmStage { key: string; label: string; color: string; }
+interface BroadcastRecord {
+  id: string; templateName: string; sent: number; failed: number; totalMatched: number;
+  deliveredCount?: number; readCount?: number;
+  createdByName?: string; createdAt: string; filter: Record<string, unknown>;
+}
+interface BroadcastResult { sent: number; failed: number; total: number; errors: { phone: string; error: string }[]; }
+
+function BroadcastSection() {
+  const qc = useQueryClient();
+  const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [varValues, setVarValues] = useState<string[]>([]);
+  const [filterStages, setFilterStages] = useState<string[]>([]);
+  const [filterTags, setFilterTags] = useState('');
+  const [confirmed, setConfirmed] = useState(false);
+  const [result, setResult] = useState<BroadcastResult | null>(null);
+
+  const { data: tmplData } = useQuery({
+    queryKey: ['wa-templates'],
+    queryFn: () => apiFetch<{ templates: WaTemplate[] }>('/api/whatsapp/templates'),
+    staleTime: 60_000,
+  });
+  const { data: pipelineData } = useQuery({
+    queryKey: ['crm-pipeline'],
+    queryFn: () => apiFetch<{ stages: CrmStage[] }>('/api/crm/pipeline'),
+    staleTime: 5 * 60_000,
+  });
+  const { data: historyData } = useQuery({
+    queryKey: ['wa-broadcasts'],
+    queryFn: () => apiFetch<{ broadcasts: BroadcastRecord[] }>('/api/whatsapp/broadcasts'),
+    staleTime: 30_000,
+  });
+
+  const broadcastMut = useMutation({
+    mutationFn: () => apiFetch<BroadcastResult>('/api/whatsapp/broadcast', {
+      method: 'POST',
+      body: JSON.stringify({
+        templateId: selectedTemplate,
+        variableValues: varValues,
+        filter: {
+          stages: filterStages.length ? filterStages : undefined,
+          tags: filterTags ? filterTags.split(',').map((t) => t.trim()).filter(Boolean) : undefined,
+        },
+      }),
+    }),
+    onSuccess: (data) => { setResult(data); setConfirmed(false); qc.invalidateQueries({ queryKey: ['wa-broadcasts'] }); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const templates = tmplData?.templates ?? [];
+  const stages = pipelineData?.stages ?? [];
+  const broadcasts = historyData?.broadcasts ?? [];
+  const tmpl = templates.find((t) => t.id === selectedTemplate);
+
+  function toggleStage(key: string) {
+    setFilterStages((prev) => prev.includes(key) ? prev.filter((s) => s !== key) : [...prev, key]);
+  }
+
+  return (
+    <div className="space-y-5 p-4">
+      {result && (
+        <div className={cn('rounded-xl border p-4', result.failed === 0 ? 'border-success-200 bg-success-50 dark:border-success-900/30 dark:bg-success-900/10' : 'border-warning-200 bg-warning-50 dark:border-warning-900/30 dark:bg-warning-900/10')}>
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <p className="text-sm font-bold text-neutral-900 dark:text-white">Broadcast Complete</p>
+              <p className="text-xs text-neutral-500">{result.sent} sent · {result.failed} failed · {result.total} matched</p>
+            </div>
+            <button onClick={() => setResult(null)} className="text-neutral-400 hover:text-neutral-600">×</button>
+          </div>
+          {result.errors.length > 0 && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-neutral-500">Show {result.errors.length} errors</summary>
+              <div className="mt-2 max-h-28 overflow-y-auto rounded-lg bg-white p-2 text-xs dark:bg-neutral-800">
+                {result.errors.map((e, i) => <p key={i} className="text-error-500">{e.phone}: {e.error}</p>)}
+              </div>
+            </details>
+          )}
+        </div>
+      )}
+
+      <div className="grid gap-5 lg:grid-cols-3">
+        {/* Config */}
+        <div className="space-y-4 lg:col-span-2">
+          {/* Template picker */}
+          <div className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+            <p className="mb-3 text-sm font-semibold text-neutral-900 dark:text-neutral-100">1. Choose Template</p>
+            {templates.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-neutral-200 p-4 text-center dark:border-neutral-700">
+                <p className="text-sm text-neutral-400">No templates configured yet</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {templates.map((t) => (
+                  <label key={t.id} className={cn('flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors', selectedTemplate === t.id ? 'border-primary-400 bg-primary-50 dark:border-primary-600 dark:bg-primary-900/20' : 'border-neutral-200 hover:border-neutral-300 dark:border-neutral-700')}>
+                    <input type="radio" name="template" value={t.id} checked={selectedTemplate === t.id}
+                      onChange={() => { setSelectedTemplate(t.id); setVarValues(Array(t.variables.length).fill('')); }}
+                      className="mt-0.5 accent-primary-600" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-neutral-900 dark:text-white">{t.name}</p>
+                      <p className="font-mono text-[10px] text-neutral-400">{t.templateName}</p>
+                      {t.bodyPreview && <p className="mt-1 text-xs text-neutral-500">{t.bodyPreview}</p>}
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Variables */}
+          {tmpl && tmpl.variables.length > 0 && (
+            <div className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+              <p className="mb-3 text-sm font-semibold text-neutral-900 dark:text-neutral-100">2. Variable Values</p>
+              <div className="space-y-2">
+                {tmpl.variables.map((v, i) => (
+                  <div key={i}>
+                    <label className="mb-1 block text-xs font-medium text-neutral-500">{`{{${i + 1}}}`} {v}</label>
+                    <input value={varValues[i] ?? ''} onChange={(e) => { const n = [...varValues]; n[i] = e.target.value; setVarValues(n); }}
+                      placeholder="e.g. {{name}}"
+                      className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Filters */}
+          <div className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+            <p className="mb-3 text-sm font-semibold text-neutral-900 dark:text-neutral-100">3. Audience Filter <span className="text-neutral-400 font-normal">(optional)</span></p>
+            <div className="space-y-3">
+              {stages.length > 0 && (
+                <div>
+                  <p className="mb-2 text-xs font-medium text-neutral-500">Pipeline Stages</p>
+                  <div className="flex flex-wrap gap-2">
+                    {stages.map((s) => (
+                      <button key={s.key} onClick={() => toggleStage(s.key)}
+                        className={cn('rounded-full border px-3 py-1 text-xs font-medium transition', filterStages.includes(s.key) ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-900/20 dark:text-primary-400' : 'border-neutral-200 text-neutral-500 hover:border-neutral-400 dark:border-neutral-700')}>
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <div>
+                <p className="mb-1 text-xs font-medium text-neutral-500">Tags (comma-separated)</p>
+                <input value={filterTags} onChange={(e) => setFilterTags(e.target.value)}
+                  placeholder="e.g. hot-lead, high-value"
+                  className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100" />
+              </div>
+            </div>
+          </div>
+
+          {/* Confirm + Send */}
+          <div className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+            <p className="mb-3 text-sm font-semibold text-neutral-900 dark:text-neutral-100">4. Send</p>
+            {!selectedTemplate ? (
+              <p className="text-xs text-neutral-400">Select a template first</p>
+            ) : (
+              <div className="space-y-3">
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-0.5 accent-primary-600" />
+                  <p className="text-sm text-neutral-700 dark:text-neutral-300">
+                    I confirm this broadcast is authorised and compliant with WhatsApp messaging policies.
+                  </p>
+                </label>
+                <Button loading={broadcastMut.isPending} disabled={!confirmed} onClick={() => broadcastMut.mutate()}
+                  iconLeft={<Send className="h-4 w-4" />}>
+                  Send Broadcast
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* History */}
+        <div>
+          <div className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+            <p className="mb-3 text-sm font-semibold text-neutral-900 dark:text-neutral-100">Broadcast History</p>
+            {broadcasts.length === 0 ? (
+              <p className="text-xs text-neutral-400">No broadcasts yet</p>
+            ) : (
+              <ul className="divide-y divide-neutral-50 dark:divide-neutral-800/60">
+                {broadcasts.map((b) => (
+                  <li key={b.id} className="py-2.5">
+                    <p className="text-xs font-medium text-neutral-800 dark:text-neutral-200 truncate">{b.templateName}</p>
+                    <p className="text-xs text-neutral-400">
+                      {b.sent} sent · {b.failed} failed · {b.totalMatched} matched
+                    </p>
+                    <p className="text-xs text-neutral-300 dark:text-neutral-600">
+                      {new Date(b.createdAt).toLocaleDateString('en-IN')}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+type CommPageMode = 'inbox' | 'broadcast';
+
 function CommunicationsContent() {
+  const [mode, setMode] = useState<CommPageMode>('inbox');
   const [activeTab, setActiveTab] = useState<ConvTab>('open');
   const [activeConv, setActiveConv] = useState<WaConversation | null>(null);
   const [snapshotOpen, setSnapshotOpen] = useState(false);
 
   return (
-    <div className="flex h-full overflow-hidden">
-      {/* Column 1: Conversation list */}
-      <div className={cn(
-        'w-[280px] shrink-0',
-        activeConv ? 'hidden md:block' : 'w-full md:w-[280px]',
-      )}>
-        <ConversationList
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          activeId={activeConv ? (activeConv.leadId ?? activeConv.phone) : undefined}
-          onSelect={(conv) => { setActiveConv(conv); setSnapshotOpen(false); }}
-        />
+    <div className="flex h-full flex-col overflow-hidden">
+      {/* Mode switcher */}
+      <div className="flex items-center gap-3 border-b border-neutral-200 bg-white px-4 py-2 dark:border-neutral-800 dark:bg-neutral-950">
+        <div className="flex gap-1 rounded-lg border border-neutral-200 p-0.5 dark:border-neutral-700">
+          {([['inbox', 'Inbox'], ['broadcast', 'Broadcast']] as const).map(([id, label]) => (
+            <button key={id} onClick={() => setMode(id)}
+              className={cn('rounded-md px-4 py-1.5 text-xs font-medium transition', mode === id ? 'bg-primary-600 text-white' : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200')}>
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Column 2: Thread */}
-      {activeConv ? (
-        <div className={cn('flex min-w-0 flex-1 flex-col', snapshotOpen ? 'hidden xl:flex' : 'flex')}>
-          <button
-            onClick={() => setActiveConv(null)}
-            className="flex items-center gap-1 px-3 py-2 text-sm text-primary-600 md:hidden"
-          >
-            <ChevronLeft className="h-4 w-4" aria-hidden />
-            Back
-          </button>
-          <ThreadPane conversation={activeConv} onOpenSnapshot={() => setSnapshotOpen((o) => !o)} />
+      {mode === 'broadcast' ? (
+        <div className="scrollbar-thin flex-1 overflow-y-auto">
+          <BroadcastSection />
         </div>
       ) : (
-        <div className="hidden flex-1 items-center justify-center bg-neutral-50 dark:bg-neutral-900 md:flex">
-          <EmptyState
-            icon={MessageSquare}
-            title="Select a conversation"
-            description="Choose a conversation from the left to start"
-          />
-        </div>
-      )}
+        <div className="flex flex-1 overflow-hidden">
+          {/* Column 1: Conversation list */}
+          <div className={cn(
+            'w-[280px] shrink-0',
+            activeConv ? 'hidden md:block' : 'w-full md:w-[280px]',
+          )}>
+            <ConversationList
+              activeTab={activeTab}
+              onTabChange={setActiveTab}
+              activeId={activeConv ? (activeConv.leadId ?? activeConv.phone) : undefined}
+              onSelect={(conv) => { setActiveConv(conv); setSnapshotOpen(false); }}
+            />
+          </div>
 
-      {/* Column 3: Snapshot */}
-      {activeConv && snapshotOpen && (
-        <div className="w-[320px] shrink-0">
-          <CustomerSnapshotPanel conversation={activeConv} onClose={() => setSnapshotOpen(false)} />
+          {/* Column 2: Thread */}
+          {activeConv ? (
+            <div className={cn('flex min-w-0 flex-1 flex-col', snapshotOpen ? 'hidden xl:flex' : 'flex')}>
+              <button
+                onClick={() => setActiveConv(null)}
+                className="flex items-center gap-1 px-3 py-2 text-sm text-primary-600 md:hidden"
+              >
+                <ChevronLeft className="h-4 w-4" aria-hidden />
+                Back
+              </button>
+              <ThreadPane conversation={activeConv} onOpenSnapshot={() => setSnapshotOpen((o) => !o)} />
+            </div>
+          ) : (
+            <div className="hidden flex-1 items-center justify-center bg-neutral-50 dark:bg-neutral-900 md:flex">
+              <EmptyState
+                icon={MessageSquare}
+                title="Select a conversation"
+                description="Choose a conversation from the left to start"
+              />
+            </div>
+          )}
+
+          {/* Column 3: Snapshot */}
+          {activeConv && snapshotOpen && (
+            <div className="w-[320px] shrink-0">
+              <CustomerSnapshotPanel conversation={activeConv} onClose={() => setSnapshotOpen(false)} />
+            </div>
+          )}
         </div>
       )}
     </div>

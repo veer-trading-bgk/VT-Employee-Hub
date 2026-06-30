@@ -2,16 +2,17 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, MessageSquare, Users, TrendingUp, MoreHorizontal } from 'lucide-react';
+import { Home, MessageSquare, Users, TrendingUp, PenLine, MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role, type V3Role } from '@/types/v3';
 
 const BOTTOM_NAV = [
   { href: '/home',           label: 'Home',  icon: <Home className="h-5 w-5" />,          roles: ['owner', 'admin', 'manager', 'sales', 'support'] as V3Role[] },
+  { href: '/entry',          label: 'Entry', icon: <PenLine className="h-5 w-5" />,        roles: ['owner', 'admin', 'manager', 'sales', 'support'] as V3Role[] },
   { href: '/communications', label: 'Comms', icon: <MessageSquare className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] as V3Role[] },
   { href: '/customers',      label: 'Cust.', icon: <Users className="h-5 w-5" />,         roles: ['owner', 'admin', 'manager', 'sales', 'support'] as V3Role[] },
-  { href: '/sales',          label: 'Sales', icon: <TrendingUp className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager', 'sales'] as V3Role[] },
+  { href: '/sales',          label: 'Sales', icon: <TrendingUp className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager'] as V3Role[] },
 ];
 
 export function V3BottomNav({ onMoreClick }: { onMoreClick?: () => void }) {

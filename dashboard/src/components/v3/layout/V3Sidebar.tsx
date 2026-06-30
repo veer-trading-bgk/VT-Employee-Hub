@@ -14,6 +14,10 @@ import {
   Bell,
   ChevronLeft,
   ChevronRight,
+  PenLine,
+  CalendarDays,
+  Wallet,
+  ShieldCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Avatar } from '@/components/v3/ui/Avatar';
@@ -31,15 +35,19 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { href: '/home',           label: 'My Work',        icon: <Home className="h-5 w-5" />,          roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+  { href: '/entry',          label: 'Daily Entry',     icon: <PenLine className="h-5 w-5" />,       roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/communications', label: 'Communications',  icon: <MessageSquare className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/customers',      label: 'Customers',       icon: <Users className="h-5 w-5" />,         roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/sales',          label: 'Sales',           icon: <TrendingUp className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager', 'sales'] },
+  { href: '/attendance',     label: 'Attendance',      icon: <CalendarDays className="h-5 w-5" />,  roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+  { href: '/compensation',   label: 'Compensation',    icon: <Wallet className="h-5 w-5" />,        roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/analytics',      label: 'Analytics',       icon: <BarChart3 className="h-5 w-5" />,     roles: ['owner', 'admin', 'manager'] },
   { href: '/automation',     label: 'Automation',      icon: <Zap className="h-5 w-5" />,           roles: ['owner', 'admin'] },
-  { href: '/settings',       label: 'Settings',        icon: <Settings className="h-5 w-5" />,      roles: ['owner', 'admin', 'manager'] },
+  { href: '/platform',       label: 'Platform',        icon: <ShieldCheck className="h-5 w-5" />,   roles: ['owner'] },
+  { href: '/settings',       label: 'Settings',        icon: <Settings className="h-5 w-5" />,      roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
 ];
 
-const SEPARATOR_BEFORE = new Set(['/analytics', '/settings']);
+const SEPARATOR_BEFORE = new Set(['/attendance', '/analytics', '/platform', '/settings']);
 
 interface V3SidebarProps {
   onNotificationsClick?: () => void;
