@@ -1116,44 +1116,191 @@ function EmployeesSection() {
 
 // ── WhatsApp section ──────────────────────────────────────────────────────────
 
+interface WabaConnection {
+  connected: boolean;
+  phoneNumber?: string | null;
+  wabaId?: string | null;
+  connectedAt?: string | null;
+}
+
 function WhatsAppSection() {
+  const qc = useQueryClient();
+  const [manualOpen, setManualOpen] = useState(false);
+  const [accessToken, setAccessToken] = useState('');
+  const [phoneNumberId, setPhoneNumberId] = useState('');
+
+  const { data, isLoading } = useQuery<WabaConnection>({
+    queryKey: ['whatsapp-connection'],
+    queryFn: () => apiFetch<WabaConnection>('/api/whatsapp/connection'),
+    staleTime: 30_000,
+  });
+
+  const disconnectMut = useMutation({
+    mutationFn: () => apiFetch('/api/whatsapp/connection', { method: 'DELETE' }),
+    onSuccess: () => { toast.success('WhatsApp disconnected'); qc.invalidateQueries({ queryKey: ['whatsapp-connection'] }); },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const manualMut = useMutation({
+    mutationFn: () => apiFetch<{ success: boolean; phoneNumber: string }>('/api/whatsapp/manual-connect', {
+      method: 'POST',
+      body: JSON.stringify({ accessToken: accessToken.trim(), phoneNumberId: phoneNumberId.trim() }),
+    }),
+    onSuccess: (res) => {
+      toast.success(`Connected: ${res.phoneNumber ?? 'WhatsApp Business'}`);
+      setManualOpen(false);
+      setAccessToken('');
+      setPhoneNumberId('');
+      qc.invalidateQueries({ queryKey: ['whatsapp-connection'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  async function handleOAuthConnect() {
+    try {
+      const res = await apiFetch<{ url: string }>('/api/whatsapp/auth/init');
+      const popup = window.open(res.url, 'wa_connect', 'width=600,height=700');
+      const onMessage = (e: MessageEvent) => {
+        if (e.data?.type === 'waba_connected') {
+          toast.success(e.data.message ?? 'WhatsApp connected');
+          qc.invalidateQueries({ queryKey: ['whatsapp-connection'] });
+          window.removeEventListener('message', onMessage);
+        } else if (e.data?.type === 'waba_failed') {
+          toast.error(e.data.message ?? 'Connection failed');
+          window.removeEventListener('message', onMessage);
+        }
+      };
+      window.addEventListener('message', onMessage);
+      const timer = setInterval(() => {
+        if (popup?.closed) { clearInterval(timer); window.removeEventListener('message', onMessage); }
+      }, 500);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to start OAuth flow';
+      if (msg.includes('META_APP_ID')) {
+        toast.error('Meta App ID not configured on server — use manual connect below');
+        setManualOpen(true);
+      } else {
+        toast.error(msg);
+      }
+    }
+  }
+
+  const connected = data?.connected;
+
+  const inputCls = 'w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 focus:border-primary-600 focus:outline-none';
+
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">WhatsApp</h2>
-        <p className="text-sm text-neutral-500">Manage your WhatsApp Business connection</p>
+        <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">WhatsApp Business</h2>
+        <p className="text-sm text-neutral-500">Connect your Meta WhatsApp Business API to enable messaging</p>
       </div>
-      <Card>
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success-50 dark:bg-success-900/20">
-              <Smartphone className="h-5 w-5 text-success-600" aria-hidden />
+
+      {isLoading ? (
+        <Skeleton className="h-32 w-full rounded-xl" />
+      ) : connected ? (
+        <Card>
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-success-50 dark:bg-success-900/20">
+                <Smartphone className="h-5 w-5 text-success-600" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">WhatsApp Business API</p>
+                <p className="text-xs text-neutral-500">Connected via Meta Cloud API</p>
+              </div>
+            </div>
+            <Badge variant="success" dot>Connected</Badge>
+          </div>
+          <div className="mt-4 divide-y divide-neutral-100 dark:divide-neutral-800 text-sm">
+            {data?.phoneNumber && (
+              <div className="flex justify-between py-2.5">
+                <span className="text-neutral-500">Phone number</span>
+                <span className="font-medium text-neutral-900 dark:text-neutral-100">{data.phoneNumber}</span>
+              </div>
+            )}
+            {data?.wabaId && (
+              <div className="flex justify-between py-2.5">
+                <span className="text-neutral-500">WABA ID</span>
+                <span className="font-mono text-xs text-neutral-700 dark:text-neutral-300">{data.wabaId}</span>
+              </div>
+            )}
+            {data?.connectedAt && (
+              <div className="flex justify-between py-2.5">
+                <span className="text-neutral-500">Connected</span>
+                <span className="text-neutral-700 dark:text-neutral-300">{new Date(data.connectedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</span>
+              </div>
+            )}
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Button variant="secondary" size="sm" onClick={handleOAuthConnect}>Reconnect</Button>
+            <Button variant="danger" size="sm" loading={disconnectMut.isPending}
+              onClick={() => { if (confirm('Disconnect WhatsApp? All messaging will stop.')) disconnectMut.mutate(); }}>
+              Disconnect
+            </Button>
+          </div>
+        </Card>
+      ) : (
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-neutral-100 dark:bg-neutral-800">
+              <Smartphone className="h-5 w-5 text-neutral-500" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">WhatsApp Business API</p>
-              <p className="text-xs text-neutral-500">Connected via Meta Cloud API</p>
+              <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Not connected</p>
+              <p className="text-xs text-neutral-500">Connect your WhatsApp Business number to start messaging</p>
             </div>
           </div>
-          <Badge variant="success" dot>Connected</Badge>
-        </div>
-        <div className="mt-4 grid gap-3 text-sm">
-          <div className="flex justify-between">
-            <span className="text-neutral-500">Phone number</span>
-            <span className="font-medium text-neutral-900 dark:text-neutral-100">+91 98765 43210</span>
+
+          <div className="space-y-3">
+            <Button onClick={handleOAuthConnect} className="w-full">
+              Connect with Meta (OAuth)
+            </Button>
+            <div className="flex items-center gap-2">
+              <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
+              <span className="text-xs text-neutral-400">or connect manually</span>
+              <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
+            </div>
+            <button onClick={() => setManualOpen((v) => !v)}
+              className="w-full text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400 text-left">
+              {manualOpen ? 'Hide manual setup ↑' : 'Paste Access Token + Phone Number ID ↓'}
+            </button>
+
+            {manualOpen && (
+              <div className="space-y-3 pt-1">
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-neutral-500">Permanent Access Token</label>
+                  <input value={accessToken} onChange={(e) => setAccessToken(e.target.value)}
+                    placeholder="EAAxxxxxx..." className={inputCls} />
+                  <p className="mt-1 text-xs text-neutral-400">From Meta Business Suite → WhatsApp → API Setup → Generate Token</p>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-neutral-500">Phone Number ID</label>
+                  <input value={phoneNumberId} onChange={(e) => setPhoneNumberId(e.target.value)}
+                    placeholder="1234567890123..." className={inputCls} />
+                  <p className="mt-1 text-xs text-neutral-400">From Meta Business Suite → WhatsApp → API Setup → Phone Number ID</p>
+                </div>
+                <Button loading={manualMut.isPending}
+                  disabled={!accessToken.trim() || !phoneNumberId.trim()}
+                  onClick={() => manualMut.mutate()}
+                  className="w-full">
+                  Verify &amp; Connect
+                </Button>
+              </div>
+            )}
           </div>
-          <div className="flex justify-between">
-            <span className="text-neutral-500">Display name</span>
-            <span className="font-medium text-neutral-900 dark:text-neutral-100">APForce</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-neutral-500">Quality rating</span>
-            <Badge variant="success">High</Badge>
-          </div>
-        </div>
-        <div className="mt-4 flex gap-2">
-          <Button variant="secondary" size="sm">Manage templates</Button>
-          <Button variant="ghost" size="sm">Reconnect</Button>
-        </div>
+        </Card>
+      )}
+
+      <Card variant="ghost" className="text-sm text-neutral-500 space-y-1.5">
+        <p className="font-medium text-neutral-700 dark:text-neutral-300">How to get your credentials</p>
+        <ol className="list-decimal list-inside space-y-1 text-xs">
+          <li>Go to <strong>Meta Business Suite</strong> → <strong>Settings</strong> → <strong>WhatsApp</strong> → <strong>API Setup</strong></li>
+          <li>Copy the <strong>Phone Number ID</strong> from the top of the page</li>
+          <li>Click <strong>Generate Access Token</strong> and copy the permanent token</li>
+          <li>Paste both above and click Verify &amp; Connect</li>
+        </ol>
+        <p className="text-xs mt-2">Your webhook URL (tell Meta): <code className="bg-neutral-100 dark:bg-neutral-800 px-1 rounded text-xs">{typeof window !== 'undefined' ? window.location.origin.replace('dashboard', 'api').replace('3001', '3000') : ''}/api/whatsapp/webhook</code></p>
       </Card>
     </div>
   );
