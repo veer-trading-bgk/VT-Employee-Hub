@@ -822,10 +822,12 @@ function UnknownContactAssignPicker({
   conversation,
   onConvUpdate,
   onInboxRefresh,
+  onTabSwitch,
 }: {
   conversation: WaConversation;
   onConvUpdate?: (u: Partial<WaConversation>) => void;
   onInboxRefresh: () => void;
+  onTabSwitch?: (t: ConvTab) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [isPending, setIsPending] = useState(false);
@@ -870,6 +872,7 @@ function UnknownContactAssignPicker({
         assignedToName: employee.name,
         chatStatus: 'open',
       });
+      onTabSwitch?.('open');
       onInboxRefresh();
       toast.success('Contact created and assigned');
     } catch {
@@ -933,10 +936,12 @@ function CustomerSnapshotPanel({
   conversation,
   onClose,
   onConvUpdate,
+  onTabSwitch,
 }: {
   conversation: WaConversation;
   onClose: () => void;
   onConvUpdate?: (u: Partial<WaConversation>) => void;
+  onTabSwitch?: (t: ConvTab) => void;
 }) {
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -1134,13 +1139,14 @@ function CustomerSnapshotPanel({
               currentOwnerName={conversation.assignedToName}
               currentOwnerId={conversation.assignedTo}
               canEdit={canEditOwner}
-              onSuccess={() => qc.invalidateQueries({ queryKey: ['wa-inbox'] })}
+              onSuccess={() => { qc.invalidateQueries({ queryKey: ['wa-inbox'] }); onTabSwitch?.('open'); }}
             />
           ) : canEditOwner ? (
             <UnknownContactAssignPicker
               conversation={conversation}
               onConvUpdate={onConvUpdate}
               onInboxRefresh={() => qc.invalidateQueries({ queryKey: ['wa-inbox'] })}
+              onTabSwitch={onTabSwitch}
             />
           ) : (
             <p className="text-sm text-neutral-500">
@@ -1476,7 +1482,7 @@ function CommunicationsContent() {
           {/* Column 3: Contact panel — always visible on xl+, toggled on smaller screens */}
           {activeConv && (
             <div className={cn('w-[320px] shrink-0', !snapshotOpen && 'hidden xl:block')}>
-              <CustomerSnapshotPanel conversation={activeConv} onClose={() => setSnapshotOpen(false)} onConvUpdate={handleConvUpdate} />
+              <CustomerSnapshotPanel conversation={activeConv} onClose={() => setSnapshotOpen(false)} onConvUpdate={handleConvUpdate} onTabSwitch={setActiveTab} />
             </div>
           )}
         </div>
