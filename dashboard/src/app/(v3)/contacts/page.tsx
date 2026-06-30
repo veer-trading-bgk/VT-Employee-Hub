@@ -55,12 +55,45 @@ function escapeCell(v: string | null | undefined): string {
   return `"${String(v ?? '').replace(/"/g, '""')}"`;
 }
 
-async function exportContactsCSV(
-  search: string,
-  stageFilter: string,
-  onProgress?: (pct: number) => void,
-): Promise<void> {
-  const PAGE = 100; // contacts endpoint cap
+const CSV_HEADERS = ['Name', 'Phone', 'Email', 'Stage', 'Assigned To', 'Tags', 'Source', 'Created At'];
+
+function contactToRow(c: Contact): string[] {
+  return [
+    c.displayName ?? c.name ?? '',
+    c.phone ?? '',
+    c.email ?? '',
+    STAGE_LABELS[c.stage as Stage] ?? c.stage ?? '',
+    c.assignedToName ?? '',
+    (c.tags ?? []).join('; '),
+    (c as any).source ?? '',
+    c.createdAt ? format(new Date(c.createdAt), 'd MMM yyyy') : '',
+  ];
+}
+
+function triggerDownload(csv: string, filename: string) {
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function buildCSV(contacts: Contact[]): string {
+  return [CSV_HEADERS, ...contacts.map(contactToRow)]
+    .map((r) => r.map(escapeCell).join(','))
+    .join('\n');
+}
+
+// Selected-only export — instant, no API call needed
+function exportSelected(contacts: Contact[]) {
+  if (contacts.length === 0) { toast.info('Select at least one contact to export'); return; }
+  triggerDownload(buildCSV(contacts), `contacts_selected_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+  toast.success(`Exported ${contacts.length} selected contact${contacts.length !== 1 ? 's' : ''}`);
+}
+
+// Full export — paginates through API to collect all contacts matching current filters
+async function exportAllCSV(search: string, stageFilter: string): Promise<void> {
+  const PAGE = 100;
   const rows: Contact[] = [];
   let page = 1;
   let total = Infinity;
@@ -75,36 +108,12 @@ async function exportContactsCSV(
     const res = await apiFetch<ContactsResponse>(`/api/contacts?${params}`);
     rows.push(...res.contacts);
     total = res.total;
-    onProgress?.(Math.min(100, Math.round((rows.length / total) * 100)));
     if (res.contacts.length < PAGE) break;
     page++;
   }
 
   if (rows.length === 0) { toast.info('No contacts to export'); return; }
-
-  const headers = ['Name', 'Phone', 'Email', 'Stage', 'Assigned To', 'Tags', 'Source', 'Created At'];
-  const csvRows = rows.map((c) => [
-    c.displayName ?? c.name ?? '',
-    c.phone ?? '',
-    c.email ?? '',
-    STAGE_LABELS[c.stage as Stage] ?? c.stage ?? '',
-    c.assignedToName ?? '',
-    (c.tags ?? []).join('; '),
-    (c as any).source ?? '',
-    c.createdAt ? format(new Date(c.createdAt), 'd MMM yyyy') : '',
-  ]);
-
-  const csv = [headers, ...csvRows]
-    .map((r) => r.map(escapeCell).join(','))
-    .join('\n');
-
-  const blob = new Blob(['﻿' + csv, ''], { type: 'text/csv;charset=utf-8;' }); // BOM for Excel
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = `contacts_${format(new Date(), 'yyyy-MM-dd')}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+  triggerDownload(buildCSV(rows), `contacts_${format(new Date(), 'yyyy-MM-dd')}.csv`);
   toast.success(`Exported ${rows.length} contact${rows.length !== 1 ? 's' : ''}`);
 }
 
@@ -270,9 +279,16 @@ function ContactsContent() {
   }
 
   async function handleExport() {
+    if (selectedIds.size > 0) {
+      // Export only the checked rows — already in memory, instant
+      const selected = (data?.contacts ?? []).filter((c) => selectedIds.has(c.id));
+      exportSelected(selected);
+      return;
+    }
+    // No selection — export everything matching the current filters
     setExporting(true);
     try {
-      await exportContactsCSV(search, stageFilter);
+      await exportAllCSV(search, stageFilter);
     } catch {
       toast.error('Export failed');
     } finally {
@@ -319,7 +335,7 @@ function ContactsContent() {
                   loading={exporting}
                   aria-label="Export contacts"
                 >
-                  Export
+                  {selectedIds.size > 0 ? `Export (${selectedIds.size})` : 'Export'}
                 </Button>
               </>
             )}
