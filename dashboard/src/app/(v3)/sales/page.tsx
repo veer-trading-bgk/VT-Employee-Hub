@@ -1,13 +1,13 @@
 'use client';
 
-import { useState, useMemo, useCallback, useRef } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   List, LayoutGrid, Plus, GripVertical, ArrowRight,
   User, Search, X, ChevronDown, Download, Clock,
-  MessageCircle, TrendingUp, Target, CheckSquare,
-  Upload, Radio, Users,
+  MessageCircle, TrendingUp, Target, Settings,
+  Upload, Radio, Users, ArrowUp, ArrowDown, Trash2,
 } from 'lucide-react';
 import {
   DndContext, DragEndEvent, DragOverlay, DragStartEvent,
@@ -34,27 +34,27 @@ import { toV3Role } from '@/types/v3';
 import { toast } from 'sonner';
 import { format, subDays, differenceInDays, isToday, isYesterday } from 'date-fns';
 
-// ── Stage config ──────────────────────────────────────────────────────────────
+// ── Pipeline stage type ───────────────────────────────────────────────────────
 
-const STAGE_ORDER: Stage[] = ['new_lead', 'contacted', 'interested', 'kyc_done', 'demat_done', 'lost'];
+interface PipelineStage {
+  key: string;
+  label: string;
+  color: string;
+  order: number;
+}
 
-const STAGE_COLORS: Record<Stage, string> = {
-  new_lead:   'border-t-neutral-400',
-  contacted:  'border-t-primary-500',
-  interested: 'border-t-warning-500',
-  kyc_done:   'border-t-violet-500',
-  demat_done: 'border-t-success-500',
-  lost:       'border-t-error-500',
-};
+const DEFAULT_PIPELINE_STAGES: PipelineStage[] = [
+  { key: 'new_lead',   label: 'New Lead',   color: '#94a3b8', order: 0 },
+  { key: 'contacted',  label: 'Contacted',  color: '#3b82f6', order: 1 },
+  { key: 'interested', label: 'Interested', color: '#f59e0b', order: 2 },
+  { key: 'kyc_done',   label: 'KYC Done',   color: '#8b5cf6', order: 3 },
+  { key: 'demat_done', label: 'Demat Done', color: '#22c55e', order: 4 },
+  { key: 'lost',       label: 'Lost',       color: '#ef4444', order: 5 },
+];
 
-const STAGE_BAR_COLORS: Record<Stage, string> = {
-  new_lead:   'bg-neutral-400',
-  contacted:  'bg-primary-500',
-  interested: 'bg-amber-400',
-  kyc_done:   'bg-violet-500',
-  demat_done: 'bg-green-500',
-  lost:       'bg-red-400',
-};
+function slugify(label: string): string {
+  return label.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'stage';
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ type DateFilter = '' | '7' | '30' | '90';
 
 interface Filters {
   search: string;
-  stage: Stage | '';
+  stage: string;
   owner: string;
   tags: string[];
   dateAdded: DateFilter;
@@ -87,12 +87,16 @@ function relTime(ts: string | undefined | null): string {
   return format(d, 'd MMM');
 }
 
-function exportCSV(contacts: Contact[]) {
+function getStageLabel(key: string, stages: PipelineStage[]): string {
+  return stages.find((s) => s.key === key)?.label ?? STAGE_LABELS[key as Stage] ?? key;
+}
+
+function exportCSV(contacts: Contact[], stages: PipelineStage[]) {
   const headers = ['Name', 'Phone', 'Stage', 'Assigned To', 'Last Activity', 'Added'];
   const rows = contacts.map((c) => [
     contactName(c),
     c.phone,
-    STAGE_LABELS[c.stage] ?? c.stage,
+    getStageLabel(c.stage, stages),
     c.assignedToName ?? c.ownerName ?? '',
     relTime(c.lastMessageAt ?? c.createdAt),
     c.createdAt ? format(new Date(c.createdAt), 'dd/MM/yyyy') : '',
@@ -111,7 +115,7 @@ function exportCSV(contacts: Contact[]) {
 
 // ── KPI Header ────────────────────────────────────────────────────────────────
 
-function KPIHeader({ contacts }: { contacts: Contact[] }) {
+function KPIHeader({ contacts, stages }: { contacts: Contact[]; stages: PipelineStage[] }) {
   const total       = contacts.length;
   const active      = contacts.filter((c) => c.stage !== 'lost').length;
   const converted   = contacts.filter((c) => c.stage === 'demat_done').length;
@@ -121,23 +125,21 @@ function KPIHeader({ contacts }: { contacts: Contact[] }) {
   const hot         = contacts.filter((c) => c.stage === 'interested' || c.stage === 'kyc_done').length;
 
   const kpis = [
-    { label: 'Total Leads',  value: total,              sub: 'in pipeline',         color: 'text-neutral-900 dark:text-neutral-100' },
-    { label: 'Active',       value: active,             sub: `${total ? Math.round((active/total)*100) : 0}% of total`, color: 'text-primary-600 dark:text-primary-400' },
-    { label: 'Hot Leads',    value: hot,                sub: 'Interested + KYC',    color: 'text-amber-600 dark:text-amber-400' },
-    { label: 'Converted',    value: converted,          sub: 'Demat Done',          color: 'text-green-600 dark:text-green-400' },
-    { label: 'Win Rate',     value: `${winRate}%`,      sub: `${lost} lost`,        color: winRate >= 20 ? 'text-green-600 dark:text-green-400' : 'text-neutral-700 dark:text-neutral-300' },
+    { label: 'Total Leads', value: total,         sub: 'in pipeline',         color: 'text-neutral-900 dark:text-neutral-100' },
+    { label: 'Active',      value: active,         sub: `${total ? Math.round((active/total)*100) : 0}% of total`, color: 'text-primary-600 dark:text-primary-400' },
+    { label: 'Hot Leads',   value: hot,            sub: 'Interested + KYC',    color: 'text-amber-600 dark:text-amber-400' },
+    { label: 'Converted',   value: converted,      sub: 'Demat Done',          color: 'text-green-600 dark:text-green-400' },
+    { label: 'Win Rate',    value: `${winRate}%`,  sub: `${lost} lost`,        color: winRate >= 20 ? 'text-green-600 dark:text-green-400' : 'text-neutral-700 dark:text-neutral-300' },
   ];
 
-  // Stage distribution bar
-  const stageGroups = STAGE_ORDER.map((s) => ({
+  const stageGroups = stages.map((s) => ({
     stage: s,
-    count: contacts.filter((c) => c.stage === s).length,
-    pct: total > 0 ? (contacts.filter((c) => c.stage === s).length / total) * 100 : 0,
+    count: contacts.filter((c) => c.stage === s.key).length,
+    pct: total > 0 ? (contacts.filter((c) => c.stage === s.key).length / total) * 100 : 0,
   }));
 
   return (
     <div className="border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950 space-y-4">
-      {/* KPI row */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {kpis.map((k) => (
           <div key={k.label} className="rounded-xl border border-neutral-100 bg-neutral-50 px-4 py-3 dark:border-neutral-800 dark:bg-neutral-900">
@@ -148,26 +150,25 @@ function KPIHeader({ contacts }: { contacts: Contact[] }) {
         ))}
       </div>
 
-      {/* Pipeline health bar */}
       {total > 0 && (
         <div className="space-y-1.5">
           <p className="text-[11px] font-medium uppercase tracking-wider text-neutral-400">Pipeline Distribution</p>
           <div className="flex h-2 w-full overflow-hidden rounded-full bg-neutral-100 dark:bg-neutral-800">
             {stageGroups.filter((g) => g.pct > 0).map((g) => (
               <div
-                key={g.stage}
-                className={cn('h-full transition-all duration-500', STAGE_BAR_COLORS[g.stage])}
-                style={{ width: `${g.pct}%` }}
-                title={`${STAGE_LABELS[g.stage]}: ${g.count} (${Math.round(g.pct)}%)`}
+                key={g.stage.key}
+                className="h-full transition-all duration-500"
+                style={{ width: `${g.pct}%`, backgroundColor: g.stage.color }}
+                title={`${g.stage.label}: ${g.count} (${Math.round(g.pct)}%)`}
               />
             ))}
           </div>
           <div className="flex flex-wrap gap-3">
             {stageGroups.map((g) => (
-              <div key={g.stage} className="flex items-center gap-1.5">
-                <div className={cn('h-2 w-2 rounded-full', STAGE_BAR_COLORS[g.stage])} />
+              <div key={g.stage.key} className="flex items-center gap-1.5">
+                <div className="h-2 w-2 rounded-full" style={{ backgroundColor: g.stage.color }} />
                 <span className="text-[11px] text-neutral-500">
-                  {STAGE_LABELS[g.stage]} <span className="font-medium text-neutral-700 dark:text-neutral-300">{g.count}</span>
+                  {g.stage.label} <span className="font-medium text-neutral-700 dark:text-neutral-300">{g.count}</span>
                 </span>
               </div>
             ))}
@@ -178,7 +179,7 @@ function KPIHeader({ contacts }: { contacts: Contact[] }) {
   );
 }
 
-// ── Drag preview (no hooks — safe in DragOverlay) ─────────────────────────────
+// ── Drag preview ──────────────────────────────────────────────────────────────
 
 function KanbanDragPreview({ contact, tagMap }: { contact: Contact; tagMap: Map<string, Tag> }) {
   const assignee = contact.assignedToName ?? contact.ownerName ?? null;
@@ -249,7 +250,6 @@ function KanbanCard({
           : 'border-neutral-200 dark:border-neutral-800',
       )}
     >
-      {/* Bulk select checkbox */}
       {bulkMode && (
         <div className="absolute left-2 top-2 z-10">
           <Checkbox
@@ -260,7 +260,6 @@ function KanbanCard({
         </div>
       )}
 
-      {/* Drag grip (hidden in bulk mode) */}
       {!bulkMode && (
         <button
           {...listeners}
@@ -272,7 +271,6 @@ function KanbanCard({
         </button>
       )}
 
-      {/* Card body */}
       <Link
         href={`/contacts/${contact.id}`}
         className={cn('block p-3', bulkMode && 'pl-8')}
@@ -327,7 +325,7 @@ function KanbanCard({
 function KanbanColumn({
   stage, contacts, tagMap, totalContacts, bulkMode, selectedIds, onSelect,
 }: {
-  stage: Stage;
+  stage: PipelineStage;
   contacts: Contact[];
   tagMap: Map<string, Tag>;
   totalContacts: number;
@@ -335,21 +333,19 @@ function KanbanColumn({
   selectedIds: Set<string>;
   onSelect: (id: string, checked: boolean) => void;
 }) {
-  const { isOver, setNodeRef } = useDroppable({ id: stage });
+  const { isOver, setNodeRef } = useDroppable({ id: stage.key });
   const pct = totalContacts > 0 ? Math.round((contacts.length / totalContacts) * 100) : 0;
 
   return (
     <div className="flex w-[252px] shrink-0 flex-col" ref={setNodeRef}>
-      {/* Column header */}
-      <div className={cn(
-        'rounded-t-xl border border-b-0 border-neutral-200 bg-white px-3 py-3 border-t-[3px]',
-        STAGE_COLORS[stage],
-        'dark:border-neutral-800 dark:bg-neutral-950',
-      )}>
+      <div
+        className="rounded-t-xl border border-b-0 border-neutral-200 bg-white px-3 py-3 dark:border-neutral-800 dark:bg-neutral-950"
+        style={{ borderTop: `3px solid ${stage.color}` }}
+      >
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-              {STAGE_LABELS[stage]}
+              {stage.label}
             </span>
             <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full bg-neutral-100 px-1.5 text-xs font-semibold text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
               {contacts.length}
@@ -359,7 +355,6 @@ function KanbanColumn({
         </div>
       </div>
 
-      {/* Drop zone */}
       <div className={cn(
         'flex-1 rounded-b-xl border border-neutral-200 bg-neutral-50/80 p-2 space-y-2 min-h-[200px]',
         'transition-colors duration-150',
@@ -395,13 +390,14 @@ function KanbanColumn({
 // ── Kanban Board ──────────────────────────────────────────────────────────────
 
 function KanbanBoard({
-  contacts, tagMap, bulkMode, selectedIds, onSelect,
+  contacts, tagMap, bulkMode, selectedIds, onSelect, stages,
 }: {
   contacts: Contact[];
   tagMap: Map<string, Tag>;
   bulkMode: boolean;
   selectedIds: Set<string>;
   onSelect: (id: string, checked: boolean) => void;
+  stages: PipelineStage[];
 }) {
   const qc = useQueryClient();
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
@@ -409,18 +405,18 @@ function KanbanBoard({
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
 
   const stageMutation = useMutation({
-    mutationFn: async ({ contact, stage }: { contact: Contact; stage: Stage }) => {
+    mutationFn: async ({ contact, stageKey }: { contact: Contact; stageKey: string }) => {
       if (contact.type === 'lead' || (contact.leadId ?? null) !== null) {
         const leadId = contact.leadId ?? contact.id;
-        return apiFetch(`/api/crm/leads/${leadId}/stage`, { method: 'PUT', body: JSON.stringify({ stage }) });
+        return apiFetch(`/api/crm/leads/${leadId}/stage`, { method: 'PUT', body: JSON.stringify({ stage: stageKey }) });
       }
-      return apiFetch('/api/contacts/stage', { method: 'PUT', body: JSON.stringify({ phone: contact.phone, stage }) });
+      return apiFetch('/api/contacts/stage', { method: 'PUT', body: JSON.stringify({ phone: contact.phone, stage: stageKey }) });
     },
-    onMutate: async ({ contact, stage }) => {
+    onMutate: async ({ contact, stageKey }) => {
       await qc.cancelQueries({ queryKey: ['sales-contacts'] });
       const previous = qc.getQueryData<Contact[]>(['sales-contacts']);
       qc.setQueryData<Contact[]>(['sales-contacts'], (old = []) =>
-        old.map((c) => (c.id === contact.id ? { ...c, stage } : c)),
+        old.map((c) => (c.id === contact.id ? { ...c, stage: stageKey as Stage } : c)),
       );
       return { previous };
     },
@@ -441,23 +437,23 @@ function KanbanBoard({
     const { active, over } = event;
     if (!over) return;
     const contact = active.data.current?.contact as Contact;
-    const newStage = over.id as Stage;
-    if (contact && newStage !== contact.stage) stageMutation.mutate({ contact, stage: newStage });
+    const newStageKey = over.id as string;
+    if (contact && newStageKey !== contact.stage) stageMutation.mutate({ contact, stageKey: newStageKey });
   }
 
-  const grouped = STAGE_ORDER.reduce<Record<Stage, Contact[]>>(
-    (acc, s) => ({ ...acc, [s]: contacts.filter((c) => c.stage === s) }),
-    {} as Record<Stage, Contact[]>,
+  const grouped = stages.reduce<Record<string, Contact[]>>(
+    (acc, s) => ({ ...acc, [s.key]: contacts.filter((c) => c.stage === s.key) }),
+    {},
   );
 
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
       <div className="flex gap-3 p-4 overflow-x-auto min-h-0 flex-1">
-        {STAGE_ORDER.map((stage) => (
+        {stages.map((stage) => (
           <KanbanColumn
-            key={stage}
+            key={stage.key}
             stage={stage}
-            contacts={grouped[stage] ?? []}
+            contacts={grouped[stage.key] ?? []}
             tagMap={tagMap}
             totalContacts={contacts.length}
             bulkMode={bulkMode}
@@ -478,26 +474,27 @@ function KanbanBoard({
   );
 }
 
-// ── Team Pipeline View (admin: group by employee) ─────────────────────────────
+// ── Team Pipeline View ────────────────────────────────────────────────────────
 
 function TeamPipelineView({
-  contacts, employees, onSelectEmployee,
+  contacts, employees, onSelectEmployee, stages,
 }: {
   contacts: Contact[];
   employees: EmployeeItem[];
   onSelectEmployee: (id: string) => void;
+  stages: PipelineStage[];
 }) {
   const rows = employees.map((emp) => {
     const mine = contacts.filter(
       (c) => c.assignedTo === emp.id || c.assignedToName === emp.name || c.ownerName === emp.name,
     );
-    const stageCounts = STAGE_ORDER.reduce<Record<Stage, number>>(
-      (acc, s) => ({ ...acc, [s]: mine.filter((c) => c.stage === s).length }),
-      {} as Record<Stage, number>,
+    const stageCounts = stages.reduce<Record<string, number>>(
+      (acc, s) => ({ ...acc, [s.key]: mine.filter((c) => c.stage === s.key).length }),
+      {},
     );
     const total = mine.length;
-    const converted = stageCounts.demat_done;
-    const lost = stageCounts.lost;
+    const converted = stageCounts['demat_done'] ?? 0;
+    const lost = stageCounts['lost'] ?? 0;
     const winBase = converted + lost;
     const winRate = winBase > 0 ? Math.round((converted / winBase) * 100) : 0;
     return { emp, stageCounts, total, winRate };
@@ -515,27 +512,29 @@ function TeamPipelineView({
     );
   }
 
+  const stageCols = { display: 'grid', gridTemplateColumns: `repeat(${stages.length}, 1fr)`, gap: '4px' };
+
   return (
     <div className="flex-1 overflow-auto p-4">
       <div className="rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950 overflow-hidden">
-        {/* Table header */}
-        <div className="grid grid-cols-[200px_1fr_80px_80px] gap-4 border-b border-neutral-200 dark:border-neutral-800 px-4 py-2.5 bg-neutral-50 dark:bg-neutral-900">
+        <div className="grid gap-4 border-b border-neutral-200 dark:border-neutral-800 px-4 py-2.5 bg-neutral-50 dark:bg-neutral-900"
+          style={{ gridTemplateColumns: '200px 1fr 80px 80px' }}>
           <span className="text-xs font-semibold uppercase tracking-wider text-neutral-400">Employee</span>
-          <div className="grid grid-cols-6 gap-1">
-            {STAGE_ORDER.map((s) => (
-              <span key={s} className="text-[10px] font-medium text-neutral-400 text-center">{STAGE_LABELS[s]}</span>
+          <div style={stageCols}>
+            {stages.map((s) => (
+              <span key={s.key} className="text-[10px] font-medium text-neutral-400 text-center truncate">{s.label}</span>
             ))}
           </div>
           <span className="text-xs font-semibold uppercase tracking-wider text-neutral-400 text-center">Total</span>
           <span className="text-xs font-semibold uppercase tracking-wider text-neutral-400 text-center">Win%</span>
         </div>
 
-        {/* Rows */}
         {rows.map(({ emp, stageCounts, total, winRate }) => (
           <button
             key={emp.id}
             onClick={() => onSelectEmployee(emp.id)}
-            className="grid w-full grid-cols-[200px_1fr_80px_80px] gap-4 border-b border-neutral-100 dark:border-neutral-800 px-4 py-3 text-left hover:bg-primary-50 dark:hover:bg-primary-900/10 transition-colors last:border-0"
+            className="grid w-full gap-4 border-b border-neutral-100 dark:border-neutral-800 px-4 py-3 text-left hover:bg-primary-50 dark:hover:bg-primary-900/10 transition-colors last:border-0"
+            style={{ gridTemplateColumns: '200px 1fr 80px 80px' }}
           >
             <div className="flex items-center gap-2.5">
               <Avatar name={emp.name} size={24} />
@@ -544,30 +543,30 @@ function TeamPipelineView({
                 <p className="text-[10px] text-neutral-400 capitalize">{emp.role}</p>
               </div>
             </div>
-            <div className="grid grid-cols-6 gap-1 items-center">
-              {STAGE_ORDER.map((s) => (
-                <div key={s} className="flex justify-center">
-                  {stageCounts[s] > 0 ? (
-                    <span className={cn(
-                      'inline-flex h-6 min-w-[24px] items-center justify-center rounded-full text-xs font-semibold text-white px-1.5',
-                      STAGE_BAR_COLORS[s],
-                    )}>
-                      {stageCounts[s]}
-                    </span>
-                  ) : (
-                    <span className="text-xs text-neutral-300 dark:text-neutral-700">—</span>
-                  )}
-                </div>
-              ))}
+            <div style={stageCols} className="items-center">
+              {stages.map((s) => {
+                const cnt = stageCounts[s.key] ?? 0;
+                return (
+                  <div key={s.key} className="flex justify-center">
+                    {cnt > 0 ? (
+                      <span
+                        className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full text-xs font-semibold text-white px-1.5"
+                        style={{ backgroundColor: s.color }}
+                      >
+                        {cnt}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-neutral-300 dark:text-neutral-700">—</span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             <div className="text-center">
               <span className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">{total}</span>
             </div>
             <div className="text-center">
-              <span className={cn(
-                'text-sm font-semibold',
-                winRate >= 20 ? 'text-green-600 dark:text-green-400' : 'text-neutral-500',
-              )}>
+              <span className={cn('text-sm font-semibold', winRate >= 20 ? 'text-green-600 dark:text-green-400' : 'text-neutral-500')}>
                 {winRate}%
               </span>
             </div>
@@ -575,20 +574,26 @@ function TeamPipelineView({
         ))}
 
         {unassigned.length > 0 && (
-          <div className="grid w-full grid-cols-[200px_1fr_80px_80px] gap-4 border-t border-neutral-200 dark:border-neutral-800 px-4 py-3 bg-neutral-50/60 dark:bg-neutral-900/40">
+          <div
+            className="grid w-full gap-4 border-t border-neutral-200 dark:border-neutral-800 px-4 py-3 bg-neutral-50/60 dark:bg-neutral-900/40"
+            style={{ gridTemplateColumns: '200px 1fr 80px 80px' }}
+          >
             <div className="flex items-center gap-2.5">
               <div className="h-7 w-7 rounded-full bg-neutral-200 dark:bg-neutral-700 flex items-center justify-center">
                 <Users className="h-3.5 w-3.5 text-neutral-500" />
               </div>
               <p className="text-sm text-neutral-500">Unassigned</p>
             </div>
-            <div className="grid grid-cols-6 gap-1 items-center">
-              {STAGE_ORDER.map((s) => {
-                const cnt = unassigned.filter((c) => c.stage === s).length;
+            <div style={stageCols} className="items-center">
+              {stages.map((s) => {
+                const cnt = unassigned.filter((c) => c.stage === s.key).length;
                 return (
-                  <div key={s} className="flex justify-center">
+                  <div key={s.key} className="flex justify-center">
                     {cnt > 0 ? (
-                      <span className={cn('inline-flex h-6 min-w-[24px] items-center justify-center rounded-full text-xs font-semibold text-white px-1.5 opacity-60', STAGE_BAR_COLORS[s])}>
+                      <span
+                        className="inline-flex h-6 min-w-[24px] items-center justify-center rounded-full text-xs font-semibold text-white px-1.5 opacity-60"
+                        style={{ backgroundColor: s.color }}
+                      >
                         {cnt}
                       </span>
                     ) : (
@@ -609,7 +614,7 @@ function TeamPipelineView({
 
 // ── List columns ──────────────────────────────────────────────────────────────
 
-function buildListColumns(tagMap: Map<string, Tag>): TableColumn<Contact>[] {
+function buildListColumns(tagMap: Map<string, Tag>, stages: PipelineStage[]): TableColumn<Contact>[] {
   return [
     {
       key: 'name',
@@ -632,7 +637,11 @@ function buildListColumns(tagMap: Map<string, Tag>): TableColumn<Contact>[] {
       header: 'Stage',
       sortable: true,
       width: 'w-32',
-      cell: (row) => <Badge variant="stage" stage={row.stage}>{STAGE_LABELS[row.stage] ?? row.stage}</Badge>,
+      cell: (row) => (
+        <Badge variant="stage" stage={row.stage}>
+          {getStageLabel(row.stage, stages)}
+        </Badge>
+      ),
     },
     {
       key: 'tags',
@@ -676,14 +685,15 @@ function buildListColumns(tagMap: Map<string, Tag>): TableColumn<Contact>[] {
 
 const selectCls = 'h-8 rounded-lg border border-neutral-200 bg-white pl-2.5 pr-7 text-xs text-neutral-700 appearance-none focus:border-primary-600 focus:outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200';
 
-function FilterBar({
-  filters, onChange, v3Role, employees, tagCatalog,
+function SalesFilterBar({
+  filters, onChange, v3Role, employees, tagCatalog, stages,
 }: {
   filters: Filters;
   onChange: (patch: Partial<Filters>) => void;
   v3Role: string;
   employees: EmployeeItem[];
   tagCatalog: Tag[];
+  stages: PipelineStage[];
 }) {
   const isAdmin = ['owner', 'admin'].includes(v3Role);
 
@@ -694,7 +704,6 @@ function FilterBar({
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-neutral-200 bg-neutral-50 px-4 py-2.5 dark:border-neutral-800 dark:bg-neutral-950/60">
-      {/* Search */}
       <div className="relative flex-1 min-w-40 max-w-56">
         <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" />
         <input
@@ -710,16 +719,14 @@ function FilterBar({
         )}
       </div>
 
-      {/* Stage */}
       <div className="relative">
-        <select value={filters.stage} onChange={(e) => onChange({ stage: e.target.value as Stage | '' })} className={selectCls}>
+        <select value={filters.stage} onChange={(e) => onChange({ stage: e.target.value })} className={selectCls}>
           <option value="">All Stages</option>
-          {STAGE_ORDER.map((s) => <option key={s} value={s}>{STAGE_LABELS[s]}</option>)}
+          {stages.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
         </select>
         <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-neutral-400" />
       </div>
 
-      {/* Owner (admin only) */}
       {isAdmin && employees.length > 0 && (
         <div className="relative">
           <select value={filters.owner} onChange={(e) => onChange({ owner: e.target.value })} className={selectCls}>
@@ -730,7 +737,6 @@ function FilterBar({
         </div>
       )}
 
-      {/* Tags */}
       {tagCatalog.length > 0 && (
         <div className="relative">
           <select value={filters.tags[0] ?? ''} onChange={(e) => onChange({ tags: e.target.value ? [e.target.value] : [] })} className={selectCls}>
@@ -741,7 +747,6 @@ function FilterBar({
         </div>
       )}
 
-      {/* Date added */}
       <div className="relative">
         <select value={filters.dateAdded} onChange={(e) => onChange({ dateAdded: e.target.value as DateFilter })} className={selectCls}>
           <option value="">Any Date</option>
@@ -752,7 +757,6 @@ function FilterBar({
         <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-neutral-400" />
       </div>
 
-      {/* Clear */}
       {activeCount > 0 && (
         <button onClick={() => onChange(EMPTY_FILTERS)} className="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-error-600 hover:bg-error-50 dark:hover:bg-error-900/20">
           <X className="h-3 w-3" />
@@ -766,12 +770,13 @@ function FilterBar({
 // ── Bulk action bar ───────────────────────────────────────────────────────────
 
 function BulkBar({
-  selectedIds, contacts, onClear, onBulkStage,
+  selectedIds, contacts, onClear, onBulkStage, stages,
 }: {
   selectedIds: Set<string>;
   contacts: Contact[];
   onClear: () => void;
-  onBulkStage: (stage: Stage) => void;
+  onBulkStage: (stage: string) => void;
+  stages: PipelineStage[];
 }) {
   const count = selectedIds.size;
   if (count === 0) return null;
@@ -785,22 +790,20 @@ function BulkBar({
       </span>
       <div className="h-4 w-px bg-neutral-200 dark:bg-neutral-700" />
 
-      {/* Move to stage */}
       <div className="relative">
         <select
           defaultValue=""
-          onChange={(e) => { if (e.target.value) onBulkStage(e.target.value as Stage); e.target.value = ''; }}
+          onChange={(e) => { if (e.target.value) onBulkStage(e.target.value); e.target.value = ''; }}
           className="h-8 rounded-lg border border-neutral-200 bg-neutral-50 pl-2.5 pr-7 text-xs font-medium text-neutral-700 appearance-none focus:outline-none dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
         >
           <option value="" disabled>Move to stage…</option>
-          {STAGE_ORDER.map((s) => <option key={s} value={s}>{STAGE_LABELS[s]}</option>)}
+          {stages.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
         </select>
         <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-neutral-400" />
       </div>
 
-      {/* Export selected */}
       <button
-        onClick={() => exportCSV(selected)}
+        onClick={() => exportCSV(selected, stages)}
         className="flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
       >
         <Download className="h-3.5 w-3.5" />
@@ -809,7 +812,6 @@ function BulkBar({
 
       <div className="h-4 w-px bg-neutral-200 dark:bg-neutral-700" />
 
-      {/* Clear */}
       <button onClick={onClear} className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800">
         <X className="h-3.5 w-3.5" />
         Clear
@@ -820,15 +822,31 @@ function BulkBar({
 
 // ── Add Lead drawer ───────────────────────────────────────────────────────────
 
-function AddLeadDrawer({ open, onClose, onSuccess }: { open: boolean; onClose: () => void; onSuccess: () => void }) {
+function AddLeadDrawer({
+  open, onClose, onSuccess, stages,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onSuccess: () => void;
+  stages: PipelineStage[];
+}) {
+  const defaultStage = stages[0]?.key ?? 'new_lead';
+
   const [name, setName]             = useState('');
   const [phone, setPhone]           = useState('');
-  const [stage, setStage]           = useState<Stage>('new_lead');
+  const [stage, setStage]           = useState(defaultStage);
   const [notes, setNotes]           = useState('');
   const [nameError, setNameError]   = useState('');
   const [phoneError, setPhoneError] = useState('');
 
-  function reset() { setName(''); setPhone(''); setStage('new_lead'); setNotes(''); setNameError(''); setPhoneError(''); }
+  // Reset stage default when stages list changes (e.g. after pipeline edit)
+  useEffect(() => {
+    if (stages.length > 0 && !stages.find((s) => s.key === stage)) {
+      setStage(stages[0].key);
+    }
+  }, [stages, stage]);
+
+  function reset() { setName(''); setPhone(''); setStage(defaultStage); setNotes(''); setNameError(''); setPhoneError(''); }
   function clean(raw: string) { return raw.replace(/\D/g, ''); }
 
   function validate(): boolean {
@@ -879,9 +897,9 @@ function AddLeadDrawer({ open, onClose, onSuccess }: { open: boolean; onClose: (
           type="tel" phonePrefix error={phoneError} />
         <div className="space-y-1.5">
           <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">Stage</label>
-          <select value={stage} onChange={(e) => setStage(e.target.value as Stage)}
+          <select value={stage} onChange={(e) => setStage(e.target.value)}
             className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200">
-            {STAGE_ORDER.map((s) => <option key={s} value={s}>{STAGE_LABELS[s]}</option>)}
+            {stages.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
         </div>
         <div className="space-y-1.5">
@@ -897,6 +915,177 @@ function AddLeadDrawer({ open, onClose, onSuccess }: { open: boolean; onClose: (
   );
 }
 
+// ── Manage Pipeline Drawer ────────────────────────────────────────────────────
+
+function ManagePipelineDrawer({
+  open, onClose, initialStages, onSaved,
+}: {
+  open: boolean;
+  onClose: () => void;
+  initialStages: PipelineStage[];
+  onSaved: () => void;
+}) {
+  const [stages, setStages] = useState<PipelineStage[]>([]);
+
+  useEffect(() => {
+    if (open) setStages(initialStages.map((s, i) => ({ ...s, order: i })));
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const saveMut = useMutation({
+    mutationFn: () =>
+      apiFetch('/api/crm/pipeline', {
+        method: 'PUT',
+        body: JSON.stringify({ stages: stages.map((s, i) => ({ ...s, order: i })) }),
+      }),
+    onSuccess: () => {
+      toast.success('Pipeline updated');
+      onSaved();
+      onClose();
+    },
+    onError: (err: any) => {
+      const msg = err?.body?.error ?? err?.message ?? 'Failed to save pipeline';
+      toast.error(msg);
+    },
+  });
+
+  function move(i: number, dir: -1 | 1) {
+    const j = i + dir;
+    if (j < 0 || j >= stages.length) return;
+    const next = [...stages];
+    [next[i], next[j]] = [next[j], next[i]];
+    setStages(next);
+  }
+
+  function rename(i: number, label: string) {
+    setStages((p) => p.map((s, idx) => idx === i ? { ...s, label } : s));
+  }
+
+  function recolor(i: number, color: string) {
+    setStages((p) => p.map((s, idx) => idx === i ? { ...s, color } : s));
+  }
+
+  function remove(i: number) {
+    setStages((p) => p.filter((_, idx) => idx !== i));
+  }
+
+  function addStage() {
+    const existingKeys = new Set(stages.map((s) => s.key));
+    let key = 'new_stage';
+    let n = 2;
+    while (existingKeys.has(key)) key = `new_stage_${n++}`;
+    setStages((p) => [...p, { key, label: 'New Stage', color: '#64748b', order: p.length }]);
+  }
+
+  function handleLabelBlur(i: number, label: string) {
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    const existingKeys = new Set(stages.map((s) => s.key));
+    const base = slugify(trimmed);
+    if (!existingKeys.has(base) || stages[i].key === base) {
+      setStages((p) => p.map((s, idx) => idx === i ? { ...s, key: base, label: trimmed } : s));
+    } else {
+      setStages((p) => p.map((s, idx) => idx === i ? { ...s, label: trimmed } : s));
+    }
+  }
+
+  const isDirty = JSON.stringify(stages) !== JSON.stringify(initialStages.map((s, i) => ({ ...s, order: i })));
+
+  return (
+    <Drawer
+      open={open}
+      onClose={onClose}
+      title="Manage Pipeline Stages"
+      description="Rename, reorder, or add stages for your sales pipeline"
+      confirmClose={isDirty}
+      width={480}
+      footer={
+        <DrawerFooter>
+          <Button variant="secondary" size="md" onClick={onClose} type="button">Cancel</Button>
+          <Button variant="primary" size="md" loading={saveMut.isPending} onClick={() => saveMut.mutate()}>
+            Save Stages
+          </Button>
+        </DrawerFooter>
+      }
+    >
+      <div className="flex flex-col gap-2">
+        {stages.map((s, i) => (
+          <div key={s.key} className="flex items-center gap-2 rounded-xl border border-neutral-200 bg-white p-2.5 dark:border-neutral-800 dark:bg-neutral-900">
+            {/* Color picker — native OS color picker */}
+            <label className="relative flex-shrink-0 cursor-pointer" title="Change color">
+              <span
+                className="block h-7 w-7 rounded-full border-2 border-white shadow ring-1 ring-neutral-200 dark:ring-neutral-700"
+                style={{ backgroundColor: s.color }}
+              />
+              <input
+                type="color"
+                value={s.color}
+                onChange={(e) => recolor(i, e.target.value)}
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              />
+            </label>
+
+            {/* Label */}
+            <input
+              value={s.label}
+              onChange={(e) => rename(i, e.target.value)}
+              onBlur={(e) => handleLabelBlur(i, e.target.value)}
+              className="flex-1 rounded-lg border border-neutral-200 bg-transparent px-2.5 py-1.5 text-sm text-neutral-900 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-neutral-700 dark:text-neutral-100"
+              maxLength={40}
+              placeholder="Stage name"
+            />
+
+            {/* Move up */}
+            <button
+              type="button"
+              disabled={i === 0}
+              onClick={() => move(i, -1)}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
+              title="Move up"
+            >
+              <ArrowUp className="h-3.5 w-3.5" />
+            </button>
+
+            {/* Move down */}
+            <button
+              type="button"
+              disabled={i === stages.length - 1}
+              onClick={() => move(i, 1)}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
+              title="Move down"
+            >
+              <ArrowDown className="h-3.5 w-3.5" />
+            </button>
+
+            {/* Delete */}
+            <button
+              type="button"
+              onClick={() => remove(i)}
+              disabled={stages.length <= 1}
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-error-500 hover:bg-error-50 disabled:opacity-30 dark:hover:bg-error-900/20"
+              title="Remove stage"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+
+        <button
+          type="button"
+          onClick={addStage}
+          className="flex items-center gap-2 rounded-xl border-2 border-dashed border-neutral-200 p-3 text-sm text-neutral-500 hover:border-primary-300 hover:text-primary-600 dark:border-neutral-700 dark:hover:border-primary-700 transition-colors"
+        >
+          <Plus className="h-4 w-4" />
+          Add Stage
+        </button>
+
+        <p className="text-xs text-neutral-400 mt-1">
+          Click the colored circle to change a stage color. Stages with active leads cannot be deleted — move leads first.
+        </p>
+      </div>
+    </Drawer>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function SalesPage() {
@@ -904,20 +1093,33 @@ export default function SalesPage() {
   const qc = useQueryClient();
   const { user } = useAuth();
 
-  const [view, setView]               = useState<'kanban' | 'list' | 'team'>('kanban');
-  const [showAddLead, setShowAddLead] = useState(false);
-  const [sortKey, setSortKey]         = useState('name');
-  const [sortDir, setSortDir]         = useState<SortDirection>('asc');
-  const [filters, setFilters]         = useState<Filters>(EMPTY_FILTERS);
-  const [bulkMode, setBulkMode]       = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [showKPIs, setShowKPIs]       = useState(true);
+  const [view, setView]                       = useState<'kanban' | 'list' | 'team'>('kanban');
+  const [showAddLead, setShowAddLead]         = useState(false);
+  const [showManagePipeline, setShowManagePipeline] = useState(false);
+  const [sortKey, setSortKey]                 = useState('name');
+  const [sortDir, setSortDir]                 = useState<SortDirection>('asc');
+  const [filters, setFilters]                 = useState<Filters>(EMPTY_FILTERS);
+  const [bulkMode, setBulkMode]               = useState(false);
+  const [selectedIds, setSelectedIds]         = useState<Set<string>>(new Set());
+  const [showKPIs, setShowKPIs]               = useState(true);
 
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const isAdmin = ['owner', 'admin'].includes(v3Role);
+  const isAdmin  = ['owner', 'admin'].includes(v3Role);
   const canCreate = ['owner', 'admin', 'manager', 'sales'].includes(v3Role);
 
-  // ── Queries (all lifted to page level so components share cache) ───────────
+  // ── Pipeline stages (dynamic) ─────────────────────────────────────────────
+
+  const { data: pipelineData, refetch: refetchPipeline } = useQuery({
+    queryKey: ['pipeline-stages'],
+    queryFn: () => apiFetch<{ success: boolean; stages: PipelineStage[] }>('/api/crm/pipeline'),
+    staleTime: 5 * 60_000,
+  });
+  const stages = useMemo(
+    () => [...(pipelineData?.stages ?? DEFAULT_PIPELINE_STAGES)].sort((a, b) => a.order - b.order),
+    [pipelineData],
+  );
+
+  // ── Queries ───────────────────────────────────────────────────────────────
 
   const { data: contacts = [], isLoading } = useQuery<Contact[]>({
     queryKey: ['sales-contacts'],
@@ -985,29 +1187,28 @@ export default function SalesPage() {
   }, []);
 
   const stageMutBulk = useMutation({
-    mutationFn: async ({ contact, stage }: { contact: Contact; stage: Stage }) => {
+    mutationFn: async ({ contact, stageKey }: { contact: Contact; stageKey: string }) => {
       if (contact.type === 'lead' || (contact.leadId ?? null) !== null) {
-        return apiFetch(`/api/crm/leads/${contact.leadId ?? contact.id}/stage`, { method: 'PUT', body: JSON.stringify({ stage }) });
+        return apiFetch(`/api/crm/leads/${contact.leadId ?? contact.id}/stage`, { method: 'PUT', body: JSON.stringify({ stage: stageKey }) });
       }
-      return apiFetch('/api/contacts/stage', { method: 'PUT', body: JSON.stringify({ phone: contact.phone, stage }) });
+      return apiFetch('/api/contacts/stage', { method: 'PUT', body: JSON.stringify({ phone: contact.phone, stage: stageKey }) });
     },
     onSettled: () => qc.invalidateQueries({ queryKey: ['sales-contacts'] }),
   });
 
-  async function handleBulkStage(stage: Stage) {
-    const toMove = contacts.filter((c) => selectedIds.has(c.id) && c.stage !== stage);
-    // Optimistic batch
+  async function handleBulkStage(stageKey: string) {
+    const toMove = contacts.filter((c) => selectedIds.has(c.id) && c.stage !== stageKey);
     qc.setQueryData<Contact[]>(['sales-contacts'], (old = []) =>
-      old.map((c) => selectedIds.has(c.id) ? { ...c, stage } : c),
+      old.map((c) => selectedIds.has(c.id) ? { ...c, stage: stageKey as Stage } : c),
     );
-    // Fire mutations sequentially to avoid 429
     let failed = 0;
     for (const c of toMove) {
-      try { await stageMutBulk.mutateAsync({ contact: c, stage }); }
+      try { await stageMutBulk.mutateAsync({ contact: c, stageKey }); }
       catch { failed++; }
     }
+    const label = getStageLabel(stageKey, stages);
     if (failed > 0) toast.error(`${failed} leads failed to update — refreshing…`);
-    else toast.success(`${toMove.length} leads moved to ${STAGE_LABELS[stage]}`);
+    else toast.success(`${toMove.length} leads moved to ${label}`);
     setSelectedIds(new Set());
     setBulkMode(false);
   }
@@ -1033,16 +1234,16 @@ export default function SalesPage() {
     {
       label: 'Export Pipeline',
       icon: <Download className="h-4 w-4" aria-hidden />,
-      onClick: () => { exportCSV(filteredContacts); toast.success(`Exported ${filteredContacts.length} leads`); },
+      onClick: () => { exportCSV(filteredContacts, stages); toast.success(`Exported ${filteredContacts.length} leads`); },
     },
     {
       label: 'Broadcast',
       icon: <Radio className="h-4 w-4" aria-hidden />,
       onClick: () => router.push('/inbox'),
     },
-  ], [filteredContacts, router]);
+  ], [filteredContacts, stages, router]);
 
-  const listColumns = useMemo(() => buildListColumns(tagMap), [tagMap]);
+  const listColumns = useMemo(() => buildListColumns(tagMap, stages), [tagMap, stages]);
 
   return (
     <div className="flex h-full flex-col">
@@ -1053,7 +1254,7 @@ export default function SalesPage() {
           <p className="text-sm text-neutral-500">
             {isLoading ? 'Loading…'
               : hasActiveFilters ? `${filteredContacts.length} of ${contacts.length} leads`
-              : `${contacts.length} leads · ${STAGE_ORDER.length} stages`}
+              : `${contacts.length} leads · ${stages.length} stages`}
           </p>
         </div>
 
@@ -1072,11 +1273,21 @@ export default function SalesPage() {
             <Target className="h-4 w-4" />
           </button>
 
+          {/* Manage pipeline (admin only) */}
+          {isAdmin && (
+            <button
+              onClick={() => setShowManagePipeline(true)}
+              title="Manage pipeline stages"
+              className="flex h-8 w-8 items-center justify-center rounded-lg border border-neutral-200 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800 transition-colors"
+            >
+              <Settings className="h-4 w-4" />
+            </button>
+          )}
+
           <Link href="/sales/followups">
             <Button variant="secondary" size="sm" iconRight={<ArrowRight className="h-4 w-4" />}>Follow-ups</Button>
           </Link>
 
-          {/* Select / bulk mode toggle */}
           <button
             onClick={() => { setBulkMode((v) => !v); setSelectedIds(new Set()); }}
             title={bulkMode ? 'Exit select mode' : 'Select leads'}
@@ -1091,7 +1302,6 @@ export default function SalesPage() {
             {bulkMode ? 'Selecting' : 'Select'}
           </button>
 
-          {/* View toggle */}
           <div className="flex rounded-lg border border-neutral-200 p-0.5 dark:border-neutral-700" role="group" aria-label="View mode">
             {([
               { id: 'kanban', icon: <LayoutGrid className="h-4 w-4" />, label: 'Kanban View' },
@@ -1124,26 +1334,27 @@ export default function SalesPage() {
         </div>
       </div>
 
-      {/* ── KPI header (collapsible) ──────────────────────────────────────────── */}
+      {/* ── KPI header ───────────────────────────────────────────────────────── */}
       {showKPIs && !isLoading && contacts.length > 0 && (
-        <KPIHeader contacts={contacts} />
+        <KPIHeader contacts={contacts} stages={stages} />
       )}
 
       {/* ── Filter bar ───────────────────────────────────────────────────────── */}
-      <FilterBar
+      <SalesFilterBar
         filters={filters}
         onChange={patchFilter}
         v3Role={v3Role}
         employees={employees}
         tagCatalog={tagCatalog}
+        stages={stages}
       />
 
       {/* ── Content ──────────────────────────────────────────────────────────── */}
       {isLoading ? (
         view === 'kanban' ? (
           <div className="flex gap-3 p-4 overflow-x-auto">
-            {STAGE_ORDER.map((s) => (
-              <div key={s} className="w-[252px] shrink-0 space-y-2">
+            {stages.map((s) => (
+              <div key={s.key} className="w-[252px] shrink-0 space-y-2">
                 <SkeletonCard /><SkeletonCard />
               </div>
             ))}
@@ -1165,6 +1376,7 @@ export default function SalesPage() {
         <TeamPipelineView
           contacts={filteredContacts}
           employees={employees}
+          stages={stages}
           onSelectEmployee={(id) => {
             patchFilter({ owner: id });
             setView('kanban');
@@ -1177,6 +1389,7 @@ export default function SalesPage() {
           bulkMode={bulkMode}
           selectedIds={selectedIds}
           onSelect={handleSelect}
+          stages={stages}
         />
       ) : (
         <div className="flex-1 overflow-auto">
@@ -1198,16 +1411,27 @@ export default function SalesPage() {
         contacts={contacts}
         onClear={() => { setSelectedIds(new Set()); setBulkMode(false); }}
         onBulkStage={handleBulkStage}
+        stages={stages}
       />
 
       {/* ── FAB ──────────────────────────────────────────────────────────────── */}
       {canCreate && <FAB actions={fabActions} />}
 
-      {/* ── Add Lead drawer ───────────────────────────────────────────────────── */}
+      {/* ── Drawers ───────────────────────────────────────────────────────────── */}
       <AddLeadDrawer
         open={showAddLead}
         onClose={() => setShowAddLead(false)}
         onSuccess={() => qc.invalidateQueries({ queryKey: ['sales-contacts'] })}
+        stages={stages}
+      />
+      <ManagePipelineDrawer
+        open={showManagePipeline}
+        onClose={() => setShowManagePipeline(false)}
+        initialStages={stages}
+        onSaved={() => {
+          refetchPipeline();
+          qc.invalidateQueries({ queryKey: ['pipeline-stages'] });
+        }}
       />
     </div>
   );

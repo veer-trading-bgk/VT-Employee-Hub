@@ -15,13 +15,12 @@ const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
 const DEFAULT_STAGES = [
-  { key: 'new_lead',   label: 'New Lead',     color: '#64748b', order: 0 },
-  { key: 'contacted',  label: 'Contacted',    color: '#3b82f6', order: 1 },
-  { key: 'interested', label: 'Interested',   color: '#8b5cf6', order: 2 },
-  { key: 'kyc_done',   label: 'KYC Done',     color: '#f59e0b', order: 3 },
-  { key: 'demat_done', label: 'Demat Done',   color: '#f97316', order: 4 },
-  { key: 'converted',  label: 'Converted',    color: '#10b981', order: 5 },
-  { key: 'churned',    label: 'Closed Lost',  color: '#ef4444', order: 6 },
+  { key: 'new_lead',   label: 'New Lead',   color: '#94a3b8', order: 0 },
+  { key: 'contacted',  label: 'Contacted',  color: '#3b82f6', order: 1 },
+  { key: 'interested', label: 'Interested', color: '#f59e0b', order: 2 },
+  { key: 'kyc_done',   label: 'KYC Done',   color: '#8b5cf6', order: 3 },
+  { key: 'demat_done', label: 'Demat Done', color: '#22c55e', order: 4 },
+  { key: 'lost',       label: 'Lost',       color: '#ef4444', order: 5 },
 ];
 
 // Stages that auto-credit a payroll metric
