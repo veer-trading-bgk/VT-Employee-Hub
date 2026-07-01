@@ -7,7 +7,7 @@ import {
   MessageSquare, Search, Send, MoreHorizontal, Phone,
   CheckCheck, Check, Clock, AlertCircle, Plus, X, ChevronLeft,
   Paperclip, FileText, Download, ZoomIn, Tag as TagIcon,
-  Loader2, ChevronDown,
+  Loader2, ChevronDown, Lock, AlertTriangle,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { TagBadge } from '@/components/tags/TagBadge';
@@ -88,12 +88,59 @@ function msgTime(iso: string) {
   return format(new Date(iso), 'h:mm a');
 }
 
+// ── WABA 24-hour customer service window ──────────────────────────────────────
+
+const WABA_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const CLOSING_SOON_MS = 60 * 60 * 1_000; // warn when <1 h remains
+
+type WindowStatus = 'open' | 'closing-soon' | 'expired';
+
+function getWindowRemainingMs(lastInboundAt?: string | null, now = Date.now()): number {
+  if (!lastInboundAt) return 0;
+  return Math.max(0, WABA_WINDOW_MS - (now - new Date(lastInboundAt).getTime()));
+}
+
+function getWindowStatus(lastInboundAt?: string | null, now = Date.now()): WindowStatus {
+  const rem = getWindowRemainingMs(lastInboundAt, now);
+  if (rem === 0) return 'expired';
+  if (rem <= CLOSING_SOON_MS) return 'closing-soon';
+  return 'open';
+}
+
+function formatCountdown(ms: number): string {
+  if (ms <= 0) return '0s';
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  const s = Math.floor((ms % 60_000) / 1_000);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 function DeliveryIcon({ status }: { status?: WaMessage['msgStatus'] }) {
   if (status === 'read')      return <CheckCheck className="h-3.5 w-3.5 text-primary-300" aria-label="Read" />;
   if (status === 'delivered') return <CheckCheck className="h-3.5 w-3.5 text-white/60" aria-label="Delivered" />;
   if (status === 'sent')      return <Check className="h-3.5 w-3.5 text-white/60" aria-label="Sent" />;
   if (status === 'failed')    return <AlertCircle className="h-3.5 w-3.5 text-red-300" aria-label="Failed" />;
   return <Clock className="h-3.5 w-3.5 text-white/40" aria-label="Pending" />;
+}
+
+function WindowStatusChip({ lastInboundAt }: { lastInboundAt?: string | null }) {
+  const status = getWindowStatus(lastInboundAt);
+  if (status === 'open') return null;
+  return (
+    <span className={cn(
+      'inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-semibold leading-none',
+      status === 'expired'
+        ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+        : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+    )}>
+      {status === 'expired'
+        ? <Lock className="h-2.5 w-2.5 shrink-0" aria-hidden />
+        : <Clock className="h-2.5 w-2.5 shrink-0" aria-hidden />}
+      {status === 'expired' ? 'Expired' : 'Closing Soon'}
+    </span>
+  );
 }
 
 // ── Lightbox ──────────────────────────────────────────────────────────────────
@@ -465,13 +512,14 @@ function ConversationList({
                   <p className="mt-0.5 truncate text-xs text-neutral-500">
                     {conv.lastMessagePreview || conv.phone}
                   </p>
-                  {hasUnread && (
-                    <div className="mt-1">
+                  <div className="mt-1 flex items-center gap-1.5">
+                    {hasUnread && (
                       <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary-600 px-1 text-[9px] font-bold text-white">
                         {conv.unreadCount}
                       </span>
-                    </div>
-                  )}
+                    )}
+                    <WindowStatusChip lastInboundAt={conv.lastInboundAt} />
+                  </div>
                 </div>
               </button>
             );
@@ -527,6 +575,119 @@ function MessageBubble({ message }: { message: WaMessage }) {
   );
 }
 
+// ── Expired-window template picker ───────────────────────────────────────────
+
+function ExpiredWindowSendBar({ conversation }: { conversation: WaConversation }) {
+  const qc = useQueryClient();
+  const convKey = conversation.leadId ?? conversation.phone;
+  const [showPicker, setShowPicker] = useState(false);
+  const [selectedTmplId, setSelectedTmplId] = useState('');
+
+  const { data: tmplData, isLoading: tmplLoading } = useQuery({
+    queryKey: ['wa-templates'],
+    queryFn: () => apiFetch<{ templates: WaTemplate[] }>('/api/whatsapp/templates'),
+    staleTime: 60_000,
+    enabled: showPicker,
+  });
+  const templates = tmplData?.templates ?? [];
+
+  const sendTemplateMutation = useMutation({
+    mutationFn: (templateId: string) => {
+      const body: Record<string, string> = { templateId };
+      if (conversation.type === 'lead' && conversation.PK) {
+        body.leadPK = conversation.PK;
+      } else {
+        body.phone = conversation.phone;
+      }
+      return apiFetch('/api/whatsapp/send-template', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+      setShowPicker(false);
+      setSelectedTmplId('');
+      toast.success('Template sent — conversation window re-opened');
+    },
+    onError: () => toast.error('Failed to send template. Check template configuration.'),
+  });
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 dark:border-red-900/40 dark:bg-red-900/10">
+        <Lock className="h-4 w-4 shrink-0 text-red-400 dark:text-red-500" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold text-red-700 dark:text-red-400">Messaging window closed</p>
+          <p className="text-[10px] text-red-500/80 dark:text-red-500/70">24-hour customer service window expired</p>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setShowPicker((v) => !v)}
+          className="shrink-0 text-xs text-primary-600 hover:text-primary-700 dark:text-primary-400"
+        >
+          {showPicker ? 'Cancel' : 'Send Template'}
+        </Button>
+      </div>
+
+      {showPicker && (
+        <div className="mt-2 rounded-xl border border-neutral-200 bg-white p-3 space-y-2 dark:border-neutral-800 dark:bg-neutral-900">
+          <p className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">
+            Choose a template to re-open this conversation
+          </p>
+          {tmplLoading ? (
+            <div className="flex items-center gap-2 py-2">
+              <Loader2 className="h-4 w-4 animate-spin text-primary-600" aria-hidden />
+              <span className="text-xs text-neutral-500">Loading templates…</span>
+            </div>
+          ) : templates.length === 0 ? (
+            <p className="py-1 text-xs text-neutral-400">
+              No approved templates found. Configure templates in Meta Business Manager.
+            </p>
+          ) : (
+            <div className="scrollbar-thin max-h-48 space-y-1.5 overflow-y-auto">
+              {templates.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setSelectedTmplId(t.id === selectedTmplId ? '' : t.id)}
+                  className={cn(
+                    'w-full rounded-lg border p-2.5 text-left transition-colors',
+                    selectedTmplId === t.id
+                      ? 'border-primary-400 bg-primary-50 dark:border-primary-600 dark:bg-primary-900/20'
+                      : 'border-neutral-200 hover:border-neutral-300 dark:border-neutral-700 dark:hover:border-neutral-600',
+                  )}
+                >
+                  <p className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">{t.name}</p>
+                  {t.bodyPreview && (
+                    <p className="mt-0.5 line-clamp-2 text-[10px] text-neutral-500">{t.bodyPreview}</p>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+          {selectedTmplId && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => sendTemplateMutation.mutate(selectedTmplId)}
+              loading={sendTemplateMutation.isPending}
+              iconLeft={<Send className="h-4 w-4" />}
+              className="w-full justify-center"
+            >
+              Send Template
+            </Button>
+          )}
+        </div>
+      )}
+      <p className="mt-1.5 text-center text-[10px] text-neutral-400">
+        WhatsApp · Template-only messaging when window expired
+      </p>
+    </div>
+  );
+}
+
 // ── Thread Pane ───────────────────────────────────────────────────────────────
 
 function ThreadPane({
@@ -540,9 +701,16 @@ function ThreadPane({
   const [draft, setDraft] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [now, setNow] = useState(Date.now());
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Live clock for WABA 24h window countdown (1-second tick)
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(id);
+  }, []);
 
   const convKey = conversation.leadId ?? conversation.phone;
   const displayName = convDisplayName(conversation);
@@ -560,6 +728,18 @@ function ThreadPane({
   });
 
   const messages = data?.messages ?? [];
+
+  // Derive effective lastInboundAt from messages so the countdown resets instantly
+  // when a new inbound message arrives via WebSocket without waiting for an inbox refetch.
+  const effectiveLastInboundAt = (() => {
+    const inbound = messages.filter((m) => m.direction === 'inbound');
+    if (inbound.length > 0) return inbound[inbound.length - 1].timestamp;
+    return conversation.lastInboundAt;
+  })();
+
+  const windowRemainingMs = getWindowRemainingMs(effectiveLastInboundAt, now);
+  const windowExpired = windowRemainingMs === 0;
+  const windowClosingSoon = !windowExpired && windowRemainingMs <= CLOSING_SOON_MS;
 
   // Mark conversation as read when opened (clears unread badge + sends read receipts)
   useEffect(() => {
@@ -750,6 +930,23 @@ function ThreadPane({
         </div>
       </div>
 
+      {/* WABA 24h window status banner */}
+      {windowExpired ? (
+        <div className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-4 py-2 dark:border-red-900/40 dark:bg-red-900/10" role="alert">
+          <Lock className="h-3.5 w-3.5 shrink-0 text-red-500" aria-hidden />
+          <p className="text-xs text-red-700 dark:text-red-400">
+            <strong>24-hour window expired</strong> — Only approved templates can be sent.
+          </p>
+        </div>
+      ) : windowClosingSoon ? (
+        <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 dark:border-amber-900/40 dark:bg-amber-900/10" role="status">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-hidden />
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            Window closes in <strong>{formatCountdown(windowRemainingMs)}</strong> — reply before it expires.
+          </p>
+        </div>
+      ) : null}
+
       {/* Messages */}
       <div className="scrollbar-thin flex-1 overflow-y-auto px-4 py-4 space-y-1">
         {isLoading ? (
@@ -781,56 +978,62 @@ function ThreadPane({
 
       {/* Reply bar */}
       <div className="border-t border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
-        {/* Upload progress indicator */}
-        {isUploading && uploadFile && (
-          <div className="mb-2 flex items-center gap-2 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-700 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-300">
-            <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary-600 border-t-transparent" />
-            Uploading {uploadFile.name}…
-          </div>
+        {windowExpired ? (
+          <ExpiredWindowSendBar conversation={conversation} />
+        ) : (
+          <>
+            {/* Upload progress indicator */}
+            {isUploading && uploadFile && (
+              <div className="mb-2 flex items-center gap-2 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-700 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-300">
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary-600 border-t-transparent" />
+                Uploading {uploadFile.name}…
+              </div>
+            )}
+            <div className="flex items-end gap-2">
+              {/* Hidden file input */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleFileSelect(file);
+                }}
+              />
+              {/* Paperclip button */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading || sendMutation.isPending}
+                title="Attach image, video, audio or document"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-neutral-200 text-neutral-500 hover:bg-neutral-50 hover:text-neutral-700 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800 dark:text-neutral-400"
+              >
+                <Paperclip className="h-4 w-4" />
+              </button>
+              <textarea
+                ref={textareaRef}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+                rows={1}
+                className="scrollbar-thin max-h-24 flex-1 resize-none rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                style={{ minHeight: 40 }}
+              />
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={handleSend}
+                disabled={!draft.trim() || isUploading}
+                loading={sendMutation.isPending}
+                iconLeft={<Send className="h-4 w-4" />}
+                aria-label="Send message"
+              />
+            </div>
+            <p className="mt-1.5 text-[10px] text-neutral-400">WhatsApp · Enter to send · attach image, video, audio, PDF</p>
+          </>
         )}
-        <div className="flex items-end gap-2">
-          {/* Hidden file input */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) handleFileSelect(file);
-            }}
-          />
-          {/* Paperclip button */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isUploading || sendMutation.isPending}
-            title="Attach image, video, audio or document"
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-neutral-200 text-neutral-500 hover:bg-neutral-50 hover:text-neutral-700 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800 dark:text-neutral-400"
-          >
-            <Paperclip className="h-4 w-4" />
-          </button>
-          <textarea
-            ref={textareaRef}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
-            rows={1}
-            className="scrollbar-thin max-h-24 flex-1 resize-none rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-            style={{ minHeight: 40 }}
-          />
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={handleSend}
-            disabled={!draft.trim() || isUploading}
-            loading={sendMutation.isPending}
-            iconLeft={<Send className="h-4 w-4" />}
-            aria-label="Send message"
-          />
-        </div>
-        <p className="mt-1.5 text-[10px] text-neutral-400">WhatsApp · Enter to send · 📎 attach image, video, audio, PDF</p>
       </div>
     </div>
   );
