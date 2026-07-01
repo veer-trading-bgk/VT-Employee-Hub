@@ -17,10 +17,6 @@ export async function fetchTemplates(): Promise<WaTemplate[]> {
   return res.templates ?? [];
 }
 
-export async function fetchTemplate(id: string): Promise<WaTemplate> {
-  return apiFetch<WaTemplate>(`${BASE}/${id}`);
-}
-
 // ── Create ─────────────────────────────────────────────────────────────────────
 
 export interface CreateTemplatePayload {
@@ -109,12 +105,6 @@ export async function syncTemplates(): Promise<SyncTemplatesResponse> {
 
 export async function fetchTemplateHistory(id: string) {
   return apiFetch<{ success: boolean; history: object[] }>(`${BASE}/${id}/history`);
-}
-
-// ── Analytics ──────────────────────────────────────────────────────────────────
-
-export async function fetchTemplateAnalytics(id: string) {
-  return apiFetch<{ success: boolean; analytics: object }>(`${BASE}/${id}/analytics`);
 }
 
 // ── Send template (existing endpoint) ─────────────────────────────────────────

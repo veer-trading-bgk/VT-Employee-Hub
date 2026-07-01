@@ -41,6 +41,7 @@ function defaultForm(): TemplateFormValues {
     headerType: 'NONE',
     headerText: '',
     headerMediaUrl: '',
+    headerVariableExample: '',
     bodyText: '',
     bodyVariables: [],
     footerEnabled: false,
@@ -138,6 +139,7 @@ export function TemplateCreateDrawer({ open, onClose, editTemplate }: Props) {
         headerType: (headerComp?.format ?? 'NONE') as TemplateFormValues['headerType'],
         headerText: headerComp?.text ?? '',
         headerMediaUrl: headerComp?.example?.header_handle?.[0] ?? '',
+        headerVariableExample: headerComp?.example?.header_text?.[0] ?? '',
         bodyText: bodyComp?.text ?? editTemplate.bodyPreview ?? '',
         bodyVariables: bodyVars,
         footerEnabled: Boolean(footerComp),
@@ -383,14 +385,25 @@ export function TemplateCreateDrawer({ open, onClose, editTemplate }: Props) {
                   onChange={(e) => update('headerType', e.target.value as TemplateFormValues['headerType'])}
                 />
                 {form.headerType === 'TEXT' && (
-                  <Input
-                    label="Header Text"
-                    placeholder="Welcome to APForce"
-                    value={form.headerText}
-                    onChange={(e) => update('headerText', e.target.value)}
-                    error={fieldError(visibleErrors, 'headerText')}
-                    hint={`${form.headerText.length} / ${LIMITS.HEADER_TEXT_MAX} chars · 1 variable allowed`}
-                  />
+                  <>
+                    <Input
+                      label="Header Text"
+                      placeholder="Welcome to APForce"
+                      value={form.headerText}
+                      onChange={(e) => update('headerText', e.target.value)}
+                      error={fieldError(visibleErrors, 'headerText')}
+                      hint={`${form.headerText.length} / ${LIMITS.HEADER_TEXT_MAX} chars · 1 variable allowed`}
+                    />
+                    {form.headerText.includes('{{1}}') && (
+                      <Input
+                        label="Header Variable Example"
+                        placeholder="e.g. John"
+                        value={form.headerVariableExample}
+                        onChange={(e) => update('headerVariableExample', e.target.value)}
+                        hint="Example value for {{1}} in the header — required by Meta"
+                      />
+                    )}
+                  </>
                 )}
                 {['IMAGE', 'VIDEO', 'DOCUMENT'].includes(form.headerType) && (
                   <Input

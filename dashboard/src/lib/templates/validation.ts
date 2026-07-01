@@ -253,8 +253,8 @@ export function validateTemplate(form: TemplateFormValues): ValidationResult {
     const hasQuickReply = form.buttons.some((b) => b.type === 'QUICK_REPLY');
     const hasCTA = form.buttons.some((b) => ['URL', 'PHONE_NUMBER'].includes(b.type));
     if (hasQuickReply && hasCTA) {
-      warnings.push(warn('buttons', 'MIXED_BUTTON_TYPES',
-        'Mixing Quick Reply buttons with URL/Phone buttons may cause display issues on some devices'));
+      errors.push(err('buttons', 'MIXED_BUTTON_TYPES',
+        'Quick Reply buttons cannot be mixed with URL/Phone buttons — Meta rejects this combination'));
     }
   }
 
@@ -328,7 +328,7 @@ function buildStandardComponents(form: TemplateFormValues) {
       header.text = form.headerText;
       const vars = countVars(form.headerText);
       if (vars.length > 0) {
-        header.example = { header_text: [form.bodyVariables[0]?.example ?? ''] };
+        header.example = { header_text: [form.headerVariableExample || ''] };
       }
     } else if (form.headerMediaUrl) {
       header.example = { header_handle: [form.headerMediaUrl] };

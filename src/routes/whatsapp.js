@@ -489,10 +489,12 @@ router.post('/webhook', async (req, res) => {
         const wabaId = entry?.id;
         let companyId = null;
         if (wabaId) {
-          const scan = await dynamodb.query({
+          // WABA config is keyed by companyId (CONFIG#WABA#${companyId}), not by wabaId.
+          // Scan WABA config items and match by wabaId attribute.
+          const scan = await dynamodb.scan({
             TableName: TABLE,
-            KeyConditionExpression: 'PK = :pk AND SK = :sk',
-            ExpressionAttributeValues: { ':pk': `CONFIG#WABA#${wabaId}`, ':sk': 'CURRENT' },
+            FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk AND wabaId = :wid',
+            ExpressionAttributeValues: { ':prefix': 'CONFIG#WABA#', ':sk': 'CURRENT', ':wid': wabaId },
           }).promise().catch(() => ({ Items: [] }));
           companyId = scan.Items?.[0]?.companyId ?? null;
         }
@@ -1335,7 +1337,7 @@ router.get('/templates', authMiddleware, checkRole(['admin', 'manager']), async 
 router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { name, templateName, language, category, bodyPreview, variables,
-            components, status, allowCategoryChange, metaTemplateId } = req.body;
+            components, allowCategoryChange, metaTemplateId } = req.body;
     if (!name?.trim() || !templateName?.trim()) {
       return res.status(400).json({ error: 'name and templateName are required' });
     }
@@ -1351,14 +1353,14 @@ router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60
       bodyPreview: bodyPreview?.trim() ?? '',
       variables: variables ?? [],
       components: components ?? null,
-      status: status ?? 'DRAFT',
+      status: 'DRAFT',
       qualityScore: 'UNKNOWN',
       allowCategoryChange: allowCategoryChange ?? true,
       metaTemplateId: metaTemplateId ?? null,
       createdBy: req.user.id,
       createdByName: req.user.name ?? null,
       createdAt: now, updatedAt: now,
-      statusHistory: [{ status: status ?? 'DRAFT', ts: now, reason: null }],
+      statusHistory: [{ status: 'DRAFT', ts: now, reason: null }],
     };
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();
     res.status(201).json({ success: true, template: item });

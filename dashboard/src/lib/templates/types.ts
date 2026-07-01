@@ -70,11 +70,9 @@ export interface CarouselCard {
 }
 
 export interface StatusHistoryEntry {
-  from: TemplateStatus | null;
-  to: TemplateStatus;
-  reason?: string;
-  source: 'webhook' | 'manual' | 'api' | 'system';
-  at: string; // ISO
+  status: TemplateStatus;
+  ts: string;           // ISO timestamp
+  reason: string | null;
 }
 
 // The full template record as stored in our DB / returned by the API
@@ -141,6 +139,7 @@ export interface TemplateFormValues {
   headerType: 'NONE' | HeaderFormat;
   headerText: string;
   headerMediaUrl: string;
+  headerVariableExample: string;
 
   // Body
   bodyText: string;
