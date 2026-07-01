@@ -25,8 +25,9 @@ class AutomationEngine {
       }).promise();
 
       const workflows = items.filter((w) => {
-        if (w.status === 'archived') return false;
-        if (w.status !== 'active' && w.enabled !== true) return false;
+        // Only active workflows fire. Legacy workflows use enabled:true when status is absent.
+        const isActive = w.status === 'active' || (w.status == null && w.enabled === true);
+        if (!isActive) return false;
         const wTrigger = typeof w.trigger === 'object' ? w.trigger.type : w.trigger;
         return wTrigger === triggerType;
       });
@@ -84,29 +85,32 @@ class AutomationEngine {
       const step = steps[i];
       stepResults[i] = { ...stepResults[i], status: 'running', startedAt: ts() };
 
+      // 'end' and 'wait' are outside the action try/catch — their errors propagate up cleanly.
+      // This prevents the catch block from continuing past a failed wait (which would cause
+      // double-execution: the stored WAIT# fires later AND the loop continues immediately).
+      if (step.type === 'end') {
+        stepResults[i] = { ...stepResults[i], status: 'completed', completedAt: ts() };
+        break;
+      }
+
+      if (step.type === 'wait') {
+        const delayMs  = this._parseWait(step.config ?? {});
+        const resumeAt = new Date(Date.now() + delayMs).toISOString();
+        await this._storeWait(companyId, {
+          executionId: execItem.executionId,
+          workflowId:  workflow.id,
+          execSK:      execItem.SK,
+          steps,
+          context,
+          resumeAt,
+          nextStepIndex: i + 1,
+        });
+        stepResults[i] = { ...stepResults[i], status: 'waiting', resumeAt };
+        await this._patchExec(companyId, execItem.SK, stepResults, 'paused');
+        return; // execution paused; will resume via processDueWaits
+      }
+
       try {
-        if (step.type === 'end') {
-          stepResults[i] = { ...stepResults[i], status: 'completed', completedAt: ts() };
-          break;
-        }
-
-        if (step.type === 'wait') {
-          const delayMs  = this._parseWait(step.config ?? {});
-          const resumeAt = new Date(Date.now() + delayMs).toISOString();
-          await this._storeWait(companyId, {
-            executionId: execItem.executionId,
-            workflowId:  workflow.id,
-            execSK:      execItem.SK,
-            steps,
-            context,
-            resumeAt,
-            nextStepIndex: i + 1,
-          });
-          stepResults[i] = { ...stepResults[i], status: 'waiting', resumeAt };
-          await this._patchExec(companyId, execItem.SK, stepResults, 'paused');
-          return; // execution paused; will resume via processDueWaits
-        }
-
         const result = await this._runAction(companyId, step, context);
         stepResults[i] = { ...stepResults[i], status: 'completed', completedAt: ts(), result };
 
@@ -122,13 +126,18 @@ class AutomationEngine {
 
     const completedAt = ts();
     const durationMs  = Date.now() - new Date(execItem.startedAt).getTime();
+    const failedCount = stepResults.filter((s) => s.status === 'failed').length;
+    const actionCount = stepResults.filter((s) => s.type  !== 'end').length;
+    const finalStatus = failedCount === 0        ? 'completed'
+                      : failedCount === actionCount ? 'failed'
+                      :                               'partial_failure';
 
     await dynamodb.update({
       TableName: TABLE,
       Key:       { PK: `AUTO_EXEC#${companyId}`, SK: execItem.SK },
       UpdateExpression: 'SET #st = :st, steps = :steps, completedAt = :ca, durationMs = :dm',
       ExpressionAttributeNames:  { '#st': 'status' },
-      ExpressionAttributeValues: { ':st': 'completed', ':steps': stepResults, ':ca': completedAt, ':dm': durationMs },
+      ExpressionAttributeValues: { ':st': finalStatus, ':steps': stepResults, ':ca': completedAt, ':dm': durationMs },
     }).promise();
 
     // Bump workflow stats (fire-and-forget)
@@ -172,8 +181,20 @@ class AutomationEngine {
 
     let resumed = 0;
     for (const item of Items) {
+      // Conditional delete acts as a distributed claim — only ONE concurrent Lambda invocation
+      // can claim each WAIT# item, preventing double-resume under concurrent /_tick calls.
       try {
-        await dynamodb.delete({ TableName: TABLE, Key: { PK: item.PK, SK: item.SK } }).promise();
+        await dynamodb.delete({
+          TableName: TABLE,
+          Key:       { PK: item.PK, SK: item.SK },
+          ConditionExpression: 'attribute_exists(PK)',
+        }).promise();
+      } catch (e) {
+        if (e.code === 'ConditionalCheckFailedException') continue; // already claimed by another invocation
+        logger.warn(`AutomationEngine: wait-claim failed for ${item.executionId}: ${e.message}`);
+        continue;
+      }
+      try {
         await this.resumeExecution(companyId, item);
         resumed++;
       } catch (e) {
@@ -216,8 +237,8 @@ class AutomationEngine {
         await dynamodb.update({
           TableName: TABLE,
           Key: { PK: leadPK, SK: 'METADATA' },
-          UpdateExpression: 'SET assignedTo = :at, assignedToName = :atn, updatedAt = :ua',
-          ExpressionAttributeValues: { ':at': employeeId, ':atn': employeeName ?? null, ':ua': now },
+          UpdateExpression: 'SET assignedTo = :at, assignedToName = :atn, chatStatus = :cs, updatedAt = :ua',
+          ExpressionAttributeValues: { ':at': employeeId, ':atn': employeeName ?? null, ':cs': 'open', ':ua': now },
         }).promise();
         return { assignedTo: employeeId };
       }
@@ -238,15 +259,18 @@ class AutomationEngine {
       case 'add_tag': {
         const { tag } = step.config ?? {};
         if (!tag || !leadPK) throw new Error('add_tag: tag required');
-        const cur  = await dynamodb.get({ TableName: TABLE, Key: { PK: leadPK, SK: 'METADATA' } }).promise();
-        const tags = [...new Set([...(cur.Item?.tags ?? []), tag])];
+        // Atomic list_append avoids the read-modify-write TOCTOU race under concurrent executions.
         await dynamodb.update({
           TableName: TABLE,
           Key: { PK: leadPK, SK: 'METADATA' },
-          UpdateExpression: 'SET tags = :t, updatedAt = :ua',
-          ExpressionAttributeValues: { ':t': tags, ':ua': now },
-        }).promise();
-        return { tag, totalTags: tags.length };
+          UpdateExpression: 'SET tags = list_append(if_not_exists(tags, :empty), :newTag), updatedAt = :ua',
+          ConditionExpression: 'not contains(tags, :tagVal)',
+          ExpressionAttributeValues: { ':newTag': [tag], ':empty': [], ':tagVal': tag, ':ua': now },
+        }).promise().catch((e) => {
+          // ConditionalCheckFailedException means tag already present — idempotent, not an error
+          if (e.code !== 'ConditionalCheckFailedException') throw e;
+        });
+        return { tag };
       }
 
       case 'create_task': {
@@ -292,7 +316,7 @@ class AutomationEngine {
       case 'from_stage':  return ctx.fromStage === value;
       case 'to_stage':    return ctx.toStage   === value;
       case 'has_tag':     return (ctx.tags ?? []).includes(value);
-      default:            return true;
+      default:            return false; // unknown operator → condition fails safely (don't fire)
     }
   }
 
@@ -321,7 +345,7 @@ class AutomationEngine {
         PK:  `AUTO_WAIT#${companyId}`,
         SK:  `WAIT#${payload.resumeAt}#${payload.executionId}`,
         ...payload, companyId,
-        TTL: Math.floor(new Date(payload.resumeAt).getTime() / 1000) + 86400,
+        TTL: Math.floor(new Date(payload.resumeAt).getTime() / 1000) + 7 * 86400, // 7-day grace window
       },
     }).promise();
   }

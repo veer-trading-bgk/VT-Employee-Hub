@@ -43,7 +43,7 @@ router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req
     const excs = execRes.Items ?? [];
 
     const active    = wfs.filter((w) => w.status === 'active'   || (w.status == null && w.enabled === true)).length;
-    const draft     = wfs.filter((w) => w.status === 'draft'    || (w.status == null && w.enabled === false && !w.status)).length;
+    const draft     = wfs.filter((w) => w.status === 'draft'    || (w.status == null && w.enabled === false)).length;
     const paused    = wfs.filter((w) => w.status === 'paused').length;
     const successes = excs.filter((e) => e.status === 'completed').length;
 
@@ -72,7 +72,7 @@ router.get('/executions', authMiddleware, checkRole(['admin', 'manager']), async
       KeyConditionExpression: 'PK = :pk',
       ExpressionAttributeValues: { ':pk': execPK(companyId) },
       ScanIndexForward: false,
-      Limit: Math.min(Number(limit), 200),
+      Limit: Math.min(parseInt(limit, 10) || 50, 200),
     }).promise();
 
     let executions = result.Items ?? [];
@@ -83,8 +83,23 @@ router.get('/executions', authMiddleware, checkRole(['admin', 'manager']), async
   } catch (err) { next(err); }
 });
 
-// ── POST /_tick — process due waits; wire to AWS EventBridge in production ──
-router.post('/_tick', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+// ── POST /_tick — process due waits ──────────────────────────────────────────
+// Two auth modes:
+// 1. X-Automation-Secret header + ?companyId=xxx  — for AWS EventBridge / Lambda Scheduler
+// 2. JWT Bearer (admin role)                      — for manual admin use
+router.post('/_tick', async (req, res, next) => {
+  try {
+    const tickSecret = process.env.AUTOMATION_TICK_SECRET;
+    if (tickSecret && req.headers['x-automation-secret'] === tickSecret) {
+      const companyId = String(req.query.companyId ?? req.body?.companyId ?? '');
+      if (!companyId) return res.status(400).json({ error: 'companyId required' });
+      const resumed = await AutomationEngine.processDueWaits(companyId);
+      return res.json({ success: true, resumed });
+    }
+    // Fall through to standard JWT auth
+    return next();
+  } catch (err) { next(err); }
+}, authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
     const resumed = await AutomationEngine.processDueWaits(req.user.companyId);
     res.json({ success: true, resumed });
@@ -167,11 +182,18 @@ router.put('/:id', authMiddleware, checkRole(['admin']), async (req, res, next) 
     const expVals  = { ':ua': new Date().toISOString() };
     const sets     = ['updatedAt = :ua'];
 
-    if (name        !== undefined) { sets.push('#n = :n');       expNames['#n']  = 'name';    expVals[':n']     = name.trim(); }
+    if (name        !== undefined) {
+      const trimmed = name?.trim();
+      if (!trimmed) return res.status(400).json({ error: 'name cannot be empty' });
+      sets.push('#n = :n'); expNames['#n'] = 'name'; expVals[':n'] = trimmed;
+    }
     if (description !== undefined) { sets.push('description = :d');                           expVals[':d']     = description?.trim() ?? null; }
     if (trigger     !== undefined) { sets.push('#t = :t');       expNames['#t']  = 'trigger'; expVals[':t']     = { type: trigger.type, conditions: trigger.conditions ?? [] }; }
     if (steps       !== undefined) { sets.push('steps = :steps');                             expVals[':steps'] = steps; }
     if (status      !== undefined) {
+      if (!['active', 'draft', 'paused', 'archived'].includes(status)) {
+        return res.status(400).json({ error: 'status must be: active | draft | paused | archived' });
+      }
       sets.push('#st = :st, enabled = :en');
       expNames['#st'] = 'status';
       expVals[':st']  = status;
@@ -198,13 +220,19 @@ router.put('/:id/status', authMiddleware, checkRole(['admin']), async (req, res,
     if (!['active', 'draft', 'paused', 'archived'].includes(status)) {
       return res.status(400).json({ error: 'status must be: active | draft | paused | archived' });
     }
-    await dynamodb.update({
-      TableName: TABLE,
-      Key: { PK: autoPK(companyId), SK: autoSK(req.params.id) },
-      UpdateExpression: 'SET #st = :st, enabled = :en, updatedAt = :ua',
-      ExpressionAttributeNames:  { '#st': 'status' },
-      ExpressionAttributeValues: { ':st': status, ':en': status === 'active', ':ua': new Date().toISOString() },
-    }).promise();
+    try {
+      await dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: autoPK(companyId), SK: autoSK(req.params.id) },
+        UpdateExpression: 'SET #st = :st, enabled = :en, updatedAt = :ua',
+        ConditionExpression: 'attribute_exists(PK)',
+        ExpressionAttributeNames:  { '#st': 'status' },
+        ExpressionAttributeValues: { ':st': status, ':en': status === 'active', ':ua': new Date().toISOString() },
+      }).promise();
+    } catch (e) {
+      if (e.code === 'ConditionalCheckFailedException') return res.status(404).json({ error: 'Workflow not found' });
+      throw e;
+    }
     res.json({ success: true });
   } catch (err) { next(err); }
 });

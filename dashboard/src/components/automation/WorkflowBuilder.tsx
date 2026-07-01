@@ -310,7 +310,7 @@ function Connector() {
 // ── Trigger editor ────────────────────────────────────────────────────────────
 function TriggerEditor({ trigger, onChange }: { trigger: WorkflowTrigger; onChange: (t: WorkflowTrigger) => void }) {
   const TRIGGER_OPTIONS: TriggerType[] = [
-    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added', 'campaign_completed',
+    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added',
   ];
 
   function addCondition() {

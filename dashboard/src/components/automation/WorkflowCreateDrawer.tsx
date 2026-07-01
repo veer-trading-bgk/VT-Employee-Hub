@@ -75,7 +75,7 @@ export function WorkflowCreateDrawer({ open, onClose, workflow }: WorkflowCreate
     onError: (err: Error) => toast.error(err.message ?? 'Save failed'),
   });
 
-  const canSave = name.trim().length > 0 && trigger.type && steps.length > 0;
+  const canSave = name.trim().length > 0 && trigger.type && steps.filter((s) => s.type !== 'end').length > 0;
 
   if (!open) return null;
 

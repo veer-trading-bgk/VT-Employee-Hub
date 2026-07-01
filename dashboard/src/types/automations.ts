@@ -6,8 +6,7 @@ export type TriggerType =
   | 'lead_created'
   | 'stage_changed'
   | 'stage_change'       // legacy alias from crm.js
-  | 'tag_added'
-  | 'campaign_completed';
+  | 'tag_added';
 
 export type ActionType =
   | 'send_template'
@@ -101,7 +100,7 @@ export interface Workflow {
 }
 
 // ── Executions ───────────────────────────────────────────────────────────────
-export type ExecutionStatus = 'running' | 'completed' | 'failed' | 'paused';
+export type ExecutionStatus = 'running' | 'completed' | 'failed' | 'partial_failure' | 'paused';
 export type StepStatus      = 'pending' | 'running' | 'completed' | 'failed' | 'waiting';
 
 export interface ExecutionStep {
@@ -154,7 +153,6 @@ export const TRIGGER_META: Record<string, { label: string; description: string }
   stage_changed:                 { label: 'Stage Changed',       description: 'A lead moves to a new pipeline stage'  },
   stage_change:                  { label: 'Stage Changed',       description: 'A lead moves to a new pipeline stage'  },
   tag_added:                     { label: 'Tag Added',           description: 'A tag is added to a lead'              },
-  campaign_completed:            { label: 'Campaign Completed',  description: 'A WhatsApp broadcast finishes'         },
 };
 
 export const ACTION_META: Record<ActionType, { label: string; description: string }> = {
@@ -175,10 +173,11 @@ export const WORKFLOW_STATUS_META: Record<WorkflowStatus, { label: string; varia
 };
 
 export const EXECUTION_STATUS_META: Record<ExecutionStatus, { label: string; variant: 'default' | 'primary' | 'success' | 'warning' | 'error' }> = {
-  running:   { label: 'Running',   variant: 'primary' },
-  completed: { label: 'Completed', variant: 'success' },
-  failed:    { label: 'Failed',    variant: 'error'   },
-  paused:    { label: 'Paused',    variant: 'warning' },
+  running:         { label: 'Running',         variant: 'primary' },
+  completed:       { label: 'Completed',       variant: 'success' },
+  failed:          { label: 'Failed',          variant: 'error'   },
+  partial_failure: { label: 'Partial Failure', variant: 'warning' },
+  paused:          { label: 'Paused',          variant: 'warning' },
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
