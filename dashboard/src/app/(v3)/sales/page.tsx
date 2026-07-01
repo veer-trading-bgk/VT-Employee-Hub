@@ -7,7 +7,7 @@ import {
   List, LayoutGrid, Plus, GripVertical, ArrowRight,
   User, Search, X, ChevronDown, Download, Clock,
   MessageCircle, TrendingUp, Target, Settings,
-  Upload, Radio, Users, ArrowUp, ArrowDown, Trash2,
+  Upload, Users, ArrowUp, ArrowDown, Trash2,
 } from 'lucide-react';
 import {
   DndContext, DragEndEvent, DragOverlay, DragStartEvent,
@@ -23,7 +23,6 @@ import { Drawer, DrawerFooter } from '@/components/v3/ui/Drawer';
 import { Input } from '@/components/v3/ui/Input';
 import { Table, type TableColumn, type SortDirection } from '@/components/v3/ui/Table';
 import { Checkbox } from '@/components/v3/ui/Checkbox';
-import { FAB } from '@/components/v3/ui/FAB';
 import { TagBadge, type Tag } from '@/components/tags/TagBadge';
 import { cn } from '@/lib/cn';
 import { apiFetch, ApiClientError } from '@/lib/api';
@@ -1213,35 +1212,6 @@ export default function SalesPage() {
     setBulkMode(false);
   }
 
-  // ── FAB actions ───────────────────────────────────────────────────────────
-
-  const fabActions = useMemo(() => [
-    {
-      label: 'New Lead',
-      icon: <TrendingUp className="h-4 w-4" aria-hidden />,
-      onClick: () => setShowAddLead(true),
-    },
-    {
-      label: 'Import Leads',
-      icon: <Upload className="h-4 w-4" aria-hidden />,
-      onClick: () => toast.info('CSV import coming soon'),
-    },
-    {
-      label: 'Create Follow-up',
-      icon: <Clock className="h-4 w-4" aria-hidden />,
-      onClick: () => router.push('/sales/followups'),
-    },
-    {
-      label: 'Export Pipeline',
-      icon: <Download className="h-4 w-4" aria-hidden />,
-      onClick: () => { exportCSV(filteredContacts, stages); toast.success(`Exported ${filteredContacts.length} leads`); },
-    },
-    {
-      label: 'Broadcast',
-      icon: <Radio className="h-4 w-4" aria-hidden />,
-      onClick: () => router.push('/inbox'),
-    },
-  ], [filteredContacts, stages, router]);
 
   const listColumns = useMemo(() => buildListColumns(tagMap, stages), [tagMap, stages]);
 
@@ -1414,8 +1384,6 @@ export default function SalesPage() {
         stages={stages}
       />
 
-      {/* ── FAB ──────────────────────────────────────────────────────────────── */}
-      {canCreate && <FAB actions={fabActions} />}
 
       {/* ── Drawers ───────────────────────────────────────────────────────────── */}
       <AddLeadDrawer

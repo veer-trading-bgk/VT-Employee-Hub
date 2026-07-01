@@ -6,7 +6,6 @@ import { V3Sidebar } from '@/components/v3/layout/V3Sidebar';
 import { V3BottomNav } from '@/components/v3/layout/V3BottomNav';
 import { V3NotificationPanel } from '@/components/v3/layout/V3NotificationPanel';
 import { CommandPalette } from '@/components/v3/ui/CommandPalette';
-import { FAB } from '@/components/v3/ui/FAB';
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 import { cn } from '@/lib/cn';
 
@@ -94,7 +93,6 @@ export default function V3Layout({ children }: { children: React.ReactNode }) {
 
         {/* ── Global overlays (always in DOM) ──────────────────────────── */}
         <CommandPalette />
-        <FAB />
       </div>
     </ProtectedRoute>
   );
