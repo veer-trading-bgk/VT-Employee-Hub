@@ -43,9 +43,6 @@ export type { ErrorStateProps } from './ErrorState';
 export { Drawer, DrawerFooter, DrawerSubmit } from './Drawer';
 export type { DrawerProps } from './Drawer';
 
-export { FAB } from './FAB';
-export type { FABProps, FABAction } from './FAB';
-
 export { Table } from './Table';
 export type { TableProps, TableColumn, SortDirection } from './Table';
 
