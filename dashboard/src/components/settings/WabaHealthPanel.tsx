@@ -59,6 +59,7 @@ interface WabaHealthResponse {
     messaging: boolean;
     templates: boolean;
     webhooks: boolean;
+    mediaUpload?: boolean;
   };
   issues: string[];
   rootCause: string | null;
@@ -270,6 +271,7 @@ export function WabaHealthPanel() {
             <StatusRow ok={health.capabilities?.messaging} label="Messaging" />
             <StatusRow ok={health.capabilities?.templates} label="Templates" />
             <StatusRow ok={health.capabilities?.webhooks} label="Webhooks" warn={!health.capabilities?.webhooks} />
+            <StatusRow ok={health.capabilities?.mediaUpload} label="Media Upload" />
           </div>
 
           {/* ── Detail rows ───────────────────────────────────────────────── */}

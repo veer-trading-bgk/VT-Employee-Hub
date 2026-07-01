@@ -15,7 +15,11 @@ const ConversationService = require('../services/ConversationService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
-const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?? 'v21.0'}`;
+const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0'}`;
+function getGraphUrl(cfg) {
+  if (cfg?.graphApiVersion) return `https://graph.facebook.com/${cfg.graphApiVersion}`;
+  return GRAPH;
+}
 const MEDIA_BUCKET = process.env.WA_MEDIA_BUCKET;
 if (!MEDIA_BUCKET) {
   throw new Error('WA_MEDIA_BUCKET env var is required but not set — refusing to start');
@@ -216,7 +220,7 @@ async function sendTextMessage(companyId, to, body, replyToWaMessageId = null) {
     const payload = { messaging_product: 'whatsapp', recipient_type: 'individual', to: phone, type: 'text', text: { preview_url: false, body } };
     if (replyToWaMessageId) payload.context = { message_id: replyToWaMessageId };
     const res = await axios.post(
-      `${GRAPH}/${cfg.phoneNumberId}/messages`,
+      `${getGraphUrl(cfg)}/${cfg.phoneNumberId}/messages`,
       payload,
       { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } }
     );
@@ -243,7 +247,7 @@ async function sendTemplateMessage(companyId, to, templateName, languageCode, bo
   }
   try {
     const res = await axios.post(
-      `${GRAPH}/${cfg.phoneNumberId}/messages`,
+      `${getGraphUrl(cfg)}/${cfg.phoneNumberId}/messages`,
       {
         messaging_product: 'whatsapp',
         to: phone,
@@ -274,6 +278,53 @@ router.get('/connection', authMiddleware, checkRole(['admin']), async (req, res,
       setupMethod: cfg.setupMethod ?? 'oauth',
       configValid: !configIssue,
       ...(configIssue && { configIssue }),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /api/whatsapp/config/full — full editable config for settings UI ─────
+router.get('/config/full', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const cfg = await getWabaConfig(req.user.companyId);
+    const backendUrl = process.env.BACKEND_URL ?? '';
+    const webhookCallbackUrl = `${backendUrl}/api/whatsapp/webhook`;
+    if (!cfg) {
+      return res.json({
+        connected: false,
+        accessTokenSet: false,
+        accessTokenPreview: null,
+        phoneNumberId: null,
+        wabaId: null,
+        phoneNumber: null,
+        businessManagerId: null,
+        graphApiVersion: cfg?.graphApiVersion ?? process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0',
+        webhookVerifyTokenSet: !!(process.env.META_WEBHOOK_VERIFY_TOKEN),
+        webhookCallbackUrl,
+        connectedAt: null,
+        setupMethod: null,
+        configValid: false,
+        configIssue: null,
+      });
+    }
+    const configIssue = detectInvalidWabaConfig(cfg);
+    const tok = cfg.accessToken ?? '';
+    res.json({
+      connected: true,
+      accessTokenSet: !!tok,
+      accessTokenPreview: tok ? `••••••${tok.slice(-6)}` : null,
+      phoneNumberId: cfg.phoneNumberId ?? null,
+      wabaId: cfg.wabaId ?? null,
+      phoneNumber: cfg.phoneNumber ?? null,
+      businessManagerId: cfg.businessManagerId ?? null,
+      graphApiVersion: cfg.graphApiVersion ?? process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0',
+      webhookVerifyTokenSet: !!(cfg.webhookVerifyToken || process.env.META_WEBHOOK_VERIFY_TOKEN),
+      webhookCallbackUrl,
+      connectedAt: cfg.connectedAt ?? null,
+      setupMethod: cfg.setupMethod ?? 'oauth',
+      configValid: !configIssue,
+      configIssue: configIssue ?? null,
     });
   } catch (err) {
     next(err);
@@ -496,6 +547,79 @@ router.delete('/connection', authMiddleware, checkRole(['admin']), async (req, r
   }
 });
 
+// ── PUT /api/whatsapp/config — update existing WABA configuration ────────────
+// Accepts all editable config fields. accessToken is optional (empty = keep stored value).
+// If phoneNumberId or accessToken changed, validates the new pair against Meta before saving.
+router.put('/config', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg) {
+      return res.status(400).json({ error: 'No existing configuration — connect first via Settings → WhatsApp.' });
+    }
+
+    const { accessToken: newToken, phoneNumberId: newPhoneId, wabaId: newWabaId, businessManagerId, graphApiVersion, webhookVerifyToken } = req.body;
+
+    const phoneNumberId = (newPhoneId?.trim() || cfg.phoneNumberId)?.trim();
+    const wabaId = (newWabaId?.trim() || cfg.wabaId)?.trim();
+    if (!phoneNumberId) return res.status(400).json({ error: 'phoneNumberId is required' });
+    if (!wabaId) return res.status(400).json({ error: 'wabaId is required' });
+    if (phoneNumberId === wabaId) {
+      return res.status(400).json({ error: 'phoneNumberId and wabaId must be different Meta identifiers. Check Meta Business Suite: Phone Number ID is in API Setup; WABA ID is in WhatsApp Accounts tab.' });
+    }
+    if (graphApiVersion?.trim() && !/^v\d+\.\d+$/.test(graphApiVersion.trim())) {
+      return res.status(400).json({ error: 'graphApiVersion must be in format vNN.N (e.g. v25.0)' });
+    }
+
+    const resolvedToken = newToken?.trim() || cfg.accessToken;
+    if (!resolvedToken) return res.status(400).json({ error: 'accessToken is required' });
+
+    // Validate changed credentials against Meta
+    const tokenChanged = !!(newToken?.trim()) && newToken.trim() !== cfg.accessToken;
+    const phoneChanged = phoneNumberId !== cfg.phoneNumberId;
+    if (tokenChanged || phoneChanged) {
+      try {
+        await axios.get(`${GRAPH}/${phoneNumberId}`, {
+          params: { fields: 'id', access_token: resolvedToken },
+          timeout: 10000,
+        });
+      } catch {
+        return res.status(400).json({ error: 'Could not verify credentials with Meta — check that the Phone Number ID and Access Token are correct and valid.' });
+      }
+    }
+
+    const now = new Date().toISOString();
+    const updatedItem = {
+      ...cfg,
+      phoneNumberId,
+      wabaId,
+      accessToken: resolvedToken,
+      updatedAt: now,
+      updatedBy: req.user.id,
+    };
+    if (businessManagerId !== undefined) updatedItem.businessManagerId = businessManagerId?.trim() || null;
+    if (graphApiVersion !== undefined) updatedItem.graphApiVersion = graphApiVersion?.trim() || null;
+    if (webhookVerifyToken?.trim()) updatedItem.webhookVerifyToken = webhookVerifyToken.trim();
+
+    await dynamodb.put({ TableName: TABLE, Item: updatedItem }).promise();
+
+    // Update reverse-index if phone number ID changed
+    if (phoneChanged) {
+      await dynamodb.put({
+        TableName: TABLE,
+        Item: { PK: `CONFIG#PHONEID#${phoneNumberId}`, SK: 'CURRENT', companyId: req.user.companyId, phoneNumberId },
+      }).promise();
+      invalidatePhoneIdCache(cfg.phoneNumberId);
+      invalidatePhoneIdCache(phoneNumberId);
+    }
+
+    logger.info(`WABA config updated for company ${req.user.companyId}`);
+    res.json({ success: true, message: 'Configuration updated successfully.' });
+  } catch (err) {
+    logger.error('PUT /config error', err);
+    next(err);
+  }
+});
+
 // ── POST /api/whatsapp/connection/probe — pre-flight: validate token + auto-discover WABA ID ──
 // Read-only (no DynamoDB writes). Two discovery paths:
 //   1. GET /{phoneNumberId}?fields=...,whatsapp_business_account  (requires whatsapp_business_management)
@@ -649,7 +773,7 @@ router.post('/connection/repair', authMiddleware, checkRole(['admin']), async (r
     let phoneNumber = cfg.phoneNumber;
     let phoneData = null;
     try {
-      const verifyRes = await axios.get(`${GRAPH}/${cfg.phoneNumberId}`, {
+      const verifyRes = await axios.get(`${getGraphUrl(cfg)}/${cfg.phoneNumberId}`, {
         params: { fields: 'display_phone_number,verified_name,id,whatsapp_business_account', access_token: cfg.accessToken },
         timeout: 10000,
       });
@@ -663,7 +787,7 @@ router.post('/connection/repair', authMiddleware, checkRole(['admin']), async (r
     // ── Path B2: /me/whatsapp_business_accounts fallback ─────────────────────
     if (!newWabaId || newWabaId === cfg.phoneNumberId) {
       try {
-        const meRes = await axios.get(`${GRAPH}/me`, {
+        const meRes = await axios.get(`${getGraphUrl(cfg)}/me`, {
           params: { fields: 'id,whatsapp_business_accounts{id,phone_numbers{id}}', access_token: cfg.accessToken },
           timeout: 10000,
         });
@@ -710,7 +834,7 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
   try {
     const cfg = await getWabaConfig(req.user.companyId);
     const now = new Date().toISOString();
-    const graphApiVersion = process.env.WHATSAPP_GRAPH_VERSION ?? 'v21.0';
+    const graphApiVersion = cfg?.graphApiVersion ?? process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0';
 
     if (!cfg) {
       return res.json({ success: true, connected: false, graphApiVersion, lastChecked: now, issues: ['No WABA configuration — connect via Settings → WhatsApp.'], rootCause: 'No WhatsApp configuration stored. Connect via Settings → WhatsApp.', recommendedFix: ['Connect WhatsApp via Settings → WhatsApp.'] });
@@ -735,7 +859,7 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
     if (cfg.accessToken) {
       try {
         if (appId && appSecret) {
-          const debugRes = await axios.get(`${GRAPH}/debug_token`, {
+          const debugRes = await axios.get(`${getGraphUrl(cfg)}/debug_token`, {
             params: { input_token: cfg.accessToken, access_token: `${appId}|${appSecret}` },
             timeout: 10000,
           });
@@ -749,7 +873,7 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
             expiresAt: d.expires_at ? new Date(d.expires_at * 1000).toISOString() : null,
           };
         } else {
-          const meRes = await axios.get(`${GRAPH}/me`, {
+          const meRes = await axios.get(`${getGraphUrl(cfg)}/me`, {
             params: { fields: 'id,name', access_token: cfg.accessToken },
             timeout: 10000,
           });
@@ -767,7 +891,7 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
     let phone = { accessible: false, id: cfg.phoneNumberId, displayNumber: cfg.phoneNumber, verifiedName: null, qualityRating: null, verificationStatus: null, status: null };
     if (cfg.phoneNumberId && cfg.accessToken) {
       try {
-        const phoneRes = await axios.get(`${GRAPH}/${cfg.phoneNumberId}`, {
+        const phoneRes = await axios.get(`${getGraphUrl(cfg)}/${cfg.phoneNumberId}`, {
           params: { fields: 'id,display_phone_number,verified_name,quality_rating,code_verification_status,name_status', access_token: cfg.accessToken },
           timeout: 10000,
         });
@@ -790,7 +914,7 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
     let webhooks = { subscribed: false, appId: null };
     if (cfg.wabaId && cfg.accessToken && !configIssue) {
       try {
-        const wabaRes = await axios.get(`${GRAPH}/${cfg.wabaId}`, {
+        const wabaRes = await axios.get(`${getGraphUrl(cfg)}/${cfg.wabaId}`, {
           params: { fields: 'id,name,account_review_status,currency,message_template_namespace,on_behalf_of_business_info', access_token: cfg.accessToken },
           timeout: 10000,
         });
@@ -805,7 +929,7 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
         };
         // ── Webhook subscription check (only if WABA is accessible) ───────────
         try {
-          const whRes = await axios.get(`${GRAPH}/${cfg.wabaId}/subscribed_apps`, {
+          const whRes = await axios.get(`${getGraphUrl(cfg)}/${cfg.wabaId}/subscribed_apps`, {
             params: { access_token: cfg.accessToken },
             timeout: 8000,
           });
@@ -834,6 +958,7 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
       messaging: phone.accessible && token.valid,
       templates: waba.accessible && token.valid && !configIssue,
       webhooks: webhooks.subscribed,
+      mediaUpload: phone.accessible && token.valid,
     };
 
     const rootCause = computeRootCause(config, token, waba);
@@ -867,7 +992,7 @@ router.get('/connection/diagnose', authMiddleware, checkRole(['admin']), async (
     const appSecret = process.env.META_APP_SECRET;
     if (appId && appSecret) {
       try {
-        const r = await axios.get(`${GRAPH}/debug_token`, {
+        const r = await axios.get(`${getGraphUrl(cfg)}/debug_token`, {
           params: { input_token: cfg.accessToken, access_token: `${appId}|${appSecret}` },
           timeout: 10000,
         });
@@ -881,7 +1006,7 @@ router.get('/connection/diagnose', authMiddleware, checkRole(['admin']), async (
 
     // /me (token identity + business accounts)
     try {
-      const r = await axios.get(`${GRAPH}/me`, {
+      const r = await axios.get(`${getGraphUrl(cfg)}/me`, {
         params: { fields: 'id,name,whatsapp_business_accounts{id,name,phone_numbers{id,display_phone_number}}', access_token: cfg.accessToken },
         timeout: 10000,
       });
@@ -893,7 +1018,7 @@ router.get('/connection/diagnose', authMiddleware, checkRole(['admin']), async (
     // Phone number node (all available fields including whatsapp_business_account)
     if (cfg.phoneNumberId) {
       try {
-        const r = await axios.get(`${GRAPH}/${cfg.phoneNumberId}`, {
+        const r = await axios.get(`${getGraphUrl(cfg)}/${cfg.phoneNumberId}`, {
           params: {
             fields: 'id,display_phone_number,verified_name,code_verification_status,quality_rating,name_status,whatsapp_business_account',
             access_token: cfg.accessToken,
@@ -909,7 +1034,7 @@ router.get('/connection/diagnose', authMiddleware, checkRole(['admin']), async (
     // WABA node (only if different from phone number ID)
     if (cfg.wabaId && cfg.wabaId !== cfg.phoneNumberId) {
       try {
-        const r = await axios.get(`${GRAPH}/${cfg.wabaId}`, {
+        const r = await axios.get(`${getGraphUrl(cfg)}/${cfg.wabaId}`, {
           params: {
             fields: 'id,name,account_review_status,currency,message_template_namespace,on_behalf_of_business_info',
             access_token: cfg.accessToken,
@@ -926,7 +1051,7 @@ router.get('/connection/diagnose', authMiddleware, checkRole(['admin']), async (
 
     res.json({
       success: true,
-      graphApiVersion: process.env.WHATSAPP_GRAPH_VERSION ?? 'v21.0',
+      graphApiVersion: cfg?.graphApiVersion ?? process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0',
       storedConfig: {
         wabaId: cfg.wabaId,
         phoneNumberId: cfg.phoneNumberId,
