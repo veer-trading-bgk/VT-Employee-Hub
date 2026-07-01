@@ -14,6 +14,7 @@ import {
   MoreHorizontal,
   AlertCircle,
   X,
+  Clock,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -66,6 +67,7 @@ export function TemplateList({ onSendTemplate }: Props) {
   const role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   const canManage = role === 'owner' || role === 'admin';
   const canSync = role === 'owner' || role === 'admin' || role === 'manager';
+  const canSendRole = canManage || role === 'manager'; // /send-template backend: admin|manager
 
   // Filters & sort
   const [filters, setFilters] = useState<Filters>({ search: '', status: '', category: '', quality: '' });
@@ -89,10 +91,14 @@ export function TemplateList({ onSendTemplate }: Props) {
   // Delete mutation
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteTemplate(id),
-    onSuccess: (_, id) => {
+    onSuccess: (data, id) => {
       qc.invalidateQueries({ queryKey: templateKeys.all });
       setSelected((s) => { const n = new Set(s); n.delete(id); return n; });
-      toast.success('Template deleted');
+      if (data.warning) {
+        toast.warning(`Deleted locally — ${data.warning}`);
+      } else {
+        toast.success('Template deleted');
+      }
     },
     onError: (e: Error) => toast.error(e.message || 'Delete failed'),
   });
@@ -379,6 +385,7 @@ export function TemplateList({ onSendTemplate }: Props) {
                 template={t}
                 selected={selected.has(t.id)}
                 canManage={canManage}
+                canSendRole={canSendRole}
                 onToggle={() => toggleOne(t.id)}
                 onEdit={() => handleEdit(t)}
                 onDelete={() => {
@@ -475,6 +482,7 @@ interface RowProps {
   template: WaTemplate;
   selected: boolean;
   canManage: boolean;
+  canSendRole: boolean;
   onToggle: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -488,6 +496,7 @@ function TemplateRow({
   template: t,
   selected,
   canManage,
+  canSendRole,
   onToggle,
   onEdit,
   onDelete,
@@ -497,8 +506,9 @@ function TemplateRow({
   deleting,
 }: RowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const canEdit = canManage && EDITABLE_STATUSES.includes(t.status);
-  const canSend = SENDABLE_STATUSES.includes(t.status);
+  const canSend = canSendRole && SENDABLE_STATUSES.includes(t.status);
   const canSubmit = canManage && (t.status === 'DRAFT' || t.status === 'REJECTED');
 
   return (
@@ -595,6 +605,7 @@ function TemplateRow({
                   {submitting && (
                     <MenuItem icon={RefreshCw} label="Submitting…" onClick={() => {}} disabled />
                   )}
+                  <MenuItem icon={Clock} label="View History" onClick={() => { setMenuOpen(false); setHistoryOpen(true); }} />
                   {canManage && (
                     <>
                       <div className="my-1 border-t border-neutral-100 dark:border-neutral-800" />
@@ -606,6 +617,37 @@ function TemplateRow({
                       />
                     </>
                   )}
+                </div>
+              </>
+            )}
+            {historyOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setHistoryOpen(false)} />
+                <div className="absolute right-0 z-20 mt-1 w-72 rounded-lg border border-neutral-200 bg-white shadow-xl dark:border-neutral-700 dark:bg-neutral-900">
+                  <div className="flex items-center justify-between border-b border-neutral-100 px-3 py-2 dark:border-neutral-800">
+                    <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Status History</span>
+                    <button type="button" onClick={() => setHistoryOpen(false)} className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                  <div className="max-h-56 overflow-y-auto py-1">
+                    {[...(t.statusHistory ?? [])].reverse().map((entry, i) => (
+                      <div key={i} className="flex items-start gap-2.5 border-b border-neutral-50 px-3 py-2 last:border-0 dark:border-neutral-800/50">
+                        <TemplateStatusBadge status={entry.status} size="xs" />
+                        <div className="flex min-w-0 flex-col">
+                          <span className="text-[10px] text-neutral-400">
+                            {new Date(entry.ts).toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          {entry.reason && (
+                            <span className="truncate text-[10px] text-error-600 dark:text-error-400">{entry.reason}</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {(t.statusHistory?.length ?? 0) === 0 && (
+                      <p className="px-3 py-4 text-center text-xs text-neutral-400">No history available</p>
+                    )}
+                  </div>
                 </div>
               </>
             )}

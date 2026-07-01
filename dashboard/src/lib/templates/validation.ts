@@ -123,6 +123,9 @@ export function validateTemplate(form: TemplateFormValues): ValidationResult {
       if (headerVars.length > LIMITS.HEADER_VARIABLES_MAX) {
         errors.push(err('headerText', 'TOO_MANY_HEADER_VARS',
           'Header can have at most 1 variable'));
+      } else if (headerVars.length > 0 && !form.headerVariableExample?.trim()) {
+        errors.push(err('headerVariableExample', 'EXAMPLE_REQUIRED',
+          'An example value for {{1}} in the header is required by Meta'));
       }
     }
   } else if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(form.headerType)) {

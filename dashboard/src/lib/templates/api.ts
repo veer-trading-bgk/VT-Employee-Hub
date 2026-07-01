@@ -76,7 +76,7 @@ export async function updateTemplate(
 
 // ── Delete ─────────────────────────────────────────────────────────────────────
 
-export async function deleteTemplate(id: string): Promise<{ success: boolean }> {
+export async function deleteTemplate(id: string): Promise<{ success: boolean; warning?: string }> {
   return apiFetch(`${BASE}/${id}`, {
     method: 'DELETE',
     retries: 0,
@@ -114,6 +114,7 @@ export interface SendTemplatePayload {
   leadPK?: string;
   templateId: string;
   variableValues: string[];
+  headerVariableValue?: string;
 }
 
 export async function sendTemplate(payload: SendTemplatePayload): Promise<{ success: boolean }> {
