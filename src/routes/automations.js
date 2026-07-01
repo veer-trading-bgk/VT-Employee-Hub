@@ -83,23 +83,10 @@ router.get('/executions', authMiddleware, checkRole(['admin', 'manager']), async
   } catch (err) { next(err); }
 });
 
-// ── POST /_tick — process due waits ──────────────────────────────────────────
-// Two auth modes:
-// 1. X-Automation-Secret header + ?companyId=xxx  — for AWS EventBridge / Lambda Scheduler
-// 2. JWT Bearer (admin role)                      — for manual admin use
-router.post('/_tick', async (req, res, next) => {
-  try {
-    const tickSecret = process.env.AUTOMATION_TICK_SECRET;
-    if (tickSecret && req.headers['x-automation-secret'] === tickSecret) {
-      const companyId = String(req.query.companyId ?? req.body?.companyId ?? '');
-      if (!companyId) return res.status(400).json({ error: 'companyId required' });
-      const resumed = await AutomationEngine.processDueWaits(companyId);
-      return res.json({ success: true, resumed });
-    }
-    // Fall through to standard JWT auth
-    return next();
-  } catch (err) { next(err); }
-}, authMiddleware, checkRole(['admin']), async (req, res, next) => {
+// ── POST /_tick — JWT admin path ─────────────────────────────────────────────
+// EventBridge bypass is handled in app.js BEFORE auth middleware via processTick().
+// This router handler covers the admin-with-JWT case (manual trigger / testing).
+router.post('/_tick', checkRole(['admin']), async (req, res, next) => {
   try {
     const resumed = await AutomationEngine.processDueWaits(req.user.companyId);
     res.json({ success: true, resumed });
@@ -255,5 +242,22 @@ router.delete('/:id', authMiddleware, checkRole(['admin']), async (req, res, nex
   } catch (err) { next(err); }
 });
 
+// ── EventBridge bypass handler (mounted in app.js BEFORE auth middleware) ────
+// Checks x-automation-secret; if missing/wrong, calls next() to fall through
+// to the JWT-authed automations router below it in app.js.
+async function processTick(req, res, next) {
+  try {
+    const secret = process.env.AUTOMATION_TICK_SECRET;
+    if (secret && req.headers['x-automation-secret'] === secret) {
+      const companyId = String(req.query.companyId ?? req.body?.companyId ?? '');
+      if (!companyId) return res.status(400).json({ error: 'companyId required' });
+      const resumed = await AutomationEngine.processDueWaits(companyId);
+      return res.json({ success: true, resumed });
+    }
+    next(); // no secret or wrong secret → fall through to JWT path
+  } catch (e) { next(e); }
+}
+
 module.exports = router;
 module.exports.runAutomations = runAutomations;
+module.exports.processTick    = processTick;
