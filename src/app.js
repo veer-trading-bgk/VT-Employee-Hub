@@ -21,6 +21,7 @@ const whatsappRoutes = require('./routes/whatsapp');
 const contactsRoutes = require('./routes/contacts');
 const tagsRoutes = require('./routes/tags');
 const automationsRoutes = require('./routes/automations');
+const campaignsRoutes = require('./routes/campaigns');
 const formsRoutes = require('./routes/forms');
 const { authMiddleware, subscriptionMiddleware } = require('./middleware/auth');
 const { errorHandler } = require('./middleware/errorHandler');
@@ -79,6 +80,7 @@ app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/contacts', contactsRoutes);
 app.use('/api/tags', tagsRoutes);
 app.use('/api/automations', authMiddleware, subscriptionMiddleware, automationsRoutes);
+app.use('/api/campaigns',  authMiddleware, subscriptionMiddleware, campaignsRoutes);
 app.use('/api/forms', formsRoutes);
 
 // Health check

@@ -25,6 +25,7 @@ import {
   Target,
   ScrollText,
   FileText,
+  Send,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Avatar } from '@/components/v3/ui/Avatar';
@@ -55,6 +56,7 @@ const FLAT_ITEMS: NavItem[] = [
   { href: '/templates',      label: 'Templates',      icon: <FileText className="h-5 w-5" />,      roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/contacts',       label: 'Contacts',       icon: <Users className="h-5 w-5" />,         roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/sales',          label: 'Sales CRM',      icon: <TrendingUp className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager', 'sales'] },
+  { href: '/campaigns',      label: 'Campaigns',      icon: <Send className="h-5 w-5" />,          roles: ['owner', 'admin', 'manager'] },
 ];
 
 // Team group — HR / workforce items
