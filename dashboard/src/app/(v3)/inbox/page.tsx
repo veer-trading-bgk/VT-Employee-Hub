@@ -131,18 +131,29 @@ function WindowStatusChip({ lastInboundAt }: { lastInboundAt?: string | null }) 
   const status = getWindowStatus(lastInboundAt);
   if (status === 'open') return null;
   return (
-    <span className={cn(
-      'inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-semibold leading-none',
-      status === 'expired'
-        ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-        : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
-    )}>
+    <span
+      title={status === 'expired' ? '24-hour messaging window expired' : 'Window closing soon'}
+      className={cn(
+        'inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] font-medium leading-none',
+        status === 'expired'
+          ? 'bg-neutral-100 text-neutral-400 dark:bg-neutral-800 dark:text-neutral-500'
+          : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+      )}>
       {status === 'expired'
         ? <Lock className="h-2.5 w-2.5 shrink-0" aria-hidden />
         : <Clock className="h-2.5 w-2.5 shrink-0" aria-hidden />}
-      {status === 'expired' ? 'Expired' : 'Closing Soon'}
+      {status !== 'expired' && 'Closing Soon'}
     </span>
   );
+}
+
+// ── Preview text cleaner ──────────────────────────────────────────────────────
+// Backend stores bracket-encoded placeholders as preview text. Strip them for display.
+function cleanPreview(preview?: string): string {
+  if (!preview) return '';
+  const m = preview.match(/^\[(Template|Campaign|Broadcast):\s*(.+?)\]$/i);
+  if (m) return `${m[1]}: ${m[2]}`;
+  return preview;
 }
 
 // ── Lightbox ──────────────────────────────────────────────────────────────────
@@ -512,7 +523,7 @@ function ConversationList({
                     )}
                   </div>
                   <p className="mt-0.5 truncate text-xs text-neutral-500">
-                    {conv.lastMessagePreview || conv.phone}
+                    {cleanPreview(conv.lastMessagePreview) || conv.phone}
                   </p>
                   <div className="mt-1 flex items-center gap-1.5">
                     {hasUnread && (
@@ -536,11 +547,16 @@ function ConversationList({
 
 function TemplateBubble({ message, isOut }: { message: WaMessage; isOut: boolean }) {
   const qc = useQueryClient();
-  // Read from cache (no fetch triggered) — graceful when cache is cold
   const cached = qc.getQueryData<{ templates: WaTemplate[] }>(['wa-templates']);
   const tpl = cached?.templates.find((t) => t.id === message.templateId);
-  const nameFromContent = message.content?.match(/^\[Template:\s*(.+?)\]$/i)?.[1];
-  const displayName = tpl?.name ?? nameFromContent ?? 'Template';
+
+  // Extract category (Template/Campaign/Broadcast) and name from content placeholder
+  const contentMatch = message.content?.match(/^\[(Template|Campaign|Broadcast):\s*(.+?)\]$/i);
+  const contentCategory = contentMatch?.[1] ?? 'Template';
+  const contentName = contentMatch?.[2];
+
+  const displayName = tpl?.name ?? contentName ?? null;
+  const headerLabel = displayName ? `${contentCategory} · ${displayName}` : contentCategory;
 
   return (
     <div className={cn(
@@ -554,13 +570,17 @@ function TemplateBubble({ message, isOut }: { message: WaMessage; isOut: boolean
         isOut ? 'text-white/60' : 'text-neutral-400',
       )}>
         <FileText className="h-2.5 w-2.5" aria-hidden />
-        Template · {displayName}
+        {headerLabel}
       </div>
       {tpl?.bodyPreview ? (
         <p className="whitespace-pre-wrap break-words">{tpl.bodyPreview}</p>
+      ) : displayName ? (
+        <p className={cn('text-xs', isOut ? 'text-white/80' : 'text-neutral-600 dark:text-neutral-300')}>
+          {displayName}
+        </p>
       ) : (
         <p className={cn('text-xs italic', isOut ? 'text-white/60' : 'text-neutral-400')}>
-          Sent: {displayName}
+          Template message
         </p>
       )}
       <div className={cn('mt-1 flex items-center gap-1', isOut ? 'justify-end' : 'justify-start')}>
@@ -668,11 +688,10 @@ function ExpiredWindowSendBar({ conversation }: { conversation: WaConversation }
 
   return (
     <div>
-      <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 dark:border-red-900/40 dark:bg-red-900/10">
-        <Lock className="h-4 w-4 shrink-0 text-red-400 dark:text-red-500" aria-hidden />
+      <div className="flex items-center gap-2 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 dark:border-neutral-700 dark:bg-neutral-800/60">
+        <Lock className="h-4 w-4 shrink-0 text-neutral-400 dark:text-neutral-500" aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold text-red-700 dark:text-red-400">Messaging window closed</p>
-          <p className="text-[10px] text-red-500/80 dark:text-red-500/70">24-hour customer service window expired</p>
+          <p className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Window closed · Send a template to re-open</p>
         </div>
         <Button
           variant="ghost"
@@ -733,9 +752,6 @@ function ExpiredWindowSendBar({ conversation }: { conversation: WaConversation }
           )}
         </div>
       )}
-      <p className="mt-1.5 text-center text-[10px] text-neutral-400">
-        WhatsApp · Template-only messaging when window expired
-      </p>
     </div>
   );
 }
@@ -992,22 +1008,15 @@ function ThreadPane({
         </div>
       </div>
 
-      {/* WABA 24h window status banner */}
-      {windowExpired ? (
-        <div className="flex items-center gap-2 border-b border-red-200 bg-red-50 px-4 py-2 dark:border-red-900/40 dark:bg-red-900/10" role="alert">
-          <Lock className="h-3.5 w-3.5 shrink-0 text-red-500" aria-hidden />
-          <p className="text-xs text-red-700 dark:text-red-400">
-            <strong>24-hour window expired</strong> — Only approved templates can be sent.
-          </p>
-        </div>
-      ) : windowClosingSoon ? (
+      {/* WABA 24h window closing-soon banner (expired state is handled by the composer bar) */}
+      {windowClosingSoon && (
         <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 dark:border-amber-900/40 dark:bg-amber-900/10" role="status">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-hidden />
           <p className="text-xs text-amber-700 dark:text-amber-400">
             Window closes in <strong>{formatCountdown(windowRemainingMs)}</strong> — reply before it expires.
           </p>
         </div>
-      ) : null}
+      )}
 
       {/* Messages */}
       <div className="scrollbar-thin flex-1 overflow-y-auto px-4 py-4 space-y-1">
