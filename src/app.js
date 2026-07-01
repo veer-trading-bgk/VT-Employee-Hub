@@ -33,6 +33,8 @@ const STATIC_ORIGINS = [
   'https://app.apforce.in',
   'https://dashboard.viirtrading.com',
   'https://vt-employee-hub.vercel.app',
+  'http://localhost:3001',
+  'http://localhost:3000',
 ];
 
 const allowedOrigins = [
