@@ -15,7 +15,7 @@ const ConversationService = require('../services/ConversationService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
-const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?? 'v19.0'}`;
+const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?? 'v21.0'}`;
 const MEDIA_BUCKET = process.env.WA_MEDIA_BUCKET;
 if (!MEDIA_BUCKET) {
   throw new Error('WA_MEDIA_BUCKET env var is required but not set — refusing to start');
@@ -47,6 +47,62 @@ function detectInvalidWabaConfig(cfg) {
     return 'WABA ID equals Phone Number ID — these must be different identifiers. Go to Settings → WhatsApp → Health Check and click "Repair Config" to auto-fix.';
   }
   return null;
+}
+
+// Compute a plain-English root cause from health-check state (shown in UI and logs).
+function computeRootCause(cfg, token, waba) {
+  if (!cfg) return 'No WhatsApp configuration stored. Connect via Settings → WhatsApp.';
+  if (!cfg.configValid) {
+    if (cfg.wabaId && cfg.phoneNumberId && cfg.wabaId === cfg.phoneNumberId) {
+      if (!waba?.accessible) {
+        return 'The WABA ID stored during initial setup equals the Phone Number ID — a known bug in the original connection code. Auto-repair requires the whatsapp_business_management permission, which the stored token does not have. Either grant that permission to your System User and regenerate the token, or enter your WABA ID manually using the field in the repair section.';
+      }
+      return 'The WABA ID stored during initial setup equals the Phone Number ID. Click "Repair Config Automatically" to correct it, or enter your WABA ID manually.';
+    }
+    if (!cfg.wabaId) return 'No WABA ID is stored. Reconnect via Settings → WhatsApp.';
+  }
+  if (token && token.valid === false) {
+    return 'The stored access token is invalid or expired. Generate a new permanent token in Meta Business Suite → System Users → Generate Token.';
+  }
+  if (token?.valid && !waba?.accessible) {
+    const scopesMissing = token.scopes?.length > 0 && !token.scopes.includes('whatsapp_business_management');
+    const scopesUnknown = !token.scopes?.length;
+    if (scopesMissing || scopesUnknown) {
+      return 'The access token does not have the whatsapp_business_management permission. This permission is required for template management and WABA configuration. Messaging works without it (whatsapp_business_messaging is present), but templates will fail until this permission is granted.';
+    }
+    return 'The stored WABA ID is not accessible from Meta — it may be incorrect or your account may have changed.';
+  }
+  return null;
+}
+
+// Compute ordered remediation steps for the UI "Recommended Fix" section.
+function computeRecommendedFix(cfg, token, waba) {
+  if (!cfg) return ['Connect WhatsApp via Settings → WhatsApp.'];
+  if (!cfg.configValid && cfg.wabaId === cfg.phoneNumberId) {
+    if (!waba?.accessible) {
+      return [
+        'In Meta Business Suite → System Users: select your system user → Edit → Add Permissions → enable whatsapp_business_management.',
+        'After adding the permission, generate a new permanent access token for this system user.',
+        'In APForce: Settings → WhatsApp → Disconnect, then reconnect. Your WABA ID will be auto-detected with the new token.',
+        'If you prefer not to change the token now: find your WABA ID in Meta Business Suite → WhatsApp Accounts (15–16 digit number next to your account name, different from the Phone Number ID in API Setup) and use "Apply Manual Override" in the repair section.',
+      ];
+    }
+    return ['Click "Repair Config Automatically" to auto-detect and correct your WABA ID.'];
+  }
+  if (token && token.valid === false) {
+    return [
+      'In Meta Business Suite → System Users: select your system user → Generate New Token.',
+      'Ensure both whatsapp_business_messaging AND whatsapp_business_management are enabled for the system user.',
+      'In APForce: Settings → WhatsApp → Disconnect, then reconnect with the new token.',
+    ];
+  }
+  if (token?.valid && !waba?.accessible) {
+    return [
+      'Verify your WABA ID is correct in Meta Business Suite → WhatsApp Accounts.',
+      'If your token lacks whatsapp_business_management: Meta Business Suite → System Users → Edit → Add Permissions.',
+    ];
+  }
+  return [];
 }
 
 // Cache last message on lead METADATA for inbox listing
@@ -355,15 +411,39 @@ router.post('/manual-connect', authMiddleware, checkRole(['admin']), async (req,
     }
 
     // Resolve: explicit entry takes precedence over auto-detected
-    const wabaId = explicitWabaId?.trim() || derivedWabaId;
+    let wabaId = explicitWabaId?.trim() || derivedWabaId;
+
+    // Path 2: /me/whatsapp_business_accounts fallback if phone node didn't yield WABA ID
+    if (!wabaId || wabaId === phoneNumberId.trim()) {
+      try {
+        const meRes = await axios.get(`${GRAPH}/me`, {
+          params: {
+            fields: 'id,name,whatsapp_business_accounts{id,name,phone_numbers{id}}',
+            access_token: accessToken.trim(),
+          },
+          timeout: 10000,
+        });
+        const wabas = meRes.data?.whatsapp_business_accounts?.data ?? [];
+        let meWabaId = null;
+        for (const waba of wabas) {
+          const phones = waba.phone_numbers?.data ?? [];
+          if (phones.some((p) => p.id === phoneNumberId.trim())) { meWabaId = waba.id; break; }
+        }
+        if (!meWabaId && wabas.length === 1) meWabaId = wabas[0].id;
+        if (meWabaId && meWabaId !== phoneNumberId.trim()) wabaId = meWabaId;
+      } catch { /* silent — explicit wabaId still available if user provided it */ }
+    }
+
     if (!wabaId) {
       return res.status(400).json({
-        error: 'Could not determine your WhatsApp Business Account ID (WABA ID) automatically. Enter it in the WABA ID field — find it in Meta Business Suite → WhatsApp Accounts (not the API Setup page).',
+        error: 'Could not determine your WABA ID automatically — the token may lack whatsapp_business_management permission. Click "Start Over" and enter your WABA ID manually (find it in Meta Business Suite → WhatsApp Accounts, not the API Setup page).',
+        requiresManualWabaId: true,
       });
     }
     if (wabaId === phoneNumberId.trim()) {
       return res.status(400).json({
-        error: 'WABA ID cannot equal Phone Number ID — these are different identifiers. Your WABA ID is in Meta Business Suite → WhatsApp Accounts. Your Phone Number ID is in Meta Business Suite → API Setup.',
+        error: 'WABA ID cannot equal Phone Number ID — these are different Meta identifiers. Your WABA ID is in Meta Business Suite → WhatsApp Accounts. Your Phone Number ID is in Meta Business Suite → API Setup.',
+        requiresManualWabaId: true,
       });
     }
 
@@ -416,36 +496,197 @@ router.delete('/connection', authMiddleware, checkRole(['admin']), async (req, r
   }
 });
 
-// ── POST /api/whatsapp/connection/repair — auto-fix invalid wabaId ────────────
+// ── POST /api/whatsapp/connection/probe — pre-flight: validate token + auto-discover WABA ID ──
+// Read-only (no DynamoDB writes). Two discovery paths:
+//   1. GET /{phoneNumberId}?fields=...,whatsapp_business_account  (requires whatsapp_business_management)
+//   2. GET /me?fields=...,whatsapp_business_accounts{...}         (same scope, different graph path)
+// Returns { autoDiscovered, wabaId, phoneNumber, verifiedName, reason, rawError, requiresManualWabaId }
+router.post('/connection/probe', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const { accessToken, phoneNumberId } = req.body;
+    if (!accessToken?.trim() || !phoneNumberId?.trim()) {
+      return res.status(400).json({ error: 'accessToken and phoneNumberId are required' });
+    }
+    const pid = phoneNumberId.trim();
+    const token = accessToken.trim();
+
+    // ── Path 1: phone node with whatsapp_business_account traversal ───────────
+    let phoneData = null;
+    let phoneError = null;
+    try {
+      const r = await axios.get(`${GRAPH}/${pid}`, {
+        params: {
+          fields: 'id,display_phone_number,verified_name,code_verification_status,quality_rating,whatsapp_business_account',
+          access_token: token,
+        },
+        timeout: 10000,
+      });
+      phoneData = r.data;
+    } catch (e) {
+      phoneError = e.response?.data ?? { message: e.message };
+      return res.json({
+        phoneValid: false,
+        autoDiscovered: false,
+        wabaId: null,
+        phoneNumber: null,
+        verifiedName: null,
+        reason: 'The Phone Number ID is invalid or this token cannot access it. Verify both values in Meta Business Suite → API Setup.',
+        rawError: phoneError,
+        requiresManualWabaId: false,
+      });
+    }
+
+    const derivedWabaId = phoneData?.whatsapp_business_account?.id ?? null;
+    if (derivedWabaId && derivedWabaId !== pid) {
+      return res.json({
+        phoneValid: true,
+        autoDiscovered: true,
+        discoveryMethod: 'phone_node',
+        wabaId: derivedWabaId,
+        phoneNumber: phoneData.display_phone_number ?? null,
+        verifiedName: phoneData.verified_name ?? null,
+        qualityRating: phoneData.quality_rating ?? null,
+        reason: null,
+        rawError: null,
+        requiresManualWabaId: false,
+      });
+    }
+
+    // ── Path 2: /me/whatsapp_business_accounts (same scope, alternative graph path) ─
+    let meWabaId = null;
+    let meError = null;
+    try {
+      const meRes = await axios.get(`${GRAPH}/me`, {
+        params: {
+          fields: 'id,name,whatsapp_business_accounts{id,name,phone_numbers{id,display_phone_number}}',
+          access_token: token,
+        },
+        timeout: 10000,
+      });
+      const wabas = meRes.data?.whatsapp_business_accounts?.data ?? [];
+      for (const waba of wabas) {
+        const phones = waba.phone_numbers?.data ?? [];
+        if (phones.some((p) => p.id === pid)) { meWabaId = waba.id; break; }
+      }
+      if (!meWabaId && wabas.length === 1) meWabaId = wabas[0].id;
+    } catch (e) {
+      meError = e.response?.data ?? { message: e.message };
+    }
+
+    if (meWabaId && meWabaId !== pid) {
+      return res.json({
+        phoneValid: true,
+        autoDiscovered: true,
+        discoveryMethod: 'user_waba_list',
+        wabaId: meWabaId,
+        phoneNumber: phoneData.display_phone_number ?? null,
+        verifiedName: phoneData.verified_name ?? null,
+        reason: null,
+        rawError: null,
+        requiresManualWabaId: false,
+      });
+    }
+
+    // ── Both paths failed — diagnose why ──────────────────────────────────────
+    const wabaFieldPresent = 'whatsapp_business_account' in (phoneData ?? {});
+    let reason, rawError;
+    if (!wabaFieldPresent && meError) {
+      reason = 'Your access token does not have the whatsapp_business_management permission. This permission is required to manage templates. You can (1) grant it to your System User in Meta Business Suite → System Users → Edit → Add Permissions, then regenerate the token; or (2) enter your WABA ID manually below — find it in Meta Business Suite → WhatsApp Accounts (the 15–16 digit number, different from the Phone Number ID in API Setup).';
+      rawError = { code: 'MISSING_PERMISSION', missingPermission: 'whatsapp_business_management', phoneNodeResponse: phoneData, meApiError: meError };
+    } else if (derivedWabaId === pid) {
+      reason = 'Meta returned the Phone Number ID as the WABA ID — these are different objects. This indicates a token or account configuration issue. Enter your correct WABA ID manually below.';
+      rawError = { code: 'WABA_ID_EQUALS_PHONE_ID', phoneNumberId: pid, returnedWabaId: derivedWabaId };
+    } else {
+      reason = 'Could not determine WABA ID automatically. Enter it manually below — find it in Meta Business Suite → WhatsApp Accounts.';
+      rawError = { phoneData, meError };
+    }
+
+    return res.json({
+      phoneValid: true,
+      autoDiscovered: false,
+      wabaId: null,
+      phoneNumber: phoneData.display_phone_number ?? null,
+      verifiedName: phoneData.verified_name ?? null,
+      reason,
+      rawError,
+      requiresManualWabaId: true,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/whatsapp/connection/repair — auto-fix or manually override wabaId ───────────────
+// Body (optional): { wabaId: "..." } — explicit override skips auto-discovery.
+// Without body: tries two auto-discovery paths (phone node, then /me).
+// Both paths require whatsapp_business_management; if absent, returns requiresManualWabaId: true.
 router.post('/connection/repair', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
     const cfg = await getWabaConfig(req.user.companyId);
     if (!cfg) return res.status(400).json({ error: 'No WABA configuration to repair — connect first via Settings → WhatsApp.' });
 
+    const explicitWabaId = req.body?.wabaId?.trim() ?? null;
     const oldWabaId = cfg.wabaId;
 
-    // Re-fetch phone number info including the whatsapp_business_account edge to get the real WABA ID
+    // ── Path A: explicit manual override ──────────────────────────────────────
+    if (explicitWabaId) {
+      if (explicitWabaId === cfg.phoneNumberId) {
+        return res.status(400).json({ error: 'WABA ID cannot equal Phone Number ID — enter the correct WABA ID from Meta Business Suite → WhatsApp Accounts.' });
+      }
+      const now = new Date().toISOString();
+      await dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: `CONFIG#WABA#${req.user.companyId}`, SK: 'CURRENT' },
+        UpdateExpression: 'SET wabaId = :wid, repairedAt = :ra, repairedBy = :rb, repairMethod = :rm',
+        ExpressionAttributeValues: { ':wid': explicitWabaId, ':ra': now, ':rb': req.user.id, ':rm': 'manual' },
+      }).promise();
+      logger.info(`WABA config manually overridden for company ${req.user.companyId}: ${oldWabaId} → ${explicitWabaId}`);
+      return res.json({ success: true, oldWabaId, newWabaId: explicitWabaId, method: 'manual', message: 'WABA ID manually corrected. Template submission will now use the correct ID.' });
+    }
+
+    // ── Path B1: phone node with whatsapp_business_account traversal ──────────
     let newWabaId = null;
     let phoneNumber = cfg.phoneNumber;
+    let phoneData = null;
     try {
       const verifyRes = await axios.get(`${GRAPH}/${cfg.phoneNumberId}`, {
         params: { fields: 'display_phone_number,verified_name,id,whatsapp_business_account', access_token: cfg.accessToken },
         timeout: 10000,
       });
-      newWabaId = verifyRes.data?.whatsapp_business_account?.id ?? null;
-      phoneNumber = verifyRes.data?.display_phone_number ?? phoneNumber;
+      phoneData = verifyRes.data;
+      newWabaId = phoneData?.whatsapp_business_account?.id ?? null;
+      phoneNumber = phoneData?.display_phone_number ?? phoneNumber;
     } catch (e) {
-      return res.status(400).json({ error: 'Failed to reach Meta API — check that the stored access token is still valid.' });
+      return res.status(400).json({ error: 'Failed to reach Meta API — check that the stored access token is still valid.', requiresManualWabaId: true });
+    }
+
+    // ── Path B2: /me/whatsapp_business_accounts fallback ─────────────────────
+    if (!newWabaId || newWabaId === cfg.phoneNumberId) {
+      try {
+        const meRes = await axios.get(`${GRAPH}/me`, {
+          params: { fields: 'id,whatsapp_business_accounts{id,phone_numbers{id}}', access_token: cfg.accessToken },
+          timeout: 10000,
+        });
+        const wabas = meRes.data?.whatsapp_business_accounts?.data ?? [];
+        for (const waba of wabas) {
+          const phones = waba.phone_numbers?.data ?? [];
+          if (phones.some((p) => p.id === cfg.phoneNumberId)) { newWabaId = waba.id; break; }
+        }
+        if (!newWabaId && wabas.length === 1) newWabaId = wabas[0].id;
+      } catch { /* silent */ }
     }
 
     if (!newWabaId) {
       return res.status(400).json({
-        error: 'Meta did not return a WhatsApp Business Account ID. Your token likely lacks the whatsapp_business_management permission. Grant it in Meta Business Suite → System Users → Edit → Add Permissions, then retry.',
+        error: 'Auto-repair failed: the access token lacks whatsapp_business_management permission — Meta did not return a WABA ID. Enter your WABA ID manually using the field in the repair section, or grant the permission and regenerate the token.',
+        requiresManualWabaId: true,
+        rawPhoneResponse: phoneData,
       });
     }
     if (newWabaId === cfg.phoneNumberId) {
       return res.status(400).json({
-        error: 'Auto-repair failed: Meta returned the Phone Number ID as the WABA ID. The token is missing whatsapp_business_management permission.',
+        error: 'Auto-repair failed: Meta returned the Phone Number ID as the WABA ID. Enter your correct WABA ID manually using the field in the repair section.',
+        requiresManualWabaId: true,
       });
     }
 
@@ -453,12 +694,12 @@ router.post('/connection/repair', authMiddleware, checkRole(['admin']), async (r
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK: `CONFIG#WABA#${req.user.companyId}`, SK: 'CURRENT' },
-      UpdateExpression: 'SET wabaId = :wid, phoneNumber = :pn, repairedAt = :ra, repairedBy = :rb',
-      ExpressionAttributeValues: { ':wid': newWabaId, ':pn': phoneNumber, ':ra': now, ':rb': req.user.id },
+      UpdateExpression: 'SET wabaId = :wid, phoneNumber = :pn, repairedAt = :ra, repairedBy = :rb, repairMethod = :rm',
+      ExpressionAttributeValues: { ':wid': newWabaId, ':pn': phoneNumber, ':ra': now, ':rb': req.user.id, ':rm': 'auto' },
     }).promise();
 
-    logger.info(`WABA config repaired for company ${req.user.companyId}: ${oldWabaId} → ${newWabaId}`);
-    res.json({ success: true, oldWabaId, newWabaId, message: 'WABA ID corrected. Template submission and sync will now use the correct ID.' });
+    logger.info(`WABA config auto-repaired for company ${req.user.companyId}: ${oldWabaId} → ${newWabaId}`);
+    res.json({ success: true, oldWabaId, newWabaId, method: 'auto', message: 'WABA ID corrected automatically. Template submission and sync will now use the correct ID.' });
   } catch (err) {
     next(err);
   }
@@ -469,10 +710,10 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
   try {
     const cfg = await getWabaConfig(req.user.companyId);
     const now = new Date().toISOString();
-    const graphApiVersion = process.env.WHATSAPP_GRAPH_VERSION ?? 'v19.0';
+    const graphApiVersion = process.env.WHATSAPP_GRAPH_VERSION ?? 'v21.0';
 
     if (!cfg) {
-      return res.json({ success: true, connected: false, graphApiVersion, lastChecked: now, issues: ['No WABA configuration — connect via Settings → WhatsApp.'] });
+      return res.json({ success: true, connected: false, graphApiVersion, lastChecked: now, issues: ['No WABA configuration — connect via Settings → WhatsApp.'], rootCause: 'No WhatsApp configuration stored. Connect via Settings → WhatsApp.', recommendedFix: ['Connect WhatsApp via Settings → WhatsApp.'] });
     }
 
     const configIssue = detectInvalidWabaConfig(cfg);
@@ -487,8 +728,8 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
     };
     const issues = configIssue ? [configIssue] : [];
 
-    // ── Token validity via debug_token (requires app credentials) ──────────────
-    let token = { valid: false, scopes: [], appId: null, expiresAt: null };
+    // ── Token validity ─────────────────────────────────────────────────────────
+    let token = { valid: false, scopes: [], scopesConfirmed: false, type: null, appId: null, expiresAt: null };
     const appId = process.env.META_APP_ID;
     const appSecret = process.env.META_APP_SECRET;
     if (cfg.accessToken) {
@@ -502,7 +743,9 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
           token = {
             valid: d.is_valid ?? false,
             scopes: d.scopes ?? [],
-            appId: String(d.app_id ?? appId),
+            scopesConfirmed: true,
+            type: d.type ?? null,
+            appId: String(d.app_id ?? appId ?? ''),
             expiresAt: d.expires_at ? new Date(d.expires_at * 1000).toISOString() : null,
           };
         } else {
@@ -510,7 +753,7 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
             params: { fields: 'id,name', access_token: cfg.accessToken },
             timeout: 10000,
           });
-          token = { valid: !!meRes.data?.id, scopes: [], appId: appId ?? null, expiresAt: null };
+          token = { valid: !!meRes.data?.id, scopes: [], scopesConfirmed: false, type: null, appId: appId ?? null, expiresAt: null };
         }
         if (!token.valid) issues.push('Access token is invalid or expired.');
       } catch {
@@ -542,8 +785,9 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
       }
     }
 
-    // ── WABA check (skip if config is already known-invalid) ──────────────────
+    // ── WABA check (skip if config is known-invalid) ───────────────────────────
     let waba = { accessible: false, id: cfg.wabaId, name: null, reviewStatus: null, currency: null, templateNamespace: null, businessId: null };
+    let webhooks = { subscribed: false, appId: null };
     if (cfg.wabaId && cfg.accessToken && !configIssue) {
       try {
         const wabaRes = await axios.get(`${GRAPH}/${cfg.wabaId}`, {
@@ -559,17 +803,140 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
           templateNamespace: w.message_template_namespace ?? null,
           businessId: w.on_behalf_of_business_info?.id ?? null,
         };
+        // ── Webhook subscription check (only if WABA is accessible) ───────────
+        try {
+          const whRes = await axios.get(`${GRAPH}/${cfg.wabaId}/subscribed_apps`, {
+            params: { access_token: cfg.accessToken },
+            timeout: 8000,
+          });
+          const apps = whRes.data?.data ?? [];
+          webhooks = { subscribed: apps.length > 0, appId: apps[0]?.id ?? null };
+        } catch { /* non-fatal: webhooks check is best-effort */ }
       } catch {
-        issues.push('WABA ID is inaccessible — the ID may be wrong or the token lacks whatsapp_business_management permission.');
+        issues.push('WABA ID is inaccessible — the ID may be incorrect or the token lacks whatsapp_business_management permission.');
+      }
+    } else if (configIssue) {
+      issues.push('WABA check skipped — configuration is invalid (WABA ID equals Phone Number ID).');
+    }
+
+    // ── Scope inference when debug_token is unavailable ────────────────────────
+    // If scopes were not confirmed (no META_APP_ID/SECRET), infer from WABA accessibility.
+    if (!token.scopesConfirmed) {
+      if (waba.accessible) {
+        token.scopes = ['whatsapp_business_messaging (inferred)', 'whatsapp_business_management (inferred)'];
+      } else if (phone.accessible) {
+        token.scopes = ['whatsapp_business_messaging (inferred)'];
+        issues.push('Token likely lacks whatsapp_business_management — WABA is inaccessible while Phone is accessible. Set META_APP_ID and META_APP_SECRET in Lambda env vars to confirm exact scopes.');
       }
     }
 
-    const capabilities = { messaging: phone.accessible && token.valid, templates: waba.accessible && token.valid && !configIssue };
+    const capabilities = {
+      messaging: phone.accessible && token.valid,
+      templates: waba.accessible && token.valid && !configIssue,
+      webhooks: webhooks.subscribed,
+    };
+
+    const rootCause = computeRootCause(config, token, waba);
+    const recommendedFix = computeRecommendedFix(config, token, waba);
+
     res.json({
       success: true, connected: true,
       config, graphApiVersion, lastChecked: now,
-      token, waba, phone, capabilities,
+      token, waba, phone, webhooks, capabilities,
       issues: [...new Set(issues)],
+      rootCause,
+      recommendedFix,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /api/whatsapp/connection/diagnose — raw Meta API responses for debugging ──────────────
+// Returns unfiltered Graph API responses for all connection-related nodes.
+// Use this when the health check shows issues and you need to see exactly what Meta returns.
+router.get('/connection/diagnose', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg) return res.status(400).json({ error: 'No WABA configuration to diagnose.' });
+
+    const results = {};
+
+    // debug_token (requires META_APP_ID + META_APP_SECRET in Lambda env vars)
+    const appId = process.env.META_APP_ID;
+    const appSecret = process.env.META_APP_SECRET;
+    if (appId && appSecret) {
+      try {
+        const r = await axios.get(`${GRAPH}/debug_token`, {
+          params: { input_token: cfg.accessToken, access_token: `${appId}|${appSecret}` },
+          timeout: 10000,
+        });
+        results.debugToken = { status: 200, data: r.data };
+      } catch (e) {
+        results.debugToken = { status: e.response?.status ?? 0, data: e.response?.data ?? { message: e.message } };
+      }
+    } else {
+      results.debugToken = { skipped: true, reason: 'META_APP_ID or META_APP_SECRET not set in Lambda env vars' };
+    }
+
+    // /me (token identity + business accounts)
+    try {
+      const r = await axios.get(`${GRAPH}/me`, {
+        params: { fields: 'id,name,whatsapp_business_accounts{id,name,phone_numbers{id,display_phone_number}}', access_token: cfg.accessToken },
+        timeout: 10000,
+      });
+      results.me = { status: 200, data: r.data };
+    } catch (e) {
+      results.me = { status: e.response?.status ?? 0, data: e.response?.data };
+    }
+
+    // Phone number node (all available fields including whatsapp_business_account)
+    if (cfg.phoneNumberId) {
+      try {
+        const r = await axios.get(`${GRAPH}/${cfg.phoneNumberId}`, {
+          params: {
+            fields: 'id,display_phone_number,verified_name,code_verification_status,quality_rating,name_status,whatsapp_business_account',
+            access_token: cfg.accessToken,
+          },
+          timeout: 10000,
+        });
+        results.phoneNode = { status: 200, nodeId: cfg.phoneNumberId, data: r.data };
+      } catch (e) {
+        results.phoneNode = { status: e.response?.status ?? 0, nodeId: cfg.phoneNumberId, data: e.response?.data };
+      }
+    }
+
+    // WABA node (only if different from phone number ID)
+    if (cfg.wabaId && cfg.wabaId !== cfg.phoneNumberId) {
+      try {
+        const r = await axios.get(`${GRAPH}/${cfg.wabaId}`, {
+          params: {
+            fields: 'id,name,account_review_status,currency,message_template_namespace,on_behalf_of_business_info',
+            access_token: cfg.accessToken,
+          },
+          timeout: 10000,
+        });
+        results.wabaNode = { status: 200, nodeId: cfg.wabaId, data: r.data };
+      } catch (e) {
+        results.wabaNode = { status: e.response?.status ?? 0, nodeId: cfg.wabaId, data: e.response?.data };
+      }
+    } else {
+      results.wabaNode = { skipped: true, reason: cfg.wabaId === cfg.phoneNumberId ? 'wabaId === phoneNumberId (invalid config — both IDs are the same)' : 'No wabaId stored' };
+    }
+
+    res.json({
+      success: true,
+      graphApiVersion: process.env.WHATSAPP_GRAPH_VERSION ?? 'v21.0',
+      storedConfig: {
+        wabaId: cfg.wabaId,
+        phoneNumberId: cfg.phoneNumberId,
+        phoneNumber: cfg.phoneNumber,
+        setupMethod: cfg.setupMethod ?? 'oauth',
+        connectedAt: cfg.connectedAt,
+        repairedAt: cfg.repairedAt ?? null,
+        repairMethod: cfg.repairMethod ?? null,
+      },
+      results,
     });
   } catch (err) {
     next(err);

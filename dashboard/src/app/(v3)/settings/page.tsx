@@ -176,12 +176,50 @@ interface WabaConnection {
   configIssue?: string;
 }
 
+interface ProbeResult {
+  phoneValid: boolean;
+  autoDiscovered: boolean;
+  discoveryMethod?: string;
+  wabaId: string | null;
+  phoneNumber: string | null;
+  verifiedName: string | null;
+  qualityRating?: string | null;
+  reason?: string | null;
+  rawError?: unknown;
+  requiresManualWabaId?: boolean;
+}
+
+// ── Manual WABA ID field shown only after a failed probe ──────────────────────
+function ManualWabaField({ value, onChange, inputCls }: { value: string; onChange: (v: string) => void; inputCls: string }) {
+  return (
+    <div>
+      <label className="mb-1 block text-xs font-medium text-neutral-700 dark:text-neutral-300">
+        WhatsApp Business Account ID (WABA ID) <span className="text-error-500">*</span>
+      </label>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="e.g. 123456789012345"
+        className={inputCls}
+      />
+      <p className="mt-1 text-xs text-neutral-400">
+        Find it in Meta Business Suite → <strong>WhatsApp Accounts</strong> tab (the 15–16 digit number, NOT the Phone Number ID from API Setup).
+      </p>
+    </div>
+  );
+}
+
 function WhatsAppSection() {
   const qc = useQueryClient();
   const [manualOpen, setManualOpen] = useState(false);
   const [accessToken, setAccessToken] = useState('');
   const [phoneNumberId, setPhoneNumberId] = useState('');
   const [wabaId, setWabaId] = useState('');
+
+  // Two-phase connection state
+  const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [showRawError, setShowRawError] = useState(false);
 
   const { data, isLoading } = useQuery<WabaConnection>({
     queryKey: ['whatsapp-connection'],
@@ -195,10 +233,11 @@ function WhatsAppSection() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  const manualMut = useMutation({
-    mutationFn: () => apiFetch<{ success: boolean; phoneNumber: string }>('/api/whatsapp/manual-connect', {
+  // Phase 2: final save — always called with a confirmed wabaId (from probe or manual entry)
+  const connectMut = useMutation({
+    mutationFn: (resolvedWabaId: string) => apiFetch<{ success: boolean; phoneNumber: string }>('/api/whatsapp/manual-connect', {
       method: 'POST',
-      body: JSON.stringify({ accessToken: accessToken.trim(), phoneNumberId: phoneNumberId.trim(), wabaId: wabaId.trim() || undefined }),
+      body: JSON.stringify({ accessToken: accessToken.trim(), phoneNumberId: phoneNumberId.trim(), wabaId: resolvedWabaId }),
     }),
     onSuccess: (res) => {
       toast.success(`Connected: ${res.phoneNumber ?? 'WhatsApp Business'}`);
@@ -206,10 +245,40 @@ function WhatsAppSection() {
       setAccessToken('');
       setPhoneNumberId('');
       setWabaId('');
+      setProbeResult(null);
       qc.invalidateQueries({ queryKey: ['whatsapp-connection'] });
     },
     onError: (e: Error) => toast.error(e.message),
   });
+
+  // Phase 1: probe — try auto-discovery; on success immediately save
+  async function handleVerifyAndConnect() {
+    if (!accessToken.trim() || !phoneNumberId.trim()) return;
+    setProbing(true);
+    setProbeResult(null);
+    setShowRawError(false);
+    try {
+      const result = await apiFetch<ProbeResult>('/api/whatsapp/connection/probe', {
+        method: 'POST',
+        body: JSON.stringify({ accessToken: accessToken.trim(), phoneNumberId: phoneNumberId.trim() }),
+      });
+      setProbeResult(result);
+      if (result.autoDiscovered && result.wabaId) {
+        // Auto-discovery succeeded → save immediately (no user interaction needed)
+        connectMut.mutate(result.wabaId);
+      }
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Verification failed');
+    } finally {
+      setProbing(false);
+    }
+  }
+
+  function resetProbe() {
+    setProbeResult(null);
+    setWabaId('');
+    setShowRawError(false);
+  }
 
   async function handleOAuthConnect() {
     try {
@@ -241,6 +310,8 @@ function WhatsAppSection() {
   }
 
   const connected = data?.connected;
+  const isConnecting = probing || connectMut.isPending;
+  const needsManualWabaId = probeResult?.requiresManualWabaId === true;
 
   const inputCls = 'w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100 focus:border-primary-600 focus:outline-none';
 
@@ -325,42 +396,115 @@ function WhatsAppSection() {
               <span className="text-xs text-neutral-400">or connect manually</span>
               <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
             </div>
-            <button onClick={() => setManualOpen((v) => !v)}
+            <button onClick={() => { setManualOpen((v) => !v); resetProbe(); }}
               className="w-full text-sm text-primary-600 hover:text-primary-700 dark:text-primary-400 text-left">
               {manualOpen ? 'Hide manual setup ↑' : 'Paste Access Token + Phone Number ID ↓'}
             </button>
 
             {manualOpen && (
               <div className="space-y-3 pt-1">
+                {/* ── Always-visible fields ── */}
                 <div>
                   <label className="mb-1 block text-xs font-medium text-neutral-500">Permanent Access Token</label>
-                  <input value={accessToken} onChange={(e) => setAccessToken(e.target.value)}
+                  <input value={accessToken} onChange={(e) => { setAccessToken(e.target.value); resetProbe(); }}
                     placeholder="EAAxxxxxx..." className={inputCls} />
-                  <p className="mt-1 text-xs text-neutral-400">From Meta Business Suite → WhatsApp → API Setup → Generate Token</p>
+                  <p className="mt-1 text-xs text-neutral-400">From Meta Business Suite → System Users → Generate Token</p>
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-neutral-500">Phone Number ID</label>
-                  <input value={phoneNumberId} onChange={(e) => setPhoneNumberId(e.target.value)}
+                  <input value={phoneNumberId} onChange={(e) => { setPhoneNumberId(e.target.value); resetProbe(); }}
                     placeholder="1234567890123..." className={inputCls} />
                   <p className="mt-1 text-xs text-neutral-400">From Meta Business Suite → WhatsApp → API Setup → Phone Number ID</p>
                 </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-neutral-500">
-                    WhatsApp Business Account ID (WABA ID)
-                    <span className="ml-1 text-neutral-400">— auto-detected if blank</span>
-                  </label>
-                  <input value={wabaId} onChange={(e) => setWabaId(e.target.value)}
-                    placeholder="Leave blank to auto-detect..." className={inputCls} />
-                  <p className="mt-1 text-xs text-neutral-400">
-                    Only needed if auto-detection fails. Find it in Meta Business Suite → WhatsApp Accounts (different from API Setup).
-                  </p>
-                </div>
-                <Button loading={manualMut.isPending}
-                  disabled={!accessToken.trim() || !phoneNumberId.trim()}
-                  onClick={() => manualMut.mutate()}
-                  className="w-full">
-                  Verify &amp; Connect
-                </Button>
+
+                {/* ── Phase 1 result: auto-discovery in-flight ── */}
+                {probing && (
+                  <div className="flex items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-800">
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin shrink-0" />
+                    Verifying credentials with Meta and attempting WABA ID discovery…
+                  </div>
+                )}
+
+                {/* ── Phase 1 result: auto-discovery succeeded (connecting…) ── */}
+                {probeResult?.autoDiscovered && probeResult.wabaId && (
+                  <div className="rounded-lg border border-success-200 bg-success-50 px-3 py-2.5 dark:border-success-800 dark:bg-success-900/20">
+                    <p className="text-xs font-semibold text-success-700 dark:text-success-300">
+                      ✓ WABA ID auto-detected — saving…
+                    </p>
+                    {probeResult.verifiedName && (
+                      <p className="mt-0.5 text-xs text-success-600 dark:text-success-400">
+                        {probeResult.verifiedName}{probeResult.phoneNumber ? ` (${probeResult.phoneNumber})` : ''}
+                      </p>
+                    )}
+                    <p className="mt-0.5 font-mono text-[10px] text-success-600 dark:text-success-400">
+                      WABA ID: {probeResult.wabaId}
+                    </p>
+                  </div>
+                )}
+
+                {/* ── Phase 1 result: phone verified but WABA ID discovery failed ── */}
+                {needsManualWabaId && (
+                  <>
+                    {probeResult?.phoneNumber && (
+                      <div className="rounded-lg border border-success-200 bg-success-50 px-3 py-2 dark:border-success-800 dark:bg-success-900/20">
+                        <p className="text-xs text-success-700 dark:text-success-300">
+                          ✓ Phone verified: {probeResult.verifiedName ?? probeResult.phoneNumber}
+                          {probeResult.verifiedName ? ` (${probeResult.phoneNumber})` : ''}
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="rounded-lg border border-warning-200 bg-warning-50 p-3 dark:border-warning-800 dark:bg-warning-900/20">
+                      <p className="text-xs font-semibold text-warning-800 dark:text-warning-200">
+                        WABA ID could not be auto-detected
+                      </p>
+                      <p className="mt-1 text-xs text-warning-700 dark:text-warning-300 leading-relaxed">
+                        {probeResult?.reason}
+                      </p>
+                      {!!probeResult?.rawError && (
+                        <button
+                          onClick={() => setShowRawError((v) => !v)}
+                          className="mt-1.5 text-[10px] text-warning-600 underline dark:text-warning-400"
+                        >
+                          {showRawError ? 'Hide' : 'Show'} raw Meta response
+                        </button>
+                      )}
+                      {showRawError && !!probeResult?.rawError && (
+                        <pre className="mt-1.5 max-h-28 overflow-auto rounded bg-warning-100 p-2 text-[10px] font-mono text-warning-800 dark:bg-warning-900/40 dark:text-warning-200">
+                          {JSON.stringify(probeResult.rawError, null, 2)}
+                        </pre>
+                      )}
+                    </div>
+
+                    <ManualWabaField value={wabaId} onChange={setWabaId} inputCls={inputCls} />
+                  </>
+                )}
+
+                {/* ── Action buttons ── */}
+                {!needsManualWabaId ? (
+                  <Button
+                    loading={isConnecting}
+                    disabled={!accessToken.trim() || !phoneNumberId.trim()}
+                    onClick={handleVerifyAndConnect}
+                    className="w-full"
+                  >
+                    Verify &amp; Connect
+                  </Button>
+                ) : (
+                  <div className="flex gap-2">
+                    <Button variant="secondary" size="sm" onClick={resetProbe}>
+                      Start Over
+                    </Button>
+                    <Button
+                      loading={connectMut.isPending}
+                      disabled={!wabaId.trim()}
+                      onClick={() => connectMut.mutate(wabaId.trim())}
+                      className="flex-1"
+                    >
+                      Connect with Manual WABA ID
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -370,13 +514,14 @@ function WhatsAppSection() {
       <Card variant="ghost" className="text-sm text-neutral-500 space-y-1.5">
         <p className="font-medium text-neutral-700 dark:text-neutral-300">How to get your credentials</p>
         <ol className="list-decimal list-inside space-y-1 text-xs">
-          <li>Go to <strong>Meta Business Suite</strong> → <strong>Settings</strong> → <strong>WhatsApp</strong> → <strong>API Setup</strong></li>
-          <li>Copy the <strong>Phone Number ID</strong> from the top of the page</li>
-          <li>Click <strong>Generate Access Token</strong> and copy the permanent System User token</li>
-          <li>Paste both above — WABA ID is auto-detected from the token</li>
-          <li>If auto-detection fails: find your <strong>WABA ID</strong> in Meta Business Suite → <strong>WhatsApp Accounts</strong> (not API Setup) and enter it manually</li>
+          <li>In Meta Business Suite → <strong>System Users</strong>: create or select a system user</li>
+          <li>Add permissions: <strong>whatsapp_business_messaging</strong> and <strong>whatsapp_business_management</strong></li>
+          <li>Generate a <strong>permanent access token</strong> for this system user</li>
+          <li>Copy your <strong>Phone Number ID</strong> from Meta Business Suite → WhatsApp → API Setup</li>
+          <li>Paste the token and Phone Number ID above — WABA ID is auto-detected</li>
+          <li>If auto-detection fails: your <strong>WABA ID</strong> is in Meta Business Suite → <strong>WhatsApp Accounts</strong> tab (different from API Setup)</li>
         </ol>
-        <p className="text-xs mt-2">Your webhook URL (tell Meta): <code className="bg-neutral-100 dark:bg-neutral-800 px-1 rounded text-xs">{typeof window !== 'undefined' ? window.location.origin.replace('dashboard', 'api').replace('3001', '3000') : ''}/api/whatsapp/webhook</code></p>
+        <p className="text-xs mt-2">Webhook URL: <code className="bg-neutral-100 dark:bg-neutral-800 px-1 rounded text-xs">{typeof window !== 'undefined' ? window.location.origin.replace('dashboard', 'api').replace('3001', '3000') : ''}/api/whatsapp/webhook</code></p>
       </Card>
     </div>
   );
