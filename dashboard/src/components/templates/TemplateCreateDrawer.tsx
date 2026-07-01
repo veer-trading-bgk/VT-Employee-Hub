@@ -653,31 +653,31 @@ function Section({
 
   return (
     <div className="rounded-xl border border-neutral-200 dark:border-neutral-800">
-      <button
-        type="button"
-        className="flex w-full items-center justify-between px-3.5 py-2.5 text-left"
-        onClick={() => setOpen((o) => !o)}
-      >
-        <span className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-neutral-800 dark:text-neutral-100">{title}</span>
-          {optional && (
-            <span className="text-[10px] font-medium text-neutral-400 bg-neutral-100 rounded-full px-1.5 py-0.5 dark:bg-neutral-800 dark:text-neutral-500">
-              optional
-            </span>
-          )}
-          {required && (
-            <span className="text-error-600 text-xs" aria-hidden>*</span>
-          )}
-        </span>
-        <div className="flex items-center gap-2">
-          {action}
+      <div className="flex items-center px-3.5 py-2.5">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          onClick={() => setOpen((o) => !o)}
+        >
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="text-sm font-semibold text-neutral-800 dark:text-neutral-100">{title}</span>
+            {optional && (
+              <span className="text-[10px] font-medium text-neutral-400 bg-neutral-100 rounded-full px-1.5 py-0.5 dark:bg-neutral-800 dark:text-neutral-500">
+                optional
+              </span>
+            )}
+            {required && (
+              <span className="text-error-600 text-xs" aria-hidden>*</span>
+            )}
+          </span>
           {open ? (
-            <ChevronUp className="h-4 w-4 text-neutral-400" aria-hidden />
+            <ChevronUp className="ml-auto h-4 w-4 shrink-0 text-neutral-400" aria-hidden />
           ) : (
-            <ChevronDown className="h-4 w-4 text-neutral-400" aria-hidden />
+            <ChevronDown className="ml-auto h-4 w-4 shrink-0 text-neutral-400" aria-hidden />
           )}
-        </div>
-      </button>
+        </button>
+        {action && <div className="ml-2 shrink-0">{action}</div>}
+      </div>
       {open && (
         <div className="flex flex-col gap-3 border-t border-neutral-100 px-3.5 pb-3.5 pt-3 dark:border-neutral-800">
           {children}
@@ -731,6 +731,7 @@ function ButtonEditor({ index, button, isAuth, onChange, onRemove, errors }: But
             options={[
               { value: 'COPY_CODE', label: 'Copy Code (copies OTP to clipboard)' },
               { value: 'ONE_TAP', label: 'One-Tap Autofill (auto-fills in app)' },
+              { value: 'ZERO_TAP', label: 'Zero-Tap Autofill (automatic, no user action)' },
             ]}
             value={button.otpType}
             onChange={(e) => onChange('otpType', e.target.value)}
@@ -793,8 +794,8 @@ function ButtonEditor({ index, button, isAuth, onChange, onRemove, errors }: But
           />
         )}
 
-        {/* One-Tap OTP fields */}
-        {isAuth && button.otpType === 'ONE_TAP' && (
+        {/* One-Tap / Zero-Tap OTP fields */}
+        {isAuth && (button.otpType === 'ONE_TAP' || button.otpType === 'ZERO_TAP') && (
           <>
             <Input
               label="Autofill Button Text"

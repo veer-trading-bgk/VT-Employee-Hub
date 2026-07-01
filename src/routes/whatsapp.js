@@ -1,4 +1,5 @@
 const express = require('express');
+const { randomUUID } = require('crypto');
 const { dedupPut } = require('../utils/dedupPut');
 const axios = require('axios');
 const S3 = require('aws-sdk/clients/s3');
@@ -1296,7 +1297,7 @@ router.post('/inbox/canned', authMiddleware, checkRole(['admin', 'manager']), ra
       }
     }
 
-    const id = require('crypto').randomUUID();
+    const id = randomUUID();
     const item = {
       PK: `CONFIG#CANNED#${req.user.companyId}`,
       SK: `CANNED#${id}`,
@@ -1341,7 +1342,7 @@ router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60
     if (!name?.trim() || !templateName?.trim()) {
       return res.status(400).json({ error: 'name and templateName are required' });
     }
-    const id = require('crypto').randomUUID();
+    const id = randomUUID();
     const now = new Date().toISOString();
     const item = {
       PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${id}`,
@@ -1395,22 +1396,54 @@ router.put('/templates/:id', authMiddleware, checkRole(['admin']), rateLimit(20,
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
+      ConditionExpression: 'attribute_exists(PK)',
       UpdateExpression: updateExpr,
       ExpressionAttributeNames: exprNames,
       ExpressionAttributeValues: exprVals,
     }).promise();
     res.json({ success: true });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.code === 'ConditionalCheckFailedException') {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+    next(err);
+  }
 });
 
 // ── DELETE /api/whatsapp/templates/:id ───────────────────────────────────────
 router.delete('/templates/:id', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
+    const tmplResult = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
+    }).promise();
+    const tmpl = tmplResult.Item;
+    if (!tmpl) return res.status(404).json({ error: 'Template not found' });
+
+    let warning = null;
+    if (tmpl.metaTemplateId) {
+      const cfg = await getWabaConfig(req.user.companyId).catch(() => null);
+      if (cfg?.accessToken && cfg?.wabaId) {
+        try {
+          await axios.delete(`${GRAPH}/${cfg.wabaId}/message_templates`, {
+            params: { name: tmpl.templateName },
+            headers: { Authorization: `Bearer ${cfg.accessToken}` },
+            timeout: 15000,
+          });
+        } catch (metaErr) {
+          if (metaErr.response?.status !== 404) {
+            logger.warn('delete template from Meta failed — deleting locally only', metaErr.response?.data);
+            warning = metaErr.response?.data?.error?.message ?? 'Meta deletion failed — remove manually from Meta Business Suite';
+          }
+        }
+      }
+    }
+
     await dynamodb.delete({
       TableName: TABLE,
       Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
     }).promise();
-    res.json({ success: true });
+    res.json({ success: true, ...(warning && { warning }) });
   } catch (err) { next(err); }
 });
 
@@ -1476,13 +1509,15 @@ router.post('/templates/sync', authMiddleware, checkRole(['admin', 'manager']), 
       return res.status(400).json({ error: 'WABA not connected' });
     }
 
-    // Fetch all templates from Meta (paginated — handle up to 250)
-    const fields = 'id,name,status,quality_score,category,rejected_reason';
-    const metaRes = await axios.get(
-      `${GRAPH}/${cfg.wabaId}/message_templates?fields=${fields}&limit=250`,
-      { headers: { Authorization: `Bearer ${cfg.accessToken}` }, timeout: 15000 },
-    );
-    const metaTemplates = metaRes.data?.data ?? [];
+    // Fetch ALL templates from Meta with cursor pagination
+    const fields = 'id,name,status,quality_score,category,rejected_reason,language,components';
+    const metaTemplates = [];
+    let nextUrl = `${GRAPH}/${cfg.wabaId}/message_templates?fields=${fields}&limit=100`;
+    while (nextUrl) {
+      const metaRes = await axios.get(nextUrl, { headers: { Authorization: `Bearer ${cfg.accessToken}` }, timeout: 15000 });
+      metaTemplates.push(...(metaRes.data?.data ?? []));
+      nextUrl = metaRes.data?.paging?.next ?? null;
+    }
 
     // Fetch our local templates
     const localResult = await dynamodb.query({
@@ -1501,13 +1536,39 @@ router.post('/templates/sync', authMiddleware, checkRole(['admin', 'manager']), 
 
     const now = new Date().toISOString();
     let synced = 0;
+    let imported = 0;
     for (const mt of metaTemplates) {
       const local = localByName[mt.name];
-      if (!local) continue;
       const newStatus = statusMap[mt.status] ?? mt.status;
       const newQuality = qualityMap[mt.quality_score?.score ?? 'UNKNOWN'] ?? 'UNKNOWN';
-      if (local.status === newStatus && local.qualityScore === newQuality) continue;
 
+      if (!local) {
+        // Import Meta-native template not yet in our database
+        const bodyComp = (mt.components ?? []).find((c) => c.type === 'BODY');
+        const newId = randomUUID();
+        await dynamodb.put({
+          TableName: TABLE,
+          ConditionExpression: 'attribute_not_exists(PK)',
+          Item: {
+            PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${newId}`,
+            id: newId, companyId: req.user.companyId,
+            name: mt.name, templateName: mt.name,
+            language: mt.language ?? 'en', category: mt.category,
+            bodyPreview: (bodyComp?.text ?? '').slice(0, 100),
+            variables: [],
+            components: mt.components ?? null,
+            status: newStatus, qualityScore: newQuality,
+            allowCategoryChange: true, metaTemplateId: mt.id,
+            rejectedReason: mt.rejected_reason ?? null,
+            createdAt: now, updatedAt: now,
+            statusHistory: [{ status: newStatus, ts: now, reason: null }],
+          },
+        }).promise().catch(() => {}); // skip on duplicate race
+        imported++;
+        continue;
+      }
+
+      if (local.status === newStatus && local.qualityScore === newQuality) continue;
       await dynamodb.update({
         TableName: TABLE,
         Key: { PK: local.PK, SK: local.SK },
@@ -1520,7 +1581,7 @@ router.post('/templates/sync', authMiddleware, checkRole(['admin', 'manager']), 
       }).promise();
       synced++;
     }
-    res.json({ success: true, synced, total: metaTemplates.length });
+    res.json({ success: true, synced, imported, total: metaTemplates.length });
   } catch (err) {
     if (err.response?.data) {
       logger.error('sync templates from Meta failed', err.response.data);
@@ -1622,7 +1683,7 @@ router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateL
     if (items.length === 0) return res.status(400).json({ error: 'No leads match the selected filters' });
     if (items.length > 1000) return res.status(400).json({ error: 'Broadcast limited to 1000 leads per batch. Refine your filters.' });
 
-    const broadcastId = require('crypto').randomUUID();
+    const broadcastId = randomUUID();
     const now = new Date().toISOString();
     const broadcastSK = `${now}#${broadcastId}`;
     let sent = 0; let failed = 0;
@@ -1796,7 +1857,7 @@ router.get('/upload-url', authMiddleware, async (req, res, next) => {
     }
 
     const ext = filename.split('.').pop()?.toLowerCase() ?? 'bin';
-    const key = `uploads/${req.user.companyId}/${require('crypto').randomUUID()}.${ext}`;
+    const key = `uploads/${req.user.companyId}/${randomUUID()}.${ext}`;
 
     const uploadUrl = s3Client.getSignedUrl('putObject', {
       Bucket: MEDIA_BUCKET,

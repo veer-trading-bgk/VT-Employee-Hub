@@ -29,6 +29,8 @@ import {
   syncTemplates,
   templateKeys,
 } from '@/lib/templates/api';
+import { useAuth } from '@/context/AuthContext';
+import { toV3Role } from '@/types/v3';
 import type { WaTemplate, TemplateStatus, TemplateCategory, QualityScore } from '@/lib/templates/types';
 import {
   SENDABLE_STATUSES,
@@ -58,6 +60,12 @@ interface Props {
 
 export function TemplateList({ onSendTemplate }: Props) {
   const qc = useQueryClient();
+
+  // RBAC
+  const { user } = useAuth();
+  const role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
+  const canManage = role === 'owner' || role === 'admin';
+  const canSync = role === 'owner' || role === 'admin' || role === 'manager';
 
   // Filters & sort
   const [filters, setFilters] = useState<Filters>({ search: '', status: '', category: '', quality: '' });
@@ -104,7 +112,9 @@ export function TemplateList({ onSendTemplate }: Props) {
     mutationFn: () => syncTemplates(),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: templateKeys.all });
-      toast.success(`Synced ${data.synced} template${data.synced !== 1 ? 's' : ''} from Meta`);
+      const parts: string[] = [`${data.synced} updated`];
+      if (data.imported > 0) parts.push(`${data.imported} imported`);
+      toast.success(`Synced from Meta: ${parts.join(', ')}`);
     },
     onError: (e: Error) => toast.error(e.message || 'Sync failed'),
   });
@@ -209,26 +219,30 @@ export function TemplateList({ onSendTemplate }: Props) {
             )}
           </button>
 
-          {/* Sync */}
-          <button
-            type="button"
-            onClick={() => syncMutation.mutate()}
-            disabled={syncMutation.isPending}
-            className="flex h-8 items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800"
-            title="Sync status from Meta"
-          >
-            <RefreshCw className={cn('h-3.5 w-3.5', syncMutation.isPending && 'animate-spin')} aria-hidden />
-            Sync
-          </button>
+          {/* Sync — manager+ */}
+          {canSync && (
+            <button
+              type="button"
+              onClick={() => syncMutation.mutate()}
+              disabled={syncMutation.isPending}
+              className="flex h-8 items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 text-sm text-neutral-600 hover:bg-neutral-50 disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              title="Sync status from Meta"
+            >
+              <RefreshCw className={cn('h-3.5 w-3.5', syncMutation.isPending && 'animate-spin')} aria-hidden />
+              Sync
+            </button>
+          )}
 
-          {/* New template */}
-          <button
-            type="button"
-            onClick={handleCreate}
-            className="flex h-8 items-center gap-1.5 rounded-lg bg-primary-600 px-3 text-sm font-medium text-white hover:bg-primary-700 dark:bg-primary-500 dark:hover:bg-primary-600"
-          >
-            + New Template
-          </button>
+          {/* New template — admin+ only */}
+          {canManage && (
+            <button
+              type="button"
+              onClick={handleCreate}
+              className="flex h-8 items-center gap-1.5 rounded-lg bg-primary-600 px-3 text-sm font-medium text-white hover:bg-primary-700 dark:bg-primary-500 dark:hover:bg-primary-600"
+            >
+              + New Template
+            </button>
+          )}
         </div>
 
         {/* Expanded filters */}
@@ -264,8 +278,8 @@ export function TemplateList({ onSendTemplate }: Props) {
           </div>
         )}
 
-        {/* Bulk actions bar */}
-        {selected.size > 0 && (
+        {/* Bulk actions bar — admin+ only */}
+        {selected.size > 0 && canManage && (
           <div className="flex items-center gap-2 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 dark:border-primary-800 dark:bg-primary-900/20">
             <span className="text-sm font-medium text-primary-700 dark:text-primary-400">
               {selected.size} selected
@@ -364,6 +378,7 @@ export function TemplateList({ onSendTemplate }: Props) {
                 key={t.id}
                 template={t}
                 selected={selected.has(t.id)}
+                canManage={canManage}
                 onToggle={() => toggleOne(t.id)}
                 onEdit={() => handleEdit(t)}
                 onDelete={() => {
@@ -459,6 +474,7 @@ function FilterSelect({
 interface RowProps {
   template: WaTemplate;
   selected: boolean;
+  canManage: boolean;
   onToggle: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -471,6 +487,7 @@ interface RowProps {
 function TemplateRow({
   template: t,
   selected,
+  canManage,
   onToggle,
   onEdit,
   onDelete,
@@ -480,9 +497,9 @@ function TemplateRow({
   deleting,
 }: RowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const canEdit = EDITABLE_STATUSES.includes(t.status);
+  const canEdit = canManage && EDITABLE_STATUSES.includes(t.status);
   const canSend = SENDABLE_STATUSES.includes(t.status);
-  const canSubmit = t.status === 'DRAFT' || t.status === 'REJECTED';
+  const canSubmit = canManage && (t.status === 'DRAFT' || t.status === 'REJECTED');
 
   return (
     <tr
@@ -578,13 +595,17 @@ function TemplateRow({
                   {submitting && (
                     <MenuItem icon={RefreshCw} label="Submitting…" onClick={() => {}} disabled />
                   )}
-                  <div className="my-1 border-t border-neutral-100 dark:border-neutral-800" />
-                  <MenuItem
-                    icon={Trash2}
-                    label="Delete"
-                    onClick={() => { setMenuOpen(false); onDelete(); }}
-                    danger
-                  />
+                  {canManage && (
+                    <>
+                      <div className="my-1 border-t border-neutral-100 dark:border-neutral-800" />
+                      <MenuItem
+                        icon={Trash2}
+                        label="Delete"
+                        onClick={() => { setMenuOpen(false); onDelete(); }}
+                        danger
+                      />
+                    </>
+                  )}
                 </div>
               </>
             )}

@@ -76,8 +76,12 @@ export function validateTemplate(form: TemplateFormValues): ValidationResult {
     const hasButtons = form.buttonsEnabled && form.buttons.length > 0;
     if (!hasButtons) {
       errors.push(err('buttons', 'AUTH_BUTTON_REQUIRED',
-        'Authentication templates require an OTP button (Copy Code or One-Tap)'));
+        'Authentication templates require an OTP button (Copy Code, One-Tap, or Zero-Tap)'));
     } else {
+      if (form.buttons.length > 1) {
+        errors.push(err('buttons', 'TOO_MANY_AUTH_BUTTONS',
+          'Authentication templates must have exactly one button'));
+      }
       const otpButton = form.buttons.find((b) => b.type === 'OTP');
       if (!otpButton) {
         errors.push(err('buttons', 'OTP_BUTTON_REQUIRED',
@@ -86,14 +90,14 @@ export function validateTemplate(form: TemplateFormValues): ValidationResult {
         if (!otpButton.text?.trim()) {
           errors.push(err('buttons[0].text', 'REQUIRED', 'OTP button text is required'));
         }
-        if (otpButton.otpType === 'ONE_TAP') {
+        if (otpButton.otpType === 'ONE_TAP' || otpButton.otpType === 'ZERO_TAP') {
           if (!otpButton.packageName?.trim()) {
             errors.push(err('buttons[0].packageName', 'REQUIRED',
-              'Android package name is required for One-Tap buttons'));
+              'Android package name is required for One-Tap and Zero-Tap buttons'));
           }
           if (!otpButton.signatureHash?.trim()) {
             errors.push(err('buttons[0].signatureHash', 'REQUIRED',
-              'App signature hash is required for One-Tap buttons'));
+              'App signature hash is required for One-Tap and Zero-Tap buttons'));
           }
         }
       }
@@ -306,7 +310,7 @@ function buildAuthComponents(form: TemplateFormValues) {
         type: 'OTP',
         otp_type: btn.otpType,
         text: btn.text,
-        ...(btn.otpType === 'ONE_TAP' && {
+        ...((btn.otpType === 'ONE_TAP' || btn.otpType === 'ZERO_TAP') && {
           autofill_text: btn.autofillText,
           package_name: btn.packageName,
           signature_hash: btn.signatureHash,

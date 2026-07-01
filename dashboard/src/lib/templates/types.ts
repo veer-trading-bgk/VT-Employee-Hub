@@ -179,15 +179,13 @@ export interface TemplateButtonForm {
 export interface ListTemplatesResponse {
   success: boolean;
   templates: WaTemplate[];
-  total: number;
 }
 
 export interface SyncTemplatesResponse {
   success: boolean;
   synced: number;
-  created: number;
-  updated: number;
-  errors: string[];
+  imported: number;
+  total: number;
 }
 
 export interface SubmitTemplateResponse {
