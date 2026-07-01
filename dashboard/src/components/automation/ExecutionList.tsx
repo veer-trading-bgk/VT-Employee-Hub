@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { Search, CheckCircle2, XCircle, Clock, Activity, ChevronDown, ChevronRight } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Badge } from '@/components/v3/ui/Badge';
@@ -56,6 +56,7 @@ export function ExecutionList({ workflowFilter }: ExecutionListProps) {
         >
           <option value="">All statuses</option>
           <option value="completed">Completed</option>
+          <option value="partial_failure">Partial Failure</option>
           <option value="failed">Failed</option>
           <option value="running">Running</option>
           <option value="paused">Paused</option>
@@ -89,21 +90,20 @@ export function ExecutionList({ workflowFilter }: ExecutionListProps) {
             </thead>
             <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
               {executions.map((e) => (
-                <>
+                <Fragment key={e.executionId}>
                   <ExecutionRow
-                    key={e.executionId}
                     execution={e}
                     expanded={expanded === e.executionId}
                     onToggle={() => setExpanded(expanded === e.executionId ? null : e.executionId)}
                   />
                   {expanded === e.executionId && (
-                    <tr key={`${e.executionId}-steps`} className="bg-neutral-50/50 dark:bg-neutral-900/30">
+                    <tr className="bg-neutral-50/50 dark:bg-neutral-900/30">
                       <td colSpan={7} className="px-6 py-3">
                         <StepTrace steps={e.steps} />
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               ))}
             </tbody>
           </table>
