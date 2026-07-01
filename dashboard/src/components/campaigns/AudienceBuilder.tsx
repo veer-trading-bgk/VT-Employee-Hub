@@ -31,12 +31,13 @@ export function AudienceBuilder({ value, onChange }: AudienceBuilderProps) {
   const [loading, setLoading] = useState(false);
   const [exceeds, setExceeds] = useState(false);
 
-  const { data: tagsData } = useQuery<{ tags: string[] }>({
+  const { data: tagsData } = useQuery<{ success: boolean; tags: Array<{ id: string; label: string; color: string }> }>({
     queryKey: ['tag-catalog'],
     queryFn:  () => apiFetch('/api/tags'),
     staleTime: 5 * 60 * 1000,
   });
-  const allTags = tagsData?.tags ?? [];
+  // tags endpoint returns objects; extract labels so allTags stays string[]
+  const allTags = (tagsData?.tags ?? []).map((t) => t.label);
 
   const fetchPreview = useCallback(async (filter: AudienceFilter) => {
     setLoading(true);
