@@ -44,6 +44,7 @@ import { formatMetricValue } from '@/lib/metrics.config';
 import type { Role } from '@/types';
 import { toast } from 'sonner';
 import { EmployeesSection } from '@/components/v3/team/EmployeesSection';
+import { WabaHealthPanel } from '@/components/settings/WabaHealthPanel';
 
 // ── Section definitions ───────────────────────────────────────────────────────
 
@@ -167,8 +168,12 @@ function AppearanceSection() {
 interface WabaConnection {
   connected: boolean;
   phoneNumber?: string | null;
+  phoneNumberId?: string | null;
   wabaId?: string | null;
   connectedAt?: string | null;
+  setupMethod?: string | null;
+  configValid?: boolean;
+  configIssue?: string;
 }
 
 function WhatsAppSection() {
@@ -176,6 +181,7 @@ function WhatsAppSection() {
   const [manualOpen, setManualOpen] = useState(false);
   const [accessToken, setAccessToken] = useState('');
   const [phoneNumberId, setPhoneNumberId] = useState('');
+  const [wabaId, setWabaId] = useState('');
 
   const { data, isLoading } = useQuery<WabaConnection>({
     queryKey: ['whatsapp-connection'],
@@ -192,13 +198,14 @@ function WhatsAppSection() {
   const manualMut = useMutation({
     mutationFn: () => apiFetch<{ success: boolean; phoneNumber: string }>('/api/whatsapp/manual-connect', {
       method: 'POST',
-      body: JSON.stringify({ accessToken: accessToken.trim(), phoneNumberId: phoneNumberId.trim() }),
+      body: JSON.stringify({ accessToken: accessToken.trim(), phoneNumberId: phoneNumberId.trim(), wabaId: wabaId.trim() || undefined }),
     }),
     onSuccess: (res) => {
       toast.success(`Connected: ${res.phoneNumber ?? 'WhatsApp Business'}`);
       setManualOpen(false);
       setAccessToken('');
       setPhoneNumberId('');
+      setWabaId('');
       qc.invalidateQueries({ queryKey: ['whatsapp-connection'] });
     },
     onError: (e: Error) => toast.error(e.message),
@@ -247,6 +254,7 @@ function WhatsAppSection() {
       {isLoading ? (
         <Skeleton className="h-32 w-full rounded-xl" />
       ) : connected ? (
+        <>
         <Card>
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-3">
@@ -280,6 +288,11 @@ function WhatsAppSection() {
               </div>
             )}
           </div>
+          {data?.configIssue && (
+            <div className="mt-3 rounded-lg border border-error-200 bg-error-50 px-3 py-2.5 text-xs text-error-700 dark:border-error-800 dark:bg-error-900/20 dark:text-error-300">
+              ⚠ Configuration issue: {data.configIssue}
+            </div>
+          )}
           <div className="mt-4 flex gap-2">
             <Button variant="secondary" size="sm" onClick={handleOAuthConnect}>Reconnect</Button>
             <Button variant="danger" size="sm" loading={disconnectMut.isPending}
@@ -288,6 +301,9 @@ function WhatsAppSection() {
             </Button>
           </div>
         </Card>
+
+        <WabaHealthPanel />
+        </>
       ) : (
         <Card>
           <div className="flex items-center gap-3 mb-4">
@@ -328,6 +344,17 @@ function WhatsAppSection() {
                     placeholder="1234567890123..." className={inputCls} />
                   <p className="mt-1 text-xs text-neutral-400">From Meta Business Suite → WhatsApp → API Setup → Phone Number ID</p>
                 </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-neutral-500">
+                    WhatsApp Business Account ID (WABA ID)
+                    <span className="ml-1 text-neutral-400">— auto-detected if blank</span>
+                  </label>
+                  <input value={wabaId} onChange={(e) => setWabaId(e.target.value)}
+                    placeholder="Leave blank to auto-detect..." className={inputCls} />
+                  <p className="mt-1 text-xs text-neutral-400">
+                    Only needed if auto-detection fails. Find it in Meta Business Suite → WhatsApp Accounts (different from API Setup).
+                  </p>
+                </div>
                 <Button loading={manualMut.isPending}
                   disabled={!accessToken.trim() || !phoneNumberId.trim()}
                   onClick={() => manualMut.mutate()}
@@ -345,8 +372,9 @@ function WhatsAppSection() {
         <ol className="list-decimal list-inside space-y-1 text-xs">
           <li>Go to <strong>Meta Business Suite</strong> → <strong>Settings</strong> → <strong>WhatsApp</strong> → <strong>API Setup</strong></li>
           <li>Copy the <strong>Phone Number ID</strong> from the top of the page</li>
-          <li>Click <strong>Generate Access Token</strong> and copy the permanent token</li>
-          <li>Paste both above and click Verify &amp; Connect</li>
+          <li>Click <strong>Generate Access Token</strong> and copy the permanent System User token</li>
+          <li>Paste both above — WABA ID is auto-detected from the token</li>
+          <li>If auto-detection fails: find your <strong>WABA ID</strong> in Meta Business Suite → <strong>WhatsApp Accounts</strong> (not API Setup) and enter it manually</li>
         </ol>
         <p className="text-xs mt-2">Your webhook URL (tell Meta): <code className="bg-neutral-100 dark:bg-neutral-800 px-1 rounded text-xs">{typeof window !== 'undefined' ? window.location.origin.replace('dashboard', 'api').replace('3001', '3000') : ''}/api/whatsapp/webhook</code></p>
       </Card>
