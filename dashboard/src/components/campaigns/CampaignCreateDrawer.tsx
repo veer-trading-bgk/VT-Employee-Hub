@@ -425,7 +425,7 @@ function StepTemplate({
       <div className="max-h-56 space-y-2 overflow-y-auto pr-1">
         {templates.map((t) => (
           <button
-            key={t.templateId}
+            key={t.id}
             type="button"
             onClick={() => selectTemplate(t)}
             className={cn(
