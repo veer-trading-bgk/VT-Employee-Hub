@@ -64,10 +64,10 @@ router.post('/audience/preview', authMiddleware, checkRole(['admin', 'manager'])
     do {
       const r = await dynamodb.scan({
         TableName: TABLE,
-        FilterExpression: 'begins_with(PK, :pfx) AND SK = :meta',
+        FilterExpression: 'begins_with(PK, :pfx) AND SK = :meta AND attribute_not_exists(deletedAt)',
         ExpressionAttributeValues: { ':pfx': `LEAD#${companyId}#`, ':meta': 'METADATA' },
-        ProjectionExpression: 'PK, stage, tags, assignedTo, #src',
-        ExpressionAttributeNames: { '#src': 'source' },
+        ProjectionExpression: 'PK, #nm, phone, phoneNorm, stage, tags, assignedTo, #src',
+        ExpressionAttributeNames: { '#src': 'source', '#nm': 'name' },
         ...(lastKey && { ExclusiveStartKey: lastKey }),
       }).promise();
       items.push(...(r.Items ?? []));
@@ -79,7 +79,32 @@ router.post('/audience/preview', authMiddleware, checkRole(['admin', 'manager'])
     if (filter.assignedTo)      items = items.filter((l) => l.assignedTo === filter.assignedTo);
     if (filter.source)          items = items.filter((l) => l.source === filter.source);
 
-    res.json({ success: true, count: items.length, exceedsLimit: items.length > 1000 });
+    // Dedup by phoneNorm — one recipient per unique WhatsApp account (ADR-013)
+    const seenPhones = new Set();
+    let duplicatesRemoved = 0;
+    let invalidPhoneCount = 0;
+    const deduped = [];
+    for (const l of items) {
+      const norm = l.phoneNorm || l.phone;
+      if (!norm)              { invalidPhoneCount++; continue; }
+      if (seenPhones.has(norm)) { duplicatesRemoved++;  continue; }
+      seenPhones.add(norm);
+      deduped.push(l);
+    }
+
+    const RECIPIENT_CAP = 50;
+    const recipientsCapped = deduped.length > RECIPIENT_CAP;
+    res.json({
+      success: true,
+      count: deduped.length,
+      exceedsLimit: deduped.length > 1000,
+      duplicatesRemoved,
+      invalidPhoneCount,
+      recipients: !recipientsCapped
+        ? deduped.map((l) => ({ name: l.name ?? l.phone ?? '', phone: l.phone ?? '', stage: l.stage ?? '', tags: l.tags ?? [] }))
+        : null,
+      recipientsCapped,
+    });
   } catch (err) { next(err); }
 });
 
@@ -265,13 +290,13 @@ router.post('/:id/launch', authMiddleware, checkRole(['admin', 'manager']), rate
     if (!tmpl)                      return res.status(404).json({ error: 'Template not found' });
     if (tmpl.status !== 'APPROVED') return res.status(400).json({ error: 'Only APPROVED templates can be used' });
 
-    // Load audience — same scan+filter pattern as /broadcast (ADR-013 transition item)
+    // Load audience — excludes soft-deleted leads and deduplicates by phoneNorm (ADR-013)
     let leads = [];
     let lastKey;
     do {
       const sr = await dynamodb.scan({
         TableName: TABLE,
-        FilterExpression: 'begins_with(PK, :pfx) AND SK = :meta',
+        FilterExpression: 'begins_with(PK, :pfx) AND SK = :meta AND attribute_not_exists(deletedAt)',
         ExpressionAttributeValues: { ':pfx': `LEAD#${companyId}#`, ':meta': 'METADATA' },
         ...(lastKey && { ExclusiveStartKey: lastKey }),
       }).promise();
@@ -284,6 +309,15 @@ router.post('/:id/launch', authMiddleware, checkRole(['admin', 'manager']), rate
     if (f.tags?.length)    leads = leads.filter((l) => f.tags.some((t) => (l.tags ?? []).includes(t)));
     if (f.assignedTo)      leads = leads.filter((l) => l.assignedTo === f.assignedTo);
     if (f.source)          leads = leads.filter((l) => l.source === f.source);
+
+    // Dedup by phoneNorm — one send per unique WhatsApp account (ADR-013)
+    const seenPhones = new Set();
+    leads = leads.filter((l) => {
+      const norm = l.phoneNorm || l.phone;
+      if (!norm || seenPhones.has(norm)) return false;
+      seenPhones.add(norm);
+      return true;
+    });
 
     if (leads.length === 0)   return res.status(400).json({ error: 'No contacts match the audience filters' });
     if (leads.length > 1000)  return res.status(400).json({ error: 'Audience exceeds 1,000 contact limit. Refine your filters.' });

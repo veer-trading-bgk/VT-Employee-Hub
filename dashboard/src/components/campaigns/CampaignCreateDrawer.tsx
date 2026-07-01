@@ -13,9 +13,11 @@ import { Badge } from '@/components/v3/ui/Badge';
 import { AudienceBuilder } from './AudienceBuilder';
 import { apiFetch } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { STAGE_LABELS, type Stage } from '@/types/v3';
 import type {
   CampaignType, CampaignObjective, ScheduleMode,
   CampaignFormData, CampaignResponse, LaunchResponse, AudienceFilter,
+  AudiencePreviewResponse,
 } from '@/types/campaigns';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -539,17 +541,30 @@ function buildAudienceSummary(filter: AudienceFilter): string {
 }
 
 function StepReview({ form, selectedTemplate }: { form: CampaignFormData; selectedTemplate: WaTemplate | null }) {
+  // Always fetch a fresh audience count at review time so the displayed number
+  // matches what the backend will actually send to.
+  const { data: audienceData, isLoading: audienceLoading } = useQuery<AudiencePreviewResponse>({
+    queryKey: ['audience-review', JSON.stringify(form.filter)],
+    queryFn:  () => apiFetch<AudiencePreviewResponse>('/api/campaigns/audience/preview', {
+      method: 'POST',
+      body:   JSON.stringify({ filter: form.filter }),
+    }),
+    staleTime: 0,
+    retry: 1,
+  });
+
   const rows = [
-    { label: 'Name',     value: form.name },
-    { label: 'Type',     value: form.type === 'whatsapp_broadcast' ? 'WhatsApp Broadcast' : 'Click-to-WhatsApp' },
+    { label: 'Name',      value: form.name },
+    { label: 'Type',      value: form.type === 'whatsapp_broadcast' ? 'WhatsApp Broadcast' : 'Click-to-WhatsApp' },
     { label: 'Objective', value: form.objective.charAt(0).toUpperCase() + form.objective.slice(1) },
-    { label: 'Audience', value: buildAudienceSummary(form.filter) },
-    { label: 'Template', value: selectedTemplate ? selectedTemplate.name : form.type === 'ctwa' ? 'Configured in Meta Ads' : 'Not selected' },
-    { label: 'Schedule', value: form.scheduleMode === 'now' ? 'Send Now' : form.scheduleMode === 'scheduled' ? `Scheduled: ${new Date(form.scheduledAt).toLocaleString()}` : 'Save as Draft' },
+    { label: 'Audience',  value: buildAudienceSummary(form.filter) },
+    { label: 'Template',  value: selectedTemplate ? selectedTemplate.name : form.type === 'ctwa' ? 'Configured in Meta Ads' : 'Not selected' },
+    { label: 'Schedule',  value: form.scheduleMode === 'now' ? 'Send Now' : form.scheduleMode === 'scheduled' ? `Scheduled: ${new Date(form.scheduledAt).toLocaleString()}` : 'Save as Draft' },
   ];
 
   return (
     <div className="space-y-4">
+      {/* Campaign summary */}
       <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 overflow-hidden">
         {rows.map((row, i) => (
           <div key={row.label} className={cn('flex gap-4 px-4 py-3', i < rows.length - 1 && 'border-b border-neutral-100 dark:border-neutral-800')}>
@@ -557,6 +572,74 @@ function StepReview({ form, selectedTemplate }: { form: CampaignFormData; select
             <p className="flex-1 text-sm text-neutral-900 dark:text-neutral-100 break-words">{row.value}</p>
           </div>
         ))}
+      </div>
+
+      {/* Live recipients — fresh fetch at review time, not the stale step-2 count */}
+      <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 overflow-hidden">
+        <div className="flex items-center justify-between gap-2 px-4 py-2.5 bg-neutral-50 dark:bg-neutral-800/50 border-b border-neutral-200 dark:border-neutral-700">
+          <p className="text-xs font-semibold text-neutral-600 dark:text-neutral-300 uppercase tracking-wide">
+            Live Recipients
+          </p>
+          {audienceLoading
+            ? <Loader2 className="h-4 w-4 animate-spin text-primary-600" />
+            : <span className={cn('text-sm font-bold', audienceData?.exceedsLimit ? 'text-error-600 dark:text-error-400' : 'text-primary-700 dark:text-primary-300')}>
+                {audienceData?.count ?? '—'}
+              </span>
+          }
+        </div>
+
+        {/* Dedup / invalid-phone callout */}
+        {!audienceLoading && audienceData && ((audienceData.duplicatesRemoved ?? 0) > 0 || (audienceData.invalidPhoneCount ?? 0) > 0) && (
+          <div className="flex flex-wrap gap-3 px-4 py-2 border-b border-neutral-100 dark:border-neutral-800 text-xs">
+            {(audienceData.duplicatesRemoved ?? 0) > 0 && (
+              <span className="text-warning-600 dark:text-warning-400">
+                {audienceData.duplicatesRemoved} duplicate{audienceData.duplicatesRemoved !== 1 ? 's' : ''} removed
+              </span>
+            )}
+            {(audienceData.invalidPhoneCount ?? 0) > 0 && (
+              <span className="text-error-600 dark:text-error-400">
+                {audienceData.invalidPhoneCount} invalid phone{audienceData.invalidPhoneCount !== 1 ? 's' : ''} skipped
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Recipient list */}
+        {audienceLoading ? (
+          <div className="flex justify-center py-6"><Loader2 className="h-5 w-5 animate-spin text-neutral-400" /></div>
+        ) : audienceData?.exceedsLimit ? (
+          <p className="px-4 py-3 text-xs text-error-700 dark:text-error-400">
+            Audience exceeds 1,000 contacts. Refine filters before launching.
+          </p>
+        ) : audienceData?.count === 0 ? (
+          <p className="px-4 py-4 text-sm text-neutral-400 text-center">No contacts match the selected filters</p>
+        ) : audienceData?.recipients ? (
+          <div className="max-h-44 overflow-y-auto divide-y divide-neutral-100 dark:divide-neutral-800">
+            {audienceData.recipients.map((r, i) => (
+              <div key={i} className="flex items-start justify-between gap-2 px-4 py-2.5">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{r.name}</p>
+                  <p className="text-xs text-neutral-400">{r.phone}</p>
+                </div>
+                <div className="shrink-0 text-right">
+                  <p className="text-xs text-neutral-500">{STAGE_LABELS[r.stage as Stage] ?? r.stage}</p>
+                  {r.tags.length > 0 && (
+                    <p className="text-xs text-neutral-400 max-w-[100px] truncate">{r.tags.slice(0, 2).join(', ')}{r.tags.length > 2 ? ` +${r.tags.length - 2}` : ''}</p>
+                  )}
+                </div>
+              </div>
+            ))}
+            {audienceData.recipientsCapped && (
+              <p className="px-4 py-2 text-xs text-neutral-400 text-center border-t border-neutral-100 dark:border-neutral-800">
+                Showing first 50 of {audienceData.count} recipients
+              </p>
+            )}
+          </div>
+        ) : audienceData?.recipientsCapped ? (
+          <p className="px-4 py-4 text-sm text-neutral-500 text-center">
+            {audienceData.count.toLocaleString()} recipients — list omitted for large audiences
+          </p>
+        ) : null}
       </div>
 
       {form.scheduleMode === 'now' && form.type === 'whatsapp_broadcast' && (

@@ -59,11 +59,22 @@ export interface CampaignDashboardStats {
 }
 
 // API response shapes
-export interface CampaignsResponse       { success: boolean; campaigns: Campaign[] }
-export interface CampaignResponse        { success: boolean; campaign: Campaign }
-export interface CampaignStatsResponse   { success: boolean; stats: CampaignDashboardStats }
-export interface AudiencePreviewResponse { success: boolean; count: number; exceedsLimit: boolean }
-export interface LaunchResponse          { success: boolean; sent: number; failed: number; total: number; errors: Array<{ phone: string; error: string }> }
+export interface CampaignsResponse     { success: boolean; campaigns: Campaign[] }
+export interface CampaignResponse      { success: boolean; campaign: Campaign }
+export interface CampaignStatsResponse { success: boolean; stats: CampaignDashboardStats }
+
+export interface AudienceRecipient { name: string; phone: string; stage: string; tags: string[] }
+export interface AudiencePreviewResponse {
+  success:          boolean;
+  count:            number;
+  exceedsLimit:     boolean;
+  duplicatesRemoved?: number;
+  invalidPhoneCount?: number;
+  recipients?:      AudienceRecipient[] | null;
+  recipientsCapped?: boolean;
+}
+
+export interface LaunchResponse { success: boolean; sent: number; failed: number; total: number; errors: Array<{ phone: string; error: string }> }
 
 // Wizard form state
 export interface CampaignFormData {
