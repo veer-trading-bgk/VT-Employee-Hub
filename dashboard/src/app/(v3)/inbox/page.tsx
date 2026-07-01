@@ -90,8 +90,8 @@ function msgTime(iso: string) {
 
 // ── WABA 24-hour customer service window ──────────────────────────────────────
 
-const WABA_WINDOW_MS = 1 * 60 * 1_000; // TEST: 1 min — revert to 24 * 60 * 60 * 1_000
-const CLOSING_SOON_MS = 30 * 1_000; // TEST: 30s — revert to 60 * 60 * 1_000
+const WABA_WINDOW_MS = 24 * 60 * 60 * 1_000;
+const CLOSING_SOON_MS = 60 * 60 * 1_000; // warn when <1 h remains
 
 type WindowStatus = 'open' | 'closing-soon' | 'expired';
 
