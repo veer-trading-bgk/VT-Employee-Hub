@@ -24,7 +24,6 @@ import {
   UserCog,
   Target,
   ScrollText,
-  FileText,
   Send,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -53,7 +52,6 @@ interface NavGroup {
 const FLAT_ITEMS: NavItem[] = [
   { href: '/home',           label: 'My Work',       icon: <Home className="h-5 w-5" />,          roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/inbox',          label: 'Inbox',          icon: <MessageSquare className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
-  { href: '/templates',      label: 'Templates',      icon: <FileText className="h-5 w-5" />,      roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/contacts',       label: 'Contacts',       icon: <Users className="h-5 w-5" />,         roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/sales',          label: 'Sales CRM',      icon: <TrendingUp className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager', 'sales'] },
   { href: '/campaigns',      label: 'Campaigns',      icon: <Send className="h-5 w-5" />,          roles: ['owner', 'admin', 'manager'] },

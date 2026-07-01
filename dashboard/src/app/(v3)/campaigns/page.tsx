@@ -1,13 +1,16 @@
 'use client';
 
 import { useState } from 'react';
-import { Send, LayoutDashboard, List, Users, BarChart3, History } from 'lucide-react';
+import { Send, LayoutDashboard, List, Users, BarChart3, History, FileText } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { CampaignsDashboard } from '@/components/campaigns/CampaignsDashboard';
 import { CampaignList } from '@/components/campaigns/CampaignList';
 import { CampaignCreateDrawer } from '@/components/campaigns/CampaignCreateDrawer';
+import { TemplateDashboard } from '@/components/templates/TemplateDashboard';
+import { TemplateList } from '@/components/templates/TemplateList';
 
-type Tab = 'dashboard' | 'campaigns' | 'audience' | 'analytics' | 'history';
+type Tab = 'dashboard' | 'campaigns' | 'audience' | 'analytics' | 'history' | 'templates';
+type TemplateView = 'overview' | 'list';
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -15,11 +18,13 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: 'audience',  label: 'Audience',  icon: Users          },
   { id: 'analytics', label: 'Analytics', icon: BarChart3      },
   { id: 'history',   label: 'History',   icon: History        },
+  { id: 'templates', label: 'Templates', icon: FileText       },
 ];
 
 export default function CampaignsPage() {
-  const [activeTab,   setActiveTab]   = useState<Tab>('dashboard');
-  const [createOpen,  setCreateOpen]  = useState(false);
+  const [activeTab,     setActiveTab]     = useState<Tab>('dashboard');
+  const [createOpen,    setCreateOpen]    = useState(false);
+  const [templateView,  setTemplateView]  = useState<TemplateView>('overview');
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -72,6 +77,42 @@ export default function CampaignsPage() {
           {activeTab === 'analytics' && <AnalyticsPlaceholder />}
           {activeTab === 'history'   && (
             <CampaignList statusFilter="completed" />
+          )}
+          {activeTab === 'templates' && (
+            <div className="flex flex-col gap-4">
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => setTemplateView('overview')}
+                  className={cn(
+                    'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                    templateView === 'overview'
+                      ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/20 dark:text-primary-400'
+                      : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200',
+                  )}
+                >
+                  <LayoutDashboard className="h-4 w-4 shrink-0" aria-hidden />
+                  Overview
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTemplateView('list')}
+                  className={cn(
+                    'flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                    templateView === 'list'
+                      ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/20 dark:text-primary-400'
+                      : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200',
+                  )}
+                >
+                  <List className="h-4 w-4 shrink-0" aria-hidden />
+                  All Templates
+                </button>
+              </div>
+              {templateView === 'overview' && (
+                <TemplateDashboard onViewAll={() => setTemplateView('list')} />
+              )}
+              {templateView === 'list' && <TemplateList />}
+            </div>
           )}
         </div>
       </div>
