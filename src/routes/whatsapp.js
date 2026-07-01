@@ -472,6 +472,59 @@ router.post('/webhook', async (req, res) => {
   try {
     const entry = req.body?.entry?.[0];
     const change = entry?.changes?.[0];
+
+    // ── Template status update webhook ────────────────────────────────────────
+    if (change?.field === 'message_template_status_update') {
+      const ev = change.value ?? {};
+      const { message_template_id, message_template_name, event, reason } = ev;
+      if (message_template_id && event) {
+        const statusMap = {
+          APPROVED: 'APPROVED', REJECTED: 'REJECTED', PENDING: 'PENDING',
+          PAUSED: 'PAUSED', DISABLED: 'DISABLED', FLAGGED: 'FLAGGED',
+          IN_APPEAL: 'IN_APPEAL', REINSTATED: 'REINSTATED',
+          PENDING_DELETION: 'PENDING_DELETION',
+        };
+        const newStatus = statusMap[event] ?? event;
+        const now = new Date().toISOString();
+        const wabaId = entry?.id;
+        let companyId = null;
+        if (wabaId) {
+          const scan = await dynamodb.query({
+            TableName: TABLE,
+            KeyConditionExpression: 'PK = :pk AND SK = :sk',
+            ExpressionAttributeValues: { ':pk': `CONFIG#WABA#${wabaId}`, ':sk': 'CURRENT' },
+          }).promise().catch(() => ({ Items: [] }));
+          companyId = scan.Items?.[0]?.companyId ?? null;
+        }
+        if (companyId && message_template_name) {
+          const tmplScan = await dynamodb.query({
+            TableName: TABLE,
+            KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+            FilterExpression: 'templateName = :tn',
+            ExpressionAttributeValues: {
+              ':pk': `CONFIG#TMPL#${companyId}`, ':sk': 'TMPL#', ':tn': message_template_name,
+            },
+          }).promise().catch(() => ({ Items: [] }));
+          const tmpl = tmplScan.Items?.[0];
+          if (tmpl) {
+            const historyEntry = { status: newStatus, ts: now, reason: reason ?? null };
+            await dynamodb.update({
+              TableName: TABLE,
+              Key: { PK: tmpl.PK, SK: tmpl.SK },
+              UpdateExpression: 'SET #s = :s, rejectedReason = :r, updatedAt = :ua, statusHistory = list_append(if_not_exists(statusHistory, :empty), :h)',
+              ExpressionAttributeNames: { '#s': 'status' },
+              ExpressionAttributeValues: {
+                ':s': newStatus, ':r': reason ?? null,
+                ':ua': now, ':h': [historyEntry], ':empty': [],
+              },
+            }).promise().catch((e) => logger.warn('template status webhook DDB update failed', e.message));
+          }
+        }
+      }
+      res.sendStatus(200);
+      return;
+    }
+
     if (change?.field !== 'messages') { res.sendStatus(200); return; }
 
     const phoneNumberId = change.value?.metadata?.phone_number_id;
@@ -1281,7 +1334,8 @@ router.get('/templates', authMiddleware, checkRole(['admin', 'manager']), async 
 // ── POST /api/whatsapp/templates — create template ────────────────────────────
 router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
-    const { name, templateName, language, category, bodyPreview, variables } = req.body;
+    const { name, templateName, language, category, bodyPreview, variables,
+            components, status, allowCategoryChange, metaTemplateId } = req.body;
     if (!name?.trim() || !templateName?.trim()) {
       return res.status(400).json({ error: 'name and templateName are required' });
     }
@@ -1296,8 +1350,15 @@ router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60
       category: category ?? 'UTILITY',
       bodyPreview: bodyPreview?.trim() ?? '',
       variables: variables ?? [],
+      components: components ?? null,
+      status: status ?? 'DRAFT',
+      qualityScore: 'UNKNOWN',
+      allowCategoryChange: allowCategoryChange ?? true,
+      metaTemplateId: metaTemplateId ?? null,
       createdBy: req.user.id,
+      createdByName: req.user.name ?? null,
       createdAt: now, updatedAt: now,
+      statusHistory: [{ status: status ?? 'DRAFT', ts: now, reason: null }],
     };
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();
     res.status(201).json({ success: true, template: item });
@@ -1307,18 +1368,34 @@ router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60
 // ── PUT /api/whatsapp/templates/:id — update template ────────────────────────
 router.put('/templates/:id', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
-    const { name, templateName, language, category, bodyPreview, variables } = req.body;
+    const { name, templateName, language, category, bodyPreview, variables,
+            components, status, allowCategoryChange } = req.body;
+    const now = new Date().toISOString();
+    let updateExpr = 'SET #n = :n, templateName = :tn, #lang = :lang, category = :cat, bodyPreview = :bp, variables = :vars, updatedAt = :ua, allowCategoryChange = :acc';
+    const exprNames = { '#n': 'name', '#lang': 'language' };
+    const exprVals = {
+      ':n': name?.trim(), ':tn': templateName?.trim().toLowerCase().replace(/\s+/g, '_'),
+      ':lang': language ?? 'en', ':cat': category ?? 'UTILITY',
+      ':bp': bodyPreview?.trim() ?? '', ':vars': variables ?? [],
+      ':ua': now, ':acc': allowCategoryChange ?? true,
+    };
+    if (components !== undefined) {
+      updateExpr += ', components = :comp';
+      exprVals[':comp'] = components;
+    }
+    if (status !== undefined) {
+      updateExpr += ', #s = :s, statusHistory = list_append(if_not_exists(statusHistory, :empty), :h)';
+      exprNames['#s'] = 'status';
+      exprVals[':s'] = status;
+      exprVals[':empty'] = [];
+      exprVals[':h'] = [{ status, ts: now, reason: null }];
+    }
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
-      UpdateExpression: 'SET #n = :n, templateName = :tn, #lang = :lang, category = :cat, bodyPreview = :bp, variables = :vars, updatedAt = :ua',
-      ExpressionAttributeNames: { '#n': 'name', '#lang': 'language' },
-      ExpressionAttributeValues: {
-        ':n': name?.trim(), ':tn': templateName?.trim().toLowerCase().replace(/\s+/g, '_'),
-        ':lang': language ?? 'en', ':cat': category ?? 'UTILITY',
-        ':bp': bodyPreview?.trim() ?? '', ':vars': variables ?? [],
-        ':ua': new Date().toISOString(),
-      },
+      UpdateExpression: updateExpr,
+      ExpressionAttributeNames: exprNames,
+      ExpressionAttributeValues: exprVals,
     }).promise();
     res.json({ success: true });
   } catch (err) { next(err); }
@@ -1332,6 +1409,134 @@ router.delete('/templates/:id', authMiddleware, checkRole(['admin']), rateLimit(
       Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
     }).promise();
     res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/templates/:id/submit — push draft to Meta for review ──
+router.post('/templates/:id/submit', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg?.accessToken || !cfg?.wabaId) {
+      return res.status(400).json({ error: 'WABA not connected' });
+    }
+
+    const tmplResult = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
+    }).promise();
+    const tmpl = tmplResult.Item;
+    if (!tmpl) return res.status(404).json({ error: 'Template not found' });
+    if (!tmpl.components) return res.status(400).json({ error: 'Template has no components — save via builder first' });
+    if (!['DRAFT', 'REJECTED'].includes(tmpl.status ?? 'DRAFT')) {
+      return res.status(400).json({ error: `Template status is ${tmpl.status} — only DRAFT or REJECTED can be submitted` });
+    }
+
+    const payload = {
+      name: tmpl.templateName,
+      language: tmpl.language,
+      category: tmpl.category,
+      components: tmpl.components,
+      allow_category_change: tmpl.allowCategoryChange ?? true,
+    };
+
+    const metaRes = await axios.post(
+      `${GRAPH}/${cfg.wabaId}/message_templates`,
+      payload,
+      { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' }, timeout: 15000 },
+    );
+    const metaTemplateId = metaRes.data?.id ?? null;
+    const now = new Date().toISOString();
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
+      UpdateExpression: 'SET #s = :s, metaTemplateId = :mid, updatedAt = :ua, statusHistory = list_append(if_not_exists(statusHistory, :empty), :h)',
+      ExpressionAttributeNames: { '#s': 'status' },
+      ExpressionAttributeValues: {
+        ':s': 'PENDING', ':mid': metaTemplateId,
+        ':ua': now, ':h': [{ status: 'PENDING', ts: now, reason: null }], ':empty': [],
+      },
+    }).promise();
+    res.json({ success: true, metaTemplateId, status: 'PENDING' });
+  } catch (err) {
+    if (err.response?.data) {
+      logger.error('submit template to Meta failed', err.response.data);
+      return res.status(400).json({ error: err.response.data?.error?.message ?? 'Meta API error' });
+    }
+    next(err);
+  }
+});
+
+// ── POST /api/whatsapp/templates/sync — pull latest status from Meta ──────────
+router.post('/templates/sync', authMiddleware, checkRole(['admin', 'manager']), rateLimit(5, 60_000), async (req, res, next) => {
+  try {
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg?.accessToken || !cfg?.wabaId) {
+      return res.status(400).json({ error: 'WABA not connected' });
+    }
+
+    // Fetch all templates from Meta (paginated — handle up to 250)
+    const fields = 'id,name,status,quality_score,category,rejected_reason';
+    const metaRes = await axios.get(
+      `${GRAPH}/${cfg.wabaId}/message_templates?fields=${fields}&limit=250`,
+      { headers: { Authorization: `Bearer ${cfg.accessToken}` }, timeout: 15000 },
+    );
+    const metaTemplates = metaRes.data?.data ?? [];
+
+    // Fetch our local templates
+    const localResult = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: { ':pk': `CONFIG#TMPL#${req.user.companyId}`, ':sk': 'TMPL#' },
+    }).promise();
+    const localByName = Object.fromEntries((localResult.Items ?? []).map((t) => [t.templateName, t]));
+
+    const statusMap = {
+      APPROVED: 'APPROVED', REJECTED: 'REJECTED', PENDING: 'PENDING',
+      PAUSED: 'PAUSED', DISABLED: 'DISABLED', FLAGGED: 'FLAGGED',
+      IN_APPEAL: 'IN_APPEAL', REINSTATED: 'REINSTATED', PENDING_DELETION: 'PENDING_DELETION',
+    };
+    const qualityMap = { GREEN: 'HIGH', YELLOW: 'MEDIUM', RED: 'LOW', UNKNOWN: 'UNKNOWN' };
+
+    const now = new Date().toISOString();
+    let synced = 0;
+    for (const mt of metaTemplates) {
+      const local = localByName[mt.name];
+      if (!local) continue;
+      const newStatus = statusMap[mt.status] ?? mt.status;
+      const newQuality = qualityMap[mt.quality_score?.score ?? 'UNKNOWN'] ?? 'UNKNOWN';
+      if (local.status === newStatus && local.qualityScore === newQuality) continue;
+
+      await dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: local.PK, SK: local.SK },
+        UpdateExpression: 'SET #s = :s, qualityScore = :q, metaTemplateId = :mid, rejectedReason = :r, updatedAt = :ua',
+        ExpressionAttributeNames: { '#s': 'status' },
+        ExpressionAttributeValues: {
+          ':s': newStatus, ':q': newQuality, ':mid': mt.id,
+          ':r': mt.rejected_reason ?? null, ':ua': now,
+        },
+      }).promise();
+      synced++;
+    }
+    res.json({ success: true, synced, total: metaTemplates.length });
+  } catch (err) {
+    if (err.response?.data) {
+      logger.error('sync templates from Meta failed', err.response.data);
+      return res.status(400).json({ error: err.response.data?.error?.message ?? 'Meta API error' });
+    }
+    next(err);
+  }
+});
+
+// ── GET /api/whatsapp/templates/:id/history — status history ─────────────────
+router.get('/templates/:id/history', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const result = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
+    }).promise();
+    if (!result.Item) return res.status(404).json({ error: 'Template not found' });
+    res.json({ success: true, history: result.Item.statusHistory ?? [] });
   } catch (err) { next(err); }
 });
 
