@@ -302,6 +302,7 @@ function ConversationList({
 }) {
   const [search, setSearch] = useState('');
   const qc = useQueryClient();
+  const didAutoSelect = useRef(false);
 
   const { data, isLoading } = useQuery<{ conversations: WaConversation[]; counts: Record<string, number> }>({
     queryKey: ['wa-inbox', activeTab],
@@ -313,6 +314,14 @@ function ConversationList({
 
   const conversations = data?.conversations ?? [];
   const counts = data?.counts ?? {};
+
+  // Auto-open the latest conversation on first load
+  useEffect(() => {
+    if (didAutoSelect.current || activeId || isLoading || conversations.length === 0) return;
+    didAutoSelect.current = true;
+    onSelect(conversations[0]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversations, activeId, isLoading]);
 
   // Request browser notification permission once
   useEffect(() => {
