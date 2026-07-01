@@ -21,13 +21,13 @@ import type {
 // ── Types ──────────────────────────────────────────────────────────────────
 
 interface WaTemplate {
-  templateId:    string;
+  id:            string;   // backend field (was incorrectly typed as templateId)
   name:          string;
   templateName:  string;
   status:        string;
   category:      string;
   language:      string;
-  components?:   Array<{ type: string; format?: string; text?: string; example?: { header_text?: string[] } }>;
+  components?:   Array<{ type: string; format?: string; text?: string; example?: { header_text?: string[] } }> | null;
 }
 
 interface WaTemplatesResponse {
@@ -66,7 +66,7 @@ export function CampaignCreateDrawer({ open, onClose }: CampaignCreateDrawerProp
     staleTime: 5 * 60 * 1000,
   });
   const approvedTemplates = (tmplData?.templates ?? []).filter((t) => t.status === 'APPROVED');
-  const selectedTemplate  = approvedTemplates.find((t) => t.templateId === form.templateId) ?? null;
+  const selectedTemplate  = approvedTemplates.find((t) => t.id === form.templateId) ?? null;
 
   function handleClose() {
     setStep(0);
@@ -133,7 +133,7 @@ export function CampaignCreateDrawer({ open, onClose }: CampaignCreateDrawerProp
 
   const canNext = useCallback(() => {
     if (step === 0) return form.name.trim().length > 0;
-    if (step === 2) return form.type === 'ctwa' || form.templateId.length > 0;
+    if (step === 2) return form.type === 'ctwa' || (form.templateId?.length ?? 0) > 0;
     if (step === 3) return form.scheduleMode !== 'scheduled' || form.scheduledAt.length > 0;
     return true;
   }, [step, form]);
@@ -361,7 +361,7 @@ function StepInfo({
 // ── Step 3: Template Selection ─────────────────────────────────────────────
 
 function extractBodyVars(template: WaTemplate): number {
-  const body = template.components?.find((c) => c.type === 'BODY');
+  const body = (template.components ?? []).find((c) => c.type === 'BODY');
   if (!body?.text) return 0;
   return (body.text.match(/\{\{\d+\}\}/g) ?? []).length;
 }
@@ -413,7 +413,7 @@ function StepTemplate({
     const varCount = extractBodyVars(t);
     onChange((f) => ({
       ...f,
-      templateId:     t.templateId,
+      templateId:     t.id,
       templateName:   t.name,
       variableValues: Array.from({ length: varCount }, () => ''),
     }));
@@ -430,7 +430,7 @@ function StepTemplate({
             onClick={() => selectTemplate(t)}
             className={cn(
               'w-full rounded-lg border p-3 text-left transition-colors',
-              form.templateId === t.templateId
+              form.templateId === t.id
                 ? 'border-primary-400 bg-primary-50 dark:border-primary-600 dark:bg-primary-900/20'
                 : 'border-neutral-200 bg-white hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800',
             )}
@@ -438,7 +438,7 @@ function StepTemplate({
             <div className="flex items-center justify-between gap-2">
               <p className={cn(
                 'text-sm font-medium truncate',
-                form.templateId === t.templateId ? 'text-primary-700 dark:text-primary-300' : 'text-neutral-900 dark:text-neutral-100',
+                form.templateId === t.id ? 'text-primary-700 dark:text-primary-300' : 'text-neutral-900 dark:text-neutral-100',
               )}>
                 {t.name}
               </p>
