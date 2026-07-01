@@ -6,7 +6,7 @@ import { test, expect } from '@playwright/test';
 async function expectPageLoaded(page: Parameters<typeof test>[1] extends (arg: { page: infer P }) => unknown ? P : never, url: string) {
   await page.goto(url);
   // Sidebar confirms ProtectedRoute passed and layout rendered
-  await expect(page.locator('aside')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('aside').first()).toBeVisible({ timeout: 15_000 });
   // Must not have bounced to login
   await expect(page).not.toHaveURL(/\/login/);
 }
