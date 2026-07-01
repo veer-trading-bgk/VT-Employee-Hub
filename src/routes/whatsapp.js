@@ -1,4 +1,5 @@
 const express = require('express');
+const { randomUUID } = require('crypto');
 const { dedupPut } = require('../utils/dedupPut');
 const axios = require('axios');
 const S3 = require('aws-sdk/clients/s3');
@@ -159,16 +160,20 @@ async function sendTextMessage(companyId, to, body, replyToWaMessageId = null) {
   }
 }
 
-async function sendTemplateMessage(companyId, to, templateName, languageCode, bodyParams) {
+async function sendTemplateMessage(companyId, to, templateName, languageCode, bodyParams, headerParams = null) {
   const cfg = await getWabaConfig(companyId);
   if (!cfg?.accessToken || !cfg?.phoneNumberId) {
     logger.warn(`WhatsApp not configured for company ${companyId}`);
     return null;
   }
   const phone = String(to).replace(/\D/g, '');
-  const components = bodyParams?.length
-    ? [{ type: 'body', parameters: bodyParams.map((v) => ({ type: 'text', text: String(v) })) }]
-    : [];
+  const components = [];
+  if (headerParams?.length) {
+    components.push({ type: 'header', parameters: headerParams.map((v) => ({ type: 'text', text: String(v) })) });
+  }
+  if (bodyParams?.length) {
+    components.push({ type: 'body', parameters: bodyParams.map((v) => ({ type: 'text', text: String(v) })) });
+  }
   try {
     const res = await axios.post(
       `${GRAPH}/${cfg.phoneNumberId}/messages`,
@@ -472,6 +477,61 @@ router.post('/webhook', async (req, res) => {
   try {
     const entry = req.body?.entry?.[0];
     const change = entry?.changes?.[0];
+
+    // ── Template status update webhook ────────────────────────────────────────
+    if (change?.field === 'message_template_status_update') {
+      const ev = change.value ?? {};
+      const { message_template_id, message_template_name, event, reason } = ev;
+      if (message_template_id && event) {
+        const statusMap = {
+          APPROVED: 'APPROVED', REJECTED: 'REJECTED', PENDING: 'PENDING',
+          PAUSED: 'PAUSED', DISABLED: 'DISABLED', FLAGGED: 'FLAGGED',
+          IN_APPEAL: 'IN_APPEAL', REINSTATED: 'REINSTATED',
+          PENDING_DELETION: 'PENDING_DELETION',
+        };
+        const newStatus = statusMap[event] ?? event;
+        const now = new Date().toISOString();
+        const wabaId = entry?.id;
+        let companyId = null;
+        if (wabaId) {
+          // WABA config is keyed by companyId (CONFIG#WABA#${companyId}), not by wabaId.
+          // Scan WABA config items and match by wabaId attribute.
+          const scan = await dynamodb.scan({
+            TableName: TABLE,
+            FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk AND wabaId = :wid',
+            ExpressionAttributeValues: { ':prefix': 'CONFIG#WABA#', ':sk': 'CURRENT', ':wid': wabaId },
+          }).promise().catch(() => ({ Items: [] }));
+          companyId = scan.Items?.[0]?.companyId ?? null;
+        }
+        if (companyId && message_template_name) {
+          const tmplScan = await dynamodb.query({
+            TableName: TABLE,
+            KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+            FilterExpression: 'templateName = :tn',
+            ExpressionAttributeValues: {
+              ':pk': `CONFIG#TMPL#${companyId}`, ':sk': 'TMPL#', ':tn': message_template_name,
+            },
+          }).promise().catch(() => ({ Items: [] }));
+          const tmpl = tmplScan.Items?.[0];
+          if (tmpl) {
+            const historyEntry = { status: newStatus, ts: now, reason: reason ?? null };
+            await dynamodb.update({
+              TableName: TABLE,
+              Key: { PK: tmpl.PK, SK: tmpl.SK },
+              UpdateExpression: 'SET #s = :s, rejectedReason = :r, updatedAt = :ua, statusHistory = list_append(if_not_exists(statusHistory, :empty), :h)',
+              ExpressionAttributeNames: { '#s': 'status' },
+              ExpressionAttributeValues: {
+                ':s': newStatus, ':r': reason ?? null,
+                ':ua': now, ':h': [historyEntry], ':empty': [],
+              },
+            }).promise().catch((e) => logger.warn('template status webhook DDB update failed', e.message));
+          }
+        }
+      }
+      res.sendStatus(200);
+      return;
+    }
+
     if (change?.field !== 'messages') { res.sendStatus(200); return; }
 
     const phoneNumberId = change.value?.metadata?.phone_number_id;
@@ -1241,7 +1301,7 @@ router.post('/inbox/canned', authMiddleware, checkRole(['admin', 'manager']), ra
       }
     }
 
-    const id = require('crypto').randomUUID();
+    const id = randomUUID();
     const item = {
       PK: `CONFIG#CANNED#${req.user.companyId}`,
       SK: `CANNED#${id}`,
@@ -1269,23 +1329,46 @@ router.delete('/inbox/canned/:id', authMiddleware, checkRole(['admin', 'manager'
 // ── GET /api/whatsapp/templates — list stored templates ───────────────────────
 router.get('/templates', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
-    const result = await dynamodb.query({
-      TableName: TABLE,
-      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-      ExpressionAttributeValues: { ':pk': `CONFIG#TMPL#${req.user.companyId}`, ':sk': 'TMPL#' },
-    }).promise();
-    res.json({ success: true, templates: (result.Items ?? []).sort((a, b) => a.name?.localeCompare(b.name)) });
+    const items = [];
+    let lastKey;
+    do {
+      const result = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+        ExpressionAttributeValues: { ':pk': `CONFIG#TMPL#${req.user.companyId}`, ':sk': 'TMPL#' },
+        ...(lastKey && { ExclusiveStartKey: lastKey }),
+      }).promise();
+      items.push(...(result.Items ?? []));
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+    res.json({ success: true, templates: items.sort((a, b) => a.name?.localeCompare(b.name)) });
   } catch (err) { next(err); }
 });
 
 // ── POST /api/whatsapp/templates — create template ────────────────────────────
 router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
-    const { name, templateName, language, category, bodyPreview, variables } = req.body;
+    const { name, templateName, language, category, bodyPreview, variables,
+            components, allowCategoryChange, metaTemplateId } = req.body;
     if (!name?.trim() || !templateName?.trim()) {
       return res.status(400).json({ error: 'name and templateName are required' });
     }
-    const id = require('crypto').randomUUID();
+    const normName = templateName.trim().toLowerCase().replace(/\s+/g, '_');
+    const dupCheck = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      FilterExpression: 'templateName = :tn',
+      ExpressionAttributeValues: {
+        ':pk': `CONFIG#TMPL#${req.user.companyId}`,
+        ':sk': 'TMPL#',
+        ':tn': normName,
+      },
+      Limit: 1,
+    }).promise();
+    if ((dupCheck.Items?.length ?? 0) > 0) {
+      return res.status(409).json({ error: `Template name "${normName}" already exists — choose a different name` });
+    }
+    const id = randomUUID();
     const now = new Date().toISOString();
     const item = {
       PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${id}`,
@@ -1296,8 +1379,15 @@ router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60
       category: category ?? 'UTILITY',
       bodyPreview: bodyPreview?.trim() ?? '',
       variables: variables ?? [],
+      components: components ?? null,
+      status: 'DRAFT',
+      qualityScore: 'UNKNOWN',
+      allowCategoryChange: allowCategoryChange ?? true,
+      metaTemplateId: metaTemplateId ?? null,
       createdBy: req.user.id,
+      createdByName: req.user.name ?? null,
       createdAt: now, updatedAt: now,
+      statusHistory: [{ status: 'DRAFT', ts: now, reason: null }],
     };
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();
     res.status(201).json({ success: true, template: item });
@@ -1307,38 +1397,250 @@ router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60
 // ── PUT /api/whatsapp/templates/:id — update template ────────────────────────
 router.put('/templates/:id', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
-    const { name, templateName, language, category, bodyPreview, variables } = req.body;
+    const { name, templateName, language, category, bodyPreview, variables,
+            components, status, allowCategoryChange } = req.body;
+    const now = new Date().toISOString();
+    let updateExpr = 'SET #n = :n, templateName = :tn, #lang = :lang, category = :cat, bodyPreview = :bp, variables = :vars, updatedAt = :ua, allowCategoryChange = :acc';
+    const exprNames = { '#n': 'name', '#lang': 'language' };
+    const exprVals = {
+      ':n': name?.trim(), ':tn': templateName?.trim().toLowerCase().replace(/\s+/g, '_'),
+      ':lang': language ?? 'en', ':cat': category ?? 'UTILITY',
+      ':bp': bodyPreview?.trim() ?? '', ':vars': variables ?? [],
+      ':ua': now, ':acc': allowCategoryChange ?? true,
+    };
+    if (components !== undefined) {
+      updateExpr += ', components = :comp';
+      exprVals[':comp'] = components;
+    }
+    if (status !== undefined) {
+      updateExpr += ', #s = :s, statusHistory = list_append(if_not_exists(statusHistory, :empty), :h)';
+      exprNames['#s'] = 'status';
+      exprVals[':s'] = status;
+      exprVals[':empty'] = [];
+      exprVals[':h'] = [{ status, ts: now, reason: null }];
+    }
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
-      UpdateExpression: 'SET #n = :n, templateName = :tn, #lang = :lang, category = :cat, bodyPreview = :bp, variables = :vars, updatedAt = :ua',
-      ExpressionAttributeNames: { '#n': 'name', '#lang': 'language' },
-      ExpressionAttributeValues: {
-        ':n': name?.trim(), ':tn': templateName?.trim().toLowerCase().replace(/\s+/g, '_'),
-        ':lang': language ?? 'en', ':cat': category ?? 'UTILITY',
-        ':bp': bodyPreview?.trim() ?? '', ':vars': variables ?? [],
-        ':ua': new Date().toISOString(),
-      },
+      ConditionExpression: 'attribute_exists(PK)',
+      UpdateExpression: updateExpr,
+      ExpressionAttributeNames: exprNames,
+      ExpressionAttributeValues: exprVals,
     }).promise();
     res.json({ success: true });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.code === 'ConditionalCheckFailedException') {
+      return res.status(404).json({ error: 'Template not found' });
+    }
+    next(err);
+  }
 });
 
 // ── DELETE /api/whatsapp/templates/:id ───────────────────────────────────────
 router.delete('/templates/:id', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
+    const tmplResult = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
+    }).promise();
+    const tmpl = tmplResult.Item;
+    if (!tmpl) return res.status(404).json({ error: 'Template not found' });
+
+    let warning = null;
+    if (tmpl.metaTemplateId) {
+      const cfg = await getWabaConfig(req.user.companyId).catch(() => null);
+      if (cfg?.accessToken && cfg?.wabaId) {
+        try {
+          await axios.delete(`${GRAPH}/${cfg.wabaId}/message_templates`, {
+            params: { name: tmpl.templateName },
+            headers: { Authorization: `Bearer ${cfg.accessToken}` },
+            timeout: 15000,
+          });
+        } catch (metaErr) {
+          if (metaErr.response?.status !== 404) {
+            logger.warn('delete template from Meta failed — deleting locally only', metaErr.response?.data);
+            warning = metaErr.response?.data?.error?.message ?? 'Meta deletion failed — remove manually from Meta Business Suite';
+          }
+        }
+      }
+    }
+
     await dynamodb.delete({
       TableName: TABLE,
       Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
     }).promise();
-    res.json({ success: true });
+    res.json({ success: true, ...(warning && { warning }) });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/templates/:id/submit — push draft to Meta for review ──
+router.post('/templates/:id/submit', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg?.accessToken || !cfg?.wabaId) {
+      return res.status(400).json({ error: 'WABA not connected' });
+    }
+
+    const tmplResult = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
+    }).promise();
+    const tmpl = tmplResult.Item;
+    if (!tmpl) return res.status(404).json({ error: 'Template not found' });
+    if (!tmpl.components) return res.status(400).json({ error: 'Template has no components — save via builder first' });
+    if (!['DRAFT', 'REJECTED'].includes(tmpl.status ?? 'DRAFT')) {
+      return res.status(400).json({ error: `Template status is ${tmpl.status} — only DRAFT or REJECTED can be submitted` });
+    }
+
+    const payload = {
+      name: tmpl.templateName,
+      language: tmpl.language,
+      category: tmpl.category,
+      components: tmpl.components,
+      allow_category_change: tmpl.allowCategoryChange ?? true,
+    };
+
+    const metaRes = await axios.post(
+      `${GRAPH}/${cfg.wabaId}/message_templates`,
+      payload,
+      { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' }, timeout: 15000 },
+    );
+    const metaTemplateId = metaRes.data?.id ?? null;
+    const now = new Date().toISOString();
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
+      UpdateExpression: 'SET #s = :s, metaTemplateId = :mid, updatedAt = :ua, statusHistory = list_append(if_not_exists(statusHistory, :empty), :h)',
+      ExpressionAttributeNames: { '#s': 'status' },
+      ExpressionAttributeValues: {
+        ':s': 'PENDING', ':mid': metaTemplateId,
+        ':ua': now, ':h': [{ status: 'PENDING', ts: now, reason: null }], ':empty': [],
+      },
+    }).promise();
+    res.json({ success: true, metaTemplateId, status: 'PENDING' });
+  } catch (err) {
+    if (err.response?.data) {
+      logger.error('submit template to Meta failed', err.response.data);
+      return res.status(400).json({ error: err.response.data?.error?.message ?? 'Meta API error' });
+    }
+    next(err);
+  }
+});
+
+// ── POST /api/whatsapp/templates/sync — pull latest status from Meta ──────────
+router.post('/templates/sync', authMiddleware, checkRole(['admin', 'manager']), rateLimit(5, 60_000), async (req, res, next) => {
+  try {
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg?.accessToken || !cfg?.wabaId) {
+      return res.status(400).json({ error: 'WABA not connected' });
+    }
+
+    // Fetch ALL templates from Meta with cursor pagination
+    const fields = 'id,name,status,quality_score,category,rejected_reason,language,components';
+    const metaTemplates = [];
+    let nextUrl = `${GRAPH}/${cfg.wabaId}/message_templates?fields=${fields}&limit=100`;
+    while (nextUrl) {
+      const metaRes = await axios.get(nextUrl, { headers: { Authorization: `Bearer ${cfg.accessToken}` }, timeout: 15000 });
+      metaTemplates.push(...(metaRes.data?.data ?? []));
+      nextUrl = metaRes.data?.paging?.next ?? null;
+    }
+
+    // Fetch our local templates
+    const localItems = [];
+    let localLastKey;
+    do {
+      const localPage = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+        ExpressionAttributeValues: { ':pk': `CONFIG#TMPL#${req.user.companyId}`, ':sk': 'TMPL#' },
+        ...(localLastKey && { ExclusiveStartKey: localLastKey }),
+      }).promise();
+      localItems.push(...(localPage.Items ?? []));
+      localLastKey = localPage.LastEvaluatedKey;
+    } while (localLastKey);
+    const localByName = Object.fromEntries(localItems.map((t) => [t.templateName, t]));
+
+    const statusMap = {
+      APPROVED: 'APPROVED', REJECTED: 'REJECTED', PENDING: 'PENDING',
+      PAUSED: 'PAUSED', DISABLED: 'DISABLED', FLAGGED: 'FLAGGED',
+      IN_APPEAL: 'IN_APPEAL', REINSTATED: 'REINSTATED', PENDING_DELETION: 'PENDING_DELETION',
+    };
+    const qualityMap = { GREEN: 'HIGH', YELLOW: 'MEDIUM', RED: 'LOW', UNKNOWN: 'UNKNOWN' };
+
+    const now = new Date().toISOString();
+    let synced = 0;
+    let imported = 0;
+    for (const mt of metaTemplates) {
+      const local = localByName[mt.name];
+      const newStatus = statusMap[mt.status] ?? mt.status;
+      const newQuality = qualityMap[mt.quality_score?.score ?? 'UNKNOWN'] ?? 'UNKNOWN';
+
+      if (!local) {
+        // Import Meta-native template not yet in our database
+        const bodyComp = (mt.components ?? []).find((c) => c.type === 'BODY');
+        const newId = randomUUID();
+        await dynamodb.put({
+          TableName: TABLE,
+          ConditionExpression: 'attribute_not_exists(PK)',
+          Item: {
+            PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${newId}`,
+            id: newId, companyId: req.user.companyId,
+            name: mt.name, templateName: mt.name,
+            language: mt.language ?? 'en', category: mt.category,
+            bodyPreview: (bodyComp?.text ?? '').slice(0, 100),
+            variables: [],
+            components: mt.components ?? null,
+            status: newStatus, qualityScore: newQuality,
+            allowCategoryChange: true, metaTemplateId: mt.id,
+            rejectedReason: mt.rejected_reason ?? null,
+            createdAt: now, updatedAt: now,
+            statusHistory: [{ status: newStatus, ts: now, reason: null }],
+          },
+        }).promise().catch(() => {}); // skip on duplicate race
+        imported++;
+        continue;
+      }
+
+      if (local.status === newStatus && local.qualityScore === newQuality) continue;
+      await dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: local.PK, SK: local.SK },
+        UpdateExpression: 'SET #s = :s, qualityScore = :q, metaTemplateId = :mid, rejectedReason = :r, updatedAt = :ua, statusHistory = list_append(if_not_exists(statusHistory, :empty), :h)',
+        ExpressionAttributeNames: { '#s': 'status' },
+        ExpressionAttributeValues: {
+          ':s': newStatus, ':q': newQuality, ':mid': mt.id,
+          ':r': mt.rejected_reason ?? null, ':ua': now,
+          ':empty': [], ':h': [{ status: newStatus, ts: now, reason: mt.rejected_reason ?? null }],
+        },
+      }).promise();
+      synced++;
+    }
+    res.json({ success: true, synced, imported, total: metaTemplates.length });
+  } catch (err) {
+    if (err.response?.data) {
+      logger.error('sync templates from Meta failed', err.response.data);
+      return res.status(400).json({ error: err.response.data?.error?.message ?? 'Meta API error' });
+    }
+    next(err);
+  }
+});
+
+// ── GET /api/whatsapp/templates/:id/history — status history ─────────────────
+router.get('/templates/:id/history', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const result = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${req.params.id}` },
+    }).promise();
+    if (!result.Item) return res.status(404).json({ error: 'Template not found' });
+    res.json({ success: true, history: result.Item.statusHistory ?? [] });
   } catch (err) { next(err); }
 });
 
 // ── POST /api/whatsapp/send-template — send template to a lead ────────────────
 router.post('/send-template', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
-    const { leadId, leadPK: leadPK0, templateId, variableValues } = req.body;
+    const { leadId, leadPK: leadPK0, templateId, variableValues, headerVariableValue } = req.body;
     // Accept either leadId (from TemplatePicker) or leadPK (direct)
     const pk = leadPK0 || (leadId ? `LEAD#${req.user.companyId}#${leadId}` : null);
     if (!pk || !templateId) return res.status(400).json({ error: 'leadId (or leadPK) and templateId required' });
@@ -1354,7 +1656,10 @@ router.post('/send-template', authMiddleware, checkRole(['admin', 'manager']), r
     if (!lead) return res.status(404).json({ error: 'Lead not found' });
 
     const params = (variableValues ?? []).map(String);
-    const wamid = await sendTemplateMessage(req.user.companyId, lead.phone, tmpl.templateName, tmpl.language, params);
+    const headerComp = (tmpl.components ?? []).find((c) => c.type === 'HEADER' && c.format === 'TEXT');
+    const hasHeaderVar = headerComp && /\{\{1\}\}/.test(headerComp.text ?? '');
+    const headerParams = hasHeaderVar ? [String(headerVariableValue ?? '')] : null;
+    const wamid = await sendTemplateMessage(req.user.companyId, lead.phone, tmpl.templateName, tmpl.language, params, headerParams);
 
     const ts = new Date().toISOString();
     const tmplMsgSK = `MSG#${ts}#${wamid ?? Date.now()}`;
@@ -1380,7 +1685,7 @@ router.post('/send-template', authMiddleware, checkRole(['admin', 'manager']), r
 // ── POST /api/whatsapp/broadcast — send template to a lead segment ────────────
 router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
-    const { templateId, variableValues, filter } = req.body;
+    const { templateId, variableValues, filter, headerVariableValue } = req.body;
     if (!templateId) return res.status(400).json({ error: 'templateId required' });
 
     const companyId = req.user.companyId;
@@ -1391,6 +1696,9 @@ router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateL
     }).promise();
     const tmpl = tmplResult.Item;
     if (!tmpl) return res.status(404).json({ error: 'Template not found' });
+
+    const bcastHdrComp = (tmpl.components ?? []).find((c) => c.type === 'HEADER' && c.format === 'TEXT');
+    const bcastHasHdrVar = bcastHdrComp && /\{\{1\}\}/.test(bcastHdrComp.text ?? '');
 
     // Scan leads matching filter
     let items = [];
@@ -1415,7 +1723,7 @@ router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateL
     if (items.length === 0) return res.status(400).json({ error: 'No leads match the selected filters' });
     if (items.length > 1000) return res.status(400).json({ error: 'Broadcast limited to 1000 leads per batch. Refine your filters.' });
 
-    const broadcastId = require('crypto').randomUUID();
+    const broadcastId = randomUUID();
     const now = new Date().toISOString();
     const broadcastSK = `${now}#${broadcastId}`;
     let sent = 0; let failed = 0;
@@ -1433,7 +1741,12 @@ router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateL
           if (v === '{{phone}}') return lead.phone ?? '';
           return String(v);
         });
-        const wamid = await sendTemplateMessage(companyId, lead.phone, tmpl.templateName, tmpl.language, params);
+        const resolvedHeader = !bcastHasHdrVar ? null
+          : headerVariableValue === '{{name}}' ? (lead.name ?? '')
+          : headerVariableValue === '{{phone}}' ? (lead.phone ?? '')
+          : (headerVariableValue ?? bcastHdrComp?.example?.header_text?.[0] ?? '');
+        const hdrParams = bcastHasHdrVar ? [resolvedHeader] : null;
+        const wamid = await sendTemplateMessage(companyId, lead.phone, tmpl.templateName, tmpl.language, params, hdrParams);
 
         const ts = new Date().toISOString();
         const bMsgSK = `MSG#${ts}#${wamid ?? Date.now()}`;
@@ -1589,7 +1902,7 @@ router.get('/upload-url', authMiddleware, async (req, res, next) => {
     }
 
     const ext = filename.split('.').pop()?.toLowerCase() ?? 'bin';
-    const key = `uploads/${req.user.companyId}/${require('crypto').randomUUID()}.${ext}`;
+    const key = `uploads/${req.user.companyId}/${randomUUID()}.${ext}`;
 
     const uploadUrl = s3Client.getSignedUrl('putObject', {
       Bucket: MEDIA_BUCKET,
