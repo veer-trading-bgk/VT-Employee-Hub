@@ -354,6 +354,15 @@ router.post('/:id/launch', authMiddleware, checkRole(['admin', 'manager']), rate
       },
     }).promise();
 
+    // Fire campaign_completed automation trigger
+    if (sent > 0) {
+      const { runAutomations } = require('./automations');
+      runAutomations(companyId, 'campaign_completed', {
+        campaignId: campaign.id, campaignName: campaign.name,
+        sent, failed, total: leads.length,
+      }).catch((e) => logger.warn('automation error: ' + e.message));
+    }
+
     res.json({ success: true, sent, failed, total: leads.length, errors: errors.slice(0, 20) });
   } catch (err) {
     // Best-effort revert to failed on unexpected error

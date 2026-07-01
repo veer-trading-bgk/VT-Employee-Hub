@@ -1436,6 +1436,11 @@ router.post('/webhook', async (req, res) => {
               logger.info(`Welcome message sent to ${phone10} for company ${companyId}`);
             }
           } catch (e) { logger.warn('Welcome message failed: ' + e.message); }
+          // Fire automation trigger for brand-new WhatsApp contact
+          const { runAutomations } = require('./automations');
+          runAutomations(companyId, 'whatsapp_conversation_started', {
+            phone: phone10, name: waName ?? null, source: 'whatsapp', tags: [],
+          }).catch((e2) => logger.warn('automation error: ' + e2.message));
         }
       }
     }

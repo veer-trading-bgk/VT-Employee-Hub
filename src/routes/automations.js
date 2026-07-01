@@ -1,196 +1,227 @@
-const express = require('express');
+'use strict';
+
+const express  = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { authMiddleware, checkRole } = require('../middleware/auth');
+const { rateLimit } = require('../middleware/rateLimiter');
 const dynamodb = require('../config/dynamodb');
-const logger = require('../config/logger');
-const WASendSvc = require('../services/WhatsAppSendService');
+const logger   = require('../config/logger');
+const AutomationEngine = require('../services/AutomationEngine');
 
 const router = express.Router();
-const TABLE = process.env.DYNAMODB_TABLE_METRICS;
+const TABLE  = process.env.DYNAMODB_TABLE_METRICS;
 
-// ── Automation execution engine ───────────────────────────────────────────────
-async function runAutomations(companyId, trigger, context) {
+const autoPK = (companyId) => `CONFIG#AUTO#${companyId}`;
+const autoSK = (id)        => `AUTO#${id}`;
+const execPK = (companyId) => `AUTO_EXEC#${companyId}`;
+
+// ── Exported trigger function (called by crm.js, whatsapp.js, campaigns.js) ─
+async function runAutomations(companyId, triggerType, context) {
+  return AutomationEngine.fireTrigger(companyId, triggerType, context);
+}
+
+// ── GET /stats — must be before /:id ────────────────────────────────────────
+router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
+    const { companyId } = req.user;
+    const [wfRes, execRes] = await Promise.all([
+      dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+        ExpressionAttributeValues: { ':pk': autoPK(companyId), ':sk': 'AUTO#' },
+      }).promise(),
+      dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk',
+        ExpressionAttributeValues: { ':pk': execPK(companyId) },
+        ScanIndexForward: false,
+        Limit: 500,
+      }).promise(),
+    ]);
+
+    const wfs  = wfRes.Items ?? [];
+    const excs = execRes.Items ?? [];
+
+    const active    = wfs.filter((w) => w.status === 'active'   || (w.status == null && w.enabled === true)).length;
+    const draft     = wfs.filter((w) => w.status === 'draft'    || (w.status == null && w.enabled === false && !w.status)).length;
+    const paused    = wfs.filter((w) => w.status === 'paused').length;
+    const successes = excs.filter((e) => e.status === 'completed').length;
+
+    res.json({
+      success: true,
+      stats: {
+        total:           wfs.length,
+        active,
+        draft,
+        paused,
+        totalExecutions: excs.length,
+        successRate:     excs.length > 0 ? Math.round((successes / excs.length) * 100) : 0,
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// ── GET /executions — must be before /:id ───────────────────────────────────
+router.get('/executions', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const { companyId } = req.user;
+    const { status, workflowId, limit = '50' } = req.query;
+
     const result = await dynamodb.query({
       TableName: TABLE,
-      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-      ExpressionAttributeValues: { ':pk': `CONFIG#AUTO#${companyId}`, ':sk': 'AUTO#' },
+      KeyConditionExpression: 'PK = :pk',
+      ExpressionAttributeValues: { ':pk': execPK(companyId) },
+      ScanIndexForward: false,
+      Limit: Math.min(Number(limit), 200),
     }).promise();
 
-    const automations = (result.Items ?? []).filter((a) => a.enabled && a.trigger === trigger);
-    if (automations.length === 0) return;
+    let executions = result.Items ?? [];
+    if (status)     executions = executions.filter((e) => e.status     === status);
+    if (workflowId) executions = executions.filter((e) => e.workflowId === workflowId);
 
-    for (const auto of automations) {
-      try {
-        if (!checkConditions(auto.conditions ?? [], context)) continue;
-        await executeActions(companyId, auto.actions ?? [], context);
-        logger.info(`Automation "${auto.name}" fired for trigger=${trigger} company=${companyId}`);
-      } catch (e) {
-        logger.warn(`Automation "${auto.name}" action failed: ${e.message}`);
-      }
-    }
-  } catch (e) {
-    logger.warn(`runAutomations error: ${e.message}`);
-  }
-}
+    res.json({ success: true, executions });
+  } catch (err) { next(err); }
+});
 
-function checkConditions(conditions, ctx) {
-  for (const c of conditions) {
-    switch (c.field) {
-      case 'from_stage': if (ctx.fromStage !== c.value) return false; break;
-      case 'to_stage':   if (ctx.toStage !== c.value) return false; break;
-      case 'stage':      if (ctx.stage !== c.value) return false; break;
-      case 'source':     if (ctx.source !== c.value) return false; break;
-      case 'has_tag':    if (!(ctx.tags ?? []).includes(c.value)) return false; break;
-    }
-  }
-  return true;
-}
+// ── POST /_tick — process due waits; wire to AWS EventBridge in production ──
+router.post('/_tick', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const resumed = await AutomationEngine.processDueWaits(req.user.companyId);
+    res.json({ success: true, resumed });
+  } catch (err) { next(err); }
+});
 
-async function executeActions(companyId, actions, ctx) {
-  const { leadId, leadPK, phone, name, assignedTo } = ctx;
-  const now = new Date().toISOString();
-
-  for (const action of actions) {
-    switch (action.type) {
-      case 'send_template': {
-        if (!action.templateName || !phone) break;
-        const params = (action.variables ?? []).map((v) => {
-          if (v === '{{name}}') return name ?? '';
-          if (v === '{{phone}}') return phone ?? '';
-          return v;
-        });
-        await WASendSvc.sendTemplate(
-          companyId,
-          { phone },
-          { templateName: action.templateName, language: action.language ?? 'en' },
-          params,
-          { id: 'system', role: 'admin', name: 'Automation' },
-        );
-        break;
-      }
-      case 'assign_to': {
-        if (!action.employeeId) break;
-        await dynamodb.update({
-          TableName: TABLE,
-          Key: { PK: leadPK, SK: 'METADATA' },
-          UpdateExpression: 'SET assignedTo = :at, assignedToName = :atn, chatStatus = :cs, updatedAt = :ua',
-          ExpressionAttributeValues: {
-            ':at': action.employeeId,
-            ':atn': action.employeeName ?? null,
-            ':cs': 'open',
-            ':ua': now,
-          },
-        }).promise();
-        break;
-      }
-      case 'add_tag': {
-        if (!action.tag) break;
-        const cur = await dynamodb.get({ TableName: TABLE, Key: { PK: leadPK, SK: 'METADATA' } }).promise();
-        const tags = [...new Set([...(cur.Item?.tags ?? []), action.tag])];
-        await dynamodb.update({
-          TableName: TABLE,
-          Key: { PK: leadPK, SK: 'METADATA' },
-          UpdateExpression: 'SET tags = :t, updatedAt = :ua',
-          ExpressionAttributeValues: { ':t': tags, ':ua': now },
-        }).promise();
-        break;
-      }
-      case 'move_stage': {
-        if (!action.stage) break;
-        await dynamodb.update({
-          TableName: TABLE,
-          Key: { PK: leadPK, SK: 'METADATA' },
-          UpdateExpression: 'SET #s = :s, updatedAt = :ua',
-          ExpressionAttributeNames: { '#s': 'stage' },
-          ExpressionAttributeValues: { ':s': action.stage, ':ua': now },
-        }).promise();
-        break;
-      }
-      case 'create_followup': {
-        const days = Number(action.daysFromNow ?? 1);
-        const date = new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
-        await dynamodb.put({
-          TableName: TABLE,
-          Item: {
-            PK: `FOLLOWUP#${companyId}#${date}`,
-            SK: `LEAD#${leadId}`,
-            leadId, companyId, date,
-            note: action.note ?? `Auto follow-up (${days}d)`,
-            assignedTo: assignedTo ?? '',
-            done: false,
-            createdAt: now,
-            source: 'automation',
-          },
-        }).promise();
-        break;
-      }
-    }
-  }
-}
-
-// ── GET /api/automations ──────────────────────────────────────────────────────
+// ── GET / ────────────────────────────────────────────────────────────────────
 router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
     const result = await dynamodb.query({
       TableName: TABLE,
       KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-      ExpressionAttributeValues: { ':pk': `CONFIG#AUTO#${req.user.companyId}`, ':sk': 'AUTO#' },
+      ExpressionAttributeValues: { ':pk': autoPK(req.user.companyId), ':sk': 'AUTO#' },
     }).promise();
-    res.json({ success: true, automations: (result.Items ?? []).sort((a, b) => a.createdAt?.localeCompare(b.createdAt)) });
+    const automations = (result.Items ?? []).sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+    res.json({ success: true, automations });
   } catch (err) { next(err); }
 });
 
-// ── POST /api/automations ─────────────────────────────────────────────────────
-router.post('/', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+// ── POST / ───────────────────────────────────────────────────────────────────
+router.post('/', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), async (req, res, next) => {
   try {
-    const { name, trigger, conditions, actions, enabled } = req.body;
-    if (!name?.trim() || !trigger || !Array.isArray(actions) || actions.length === 0) {
-      return res.status(400).json({ error: 'name, trigger, and at least one action are required' });
-    }
-    const id = uuidv4();
-    const now = new Date().toISOString();
+    const { companyId, id: userId, name: userName } = req.user;
+    const { name, description, trigger, steps, status = 'draft' } = req.body;
+
+    if (!name?.trim())                               return res.status(400).json({ error: 'name is required' });
+    if (!trigger?.type)                              return res.status(400).json({ error: 'trigger.type is required' });
+    if (!Array.isArray(steps) || steps.length === 0) return res.status(400).json({ error: 'at least one step is required' });
+
+    const id     = uuidv4();
+    const now    = new Date().toISOString();
+    const safeStatus = ['active', 'draft'].includes(status) ? status : 'draft';
+
     const item = {
-      PK: `CONFIG#AUTO#${req.user.companyId}`, SK: `AUTO#${id}`,
-      id, companyId: req.user.companyId,
-      name: name.trim(), trigger,
-      conditions: conditions ?? [],
-      actions,
-      enabled: enabled !== false,
-      runCount: 0,
-      createdBy: req.user.id,
-      createdAt: now, updatedAt: now,
+      PK: autoPK(companyId), SK: autoSK(id),
+      id, companyId,
+      name:          name.trim(),
+      description:   description?.trim() ?? null,
+      status:        safeStatus,
+      trigger:       { type: trigger.type, conditions: trigger.conditions ?? [] },
+      steps,
+      runCount:      0,
+      lastRunAt:     null,
+      createdBy:     userId,
+      createdByName: userName ?? null,
+      createdAt:     now,
+      updatedAt:     now,
+      enabled:       safeStatus === 'active', // legacy compat
     };
+
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();
+    logger.info(`Automation created: "${item.name}" (${id}) by ${userId}`);
     res.status(201).json({ success: true, automation: item });
   } catch (err) { next(err); }
 });
 
-// ── PUT /api/automations/:id ──────────────────────────────────────────────────
+// ── GET /:id ──────────────────────────────────────────────────────────────────
+router.get('/:id', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+  try {
+    const r = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: autoPK(req.user.companyId), SK: autoSK(req.params.id) },
+    }).promise();
+    if (!r.Item) return res.status(404).json({ error: 'Workflow not found' });
+    res.json({ success: true, automation: r.Item });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /:id ──────────────────────────────────────────────────────────────────
 router.put('/:id', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
-    const { name, trigger, conditions, actions, enabled } = req.body;
+    const { companyId } = req.user;
+    const existing = await dynamodb.get({
+      TableName: TABLE, Key: { PK: autoPK(companyId), SK: autoSK(req.params.id) },
+    }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'Workflow not found' });
+
+    const { name, description, trigger, steps, status } = req.body;
+    const expNames = {};
+    const expVals  = { ':ua': new Date().toISOString() };
+    const sets     = ['updatedAt = :ua'];
+
+    if (name        !== undefined) { sets.push('#n = :n');       expNames['#n']  = 'name';    expVals[':n']     = name.trim(); }
+    if (description !== undefined) { sets.push('description = :d');                           expVals[':d']     = description?.trim() ?? null; }
+    if (trigger     !== undefined) { sets.push('#t = :t');       expNames['#t']  = 'trigger'; expVals[':t']     = { type: trigger.type, conditions: trigger.conditions ?? [] }; }
+    if (steps       !== undefined) { sets.push('steps = :steps');                             expVals[':steps'] = steps; }
+    if (status      !== undefined) {
+      sets.push('#st = :st, enabled = :en');
+      expNames['#st'] = 'status';
+      expVals[':st']  = status;
+      expVals[':en']  = status === 'active';
+    }
+
     await dynamodb.update({
       TableName: TABLE,
-      Key: { PK: `CONFIG#AUTO#${req.user.companyId}`, SK: `AUTO#${req.params.id}` },
-      UpdateExpression: 'SET #n = :n, #t = :t, conditions = :c, actions = :a, enabled = :e, updatedAt = :ua',
-      ExpressionAttributeNames: { '#n': 'name', '#t': 'trigger' },
-      ExpressionAttributeValues: {
-        ':n': name?.trim(), ':t': trigger,
-        ':c': conditions ?? [], ':a': actions,
-        ':e': enabled !== false, ':ua': new Date().toISOString(),
-      },
+      Key: { PK: autoPK(companyId), SK: autoSK(req.params.id) },
+      UpdateExpression: `SET ${sets.join(', ')}`,
+      ...(Object.keys(expNames).length && { ExpressionAttributeNames: expNames }),
+      ExpressionAttributeValues: expVals,
+    }).promise();
+
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /:id/status — activate | pause | archive ─────────────────────────────
+router.put('/:id/status', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const { companyId } = req.user;
+    const { status } = req.body;
+    if (!['active', 'draft', 'paused', 'archived'].includes(status)) {
+      return res.status(400).json({ error: 'status must be: active | draft | paused | archived' });
+    }
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK: autoPK(companyId), SK: autoSK(req.params.id) },
+      UpdateExpression: 'SET #st = :st, enabled = :en, updatedAt = :ua',
+      ExpressionAttributeNames:  { '#st': 'status' },
+      ExpressionAttributeValues: { ':st': status, ':en': status === 'active', ':ua': new Date().toISOString() },
     }).promise();
     res.json({ success: true });
   } catch (err) { next(err); }
 });
 
-// ── DELETE /api/automations/:id ───────────────────────────────────────────────
+// ── DELETE /:id ───────────────────────────────────────────────────────────────
 router.delete('/:id', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
+    const { companyId } = req.user;
+    const r = await dynamodb.get({
+      TableName: TABLE, Key: { PK: autoPK(companyId), SK: autoSK(req.params.id) },
+    }).promise();
+    if (!r.Item) return res.status(404).json({ error: 'Workflow not found' });
+    if (r.Item.status === 'active' || r.Item.enabled === true) {
+      return res.status(400).json({ error: 'Deactivate the workflow before deleting it' });
+    }
     await dynamodb.delete({
-      TableName: TABLE,
-      Key: { PK: `CONFIG#AUTO#${req.user.companyId}`, SK: `AUTO#${req.params.id}` },
+      TableName: TABLE, Key: { PK: autoPK(companyId), SK: autoSK(req.params.id) },
     }).promise();
     res.json({ success: true });
   } catch (err) { next(err); }

@@ -1,175 +1,79 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
-import { Zap, Plus, Play, Pause, Clock, FileText, ChevronRight, ExternalLink } from 'lucide-react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Card } from '@/components/v3/ui/Card';
-import { Badge } from '@/components/v3/ui/Badge';
-import { Button } from '@/components/v3/ui/Button';
-import { Toggle } from '@/components/v3/ui/Toggle';
-import { EmptyState } from '@/components/v3/ui/EmptyState';
-import { SkeletonCard } from '@/components/v3/ui/Skeleton';
+import { Zap, LayoutDashboard, List, Activity } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import { apiFetch } from '@/lib/api';
-import { toast } from 'sonner';
-import { format } from 'date-fns';
+import { AutomationDashboard } from '@/components/automation/AutomationDashboard';
+import { WorkflowList } from '@/components/automation/WorkflowList';
+import { ExecutionList } from '@/components/automation/ExecutionList';
+import { WorkflowCreateDrawer } from '@/components/automation/WorkflowCreateDrawer';
 
-interface Workflow {
-  id: string;
-  name: string;
-  description?: string;
-  trigger: string;
-  active: boolean;
-  lastRunAt?: string;
-  runCount: number;
-  createdAt: string;
-}
+type Tab = 'dashboard' | 'workflows' | 'executions';
 
-const TRIGGER_LABELS: Record<string, string> = {
-  new_contact:       'New contact added',
-  stage_changed:     'Stage changed',
-  followup_overdue:  'Follow-up overdue',
-  no_reply_24h:      'No reply in 24 hours',
-  message_received:  'Message received',
-};
+const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
+  { id: 'dashboard',  label: 'Dashboard',  icon: LayoutDashboard },
+  { id: 'workflows',  label: 'Workflows',  icon: List            },
+  { id: 'executions', label: 'Executions', icon: Activity        },
+];
 
 export default function AutomationPage() {
-  const qc = useQueryClient();
-
-  const { data: workflows = [], isLoading } = useQuery<Workflow[]>({
-    queryKey: ['workflows'],
-    queryFn: async () => {
-      const data = await apiFetch<{ workflows: Workflow[] }>('/api/workflows');
-      return data.workflows ?? [];
-    },
-    staleTime: 60_000,
-    placeholderData: [],
-  });
-
-  const toggleMutation = useMutation({
-    mutationFn: async ({ id, active }: { id: string; active: boolean }) => {
-      return apiFetch(`/api/workflows/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ active }),
-      });
-    },
-    onMutate: async ({ id, active }) => {
-      qc.setQueryData<Workflow[]>(['workflows'], (old = []) =>
-        old.map((w) => (w.id === id ? { ...w, active } : w)),
-      );
-    },
-    onSuccess: (_, vars) => {
-      toast.success(vars.active ? 'Workflow enabled' : 'Workflow paused');
-    },
-    onError: (_, vars) => {
-      qc.setQueryData<Workflow[]>(['workflows'], (old = []) =>
-        old.map((w) => (w.id === vars.id ? { ...w, active: !vars.active } : w)),
-      );
-      toast.error('Failed to update workflow');
-    },
-  });
+  const [activeTab,    setActiveTab]    = useState<Tab>('dashboard');
+  const [createOpen,   setCreateOpen]   = useState(false);
 
   return (
-    <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950">
-        <div>
-          <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Automation</h1>
-          <p className="text-sm text-neutral-500">
-            {workflows.filter((w) => w.active).length} active workflows
-          </p>
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* ── Page header ───────────────────────────────────────────────────── */}
+      <div className="border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-50 dark:bg-primary-900/20">
+            <Zap className="h-5 w-5 text-primary-600 dark:text-primary-400" aria-hidden />
+          </div>
+          <div>
+            <h1 className="text-lg font-bold text-neutral-900 dark:text-white">Automation</h1>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              Trigger-based workflows that run automatically on lead events
+            </p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Link href="/automation/logs">
-            <Button variant="secondary" size="sm" iconLeft={<FileText className="h-4 w-4" />}>
-              Execution logs
-            </Button>
-          </Link>
-          <Button size="sm" iconLeft={<Plus className="h-4 w-4" />}>
-            New workflow
-          </Button>
+
+        {/* Tabs */}
+        <div className="mt-4 flex gap-1 overflow-x-auto">
+          {TABS.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setActiveTab(id)}
+              className={cn(
+                'flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                activeTab === id
+                  ? 'bg-primary-50 text-primary-700 dark:bg-primary-900/20 dark:text-primary-400'
+                  : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200',
+              )}
+            >
+              <Icon className="h-4 w-4 shrink-0" aria-hidden />
+              {label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Content */}
-      <div className="scrollbar-thin flex-1 overflow-y-auto p-6">
-        {isLoading ? (
-          <div className="space-y-3">
-            {[0, 1, 2].map((i) => <SkeletonCard key={i} />)}
-          </div>
-        ) : workflows.length === 0 ? (
-          <EmptyState
-            icon={Zap}
-            title="No workflows yet"
-            description="Automate follow-ups, stage changes, and WhatsApp messages based on triggers"
-            action={{ label: 'Create workflow', onClick: () => {} }}
-          />
-        ) : (
-          <div className="space-y-3">
-            {workflows.map((workflow) => (
-              <Card
-                key={workflow.id}
-                variant="default"
-                className="group"
-              >
-                <div className="flex items-start gap-4">
-                  {/* Icon */}
-                  <div className={cn(
-                    'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg',
-                    workflow.active
-                      ? 'bg-success-50 text-success-600 dark:bg-success-900/20'
-                      : 'bg-neutral-100 text-neutral-400 dark:bg-neutral-800',
-                  )}>
-                    <Zap className="h-5 w-5" aria-hidden />
-                  </div>
-
-                  {/* Info */}
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-                        {workflow.name}
-                      </h3>
-                      <Toggle
-                        checked={workflow.active}
-                        onChange={(e) => toggleMutation.mutate({ id: workflow.id, active: e.target.checked })}
-                        size="sm"
-                        aria-label={workflow.active ? 'Disable workflow' : 'Enable workflow'}
-                      />
-                    </div>
-                    {workflow.description && (
-                      <p className="mt-0.5 text-xs text-neutral-500">{workflow.description}</p>
-                    )}
-                    <div className="mt-2 flex flex-wrap items-center gap-3">
-                      <Badge variant="default" className="text-[10px]">
-                        Trigger: {TRIGGER_LABELS[workflow.trigger] ?? workflow.trigger}
-                      </Badge>
-                      {workflow.lastRunAt && (
-                        <span className="text-[10px] text-neutral-400 flex items-center gap-1">
-                          <Clock className="h-3 w-3" aria-hidden />
-                          Last run {format(new Date(workflow.lastRunAt), 'd MMM, h:mm a')}
-                        </span>
-                      )}
-                      <span className="text-[10px] text-neutral-400">
-                        {workflow.runCount} runs
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Edit link */}
-                  <Link
-                    href={`/automation/${workflow.id}`}
-                    className="hidden shrink-0 items-center gap-1 text-xs font-medium text-primary-600 hover:text-primary-700 group-hover:flex"
-                    aria-label={`Edit ${workflow.name}`}
-                  >
-                    Edit <ChevronRight className="h-3 w-3" aria-hidden />
-                  </Link>
-                </div>
-              </Card>
-            ))}
-          </div>
-        )}
+      {/* ── Content ───────────────────────────────────────────────────────── */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-5xl px-6 py-5">
+          {activeTab === 'dashboard' && (
+            <AutomationDashboard
+              onViewWorkflows={() => setActiveTab('workflows')}
+              onViewExecutions={() => setActiveTab('executions')}
+              onCreateWorkflow={() => setCreateOpen(true)}
+            />
+          )}
+          {activeTab === 'workflows'  && <WorkflowList />}
+          {activeTab === 'executions' && <ExecutionList />}
+        </div>
       </div>
+
+      {/* Global create drawer — triggered from dashboard empty state */}
+      <WorkflowCreateDrawer key={createOpen ? 'open' : 'closed'} open={createOpen} onClose={() => setCreateOpen(false)} />
     </div>
   );
 }
