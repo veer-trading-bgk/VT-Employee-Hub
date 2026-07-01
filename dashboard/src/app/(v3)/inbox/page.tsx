@@ -6,7 +6,7 @@ import Link from 'next/link';
 import {
   MessageSquare, Search, Send, MoreHorizontal, Phone,
   CheckCheck, Check, Clock, AlertCircle, Plus, X, ChevronLeft,
-  Paperclip, FileText, Download, ZoomIn, Tag as TagIcon,
+  FileText, Download, ZoomIn, Tag as TagIcon,
   Loader2, ChevronDown, Lock, AlertTriangle,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -32,6 +32,7 @@ import { OwnerSelect } from '@/components/v3/ui/OwnerSelect';
 import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { assignmentKey } from '@/hooks/useOwnerAssign';
 import type { AssignmentRecord } from '@/hooks/useOwnerAssign';
+import { ComposerToolbar } from '@/components/inbox/ComposerToolbar';
 
 // ── V2 API shapes (backend response shapes, never invented) ───────────────────
 
@@ -989,28 +990,42 @@ function ThreadPane({
                 Uploading {uploadFile.name}…
               </div>
             )}
+
+            {/* Hidden file input — accept is set dynamically before .click() */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleFileSelect(file);
+                if (fileInputRef.current) {
+                  fileInputRef.current.value = '';
+                  fileInputRef.current.accept = 'image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx';
+                }
+              }}
+            />
+
+            {/* Composer toolbar */}
+            <ComposerToolbar
+              conversation={conversation}
+              draft={draft}
+              onDraftChange={setDraft}
+              onFileAccept={(accept) => {
+                if (fileInputRef.current) {
+                  fileInputRef.current.accept = accept;
+                  fileInputRef.current.click();
+                }
+              }}
+              onTemplateSent={() => {
+                qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
+                qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+              }}
+              disabled={isUploading || sendMutation.isPending}
+            />
+
             <div className="flex items-end gap-2">
-              {/* Hidden file input */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*,video/*,audio/*,application/pdf,.doc,.docx,.xls,.xlsx"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) handleFileSelect(file);
-                }}
-              />
-              {/* Paperclip button */}
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isUploading || sendMutation.isPending}
-                title="Attach image, video, audio or document"
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-neutral-200 text-neutral-500 hover:bg-neutral-50 hover:text-neutral-700 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800 dark:text-neutral-400"
-              >
-                <Paperclip className="h-4 w-4" />
-              </button>
               <textarea
                 ref={textareaRef}
                 value={draft}
@@ -1031,7 +1046,7 @@ function ThreadPane({
                 aria-label="Send message"
               />
             </div>
-            <p className="mt-1.5 text-[10px] text-neutral-400">WhatsApp · Enter to send · attach image, video, audio, PDF</p>
+            <p className="mt-1.5 text-[10px] text-neutral-400">WhatsApp · Enter to send · Shift+Enter for newline</p>
           </>
         )}
       </div>
