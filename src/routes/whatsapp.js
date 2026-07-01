@@ -210,59 +210,6 @@ function toE164(p) {
   return d;
 }
 
-async function sendTextMessage(companyId, to, body, replyToWaMessageId = null) {
-  const cfg = await getWabaConfig(companyId);
-  if (!cfg?.accessToken || !cfg?.phoneNumberId) {
-    logger.warn(`WhatsApp not configured for company ${companyId}`);
-    return null;
-  }
-  const phone = toE164(to);
-  try {
-    const payload = { messaging_product: 'whatsapp', recipient_type: 'individual', to: phone, type: 'text', text: { preview_url: false, body } };
-    if (replyToWaMessageId) payload.context = { message_id: replyToWaMessageId };
-    const res = await axios.post(
-      `${getGraphUrl(cfg)}/${cfg.phoneNumberId}/messages`,
-      payload,
-      { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } }
-    );
-    return res.data?.messages?.[0]?.id ?? null;
-  } catch (err) {
-    logger.error('WhatsApp sendTextMessage failed', err?.response?.data ?? err.message);
-    throw err;
-  }
-}
-
-async function sendTemplateMessage(companyId, to, templateName, languageCode, bodyParams, headerParams = null) {
-  const cfg = await getWabaConfig(companyId);
-  if (!cfg?.accessToken || !cfg?.phoneNumberId) {
-    logger.warn(`WhatsApp not configured for company ${companyId}`);
-    return null;
-  }
-  const phone = String(to).replace(/\D/g, '');
-  const components = [];
-  if (headerParams?.length) {
-    components.push({ type: 'header', parameters: headerParams.map((v) => ({ type: 'text', text: String(v) })) });
-  }
-  if (bodyParams?.length) {
-    components.push({ type: 'body', parameters: bodyParams.map((v) => ({ type: 'text', text: String(v) })) });
-  }
-  try {
-    const res = await axios.post(
-      `${getGraphUrl(cfg)}/${cfg.phoneNumberId}/messages`,
-      {
-        messaging_product: 'whatsapp',
-        to: phone,
-        type: 'template',
-        template: { name: templateName, language: { code: languageCode ?? 'en' }, components },
-      },
-      { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } }
-    );
-    return res.data?.messages?.[0]?.id ?? null;
-  } catch (err) {
-    logger.error('WhatsApp sendTemplateMessage failed', err?.response?.data ?? err.message);
-    throw err;
-  }
-}
 
 // ── GET /api/whatsapp/connection — WABA connection status ──────────────────────
 router.get('/connection', authMiddleware, checkRole(['admin']), async (req, res, next) => {
@@ -1479,7 +1426,13 @@ router.post('/webhook', async (req, res) => {
           try {
             const wc = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#WELCOME#${companyId}`, SK: 'CURRENT' } }).promise();
             if (wc.Item?.enabled && wc.Item?.templateName) {
-              await sendTemplateMessage(companyId, phone10, wc.Item.templateName, wc.Item.language ?? 'en', []);
+              await WASendSvc.sendTemplate(
+                companyId,
+                { phone: phone10 },
+                { templateName: wc.Item.templateName, language: wc.Item.language ?? 'en' },
+                [],
+                { id: 'system', role: 'admin', name: 'System' },
+              );
               logger.info(`Welcome message sent to ${phone10} for company ${companyId}`);
             }
           } catch (e) { logger.warn('Welcome message failed: ' + e.message); }
@@ -2360,22 +2313,20 @@ router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateL
           : headerVariableValue === '{{name}}' ? (lead.name ?? '')
           : headerVariableValue === '{{phone}}' ? (lead.phone ?? '')
           : (headerVariableValue ?? bcastHdrComp?.example?.header_text?.[0] ?? '');
-        const hdrParams = bcastHasHdrVar ? [resolvedHeader] : null;
-        const wamid = await sendTemplateMessage(companyId, lead.phone, tmpl.templateName, tmpl.language, params, hdrParams);
 
-        const ts = new Date().toISOString();
-        const bMsgSK = `MSG#${ts}#${wamid ?? Date.now()}`;
-        await dynamodb.put({
-          TableName: TABLE,
-          Item: {
-            PK: lead.PK, SK: bMsgSK,
-            direction: 'outbound', content: `[Broadcast: ${tmpl.name}]`,
-            sentBy: req.user.id, sentByName: req.user.name ?? null,
-            broadcastId, templateId, timestamp: ts, type: 'template', waMessageId: wamid, msgStatus: 'sent',
+        await WASendSvc.sendTemplate(
+          companyId,
+          { resolvedContact: { pk: lead.PK, phone: lead.phone, leadItem: lead, isLead: true } },
+          { templateName: tmpl.templateName, language: tmpl.language ?? 'en' },
+          params,
+          req.user,
+          {
+            headerVariableValue: bcastHasHdrVar ? resolvedHeader : null,
+            content:      `[Broadcast: ${tmpl.name}]`,
+            extraFields:  { broadcastId, templateId },
+            wamidExtras:  { broadcastId, broadcastSK },
           },
-        }).promise();
-        await storeWamidLookup(wamid, lead.PK, bMsgSK, companyId, { broadcastId, broadcastSK });
-        await updateLeadLastMessage(lead.PK, `[Broadcast: ${tmpl.name}]`, 'outbound', ts);
+        );
         sent++;
       } catch (e) {
         failed++;
@@ -2580,50 +2531,18 @@ router.get('/media/:mediaId', authMiddleware, async (req, res, next) => {
 // ── POST /api/whatsapp/send-media — send image/document to lead ───────────────
 router.post('/send-media', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
-    const { leadPK: pk, mediaType, mediaUrl, caption, filename } = req.body;
-    if (!pk || !mediaType || !mediaUrl) return res.status(400).json({ error: 'leadPK, mediaType, and mediaUrl are required' });
+    const { leadPK, mediaType, mediaUrl, caption, filename } = req.body;
+    if (!leadPK || !mediaType || !mediaUrl) return res.status(400).json({ error: 'leadPK, mediaType, and mediaUrl are required' });
 
-    const result = await dynamodb.get({ TableName: TABLE, Key: { PK: pk, SK: 'METADATA' } }).promise();
-    const lead = result.Item;
-    if (!lead) return res.status(404).json({ error: 'Lead not found' });
-    if (lead.companyId !== req.user.companyId) return res.status(403).json({ error: 'Forbidden' });
-
-    const cfg = await getWabaConfig(req.user.companyId);
-    if (!cfg?.accessToken || !cfg?.phoneNumberId) return res.status(400).json({ error: 'WhatsApp not configured' });
-
-    const phone = toE164(lead.phone);
-    const mediaPayload = { link: mediaUrl };
-    if (caption) mediaPayload.caption = caption;
-    if (filename && mediaType === 'document') mediaPayload.filename = filename;
-
-    const sendRes = await axios.post(`${GRAPH}/${cfg.phoneNumberId}/messages`, {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: phone,
-      type: mediaType,
-      [mediaType]: mediaPayload,
-    }, { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } });
-
-    const waMessageId = sendRes.data?.messages?.[0]?.id ?? null;
-    const timestamp = new Date().toISOString();
-    const msgSK = `MSG#${timestamp}#${waMessageId ?? Date.now()}`;
-
-    await dynamodb.put({
-      TableName: TABLE,
-      Item: {
-        PK: pk, SK: msgSK,
-        messageId: waMessageId, waMessageId,
-        direction: 'outbound', type: mediaType,
-        content: caption ?? `[${mediaType}]`,
-        mediaUrl, filename: filename ?? null,
-        sentBy: req.user.id, sentByName: req.user.name,
-        timestamp, msgStatus: 'sent',
-      },
-    }).promise();
-
-    await storeWamidLookup(waMessageId, pk, msgSK, req.user.companyId);
-    res.json({ success: true, messageId: waMessageId, timestamp });
+    const result = await WASendSvc.sendMedia(
+      req.user.companyId,
+      { leadPK },
+      { mediaType, url: mediaUrl, caption, filename },
+      req.user,
+    );
+    res.json({ success: true, messageId: result.wamid, timestamp: result.timestamp });
   } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
     logger.error('send-media error', err?.response?.data ?? err.message);
     next(err);
   }
@@ -2719,60 +2638,23 @@ router.post('/upload-send', authMiddleware, rateLimit(20, 60_000), async (req, r
     // Do NOT delete S3 object — kept for direct presigned GET streaming (video/large files).
     // Lifecycle rule handles cleanup after 30 days (matches Meta's media_id expiry).
 
-    // Send via media_id — no public hosting required
-    const phoneE164 = toE164(phone);
-    const mediaPayload = { id: mediaId };
-    if (caption) mediaPayload.caption = caption;
-    if (mediaType === 'document') mediaPayload.filename = safeFilename;
+    // Send via media_id + persist via service (message record, WAMID index, last-message update)
+    const sendResult = await WASendSvc.sendMedia(
+      companyId,
+      { resolvedContact: { pk, phone, leadItem, isLead: !!leadItem } },
+      { mediaType, mediaId, caption, filename: safeFilename, mimeType, s3Key },
+      req.user,
+    );
 
-    const sendRes = await axios.post(`${GRAPH}/${cfg.phoneNumberId}/messages`, {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: phoneE164,
-      type: mediaType,
-      [mediaType]: mediaPayload,
-    }, { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } });
-
-    const waMessageId = sendRes.data?.messages?.[0]?.id ?? null;
-    const timestamp = new Date().toISOString();
-    const msgSK = `MSG#${timestamp}#${waMessageId ?? Date.now()}`;
-
-    await dynamodb.put({
-      TableName: TABLE,
-      Item: {
-        PK: pk, SK: msgSK,
-        messageId: waMessageId, waMessageId,
-        direction: 'outbound', type: mediaType,
-        content: caption ?? `[${mediaType}]`,
-        mediaId, s3Key, filename: safeFilename, mimeType,
-        sentBy: req.user.id, sentByName: req.user.name,
-        timestamp, msgStatus: 'sent',
-      },
-    }).promise();
-
-    await storeWamidLookup(waMessageId, pk, msgSK, companyId);
-
-    // MEDIA# index — enables per-contact media gallery
+    // MEDIA# index — enables per-contact media gallery (route-specific, not in service)
     const contactKey = leadItem ? pk.split('#')[2] : phone;
     writeMediaIndex(companyId, contactKey, {
       leadPK: pk, mediaId, mimeType,
       filename: safeFilename, caption: caption ?? null,
-      direction: 'outbound', sentBy: req.user.id, timestamp,
+      direction: 'outbound', sentBy: req.user.id, timestamp: sendResult.timestamp,
     });
 
-    // Update last message preview
-    if (leadItem) {
-      await updateLeadLastMessage(pk, caption ?? `[${mediaType}]`, 'outbound', timestamp);
-    } else {
-      dynamodb.update({
-        TableName: TABLE,
-        Key: { PK: pk, SK: 'CONTACT' },
-        UpdateExpression: 'SET lastMessageAt = :ts, lastMessagePreview = :prev, lastMessageDirection = :dir',
-        ExpressionAttributeValues: { ':ts': timestamp, ':prev': (caption ?? `[${mediaType}]`).slice(0, 100), ':dir': 'outbound' },
-      }).promise().catch(() => {});
-    }
-
-    res.json({ success: true, messageId: waMessageId, timestamp });
+    res.json({ success: true, messageId: sendResult.wamid, timestamp: sendResult.timestamp });
   } catch (err) {
     logger.error('upload-send error', err?.response?.data ?? err.message);
     next(err);
@@ -2794,6 +2676,4 @@ ${success ? 'Done — Close Window' : 'Close & Retry'}</button></div></body></ht
 }
 
 module.exports = router;
-module.exports.sendTextMessage = sendTextMessage;
-module.exports.sendTemplateMessage = sendTemplateMessage;
 module.exports.storeInboundMedia = storeInboundMedia;

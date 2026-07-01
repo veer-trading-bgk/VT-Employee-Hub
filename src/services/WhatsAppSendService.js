@@ -1,20 +1,22 @@
 'use strict';
 
 /**
- * WhatsAppSendService — centralized outbound WhatsApp messaging engine.
+ * WhatsAppSendService — single authoritative engine for all outbound WhatsApp messages.
  *
- * ALL modules (Inbox, Broadcast, Automation, Customer360, AI Agents) must call
- * this service instead of implementing their own send logic.
+ * Every APForce module (Inbox, Broadcast, Automation, Customer360, Campaigns, AI Agents)
+ * MUST send through this service.  No module may implement its own Meta API call.
  *
  * Responsibilities:
- *  • Contact resolution    — leadPK / leadId / phone (CRM lead → INBOX# fallback)
- *  • RBAC                  — "own leads only" enforcement for restricted roles
- *  • Config lookup         — per-company WABA credentials + graph API version
- *  • E.164 normalization   — Indian phone numbers (10-digit → 91XXXXXXXXXX)
- *  • Meta API calls        — text, template, interactive (others: future stubs)
- *  • DynamoDB writes       — message record + WAMID lookup + last-message update
- *  • ConversationService   — CONV# entity update (fire-and-forget, non-critical)
- *  • Error enrichment      — HTTP status codes on thrown errors
+ *  • Contact resolution    — leadPK / leadId / phone via company-phone-index GSI (O(1))
+ *                            Falls back to INBOX# for unknown contacts.
+ *  • RBAC enforcement      — restricted roles (telecaller/agent/intern) see only own leads
+ *  • WABA config           — per-company credentials, per-company graph API version override
+ *                            10-min in-process cache avoids N DDB reads in broadcast loops
+ *  • E.164 normalisation   — Indian 10-digit numbers → 91XXXXXXXXXX
+ *  • Meta API calls        — text, template, interactive, media (image/video/audio/document)
+ *  • DynamoDB writes       — message record + WAMID reverse-index + last-message update
+ *  • ConversationService   — CONV# entity fire-and-forget sync (Phase 2 model)
+ *  • Future stubs          — sendCatalog/Payment/Flow/Poll/Location/Contact (all 501)
  */
 
 const axios               = require('axios');
@@ -29,6 +31,11 @@ const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?
 // Roles whose send permission is limited to their own assigned leads
 const RESTRICTED_ROLES = new Set(['telecaller', 'agent', 'intern']);
 
+// In-process WABA config cache — prevents N uncached DDB reads in broadcast loops.
+// Invalidated on disconnect/reconnect via invalidateConfigCache().
+const _cfgCache  = new Map(); // companyId → { data, ts }
+const CFG_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
 class WhatsAppSendService {
 
   // ── Internal helpers ──────────────────────────────────────────────────────
@@ -39,9 +46,8 @@ class WhatsAppSendService {
       : GRAPH;
   }
 
-  /** Strip non-digits and prepend India country code if needed. */
   _toE164(phone) {
-    const d = String(phone).replace(/\D/g, '');
+    const d = String(phone ?? '').replace(/\D/g, '');
     if (d.length === 10) return '91' + d;
     if (d.length === 11 && d.startsWith('0')) return '91' + d.slice(1);
     return d;
@@ -54,11 +60,20 @@ class WhatsAppSendService {
   }
 
   async _getConfig(companyId) {
+    const hit = _cfgCache.get(companyId);
+    if (hit && Date.now() - hit.ts < CFG_TTL_MS) return hit.data;
     const r = await dynamodb.get({
       TableName: TABLE,
       Key: { PK: `CONFIG#WABA#${companyId}`, SK: 'CURRENT' },
     }).promise();
-    return r.Item ?? null;
+    const data = r.Item ?? null;
+    _cfgCache.set(companyId, { data, ts: Date.now() });
+    return data;
+  }
+
+  /** Call when a company disconnects or reconnects WhatsApp so the cache is refreshed. */
+  invalidateConfigCache(companyId) {
+    _cfgCache.delete(companyId);
   }
 
   async _requireConfig(companyId) {
@@ -73,12 +88,12 @@ class WhatsAppSendService {
     await dynamodb.put({ TableName: TABLE, Item: { PK: pk, SK: msgSK, ...fields } }).promise();
   }
 
-  async _storeWamidLookup(wamid, pk, msgSK, companyId) {
+  async _storeWamidLookup(wamid, pk, msgSK, companyId, extras = {}) {
     if (!wamid) return;
     try {
       await dynamodb.put({
         TableName: TABLE,
-        Item: { PK: `WAMID#${wamid}`, SK: 'LOOKUP', leadPK: pk, msgSK, companyId },
+        Item: { PK: `WAMID#${wamid}`, SK: 'LOOKUP', leadPK: pk, msgSK, companyId, ...extras },
         ConditionExpression: 'attribute_not_exists(PK)',
       }).promise();
     } catch { /* ignore duplicate */ }
@@ -112,15 +127,22 @@ class WhatsAppSendService {
 
   // ── Contact Resolution ────────────────────────────────────────────────────
   /**
-   * Resolve a flexible target reference to a canonical contact record.
+   * Resolve a flexible target to { pk, phone, leadItem, isLead }.
    *
-   * Accepts:  { leadPK? }   — most specific (e.g. "LEAD#cid#lid")
-   *           { leadId? }   — short ID; PK is constructed from companyId
-   *           { phone? }    — scans for matching CRM lead, falls back to INBOX#
+   * Target variants (evaluated in order):
+   *   { resolvedContact }  — pre-resolved object; skips all lookups (for broadcast loops)
+   *   { leadPK }          — point-read by full PK  (e.g. "LEAD#companyId#leadId")
+   *   { leadId }          — construct PK from companyId + leadId, then point-read
+   *   { phone }           — O(1) query on company-phone-index GSI (PK=companyId, SK=phoneNorm)
+   *   { phoneNorm }       — alias for phone (same GSI path)
    *
-   * Returns: { pk, phone, leadItem, isLead }
+   * phone/phoneNorm falls back to INBOX# unknown contact when no CRM lead matches.
+   *
+   * Future recipient types (customer groups, contact identifiers) can be added here
+   * without changing any caller — callers just pass a new target shape.
    */
   async resolveContact(companyId, target) {
+    if (target.resolvedContact) return target.resolvedContact;
 
     if (target.leadPK) {
       const r = await dynamodb.get({
@@ -141,48 +163,37 @@ class WhatsAppSendService {
       return { pk, phone: leadItem.phone, leadItem, isLead: true };
     }
 
-    if (target.phone) {
-      const phone   = String(target.phone).replace(/\D/g, '');
+    const rawPhone = target.phone ?? target.phoneNorm;
+    if (rawPhone != null) {
+      const phone   = String(rawPhone).replace(/\D/g, '');
       const phone10 = to10Digit(phone);
 
-      // Best-effort: scan for an existing CRM lead with this phone.
-      // INBOX# contacts are stored without a CRM lead record — the scan
-      // ensures we use the lead PK if one exists (avoids duplicate message history).
-      const items = [];
-      let lastKey;
-      do {
-        const r = await dynamodb.scan({
-          TableName: TABLE,
-          FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk AND phone = :ph',
-          ExpressionAttributeValues: {
-            ':prefix': `LEAD#${companyId}#`,
-            ':sk': 'METADATA',
-            ':ph': phone10,
-          },
-          ...(lastKey && { ExclusiveStartKey: lastKey }),
-        }).promise();
-        items.push(...(r.Items ?? []));
-        if (items.length) break; // found — no need to page further
-        lastKey = r.LastEvaluatedKey;
-      } while (lastKey);
+      // O(1) indexed lookup — replaces the previous full-table scan.
+      // company-phone-index: PK=companyId (String), SK=phoneNorm (String, 10-digit canonical)
+      const r = await dynamodb.query({
+        TableName: TABLE,
+        IndexName: 'company-phone-index',
+        KeyConditionExpression: 'companyId = :cid AND phoneNorm = :norm',
+        ExpressionAttributeValues: { ':cid': companyId, ':norm': phone10 },
+        Limit: 1,
+      }).promise();
 
-      if (items.length) {
-        const leadItem = items[0];
-        return { pk: leadItem.PK, phone: leadItem.phone, leadItem, isLead: true };
+      if (r.Items?.length) {
+        const leadItem = r.Items[0];
+        return { pk: leadItem.PK, phone: leadItem.phone ?? phone10, leadItem, isLead: true };
       }
 
-      // No CRM lead found — use INBOX# unknown contact
+      // No CRM lead found — use INBOX# unknown contact key
       return { pk: `INBOX#${companyId}#${phone}`, phone, leadItem: null, isLead: false };
     }
 
-    throw this._err('leadPK, leadId, or phone is required', 400);
+    throw this._err('leadPK, leadId, phone, or resolvedContact is required', 400);
   }
 
   // ── RBAC ─────────────────────────────────────────────────────────────────
   /**
-   * Checks whether the acting user may send to the resolved contact.
-   * Restricted roles (telecaller / agent / intern) can only message their own leads.
-   * They can always message unknown contacts (no assignment concept on INBOX#).
+   * Telecaller/agent/intern may only message leads assigned to them.
+   * Unknown contacts (INBOX#) have no assignment concept — all roles may reach them.
    */
   _assertSendPermission(user, contact) {
     if (
@@ -196,20 +207,24 @@ class WhatsAppSendService {
 
   // ── sendText ──────────────────────────────────────────────────────────────
   /**
-   * Send a plain text message to a contact.
+   * Send a plain text message.
    *
-   * @param {string} companyId
-   * @param {{ leadPK?, leadId?, phone? }} target
-   * @param {string} message
-   * @param {{ id, role, name }} user  — acting user (RBAC + audit)
-   * @param {{ replyToWaMessageId?, replyToContent?, replyToDirection?, replyToSenderName? }} [options]
+   * @param {string}  companyId
+   * @param {object}  target   — { leadPK?, leadId?, phone?, resolvedContact? }
+   * @param {string}  message
+   * @param {object}  user     — { id, role, name }
+   * @param {object}  [options]
+   * @param {string}  [options.replyToWaMessageId]
+   * @param {string}  [options.replyToContent]
+   * @param {string}  [options.replyToDirection]
+   * @param {string}  [options.replyToSenderName]
    * @returns {{ waMessageId, timestamp, pk, msgSK }}
    */
   async sendText(companyId, target, message, user, options = {}) {
     const contact = await this.resolveContact(companyId, target);
     this._assertSendPermission(user, contact);
-
     const cfg = await this._requireConfig(companyId);
+
     const payload = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -234,10 +249,10 @@ class WhatsAppSendService {
       sentBy: user.id, sentByName: user.name,
       timestamp: ts, waMessageId, msgStatus: 'sent',
       ...(options.replyToWaMessageId && {
-        replyToWaMessageId:  options.replyToWaMessageId,
-        replyToContent:      options.replyToContent      ?? '',
-        replyToDirection:    options.replyToDirection    ?? 'inbound',
-        replyToSenderName:   options.replyToSenderName   ?? null,
+        replyToWaMessageId: options.replyToWaMessageId,
+        replyToContent:     options.replyToContent     ?? '',
+        replyToDirection:   options.replyToDirection   ?? 'inbound',
+        replyToSenderName:  options.replyToSenderName  ?? null,
       }),
     });
 
@@ -246,7 +261,6 @@ class WhatsAppSendService {
       this._updateLastMessage(contact.pk, message, 'outbound', ts, contact.isLead),
     ]);
 
-    // Fire-and-forget: keep CONV# entity in sync (Phase 2 conversation model)
     if (contact.leadItem?.convId) {
       ConversationService.updateLastMessage(companyId, contact.leadItem.convId, {
         text: message, timestamp: ts,
@@ -258,37 +272,52 @@ class WhatsAppSendService {
 
   // ── sendTemplate ──────────────────────────────────────────────────────────
   /**
-   * Send an approved template message to a contact.
-   * Resolves unknown contacts by phone — no prior CRM lead required.
+   * Send an approved WhatsApp template message.
    *
-   * @param {string} companyId
-   * @param {{ leadPK?, leadId?, phone? }} target
-   * @param {string} templateId
-   * @param {string[]} variableValues  — ordered variable substitutions
-   * @param {{ id, role, name }} user
+   * @param {string|object} templateRef
+   *   string → templateId (fetches template from DDB; used by Inbox, Customer360)
+   *   object → { templateName, language } (skips DDB lookup; used by Automation, welcome)
+   *
+   * @param {string[]}  variableValues  — ordered body {{n}} substitutions
+   *
+   * @param {object}  [options]
+   * @param {string}  [options.headerVariableValue]  — TEXT header {{1}} value
+   * @param {string}  [options.content]              — override content stored in DDB
+   *                                                   (broadcast uses "[Broadcast: ...]")
+   * @param {object}  [options.extraFields]          — merged into the DDB message item
+   *                                                   (broadcast adds broadcastId, templateId)
+   * @param {object}  [options.wamidExtras]          — merged into the WAMID lookup item
+   *                                                   (broadcast adds broadcastId, broadcastSK)
+   *
    * @returns {{ wamid, timestamp, pk, msgSK }}
    */
-  /**
-   * @param {string[]} variableValues  — ordered body {{n}} substitutions
-   * @param {{ headerVariableValue?: string }} [options]
-   */
-  async sendTemplate(companyId, target, templateId, variableValues = [], user, options = {}) {
+  async sendTemplate(companyId, target, templateRef, variableValues = [], user, options = {}) {
     const contact = await this.resolveContact(companyId, target);
     this._assertSendPermission(user, contact);
-
     const cfg = await this._requireConfig(companyId);
 
-    const tmplRes = await dynamodb.get({
-      TableName: TABLE,
-      Key: { PK: `CONFIG#TMPL#${companyId}`, SK: `TMPL#${templateId}` },
-    }).promise();
-    const tmpl = tmplRes.Item;
-    if (!tmpl) throw this._err('Template not found', 404);
+    // Resolve template — fetch from DDB when given an ID, use name directly otherwise
+    let tmpl;
+    if (typeof templateRef === 'string') {
+      const r = await dynamodb.get({
+        TableName: TABLE,
+        Key: { PK: `CONFIG#TMPL#${companyId}`, SK: `TMPL#${templateRef}` },
+      }).promise();
+      tmpl = r.Item;
+      if (!tmpl) throw this._err('Template not found', 404);
+    } else {
+      // { templateName, language } — name-only path for Automation / welcome messages
+      tmpl = {
+        templateName: templateRef.templateName,
+        language:     templateRef.language ?? 'en',
+        name:         templateRef.templateName,
+        components:   [],
+      };
+    }
 
-    const bodyParams   = (variableValues ?? []).map(String);
-    const components   = [];
+    const bodyParams = (variableValues ?? []).map(String);
+    const components = [];
 
-    // Header variable support — TEXT header with {{1}}
     const headerComp = (tmpl.components ?? []).find(
       (c) => c.type === 'HEADER' && c.format === 'TEXT' && /\{\{1\}\}/.test(c.text ?? ''),
     );
@@ -305,33 +334,33 @@ class WhatsAppSendService {
         messaging_product: 'whatsapp',
         to: this._toE164(contact.phone),
         type: 'template',
-        template: {
-          name: tmpl.templateName,
-          language: { code: tmpl.language ?? 'en' },
-          components,
-        },
+        template: { name: tmpl.templateName, language: { code: tmpl.language ?? 'en' }, components },
       },
       { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } },
     );
     const wamid = apiRes.data?.messages?.[0]?.id ?? null;
 
-    const ts    = new Date().toISOString();
-    const msgSK = `MSG#${ts}#${wamid ?? Date.now()}`;
+    const ts      = new Date().toISOString();
+    const msgSK   = `MSG#${ts}#${wamid ?? Date.now()}`;
+    const content = options.content ?? `[Template: ${tmpl.name}]`;
 
     await this._storeMessage(contact.pk, msgSK, {
-      direction: 'outbound', content: `[Template: ${tmpl.name}]`, type: 'template',
+      direction: 'outbound', content, type: 'template',
       sentBy: user.id, sentByName: user.name ?? null,
-      templateId, timestamp: ts, waMessageId: wamid, msgStatus: 'sent',
+      // Include templateId only when we resolved from DDB (we have the ID)
+      ...(typeof templateRef === 'string' && { templateId: templateRef }),
+      timestamp: ts, waMessageId: wamid, msgStatus: 'sent',
+      ...(options.extraFields ?? {}),
     });
 
     await Promise.all([
-      this._storeWamidLookup(wamid, contact.pk, msgSK, companyId),
-      this._updateLastMessage(contact.pk, `[Template: ${tmpl.name}]`, 'outbound', ts, contact.isLead),
+      this._storeWamidLookup(wamid, contact.pk, msgSK, companyId, options.wamidExtras ?? {}),
+      this._updateLastMessage(contact.pk, content, 'outbound', ts, contact.isLead),
     ]);
 
     if (contact.leadItem?.convId) {
       ConversationService.updateLastMessage(companyId, contact.leadItem.convId, {
-        text: `[Template: ${tmpl.name}]`, timestamp: ts,
+        text: content, timestamp: ts,
       }).catch(() => {});
     }
 
@@ -340,19 +369,14 @@ class WhatsAppSendService {
 
   // ── sendInteractive ───────────────────────────────────────────────────────
   /**
-   * Send a structured interactive message (list, reply buttons, etc.).
+   * Send a structured interactive message (list, reply buttons, CTA, etc.).
    * The `interactive` payload must conform to the Meta Interactive Message spec.
    *
-   * @param {string} companyId
-   * @param {{ leadPK?, leadId?, phone? }} target
-   * @param {object} interactive  — Meta interactive object
-   * @param {{ id, role, name }} user
    * @returns {{ wamid, timestamp, pk, msgSK }}
    */
   async sendInteractive(companyId, target, interactive, user) {
     const contact = await this.resolveContact(companyId, target);
     this._assertSendPermission(user, contact);
-
     const cfg = await this._requireConfig(companyId);
 
     const apiRes = await axios.post(
@@ -382,12 +406,87 @@ class WhatsAppSendService {
       this._updateLastMessage(contact.pk, preview, 'outbound', ts, contact.isLead),
     ]);
 
+    if (contact.leadItem?.convId) {
+      ConversationService.updateLastMessage(companyId, contact.leadItem.convId, {
+        text: preview, timestamp: ts,
+      }).catch(() => {});
+    }
+
+    return { wamid, timestamp: ts, pk: contact.pk, msgSK };
+  }
+
+  // ── sendMedia ─────────────────────────────────────────────────────────────
+  /**
+   * Send a media message (image, video, audio, document, sticker).
+   *
+   * @param {object}  media
+   * @param {string}  media.mediaType  — 'image' | 'video' | 'audio' | 'document' | 'sticker'
+   * @param {string}  [media.mediaId]  — Meta media_id (pre-uploaded via /media endpoint)
+   * @param {string}  [media.url]      — publicly accessible direct link (alternative to mediaId)
+   * @param {string}  [media.caption]  — optional caption text
+   * @param {string}  [media.filename] — shown for documents in WhatsApp UI
+   * @param {string}  [media.mimeType] — MIME type for DDB record
+   * @param {string}  [media.s3Key]    — S3 key for DDB record (enables presigned GET gallery)
+   *
+   * @returns {{ wamid, timestamp, pk, msgSK }}
+   */
+  async sendMedia(companyId, target, media, user) {
+    const contact = await this.resolveContact(companyId, target);
+    this._assertSendPermission(user, contact);
+    const cfg = await this._requireConfig(companyId);
+
+    const { mediaType, mediaId, url, caption, filename, mimeType, s3Key } = media;
+
+    const mediaPayload = {};
+    if (mediaId)  mediaPayload.id   = mediaId;
+    else if (url) mediaPayload.link = url;
+    if (caption)  mediaPayload.caption  = caption;
+    if (filename && mediaType === 'document') mediaPayload.filename = filename;
+
+    const apiRes = await axios.post(
+      `${this._graphUrl(cfg)}/${cfg.phoneNumberId}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: this._toE164(contact.phone),
+        type: mediaType,
+        [mediaType]: mediaPayload,
+      },
+      { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } },
+    );
+    const wamid    = apiRes.data?.messages?.[0]?.id ?? null;
+    const ts       = new Date().toISOString();
+    const msgSK    = `MSG#${ts}#${wamid ?? Date.now()}`;
+    const preview  = caption ?? `[${mediaType}]`;
+
+    await this._storeMessage(contact.pk, msgSK, {
+      direction: 'outbound', type: mediaType, content: preview,
+      ...(mediaId  && { mediaId }),
+      ...(url      && { mediaUrl: url }),
+      ...(s3Key    && { s3Key }),
+      ...(filename && { filename }),
+      ...(mimeType && { mimeType }),
+      sentBy: user.id, sentByName: user.name ?? null,
+      timestamp: ts, waMessageId: wamid, msgStatus: 'sent',
+    });
+
+    await Promise.all([
+      this._storeWamidLookup(wamid, contact.pk, msgSK, companyId),
+      this._updateLastMessage(contact.pk, preview, 'outbound', ts, contact.isLead),
+    ]);
+
+    if (contact.leadItem?.convId) {
+      ConversationService.updateLastMessage(companyId, contact.leadItem.convId, {
+        text: preview, timestamp: ts,
+      }).catch(() => {});
+    }
+
     return { wamid, timestamp: ts, pk: contact.pk, msgSK };
   }
 
   // ── Future stubs ──────────────────────────────────────────────────────────
-  // Each returns 501 until the backend implementation is ready.
-  // Route handlers in whatsapp.js delegate here so the API surface is stable.
+  // Each throws 501 until the backend is ready.
+  // API surface is stable — callers can be wired up before implementation.
 
   async sendCatalog()  { throw this._err('Catalog messages not yet implemented',      501); }
   async sendPayment()  { throw this._err('Payment messages not yet implemented',      501); }

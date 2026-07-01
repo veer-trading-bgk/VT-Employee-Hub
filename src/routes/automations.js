@@ -3,7 +3,7 @@ const { v4: uuidv4 } = require('uuid');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
-const { sendTemplate } = require('../utils/whatsappSend');
+const WASendSvc = require('../services/WhatsAppSendService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -60,7 +60,13 @@ async function executeActions(companyId, actions, ctx) {
           if (v === '{{phone}}') return phone ?? '';
           return v;
         });
-        await sendTemplate(companyId, phone, action.templateName, action.language ?? 'en', params);
+        await WASendSvc.sendTemplate(
+          companyId,
+          { phone },
+          { templateName: action.templateName, language: action.language ?? 'en' },
+          params,
+          { id: 'system', role: 'admin', name: 'Automation' },
+        );
         break;
       }
       case 'assign_to': {
