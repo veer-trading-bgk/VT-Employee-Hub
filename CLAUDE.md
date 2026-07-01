@@ -42,6 +42,53 @@ Before merging any PR that touches WhatsApp messaging, confirm:
 
 ---
 
+## ADR-013 — Customer Identity & Recipient Resolution (ENFORCED)
+
+**Every customer entering APForce MUST resolve through `CustomerIdentityService`.**
+
+File: `src/services/CustomerIdentityService.js`
+Full record: `docs/adr/ADR-013-customer-identity.md`
+
+### What this means in practice
+
+- `phoneNorm` is the **only** value used to compare, look up, or deduplicate customers.
+  - Always call `to10Digit(rawPhone)` before any comparison or GSI lookup.
+  - Never compare `lead.phone === incomingPhone` — always normalize both sides first.
+- Every entry point that creates or claims a customer MUST call `CIS.resolveOrCreate()`.
+  - Do NOT query `company-phone-index` directly in route handlers for dedup.
+  - Do NOT write `LEAD# METADATA` items directly in route handlers.
+  - Do NOT implement per-route dedup logic.
+- The `company-phone-index` GSI is the only permitted phone lookup mechanism — no full-table scans, no in-memory phone maps.
+- INBOX# records are a temporary staging area only — they must not be treated as durable customer identity.
+
+### Canonical usage
+
+```js
+const CIS = require('../services/CustomerIdentityService');
+
+const { lead, created } = await CIS.resolveOrCreate(companyId, {
+  phone,        // raw format accepted — CIS normalises internally
+  name,
+  source,       // 'form' | 'whatsapp' | 'import' | 'ctwa' | 'api' | 'manual'
+}, { idempotencyKey });   // required for webhook-based entry points
+```
+
+### Code review gate
+
+Before merging any PR that creates or claims a customer:
+- [ ] No direct `dynamodb.put({ Item: { PK: 'LEAD#...' } })` in route handlers
+- [ ] No in-memory phone comparison (`l.phone === x`, `phones.includes(x)`)
+- [ ] New entry points call `CIS.resolveOrCreate()` — not ad-hoc GSI + put
+- [ ] Phone lookups via `company-phone-index` use `to10Digit()` normalised value
+
+### Migration status (transition items — not yet compliant)
+
+- [ ] WhatsApp webhook unknown-contact path (`whatsapp.js:1360`) — no phone lock before INBOX# creation
+- [ ] CSV bulk import (`crm.js:841`) — in-memory scan dedup, not GSI
+- [ ] `contacts.js` — deduplicates using raw `l.phone`, not `l.phoneNorm`
+
+---
+
 ## Deployment Process (CRITICAL)
 
 ### Backend (Lambda)
