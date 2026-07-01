@@ -63,15 +63,27 @@ export interface CampaignsResponse     { success: boolean; campaigns: Campaign[]
 export interface CampaignResponse      { success: boolean; campaign: Campaign }
 export interface CampaignStatsResponse { success: boolean; stats: CampaignDashboardStats }
 
-export interface AudienceRecipient { name: string; phone: string; stage: string; tags: string[] }
+export interface AudienceRecipient { pk?: string; name: string; phone: string; stage: string; tags: string[] }
 export interface AudiencePreviewResponse {
-  success:          boolean;
-  count:            number;
-  exceedsLimit:     boolean;
+  success:           boolean;
+  count:             number;
+  exceedsLimit:      boolean;
   duplicatesRemoved?: number;
   invalidPhoneCount?: number;
-  recipients?:      AudienceRecipient[] | null;
+  recipients?:       AudienceRecipient[] | null;
   recipientsCapped?: boolean;
+}
+
+export interface ValidateAudienceResponse {
+  success:      boolean;
+  valid:        boolean;
+  reviewCount:  number;
+  currentCount: number;
+  delta:        number;
+  stats:        { duplicatesRemoved: number; invalidPhoneCount: number };
+  removed?:     Array<AudienceRecipient & { reason: string }> | null;
+  added?:       Array<AudienceRecipient & { reason: string }> | null;
+  validatedAt:  string;
 }
 
 export interface LaunchResponse { success: boolean; sent: number; failed: number; total: number; errors: Array<{ phone: string; error: string }> }

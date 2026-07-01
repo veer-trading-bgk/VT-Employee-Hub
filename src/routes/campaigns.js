@@ -13,6 +13,51 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 const campPK = (cid) => `CONFIG#CAMP#${cid}`;
 const campSK = (id)  => `CAMP#${id}`;
 
+// ── Single authoritative audience builder ─────────────────────────────────
+// Used by /audience/preview, /audience/validate, and /:id/launch.
+// Audience is built exactly once per request; the same object is used for
+// both the count validation guard and the send loop — no double-rebuild.
+async function _buildAudience(companyId, filter) {
+  let items = [];
+  let lastKey;
+  do {
+    const sr = await dynamodb.scan({
+      TableName: TABLE,
+      FilterExpression: 'begins_with(PK, :pfx) AND SK = :meta AND attribute_not_exists(deletedAt)',
+      ExpressionAttributeValues: { ':pfx': `LEAD#${companyId}#`, ':meta': 'METADATA' },
+      ...(lastKey && { ExclusiveStartKey: lastKey }),
+    }).promise();
+    items.push(...(sr.Items ?? []));
+    lastKey = sr.LastEvaluatedKey;
+  } while (lastKey);
+
+  const f = filter ?? {};
+  if (f.stages?.length)  items = items.filter((l) => f.stages.includes(l.stage));
+  if (f.tags?.length)    items = items.filter((l) => f.tags.some((t) => (l.tags ?? []).includes(t)));
+  if (f.assignedTo)      items = items.filter((l) => l.assignedTo === f.assignedTo);
+  if (f.source)          items = items.filter((l) => l.source === f.source);
+
+  // Dedup by phoneNorm — one recipient per unique WhatsApp account (ADR-013)
+  const seenPhones = new Set();
+  let duplicatesRemoved = 0;
+  let invalidPhoneCount = 0;
+  const leads = [];
+  for (const l of items) {
+    const norm = l.phoneNorm || l.phone;
+    if (!norm)               { invalidPhoneCount++; continue; }
+    if (seenPhones.has(norm)) { duplicatesRemoved++;  continue; }
+    seenPhones.add(norm);
+    leads.push(l);
+  }
+
+  return { leads, count: leads.length, stats: { duplicatesRemoved, invalidPhoneCount } };
+}
+
+const RECIPIENT_CAP = 50;
+function _toRecipient(l) {
+  return { pk: l.PK, name: l.name ?? l.phone ?? '', phone: l.phone ?? '', stage: l.stage ?? '', tags: l.tags ?? [] };
+}
+
 // ── GET /stats — dashboard KPIs (before /:id) ─────────────────────────────
 router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
@@ -28,7 +73,7 @@ router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req
 
     for (const c of r.Items ?? []) {
       const s = c.stats ?? {};
-      if (c.status === 'active')    active++;
+      if (c.status === 'active')         active++;
       else if (c.status === 'draft')     draft++;
       else if (c.status === 'scheduled') scheduled++;
       else if (c.status === 'completed') completed++;
@@ -53,57 +98,69 @@ router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req
   } catch (err) { next(err); }
 });
 
-// ── POST /audience/preview — count matching leads (before /:id) ───────────
+// ── POST /audience/preview — count + recipient list (before /:id) ─────────
 router.post('/audience/preview', authMiddleware, checkRole(['admin', 'manager']), rateLimit(30, 60_000), async (req, res, next) => {
   try {
     const { filter = {} } = req.body;
+    const { leads, count, stats } = await _buildAudience(req.user.companyId, filter);
+
+    const recipientsCapped = count > RECIPIENT_CAP;
+    res.json({
+      success:          true,
+      count,
+      exceedsLimit:     count > 1000,
+      duplicatesRemoved: stats.duplicatesRemoved,
+      invalidPhoneCount: stats.invalidPhoneCount,
+      recipients:        !recipientsCapped ? leads.map(_toRecipient) : null,
+      recipientsCapped,
+    });
+  } catch (err) { next(err); }
+});
+
+// ── POST /audience/validate — preflight before launch (before /:id) ────────
+// Called by the UI after the user clicks Launch. Compares the count the user
+// saw in the Review step (reviewCount) against the current live audience.
+// Returns valid:true only when they are identical. The send loop in /:id/launch
+// performs the same check as a server-side safety net.
+router.post('/audience/validate', authMiddleware, checkRole(['admin', 'manager']), rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const { filter = {}, reviewCount, reviewRecipients } = req.body;
     const { companyId } = req.user;
 
-    let items = [];
-    let lastKey;
-    do {
-      const r = await dynamodb.scan({
-        TableName: TABLE,
-        FilterExpression: 'begins_with(PK, :pfx) AND SK = :meta AND attribute_not_exists(deletedAt)',
-        ExpressionAttributeValues: { ':pfx': `LEAD#${companyId}#`, ':meta': 'METADATA' },
-        ProjectionExpression: 'PK, #nm, phone, phoneNorm, stage, tags, assignedTo, #src',
-        ExpressionAttributeNames: { '#src': 'source', '#nm': 'name' },
-        ...(lastKey && { ExclusiveStartKey: lastKey }),
-      }).promise();
-      items.push(...(r.Items ?? []));
-      lastKey = r.LastEvaluatedKey;
-    } while (lastKey);
-
-    if (filter.stages?.length)  items = items.filter((l) => filter.stages.includes(l.stage));
-    if (filter.tags?.length)    items = items.filter((l) => filter.tags.some((t) => (l.tags ?? []).includes(t)));
-    if (filter.assignedTo)      items = items.filter((l) => l.assignedTo === filter.assignedTo);
-    if (filter.source)          items = items.filter((l) => l.source === filter.source);
-
-    // Dedup by phoneNorm — one recipient per unique WhatsApp account (ADR-013)
-    const seenPhones = new Set();
-    let duplicatesRemoved = 0;
-    let invalidPhoneCount = 0;
-    const deduped = [];
-    for (const l of items) {
-      const norm = l.phoneNorm || l.phone;
-      if (!norm)              { invalidPhoneCount++; continue; }
-      if (seenPhones.has(norm)) { duplicatesRemoved++;  continue; }
-      seenPhones.add(norm);
-      deduped.push(l);
+    if (typeof reviewCount !== 'number') {
+      return res.status(400).json({ error: 'reviewCount is required' });
     }
 
-    const RECIPIENT_CAP = 50;
-    const recipientsCapped = deduped.length > RECIPIENT_CAP;
+    const { leads, count, stats } = await _buildAudience(companyId, filter);
+    const valid = count === reviewCount;
+
+    const recipientsCapped = count > RECIPIENT_CAP;
+    const currentRecipients = !recipientsCapped ? leads.map(_toRecipient) : null;
+
+    // Build per-contact diff when both lists are available (small audiences only)
+    let removed = null;
+    let added   = null;
+    if (Array.isArray(reviewRecipients) && currentRecipients) {
+      const reviewPks  = new Set(reviewRecipients.map((r) => r.pk).filter(Boolean));
+      const currentPks = new Set(currentRecipients.map((r) => r.pk));
+      removed = reviewRecipients
+        .filter((r) => r.pk && !currentPks.has(r.pk))
+        .map((r) => ({ ...r, reason: 'No longer matches filters (deleted, stage changed, or duplicate)' }));
+      added = currentRecipients
+        .filter((r) => !reviewPks.has(r.pk))
+        .map((r) => ({ ...r, reason: 'New match since review' }));
+    }
+
     res.json({
-      success: true,
-      count: deduped.length,
-      exceedsLimit: deduped.length > 1000,
-      duplicatesRemoved,
-      invalidPhoneCount,
-      recipients: !recipientsCapped
-        ? deduped.map((l) => ({ name: l.name ?? l.phone ?? '', phone: l.phone ?? '', stage: l.stage ?? '', tags: l.tags ?? [] }))
-        : null,
-      recipientsCapped,
+      success:      true,
+      valid,
+      reviewCount,
+      currentCount: count,
+      delta:        count - reviewCount,
+      stats:        { duplicatesRemoved: stats.duplicatesRemoved, invalidPhoneCount: stats.invalidPhoneCount },
+      removed,
+      added,
+      validatedAt:  new Date().toISOString(),
     });
   } catch (err) { next(err); }
 });
@@ -290,37 +347,28 @@ router.post('/:id/launch', authMiddleware, checkRole(['admin', 'manager']), rate
     if (!tmpl)                      return res.status(404).json({ error: 'Template not found' });
     if (tmpl.status !== 'APPROVED') return res.status(400).json({ error: 'Only APPROVED templates can be used' });
 
-    // Load audience — excludes soft-deleted leads and deduplicates by phoneNorm (ADR-013)
-    let leads = [];
-    let lastKey;
-    do {
-      const sr = await dynamodb.scan({
-        TableName: TABLE,
-        FilterExpression: 'begins_with(PK, :pfx) AND SK = :meta AND attribute_not_exists(deletedAt)',
-        ExpressionAttributeValues: { ':pfx': `LEAD#${companyId}#`, ':meta': 'METADATA' },
-        ...(lastKey && { ExclusiveStartKey: lastKey }),
-      }).promise();
-      leads.push(...(sr.Items ?? []));
-      lastKey = sr.LastEvaluatedKey;
-    } while (lastKey);
+    // Build audience once — this is the single authoritative audience for this launch.
+    // The same object is used for the integrity check AND the send loop (no double-rebuild).
+    const { leads, count: finalCount, stats: audienceStats } =
+      await _buildAudience(companyId, campaign.audience?.filter ?? {});
 
-    const f = campaign.audience?.filter ?? {};
-    if (f.stages?.length)  leads = leads.filter((l) => f.stages.includes(l.stage));
-    if (f.tags?.length)    leads = leads.filter((l) => f.tags.some((t) => (l.tags ?? []).includes(t)));
-    if (f.assignedTo)      leads = leads.filter((l) => l.assignedTo === f.assignedTo);
-    if (f.source)          leads = leads.filter((l) => l.source === f.source);
+    // Enterprise integrity check: abort if the audience changed since the user
+    // confirmed it on the Review step.
+    const reviewCount = typeof req.body?.reviewCount === 'number' ? req.body.reviewCount : null;
+    if (reviewCount !== null && finalCount !== reviewCount) {
+      logger.warn(`campaign ${campaign.id} launch aborted: reviewCount=${reviewCount} finalCount=${finalCount}`);
+      return res.status(409).json({
+        error:        'AUDIENCE_CHANGED',
+        message:      'The audience changed between your review and launch. Refresh the Review step and try again.',
+        reviewCount,
+        currentCount: finalCount,
+        delta:        finalCount - reviewCount,
+        stats:        audienceStats,
+      });
+    }
 
-    // Dedup by phoneNorm — one send per unique WhatsApp account (ADR-013)
-    const seenPhones = new Set();
-    leads = leads.filter((l) => {
-      const norm = l.phoneNorm || l.phone;
-      if (!norm || seenPhones.has(norm)) return false;
-      seenPhones.add(norm);
-      return true;
-    });
-
-    if (leads.length === 0)   return res.status(400).json({ error: 'No contacts match the audience filters' });
-    if (leads.length > 1000)  return res.status(400).json({ error: 'Audience exceeds 1,000 contact limit. Refine your filters.' });
+    if (finalCount === 0)    return res.status(400).json({ error: 'No contacts match the audience filters' });
+    if (finalCount > 1000)   return res.status(400).json({ error: 'Audience exceeds 1,000 contact limit. Refine your filters.' });
 
     const now = new Date().toISOString();
 
@@ -375,7 +423,7 @@ router.post('/:id/launch', authMiddleware, checkRole(['admin', 'manager']), rate
       }
     }));
 
-    // Persist final stats
+    // Persist final stats — includes audience integrity fields for audit trail
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK: campPK(companyId), SK: campSK(campaign.id) },
@@ -383,12 +431,24 @@ router.post('/:id/launch', authMiddleware, checkRole(['admin', 'manager']), rate
       ExpressionAttributeNames: { '#st': 'status' },
       ExpressionAttributeValues: {
         ':done':  sent === 0 ? 'failed' : 'completed',
-        ':stats': { totalAudience: leads.length, sent, failed, delivered: 0, read: 0, replied: 0 },
-        ':now2':  new Date().toISOString(),
+        ':stats': {
+          totalAudience:        finalCount,
+          sent,
+          failed,
+          delivered:            0,
+          read:                 0,
+          replied:              0,
+          duplicatesRemoved:    audienceStats.duplicatesRemoved,
+          invalidPhonesSkipped: audienceStats.invalidPhoneCount,
+          reviewCount:          reviewCount ?? finalCount,
+          actualSentCount:      sent,
+          validationTimestamp:  now,
+        },
+        ':now2': new Date().toISOString(),
       },
     }).promise();
 
-    res.json({ success: true, sent, failed, total: leads.length, errors: errors.slice(0, 20) });
+    res.json({ success: true, sent, failed, total: finalCount, errors: errors.slice(0, 20) });
   } catch (err) {
     // Best-effort revert to failed on unexpected error
     try {
