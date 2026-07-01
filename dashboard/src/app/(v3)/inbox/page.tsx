@@ -68,6 +68,7 @@ interface WaMessage {
   filename?: string;
   msgStatus?: 'sent' | 'delivered' | 'read' | 'failed';
   sentByName?: string;
+  templateId?: string;
 }
 
 type ConvTab = 'open' | 'unassigned' | 'resolved';
@@ -531,14 +532,64 @@ function ConversationList({
   );
 }
 
+// ── Template message bubble ───────────────────────────────────────────────────
+
+function TemplateBubble({ message, isOut }: { message: WaMessage; isOut: boolean }) {
+  const qc = useQueryClient();
+  // Read from cache (no fetch triggered) — graceful when cache is cold
+  const cached = qc.getQueryData<{ templates: WaTemplate[] }>(['wa-templates']);
+  const tpl = cached?.templates.find((t) => t.id === message.templateId);
+  const nameFromContent = message.content?.match(/^\[Template:\s*(.+?)\]$/i)?.[1];
+  const displayName = tpl?.name ?? nameFromContent ?? 'Template';
+
+  return (
+    <div className={cn(
+      'max-w-[75%] rounded-2xl px-3 py-2.5 text-sm shadow-sm',
+      isOut
+        ? 'bg-primary-600 text-white rounded-br-sm'
+        : 'bg-white text-neutral-900 border border-neutral-200 rounded-bl-sm dark:bg-neutral-800 dark:text-neutral-100 dark:border-neutral-700',
+    )}>
+      <div className={cn(
+        'mb-1.5 flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide',
+        isOut ? 'text-white/60' : 'text-neutral-400',
+      )}>
+        <FileText className="h-2.5 w-2.5" aria-hidden />
+        Template · {displayName}
+      </div>
+      {tpl?.bodyPreview ? (
+        <p className="whitespace-pre-wrap break-words">{tpl.bodyPreview}</p>
+      ) : (
+        <p className={cn('text-xs italic', isOut ? 'text-white/60' : 'text-neutral-400')}>
+          Sent: {displayName}
+        </p>
+      )}
+      <div className={cn('mt-1 flex items-center gap-1', isOut ? 'justify-end' : 'justify-start')}>
+        <span className={cn('text-[9px]', isOut ? 'text-white/70' : 'text-neutral-400')}>
+          {msgTime(message.timestamp)}
+        </span>
+        {isOut && <DeliveryIcon status={message.msgStatus} />}
+      </div>
+    </div>
+  );
+}
+
 // ── Message Bubble ────────────────────────────────────────────────────────────
 
 // Content is a backend-generated placeholder — suppress it when media renders
-const PLACEHOLDER_RE = /^\[(image|video|audio|document|sticker|voice|Broadcast:|Template:)/i;
+const PLACEHOLDER_RE = /^\[(image|video|audio|document|sticker|voice|Broadcast:)/i;
 
 function MessageBubble({ message }: { message: WaMessage }) {
   const isOut = message.direction === 'outbound';
-  const isMedia = !!(message.type && message.type !== 'text' && message.type !== 'template');
+
+  if (message.type === 'template') {
+    return (
+      <div className={cn('mb-1.5 flex', isOut ? 'justify-end' : 'justify-start')}>
+        <TemplateBubble message={message} isOut={isOut} />
+      </div>
+    );
+  }
+
+  const isMedia = !!(message.type && message.type !== 'text');
   const hasMediaSource = !!(message.s3Key || message.mediaId || message.mediaUrl);
   const showText = message.content && !(isMedia && PLACEHOLDER_RE.test(message.content));
 
@@ -702,6 +753,7 @@ function ThreadPane({
   const [draft, setDraft] = useState('');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [now, setNow] = useState(Date.now());
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -835,13 +887,21 @@ function ThreadPane({
         `/api/whatsapp/upload-url?mimeType=${encodeURIComponent(file.type)}&filename=${encodeURIComponent(file.name)}&fileSize=${file.size}`,
       );
 
-      // 2. PUT file directly to S3 (no auth header — presigned URL handles access)
-      const s3Res = await fetch(uploadUrl, {
-        method: 'PUT',
-        body: file,
-        headers: { 'Content-Type': file.type },
+      // 2. PUT file directly to S3 — XHR used (not fetch) to get upload progress events
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+        };
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve();
+          else reject(new Error('S3 upload failed'));
+        };
+        xhr.onerror = () => reject(new Error('Network error during upload'));
+        xhr.open('PUT', uploadUrl);
+        xhr.setRequestHeader('Content-Type', file.type);
+        xhr.send(file);
       });
-      if (!s3Res.ok) throw new Error('S3 upload failed');
 
       // 3. Tell backend to send from S3 → Meta → recipient
       const body: Record<string, string> = {
@@ -867,6 +927,7 @@ function ThreadPane({
     } finally {
       setIsUploading(false);
       setUploadFile(null);
+      setUploadProgress(0);
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }
@@ -985,9 +1046,21 @@ function ThreadPane({
           <>
             {/* Upload progress indicator */}
             {isUploading && uploadFile && (
-              <div className="mb-2 flex items-center gap-2 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-700 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-300">
-                <span className="h-3 w-3 animate-spin rounded-full border-2 border-primary-600 border-t-transparent" />
-                Uploading {uploadFile.name}…
+              <div className="mb-2 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-700 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-300">
+                <div className="flex items-center gap-2">
+                  {uploadProgress > 0 && uploadProgress < 100
+                    ? <span className="text-[10px] font-bold tabular-nums w-8 shrink-0">{uploadProgress}%</span>
+                    : <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-primary-600 border-t-transparent" />}
+                  <span className="truncate flex-1">Uploading &ldquo;{uploadFile.name}&rdquo;</span>
+                </div>
+                {uploadProgress > 0 && (
+                  <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-primary-200 dark:bg-primary-900">
+                    <div
+                      className="h-1 rounded-full bg-primary-600 transition-[width] duration-200"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                )}
               </div>
             )}
 

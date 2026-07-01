@@ -120,6 +120,7 @@ function Panel({ children, width = 'w-80' }: { children: React.ReactNode; width?
     <div className={cn(
       'absolute bottom-full left-0 z-50 mb-1 rounded-xl border border-neutral-200 bg-white shadow-lg',
       'dark:border-neutral-700 dark:bg-neutral-900',
+      'animate-panel-in',
       width,
     )}>
       {children}
@@ -177,6 +178,10 @@ export function ComposerToolbar({
   const [pendingTpl, setPendingTpl] = useState<WaTpl | null>(null);
   const [tplVars, setTplVars] = useState<string[]>([]);
   const [qrSearch, setQrSearch] = useState('');
+  const [showCannedCreate, setShowCannedCreate] = useState(false);
+  const [newTitle, setNewTitle] = useState('');
+  const [newShortcut, setNewShortcut] = useState('');
+  const [newBody, setNewBody] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Close panel on outside click
@@ -196,6 +201,10 @@ export function ComposerToolbar({
     setPendingTpl(null);
     setTplSearch('');
     setQrSearch('');
+    setShowCannedCreate(false);
+    setNewTitle('');
+    setNewShortcut('');
+    setNewBody('');
   }
 
   function togglePanel(p: Panel) {
@@ -203,6 +212,10 @@ export function ComposerToolbar({
     setPendingTpl(null);
     setTplSearch('');
     setQrSearch('');
+    setShowCannedCreate(false);
+    setNewTitle('');
+    setNewShortcut('');
+    setNewBody('');
     setPanel(p);
   }
 
@@ -256,6 +269,26 @@ export function ComposerToolbar({
       onTemplateSent();
     },
     onError: (e: Error) => toast.error(e.message || 'Failed to send template'),
+  });
+
+  const createCannedMut = useMutation({
+    mutationFn: () => apiFetch('/api/whatsapp/inbox/canned', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: newTitle.trim(),
+        body: newBody.trim(),
+        ...(newShortcut.trim() ? { shortcut: newShortcut.trim().replace(/^\//, '') } : {}),
+      }),
+    }),
+    onSuccess: () => {
+      toast.success('Quick reply created');
+      qc.invalidateQueries({ queryKey: ['wa-canned'] });
+      setShowCannedCreate(false);
+      setNewTitle('');
+      setNewShortcut('');
+      setNewBody('');
+    },
+    onError: (e: Error) => toast.error(e.message || 'Failed to create quick reply'),
   });
 
   // ── Handlers ───────────────────────────────────────────────────────────────
@@ -431,36 +464,109 @@ export function ComposerToolbar({
       {/* ── Quick Replies panel ──────────────────────────────────────────── */}
       {panel === 'quickreply' && (
         <Panel>
-          <PanelHeader title="Quick Replies" onClose={closePanel} />
-          <SearchInput value={qrSearch} onChange={setQrSearch} placeholder="Search quick replies…" />
-          <div className="max-h-56 overflow-y-auto p-1">
-            {cannedLoading ? (
-              <div className="flex items-center justify-center gap-2 py-6">
-                <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />
-                <span className="text-xs text-neutral-400">Loading…</span>
-              </div>
-            ) : canned.length === 0 ? (
-              <p className="py-4 text-center text-xs text-neutral-400">
-                {qrSearch ? 'No matches found' : 'No quick replies configured'}
-              </p>
-            ) : canned.map((cr) => (
+          <PanelHeader title={showCannedCreate ? 'New Quick Reply' : 'Quick Replies'} onClose={closePanel}>
+            {showCannedCreate ? (
               <button
-                key={cr.id}
-                onClick={() => handleQrSelect(cr)}
-                className="w-full rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                onClick={() => { setShowCannedCreate(false); setNewTitle(''); setNewShortcut(''); setNewBody(''); }}
+                className="text-xs text-primary-600 hover:underline dark:text-primary-400"
               >
-                <div className="flex items-center gap-1.5">
-                  <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">{cr.title}</span>
-                  {cr.shortcut && (
-                    <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[9px] text-neutral-500 dark:bg-neutral-800">
-                      /{cr.shortcut}
-                    </span>
-                  )}
-                </div>
-                <p className="mt-0.5 line-clamp-2 text-[11px] text-neutral-500">{cr.body}</p>
+                ← Back
               </button>
-            ))}
-          </div>
+            ) : (
+              <button
+                onClick={() => setShowCannedCreate(true)}
+                className="text-xs font-medium text-primary-600 hover:underline dark:text-primary-400"
+              >
+                + Create
+              </button>
+            )}
+          </PanelHeader>
+
+          {showCannedCreate ? (
+            <div className="space-y-2.5 p-3">
+              <div>
+                <label className="mb-1 block text-[10px] font-medium text-neutral-500">Title *</label>
+                <input
+                  autoFocus
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="e.g. Payment Confirmation"
+                  className="w-full rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 text-xs outline-none focus:border-primary-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-medium text-neutral-500">Shortcut <span className="font-normal text-neutral-400">(optional)</span></label>
+                <input
+                  value={newShortcut}
+                  onChange={(e) => setNewShortcut(e.target.value)}
+                  placeholder="/shortcut"
+                  className="w-full rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 text-xs outline-none focus:border-primary-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-medium text-neutral-500">Message *</label>
+                <textarea
+                  value={newBody}
+                  onChange={(e) => setNewBody(e.target.value)}
+                  placeholder="Type your reply… Use {{name}} for contact name."
+                  rows={3}
+                  className="w-full resize-none rounded-lg border border-neutral-200 bg-neutral-50 px-2.5 py-1.5 text-xs outline-none focus:border-primary-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+                />
+              </div>
+              <button
+                onClick={() => createCannedMut.mutate()}
+                disabled={!newTitle.trim() || !newBody.trim() || createCannedMut.isPending}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary-600 py-2 text-xs font-semibold text-white hover:bg-primary-700 disabled:opacity-50"
+              >
+                {createCannedMut.isPending
+                  ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</>
+                  : 'Save Quick Reply'}
+              </button>
+            </div>
+          ) : (
+            <>
+              <SearchInput value={qrSearch} onChange={setQrSearch} placeholder="Search quick replies…" />
+              <div className="max-h-56 overflow-y-auto p-1">
+                {cannedLoading ? (
+                  <div className="flex items-center justify-center gap-2 py-6">
+                    <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />
+                    <span className="text-xs text-neutral-400">Loading…</span>
+                  </div>
+                ) : canned.length === 0 ? (
+                  <div className="flex flex-col items-center gap-3 py-6 text-center">
+                    <Zap className="h-6 w-6 text-neutral-200 dark:text-neutral-700" />
+                    <p className="text-xs text-neutral-400">
+                      {qrSearch ? 'No matches found.' : 'No quick replies yet.'}
+                    </p>
+                    {!qrSearch && (
+                      <button
+                        onClick={() => setShowCannedCreate(true)}
+                        className="flex items-center gap-1.5 rounded-lg border border-dashed border-primary-300 px-3 py-1.5 text-xs font-medium text-primary-600 hover:bg-primary-50 dark:border-primary-700 dark:text-primary-400 dark:hover:bg-primary-900/20"
+                      >
+                        + Create Quick Reply
+                      </button>
+                    )}
+                  </div>
+                ) : canned.map((cr) => (
+                  <button
+                    key={cr.id}
+                    onClick={() => handleQrSelect(cr)}
+                    className="w-full rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">{cr.title}</span>
+                      {cr.shortcut && (
+                        <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[9px] text-neutral-500 dark:bg-neutral-800">
+                          /{cr.shortcut}
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 line-clamp-2 text-[11px] text-neutral-500">{cr.body}</p>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </Panel>
       )}
 
