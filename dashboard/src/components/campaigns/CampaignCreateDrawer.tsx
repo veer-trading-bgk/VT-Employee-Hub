@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react';
 import {
   ChevronLeft, ChevronRight, Send, CalendarDays, FileText,
-  CheckCircle2, AlertCircle, Loader2, RefreshCw, Users, ShieldCheck,
+  CheckCircle2, AlertCircle, Loader2, RefreshCw, ShieldCheck,
   XCircle, ArrowRight, Eye, EyeOff,
 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -146,7 +146,7 @@ export function CampaignCreateDrawer({ open, onClose }: CampaignCreateDrawerProp
           templateName:        form.templateName || null,
           variableValues:      form.variableValues,
           headerVariableValue: form.headerVariableValue || null,
-          scheduledAt:         payload.status === 'scheduled' ? form.scheduledAt : null,
+          scheduledAt:         payload.status === 'scheduled' ? new Date(form.scheduledAt).toISOString() : null,
         }),
       }),
     onSuccess: (_, { status }) => {
@@ -214,7 +214,7 @@ export function CampaignCreateDrawer({ open, onClose }: CampaignCreateDrawerProp
             <CheckCircle2 className="h-8 w-8 text-success-600 dark:text-success-400" />
           </div>
           <div>
-            <p className="text-lg font-semibold text-neutral-900 dark:text-white">"{form.name}" is live</p>
+            <p className="text-lg font-semibold text-neutral-900 dark:text-white">&ldquo;{form.name}&rdquo; is live</p>
             <p className="mt-1 text-sm text-neutral-500">{result.total} recipients targeted</p>
           </div>
           <div className="grid w-full grid-cols-3 gap-3">
@@ -484,7 +484,7 @@ function StepTemplate({
         <div>
           <p className="font-medium text-neutral-900 dark:text-white">Template configured via Meta Ads Manager</p>
           <p className="mt-1 text-sm text-neutral-500 max-w-xs">
-            CTWA ads use Meta's ad creative system. Set the WhatsApp message template inside your Meta Business Suite.
+            CTWA ads use Meta&apos;s ad creative system. Set the WhatsApp message template inside your Meta Business Suite.
           </p>
         </div>
       </div>

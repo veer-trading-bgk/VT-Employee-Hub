@@ -76,6 +76,35 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: ap-south-1
 
+      - name: Ensure campaign scheduler EventBridge rule exists
+        continue-on-error: true
+        run: |
+          RULE_ARN=$(aws events put-rule \
+            --name vt-employee-bot-campaign-scheduler \
+            --schedule-expression "rate(5 minutes)" \
+            --state ENABLED \
+            --region ap-south-1 \
+            --query 'RuleArn' --output text)
+          FUNCTION_ARN=$(aws lambda get-function \
+            --function-name vt-employee-bot-api \
+            --region ap-south-1 \
+            --query 'Configuration.FunctionArn' --output text)
+          aws events put-targets \
+            --rule vt-employee-bot-campaign-scheduler \
+            --region ap-south-1 \
+            --targets "Id=1,Arn=$FUNCTION_ARN"
+          aws lambda add-permission \
+            --function-name vt-employee-bot-api \
+            --statement-id EventBridgeCampaignScheduler \
+            --action lambda:InvokeFunction \
+            --principal events.amazonaws.com \
+            --source-arn "$RULE_ARN" \
+            --region ap-south-1 2>/dev/null || true
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ap-south-1
+
       - name: Smoke test
         run: |
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://api.viirtrading.com/health)

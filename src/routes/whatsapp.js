@@ -1196,7 +1196,7 @@ router.post('/webhook', async (req, res) => {
         }).promise();
         if (!lookup.Item) continue;
 
-        const { leadPK, msgSK, broadcastId, broadcastSK, companyId: cid } = lookup.Item;
+        const { leadPK, msgSK, broadcastId, broadcastSK, campaignId, companyId: cid } = lookup.Item;
 
         // Update MSG# record — priority order: failed < sent < delivered < read
         // 'failed' always overwrites (message can't recover); read can't be downgraded
@@ -1223,6 +1223,22 @@ router.post('/webhook', async (req, res) => {
               TableName: TABLE,
               Key: { PK: `BROADCAST#${cid}`, SK: broadcastSK },
               UpdateExpression: `ADD ${field} :one`,
+              ExpressionAttributeValues: { ':one': 1 },
+            }).promise().catch(() => {});
+          }
+        }
+
+        // Increment campaign stats if this came from a campaign send
+        if (campaignId && cid) {
+          const campField = statusType === 'delivered' ? 'stats.delivered'
+            : statusType === 'read' ? 'stats.read'
+            : statusType === 'failed' ? 'stats.failed'
+            : null;
+          if (campField) {
+            await dynamodb.update({
+              TableName: TABLE,
+              Key: { PK: `CONFIG#CAMP#${cid}`, SK: `CAMP#${campaignId}` },
+              UpdateExpression: `ADD ${campField} :one`,
               ExpressionAttributeValues: { ':one': 1 },
             }).promise().catch(() => {});
           }
@@ -1298,6 +1314,38 @@ router.post('/webhook', async (req, res) => {
       };
 
       if (lead) {
+        // ── Campaign reply tracking ────────────────────────────────────────────
+        // If the most recent message on this thread was an outbound campaign send
+        // still awaiting a reply, this inbound message satisfies it. The guarded
+        // update on the MSG# record ensures Meta's webhook retries never double-count.
+        try {
+          const lastMsgQuery = await dynamodb.query({
+            TableName: TABLE,
+            KeyConditionExpression: 'PK = :pk AND begins_with(SK, :pfx)',
+            ExpressionAttributeValues: { ':pk': lead.PK, ':pfx': 'MSG#' },
+            ScanIndexForward: false,
+            Limit: 1,
+          }).promise();
+          const lastMsg = lastMsgQuery.Items?.[0];
+          if (lastMsg?.direction === 'outbound' && lastMsg.campaignId && !lastMsg.repliedCounted) {
+            await dynamodb.update({
+              TableName: TABLE,
+              Key: { PK: lead.PK, SK: lastMsg.SK },
+              UpdateExpression: 'SET repliedCounted = :t',
+              ConditionExpression: 'attribute_not_exists(repliedCounted)',
+              ExpressionAttributeValues: { ':t': true },
+            }).promise();
+            await dynamodb.update({
+              TableName: TABLE,
+              Key: { PK: `CONFIG#CAMP#${webhookCompanyId}`, SK: `CAMP#${lastMsg.campaignId}` },
+              UpdateExpression: 'ADD stats.replied :one',
+              ExpressionAttributeValues: { ':one': 1 },
+            }).promise();
+          }
+        } catch (e) {
+          if (e.code !== 'ConditionalCheckFailedException') logger.warn('campaign reply tracking failed', e.message);
+        }
+
         // Guard all post-write side-effects on whether the MSG# was actually new.
         // Meta sometimes re-delivers webhooks; the ConditionExpression deduplicates the
         // DynamoDB write, but we must not re-run side-effects (preview update, unread

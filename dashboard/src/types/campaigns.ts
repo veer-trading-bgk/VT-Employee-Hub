@@ -1,7 +1,7 @@
 import type { Stage } from '@/types/v3';
 
 export type CampaignType      = 'whatsapp_broadcast' | 'ctwa';
-export type CampaignStatus    = 'draft' | 'scheduled' | 'active' | 'completed' | 'cancelled' | 'failed';
+export type CampaignStatus    = 'draft' | 'scheduled' | 'launching' | 'active' | 'completed' | 'cancelled' | 'failed';
 export type CampaignObjective = 'awareness' | 'engagement' | 'conversion';
 export type ScheduleMode      = 'now' | 'scheduled' | 'draft';
 
@@ -107,6 +107,7 @@ export interface CampaignFormData {
 export const CAMPAIGN_STATUS_META: Record<CampaignStatus, { label: string; variant: 'default' | 'primary' | 'success' | 'warning' | 'error' }> = {
   draft:     { label: 'Draft',     variant: 'default'  },
   scheduled: { label: 'Scheduled', variant: 'warning'  },
+  launching: { label: 'Launching', variant: 'primary'  },
   active:    { label: 'Active',    variant: 'primary'  },
   completed: { label: 'Completed', variant: 'success'  },
   failed:    { label: 'Failed',    variant: 'error'    },

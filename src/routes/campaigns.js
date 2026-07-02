@@ -213,6 +213,9 @@ router.post('/', authMiddleware, checkRole(['admin', 'manager']), rateLimit(30, 
     if (!['whatsapp_broadcast', 'ctwa'].includes(type)) {
       return res.status(400).json({ error: 'type must be whatsapp_broadcast or ctwa' });
     }
+    if (scheduledAt && new Date(scheduledAt).getTime() <= Date.now()) {
+      return res.status(400).json({ error: 'scheduledAt must be in the future' });
+    }
 
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -225,7 +228,7 @@ router.post('/', authMiddleware, checkRole(['admin', 'manager']), rateLimit(30, 
       description:         description?.trim() ?? null,
       type,
       objective:           objective ?? 'awareness',
-      status:              'draft',
+      status:              scheduledAt ? 'scheduled' : 'draft',
       tags:                tags ?? [],
       audience:            { filter: {}, ...(audience ?? {}) },
       templateId:          templateId ?? null,
@@ -319,66 +322,106 @@ router.delete('/:id', authMiddleware, checkRole(['admin']), async (req, res, nex
   } catch (err) { next(err); }
 });
 
-// ── POST /:id/launch — execute campaign ───────────────────────────────────
-router.post('/:id/launch', authMiddleware, checkRole(['admin', 'manager']), rateLimit(10, 60_000), async (req, res, next) => {
+// ── Shared launch logic ─────────────────────────────────────────────────────
+// Used by POST /:id/launch (actor = req.user) AND CampaignScheduler's due-campaign
+// sweep (actor = a synthetic identity built from the campaign's creator). Validation
+// failures throw CampaignLaunchError before anything is written; only errors raised
+// after the campaign is marked 'active' trigger the best-effort revert-to-failed.
+class CampaignLaunchError extends Error {
+  constructor(status, body) {
+    super(body.error ?? body.message ?? 'Campaign launch failed');
+    this.status = status;
+    this.body = body;
+  }
+}
+
+async function _launchCampaign(companyId, campaignId, { reviewCount = null, actor } = {}) {
+  const r = await dynamodb.get({
+    TableName: TABLE,
+    Key: { PK: campPK(companyId), SK: campSK(campaignId) },
+  }).promise();
+  const campaign = r.Item;
+  if (!campaign) throw new CampaignLaunchError(404, { error: 'Campaign not found' });
+  if (!['draft', 'scheduled'].includes(campaign.status)) {
+    throw new CampaignLaunchError(400, { error: 'Only draft or scheduled campaigns can be launched' });
+  }
+  if (campaign.type !== 'whatsapp_broadcast') {
+    throw new CampaignLaunchError(400, { error: 'CTWA campaigns are configured via Meta Ads Manager' });
+  }
+  if (!campaign.templateId) throw new CampaignLaunchError(400, { error: 'No template selected' });
+
+  // Verify template is APPROVED
+  const tmplRes = await dynamodb.get({
+    TableName: TABLE,
+    Key: { PK: `CONFIG#TMPL#${companyId}`, SK: `TMPL#${campaign.templateId}` },
+  }).promise();
+  const tmpl = tmplRes.Item;
+  if (!tmpl)                      throw new CampaignLaunchError(404, { error: 'Template not found' });
+  if (tmpl.status !== 'APPROVED') throw new CampaignLaunchError(400, { error: 'Only APPROVED templates can be used' });
+
+  // Build audience once — this is the single authoritative audience for this launch.
+  // The same object is used for the integrity check AND the send loop (no double-rebuild).
+  const { leads, count: finalCount, stats: audienceStats } =
+    await _buildAudience(companyId, campaign.audience?.filter ?? {});
+
+  // Enterprise integrity check: abort if the audience changed since the user
+  // confirmed it on the Review step.
+  if (reviewCount !== null && finalCount !== reviewCount) {
+    logger.warn(`campaign ${campaign.id} launch aborted: reviewCount=${reviewCount} finalCount=${finalCount}`);
+    throw new CampaignLaunchError(409, {
+      error:        'AUDIENCE_CHANGED',
+      message:      'The audience changed between your review and launch. Refresh the Review step and try again.',
+      reviewCount,
+      currentCount: finalCount,
+      delta:        finalCount - reviewCount,
+      stats:        audienceStats,
+    });
+  }
+
+  if (finalCount === 0)  throw new CampaignLaunchError(400, { error: 'No contacts match the audience filters' });
+  if (finalCount > 1000) throw new CampaignLaunchError(400, { error: 'Audience exceeds 1,000 contact limit. Refine your filters.' });
+
+  // ── Atomic claim: Scheduled/Draft -> Launching -> Running ───────────────────
+  // Two conditional transitions guard against two concurrent invocations (overlapping
+  // EventBridge triggers, or a scheduler racing a manual "Launch Now" click) ever
+  // both sending the same campaign. All validation above is read-only and re-checked
+  // implicitly by this condition, so a losing invocation never mutates anything.
   try {
-    const { companyId } = req.user;
-
-    const r = await dynamodb.get({
+    await dynamodb.update({
       TableName: TABLE,
-      Key: { PK: campPK(companyId), SK: campSK(req.params.id) },
+      Key: { PK: campPK(companyId), SK: campSK(campaignId) },
+      UpdateExpression: 'SET #st = :launching, launchClaimedAt = :now',
+      ConditionExpression: '#st IN (:draft, :scheduled)',
+      ExpressionAttributeNames: { '#st': 'status' },
+      ExpressionAttributeValues: {
+        ':launching': 'launching', ':draft': 'draft', ':scheduled': 'scheduled',
+        ':now': new Date().toISOString(),
+      },
     }).promise();
-    const campaign = r.Item;
-    if (!campaign) return res.status(404).json({ error: 'Campaign not found' });
-    if (!['draft', 'scheduled'].includes(campaign.status)) {
-      return res.status(400).json({ error: 'Only draft or scheduled campaigns can be launched' });
-    }
-    if (campaign.type !== 'whatsapp_broadcast') {
-      return res.status(400).json({ error: 'CTWA campaigns are configured via Meta Ads Manager' });
-    }
-    if (!campaign.templateId) return res.status(400).json({ error: 'No template selected' });
-
-    // Verify template is APPROVED
-    const tmplRes = await dynamodb.get({
-      TableName: TABLE,
-      Key: { PK: `CONFIG#TMPL#${companyId}`, SK: `TMPL#${campaign.templateId}` },
-    }).promise();
-    const tmpl = tmplRes.Item;
-    if (!tmpl)                      return res.status(404).json({ error: 'Template not found' });
-    if (tmpl.status !== 'APPROVED') return res.status(400).json({ error: 'Only APPROVED templates can be used' });
-
-    // Build audience once — this is the single authoritative audience for this launch.
-    // The same object is used for the integrity check AND the send loop (no double-rebuild).
-    const { leads, count: finalCount, stats: audienceStats } =
-      await _buildAudience(companyId, campaign.audience?.filter ?? {});
-
-    // Enterprise integrity check: abort if the audience changed since the user
-    // confirmed it on the Review step.
-    const reviewCount = typeof req.body?.reviewCount === 'number' ? req.body.reviewCount : null;
-    if (reviewCount !== null && finalCount !== reviewCount) {
-      logger.warn(`campaign ${campaign.id} launch aborted: reviewCount=${reviewCount} finalCount=${finalCount}`);
-      return res.status(409).json({
-        error:        'AUDIENCE_CHANGED',
-        message:      'The audience changed between your review and launch. Refresh the Review step and try again.',
-        reviewCount,
-        currentCount: finalCount,
-        delta:        finalCount - reviewCount,
-        stats:        audienceStats,
+  } catch (e) {
+    if (e.code === 'ConditionalCheckFailedException') {
+      // Another process already claimed this campaign between our read and our
+      // write — exit gracefully, nothing was mutated by this invocation.
+      throw new CampaignLaunchError(409, {
+        error:   'ALREADY_LAUNCHING',
+        message: 'Campaign is already being launched by another process.',
       });
     }
+    throw e;
+  }
 
-    if (finalCount === 0)    return res.status(400).json({ error: 'No contacts match the audience filters' });
-    if (finalCount > 1000)   return res.status(400).json({ error: 'Audience exceeds 1,000 contact limit. Refine your filters.' });
-
+  try {
     const now = new Date().toISOString();
 
-    // Mark active before sending
+    // Launching -> Running. Only the invocation that won the claim above reaches
+    // this line, so no ConditionExpression race is possible here.
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK: campPK(companyId), SK: campSK(campaign.id) },
       UpdateExpression: 'SET #st = :active, launchedAt = :now, updatedAt = :now',
+      ConditionExpression: '#st = :launching',
       ExpressionAttributeNames: { '#st': 'status' },
-      ExpressionAttributeValues: { ':active': 'active', ':now': now },
+      ExpressionAttributeValues: { ':active': 'active', ':launching': 'launching', ':now': now },
     }).promise();
 
     // Detect TEXT header variable
@@ -407,7 +450,7 @@ router.post('/:id/launch', authMiddleware, checkRole(['admin', 'manager']), rate
           { resolvedContact: { pk: lead.PK, phone: lead.phone, leadItem: lead, isLead: true } },
           { templateName: tmpl.templateName, language: tmpl.language ?? 'en' },
           params,
-          req.user,
+          actor,
           {
             headerVariableValue: hasHdrVar ? resolvedHeader : null,
             content:     `[Campaign: ${campaign.name}]`,
@@ -448,22 +491,40 @@ router.post('/:id/launch', authMiddleware, checkRole(['admin', 'manager']), rate
       },
     }).promise();
 
-    res.json({ success: true, sent, failed, total: finalCount, errors: errors.slice(0, 20) });
+    return { sent, failed, total: finalCount, errors: errors.slice(0, 20) };
   } catch (err) {
-    // Best-effort revert to failed on unexpected error
+    // Best-effort revert to failed on unexpected error (covers the Launching -> Running
+    // transition and anything during/after the send loop — the campaign must never be
+    // left stuck in a non-terminal state once claimed).
     try {
       await dynamodb.update({
         TableName: TABLE,
-        Key: { PK: campPK(req.user.companyId), SK: campSK(req.params.id) },
+        Key: { PK: campPK(companyId), SK: campSK(campaignId) },
         UpdateExpression: 'SET #st = :failed, updatedAt = :now',
         ExpressionAttributeNames: { '#st': 'status' },
         ExpressionAttributeValues: { ':failed': 'failed', ':now': new Date().toISOString() },
       }).promise();
     } catch (revertErr) {
-      logger.error(`campaign ${req.params.id} status revert failed: ${revertErr.message}`);
+      logger.error(`campaign ${campaignId} status revert failed: ${revertErr.message}`);
     }
+    throw err;
+  }
+}
+
+// ── POST /:id/launch — execute campaign ───────────────────────────────────
+router.post('/:id/launch', authMiddleware, checkRole(['admin', 'manager']), rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const reviewCount = typeof req.body?.reviewCount === 'number' ? req.body.reviewCount : null;
+    const result = await _launchCampaign(req.user.companyId, req.params.id, { reviewCount, actor: req.user });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    if (err instanceof CampaignLaunchError) return res.status(err.status).json(err.body);
     next(err);
   }
 });
+
+// Exposed for CampaignScheduler's due-campaign sweep (invoked in-process, not over HTTP).
+router.launchCampaign = _launchCampaign;
+router.CampaignLaunchError = CampaignLaunchError;
 
 module.exports = router;
