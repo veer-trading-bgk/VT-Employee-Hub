@@ -484,6 +484,33 @@ class WhatsAppSendService {
     return { wamid, timestamp: ts, pk: contact.pk, msgSK };
   }
 
+  // ── sendReadReceipt ──────────────────────────────────────────────────────
+  /**
+   * Send a read-receipt status update (blue ticks) for an inbound message.
+   * Unlike the send* methods above, this has no DDB message record or WAMID
+   * index to write — a read receipt is a status update against a message
+   * already received, not a new message in its own right.
+   *
+   * @param {string}  companyId
+   * @param {object}  target       — { leadPK?, leadId?, phone?, resolvedContact? }
+   * @param {string}  waMessageId  — WAMID of the inbound message being marked read
+   * @param {object}  user         — { id, role, name }
+   * @returns {{ sent: boolean }}
+   */
+  async sendReadReceipt(companyId, target, waMessageId, user) {
+    if (!waMessageId) return { sent: false };
+    const contact = await this.resolveContact(companyId, target);
+    this._assertSendPermission(user, contact);
+    const cfg = await this._requireConfig(companyId);
+
+    await axios.post(
+      `${this._graphUrl(cfg)}/${cfg.phoneNumberId}/messages`,
+      { messaging_product: 'whatsapp', status: 'read', message_id: waMessageId },
+      { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } },
+    );
+    return { sent: true };
+  }
+
   // ── Future stubs ──────────────────────────────────────────────────────────
   // Each throws 501 until the backend is ready.
   // API surface is stable — callers can be wired up before implementation.

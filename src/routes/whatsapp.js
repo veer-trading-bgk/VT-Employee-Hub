@@ -13,6 +13,7 @@ const { notifyCompany } = require('../utils/wsNotify');
 const { resolveForInbox, resolveForLead, syncConvStatus, syncMarkRead } = require('../utils/conversationResolver');
 const ConversationService  = require('../services/ConversationService');
 const WASendSvc            = require('../services/WhatsAppSendService');
+const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -1100,6 +1101,10 @@ function writeMediaIndex(companyId, contactKey, item) {
 
 // ── POST /api/whatsapp/webhook — inbound messages + delivery/read statuses ────
 router.post('/webhook', async (req, res) => {
+  if (!verifyMetaWebhookSignature(req)) {
+    logger.warn('WhatsApp webhook signature verification failed');
+    return res.sendStatus(401);
+  }
   logger.info(`webhook recv field=${req.body?.entry?.[0]?.changes?.[0]?.field} msgs=${req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.length ?? 0} statuses=${req.body?.entry?.[0]?.changes?.[0]?.value?.statuses?.length ?? 0}`);
   // res.sendStatus(200) is called at the END of this handler so that
   // notifyCompany() (WS push) fires inside the active Lambda invocation.
@@ -2471,16 +2476,12 @@ router.post('/inbox/:leadId/mark-read', authMiddleware, async (req, res, next) =
     // Fire-and-forget: sync unread reset to CONV# entity
     syncMarkRead(companyId, { leadPK: `LEAD#${companyId}#${leadId}` }, req.user.id).catch(() => {});
 
-    // Send read receipt to Meta (shows blue ticks on customer's phone)
+    // Send read receipt to Meta (shows blue ticks on customer's phone) — via
+    // WhatsAppSendService per ADR-012, not a direct Graph API call.
     if (lastWaMessageId) {
-      const cfg = await getWabaConfig(companyId);
-      if (cfg?.accessToken && cfg?.phoneNumberId) {
-        await axios.post(`${GRAPH}/${cfg.phoneNumberId}/messages`, {
-          messaging_product: 'whatsapp',
-          status: 'read',
-          message_id: lastWaMessageId,
-        }, { headers: { Authorization: `Bearer ${cfg.accessToken}` } }).catch(() => {});
-      }
+      await WASendSvc.sendReadReceipt(
+        companyId, { leadPK: `LEAD#${companyId}#${leadId}` }, lastWaMessageId, req.user,
+      ).catch(() => {});
     }
 
     res.json({ success: true });

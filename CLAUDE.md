@@ -1,102 +1,231 @@
-# APForce Backend Engineering Rules
+# CLAUDE.md
 
-These rules are permanent. They apply to every session, every commit, and every code review.
-An architecture decision record (ADR) must be cited to override any rule.
+**APForce Root Bootstrap** Version: 3.0
 
----
+> This is the primary instruction file for Claude Code. Detailed
+> documentation lives under `/docs`. This file defines how to think,
+> plan, implement, review, and maintain APForce.
 
-## ADR-012 — Outbound WhatsApp Messaging (ENFORCED)
+------------------------------------------------------------------------
 
-**All outbound WhatsApp messages MUST go through `WhatsAppSendService`.**
+# 1. Mission
 
-File: `src/services/WhatsAppSendService.js`
-Full record: `docs/adr/ADR-012-whatsapp-send-service.md`
+Always optimize APForce for:
 
-### What this means in practice
+-   Reliability
+-   Simplicity
+-   Reusability
+-   Maintainability
+-   Scalability
+-   Security
+-   Customer Trust
 
-- Do NOT call `axios.post(...)` or `fetch(...)` to `graph.facebook.com/*/messages` outside this service.
-- Do NOT add send logic to route handlers — route handlers are thin wrappers only.
-- New message types MUST be implemented as methods inside `WhatsAppSendService` (replace the 501 stub).
-- Contact resolution MUST use `WASendSvc.resolveContact()` — no ad-hoc DDB gets for phone lookups.
-- Batch sends (broadcast, campaigns) MUST use the `resolvedContact` target shortcut to avoid N redundant DDB reads.
-- When a company disconnects or reconnects WhatsApp, call `WASendSvc.invalidateConfigCache(companyId)`.
+Never sacrifice architecture for implementation speed.
 
-### Approved send methods
+------------------------------------------------------------------------
 
-```js
-const WASendSvc = require('../services/WhatsAppSendService');
+# 2. First Rule
 
-WASendSvc.sendText(companyId, target, message, user, options)
-WASendSvc.sendTemplate(companyId, target, templateRef, variables, user, options)
-WASendSvc.sendInteractive(companyId, target, interactive, user)
-WASendSvc.sendMedia(companyId, target, media, user)
-// sendCatalog / sendPayment / sendFlow / sendPoll / sendLocation / sendContact — stubs, implement here
-```
+Do not immediately write code.
 
-### Code review gate
+Follow this workflow:
 
-Before merging any PR that touches WhatsApp messaging, confirm:
-- [ ] No direct Meta Graph API call outside `WhatsAppSendService`
-- [ ] New send path calls a `WASendSvc.send*()` method
-- [ ] Route handler contains no DDB message writes (service handles persistence)
+Understand → Audit → Reuse → Plan → Validate Architecture → Implement →
+Test → Update Documentation → Commit → Push
 
----
+------------------------------------------------------------------------
 
-## ADR-013 — Customer Identity & Recipient Resolution (ENFORCED)
+# 3. Documentation First
 
-**Every customer entering APForce MUST resolve through `CustomerIdentityService`.**
+Before every implementation:
 
-File: `src/services/CustomerIdentityService.js`
-Full record: `docs/adr/ADR-013-customer-identity.md`
+1.  docs/bible/20_CURRENT_STATE.md
+2.  docs/APFORCE_BIBLE.md
+3.  docs/ROADMAP.md
+4.  Relevant ADR(s)
+5.  Relevant module docs
 
-### What this means in practice
+If documentation and implementation disagree:
 
-- `phoneNorm` is the **only** value used to compare, look up, or deduplicate customers.
-  - Always call `to10Digit(rawPhone)` before any comparison or GSI lookup.
-  - Never compare `lead.phone === incomingPhone` — always normalize both sides first.
-- Every entry point that creates or claims a customer MUST call `CIS.resolveOrCreate()`.
-  - Do NOT query `company-phone-index` directly in route handlers for dedup.
-  - Do NOT write `LEAD# METADATA` items directly in route handlers.
-  - Do NOT implement per-route dedup logic.
-- The `company-phone-index` GSI is the only permitted phone lookup mechanism — no full-table scans, no in-memory phone maps.
-- INBOX# records are a temporary staging area only — they must not be treated as durable customer identity.
+-   Stop
+-   Explain the conflict
+-   Resolve it before continuing
 
-### Canonical usage
+------------------------------------------------------------------------
 
-```js
-const CIS = require('../services/CustomerIdentityService');
+# 4. Architecture Rules
 
-const { lead, created } = await CIS.resolveOrCreate(companyId, {
-  phone,        // raw format accepted — CIS normalises internally
-  name,
-  source,       // 'form' | 'whatsapp' | 'import' | 'ctwa' | 'api' | 'manual'
-}, { idempotencyKey });   // required for webhook-based entry points
-```
+-   Reuse before creating
+-   Extend before redesigning
+-   Thin route handlers
+-   Business logic belongs in services
+-   Single source of truth
+-   Shared services own business capabilities
 
-### Code review gate
+------------------------------------------------------------------------
 
-Before merging any PR that creates or claims a customer:
-- [ ] No direct `dynamodb.put({ Item: { PK: 'LEAD#...' } })` in route handlers
-- [ ] No in-memory phone comparison (`l.phone === x`, `phones.includes(x)`)
-- [ ] New entry points call `CIS.resolveOrCreate()` — not ad-hoc GSI + put
-- [ ] Phone lookups via `company-phone-index` use `to10Digit()` normalised value
+# 5. Permanent ADR Rules
 
-### Migration status (transition items — not yet compliant)
+ADR-012
 
-- [ ] WhatsApp webhook unknown-contact path (`whatsapp.js:1360`) — no phone lock before INBOX# creation
-- [ ] CSV bulk import (`crm.js:841`) — in-memory scan dedup, not GSI
-- [ ] `contacts.js` — deduplicates using raw `l.phone`, not `l.phoneNorm`
+All outbound WhatsApp messaging goes through WhatsAppSendService.
 
----
+ADR-013
 
-## Deployment Process (CRITICAL)
+Customer creation and identity resolution use
+CustomerIdentityService.resolveOrCreate().
 
-### Backend (Lambda)
-- NEVER deploy to Lambda directly from Claude Code.
-- After every backend change: commit and push to GitHub only.
-- GitHub Actions (`.github/workflows/deploy.yml`) auto-deploys to Lambda on push to `main`.
-- After pushing: "Pushed. GitHub Actions will auto-deploy to Lambda — monitor at github.com/veer-trading-bgk/VT-Employee-Hub/actions"
-- `F:\aws\deploy.ps1` is a manual fallback only — suggest it only if GitHub Actions is broken.
+Never bypass approved ADRs.
 
-### Frontend (Vercel)
-- Dashboard changes auto-deploy via Vercel on git push. No action needed.
+------------------------------------------------------------------------
+
+# 6. Backend Rules
+
+-   No business logic in routes
+-   No direct Meta API calls outside approved services
+-   No duplicated DynamoDB logic
+-   Prefer indexed queries
+-   Validate all inputs
+-   RBAC on protected routes
+
+------------------------------------------------------------------------
+
+# 7. Frontend Rules
+
+-   Reuse components
+-   Reuse providers
+-   Reuse React Query
+-   Avoid duplicate state
+-   Keep UI consistent with UI_GUIDELINES.md
+
+------------------------------------------------------------------------
+
+# 8. Database Rules
+
+-   Follow documented PK/SK patterns
+-   Use GSIs where available
+-   Normalize phone numbers
+-   Avoid duplicate writes
+-   Document schema changes
+
+------------------------------------------------------------------------
+
+# 9. AI Working Style
+
+For every task:
+
+-   Audit existing implementation
+-   List reusable services/components
+-   Identify risks
+-   Present a brief implementation plan
+-   Implement
+-   Self-review
+-   Report validation results
+
+Do not guess when code can be inspected.
+
+------------------------------------------------------------------------
+
+# 10. Testing
+
+Before merge:
+
+-   TypeScript clean
+-   ESLint clean
+-   Build succeeds
+-   Relevant tests pass
+-   Manual UAT complete
+
+Encourage Playwright for UI and API/unit tests for backend.
+
+------------------------------------------------------------------------
+
+# 11. Deployment
+
+Backend: Git Push → GitHub Actions → AWS Lambda
+
+Frontend: Git Push → Vercel
+
+Never deploy directly from Claude Code.
+
+------------------------------------------------------------------------
+
+# 12. Documentation Updates
+
+If architecture, APIs, database, or module ownership changes:
+
+Update:
+
+-   CURRENT_STATE.md
+-   Relevant docs/bible file
+-   ADR (if architecture changed)
+
+Documentation is part of the feature.
+
+------------------------------------------------------------------------
+
+# 13. Anti-Patterns
+
+Never:
+
+-   Duplicate services
+-   Duplicate APIs
+-   Duplicate business logic
+-   Duplicate React Query ownership
+-   Compare raw phone numbers
+-   Bypass shared services
+-   Ignore ADRs
+-   Introduce undocumented architecture
+
+------------------------------------------------------------------------
+
+# 14. Code Review Checklist
+
+Verify:
+
+-   Architecture
+-   Security
+-   Performance
+-   Error handling
+-   Validation
+-   Logging
+-   Documentation
+-   Tests
+-   Backward compatibility
+
+------------------------------------------------------------------------
+
+# 15. Definition of Done
+
+A feature is complete only when:
+
+-   Architecture respected
+-   Documentation updated
+-   Validation complete
+-   Tests passed
+-   UAT complete
+-   Production deployment successful
+
+------------------------------------------------------------------------
+
+# 16. Read Order
+
+1.  docs/bible/20_CURRENT_STATE.md
+2.  docs/APFORCE_BIBLE.md
+3.  docs/PRODUCT_OVERVIEW.md
+4.  docs/ROADMAP.md
+5.  docs/DEVELOPMENT_GUIDE.md
+6.  docs/UI_GUIDELINES.md
+7.  docs/adr/
+8.  Relevant docs/bible/
+
+------------------------------------------------------------------------
+
+# Final Principle
+
+Build once.
+
+Reuse forever.
+
+Every change should leave APForce simpler, stronger, and easier to
+maintain than before.

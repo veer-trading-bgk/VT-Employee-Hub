@@ -7,7 +7,7 @@ const { queryAll } = require('../utils/db');
 const { logAudit } = require('../utils/audit');
 const { encrypt } = require('../utils/encryption');
 const { registerSchema, updateEmployeeSchema } = require('../utils/validation');
-const { METRIC_CONFIG, TARGET_DEFAULTS, METRIC_KEYS, toDailyTargets, toMonthlyTargets } = require('../config/metricsConfig');
+const { METRIC_CONFIG, TARGET_DEFAULTS, METRIC_KEYS, toDailyTargets, toMonthlyTargets, calcPoints, emptyTotals, buildCustomWeights } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
 const bot = require('../config/telegram');
 const logger = require('../config/logger');
@@ -613,16 +613,25 @@ router.post('/points-rebuild', adminMiddleware, async (req, res, next) => {
       lastKey = result.LastEvaluatedKey;
     } while (lastKey);
 
-    // Accumulate points per user with current weights
-    const userTotals = {};
+    // Accumulate RAW per-metric-type totals per user first, then run each user's totals
+    // through calcPoints() once — the same function metrics.js's /leaderboard and
+    // points.js's /award now use, so all three points surfaces agree on one formula.
+    // (Summing raw values before rounding, rather than rounding per metric entry,
+    // exactly preserves this endpoint's own prior sum-then-round behavior.)
+    const customWeights = buildCustomWeights(targetCfg);
+
+    const userMetricTotals = {};
     allMetrics.forEach((item) => {
       if (!item.userId || !item.metric_type) return;
       if (item.verificationStatus === 'rejected') return;
-      const cfg = METRIC_CONFIG[item.metric_type];
-      if (!cfg) return;
-      const w = targetCfg[item.metric_type]?.pointsWeight ?? cfg.pointsWeight;
-      const pts = Math.round(cfg.isCurrency ? (item.value || 0) / w : (item.value || 0) * w);
-      userTotals[item.userId] = (userTotals[item.userId] || 0) + pts;
+      if (!METRIC_CONFIG[item.metric_type]) return;
+      if (!userMetricTotals[item.userId]) userMetricTotals[item.userId] = emptyTotals();
+      userMetricTotals[item.userId][item.metric_type] += item.value || 0;
+    });
+
+    const userTotals = {};
+    Object.entries(userMetricTotals).forEach(([userId, totals]) => {
+      userTotals[userId] = calcPoints(totals, customWeights);
     });
 
     const BADGES_TABLE = process.env.DYNAMODB_TABLE_BADGES || 'vt-badges';

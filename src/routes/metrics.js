@@ -2,7 +2,7 @@ const express = require('express');
 const { addMetricSchema } = require('../utils/validation');
 const { logAudit } = require('../utils/audit');
 const { authMiddleware, adminMiddleware, checkRole } = require('../middleware/auth');
-const { METRIC_CONFIG, TARGET_DEFAULTS, METRIC_KEYS, toDailyTargets, toMonthlyTargets, calcPoints } = require('../config/metricsConfig');
+const { METRIC_CONFIG, TARGET_DEFAULTS, METRIC_KEYS, toDailyTargets, toMonthlyTargets, calcPoints, buildCustomWeights } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
 const { queryAll } = require('../utils/db');
 const bot = require('../config/telegram');
@@ -868,15 +868,12 @@ router.get('/leaderboard', async (req, res, next) => {
         (byUser[item.userId].metrics[item.metric_type] || 0) + (item.value || 0);
     });
 
-    // Build custom weights map from stored config (admin-configurable per metric)
-    const customWeights = {};
-    Object.entries(targetCfg).forEach(([k, v]) => {
-      if (v && v.pointsWeight != null) customWeights[k] = v.pointsWeight;
-    });
-    const hasCustomWeights = Object.keys(customWeights).length > 0;
+    // Custom weights map from stored config (admin-configurable per metric) — shared
+    // helper also used by points.js's /award and admin.js's /points-rebuild.
+    const customWeights = buildCustomWeights(targetCfg);
 
     const ranked = Object.values(byUser)
-      .map(user => ({ ...user, points: calcPoints(user.metrics, hasCustomWeights ? customWeights : null) }))
+      .map(user => ({ ...user, points: calcPoints(user.metrics, customWeights) }))
       .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name))
       .map((user, i) => ({ ...user, rank: i + 1 }));
 

@@ -45,6 +45,14 @@ async function loadSecrets() {
     _cache = {};
   }
 
+  if (!process.env.META_APP_SECRET) {
+    console.warn(
+      '[secrets] META_APP_SECRET is not set in production — Meta webhook signature '
+      + 'verification is disabled and inbound WhatsApp/Lead Ads webhooks will accept '
+      + 'unsigned payloads. Set META_APP_SECRET in Lambda env vars or Secrets Manager.',
+    );
+  }
+
   return _cache;
 }
 

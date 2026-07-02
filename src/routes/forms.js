@@ -1,23 +1,13 @@
 const express = require('express');
-const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
-const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
-const { to10Digit } = require('../utils/phone');
+const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
+const CIS = require('../services/CustomerIdentityService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
-
-function leadPK(companyId, leadId) { return `LEAD#${companyId}#${leadId}`; }
-
-async function getPipelineStages(companyId) {
-  try {
-    const r = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#CRM#${companyId}`, SK: 'PIPELINE' } }).promise();
-    return r.Item?.stages ?? [];
-  } catch { return []; }
-}
 
 // ── GET /api/forms — list forms (admin) ──────────────────────────────────────
 router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
@@ -129,63 +119,37 @@ router.post('/:id/submit', async (req, res, next) => {
     }
     const cleanPhone = String(phone).replace(/\D/g, '');
     if (cleanPhone.length < 7) return res.status(400).json({ error: 'Invalid phone number' });
-    const normPhone = to10Digit(cleanPhone);
 
     const companyId = form.companyId;
-    const stages = await getPipelineStages(companyId);
-    const defaultStage = form.defaultStage ?? stages[0]?.key ?? 'new_lead';
 
-    const leadId = uuidv4();
-    const now = new Date().toISOString();
-
-    // Auto-assign: use form's static assignee; fall back to auto-assign if none set
-    let formAssignedTo   = form.defaultAssignedTo   ?? null;
-    let formAssignedName = form.defaultAssignedToName ?? null;
-    let wasAutoAssigned  = false;
-    if (!formAssignedTo) {
-      try {
-        const cfg = await getAutoAssignConfig(companyId);
-        if (cfg.enabled) {
-          const picked = await pickNextEmployee(companyId, form.source ?? 'web_form', cfg);
-          if (picked) { formAssignedTo = picked.id; formAssignedName = picked.name ?? null; wasAutoAssigned = true; }
-        }
-      } catch (e) { logger.warn('form auto-assign error: ' + e.message); }
-    }
-
-    const item = {
-      PK: leadPK(companyId, leadId), SK: 'METADATA',
-      leadId, companyId,
-      name: name.trim(), phone: cleanPhone, phoneNorm: normPhone,
+    // ADR-013: identity resolution, atomic phone locking, and dedup live in
+    // CustomerIdentityService. No actorId in context — a public form has no
+    // authenticated user, so CIS's fallback-to-actor auto-assign step correctly
+    // never fires; the form's static assignee or its own auto-assign config
+    // (keyed on the same `source`) resolves it exactly as before.
+    const result = await CIS.resolveOrCreate(companyId, {
+      phone: cleanPhone,
+      name: name.trim(),
       email: email?.trim() ?? null,
       productInterest: Array.isArray(productInterest) ? productInterest : [],
       source: form.source ?? 'web_form',
       notes: notes?.trim() ?? '',
-      stage: defaultStage,
+      stage: form.defaultStage ?? undefined,
       tags: [`form:${form.name}`],
-      assignedTo: formAssignedTo,
-      assignedToName: formAssignedName,
-      autoAssigned: wasAutoAssigned,
-      createdBy: 'form_submit',
-      createdAt: now, updatedAt: now,
-      convertedAt: null,
+      assignedTo: form.defaultAssignedTo ?? null,
+      assignedToName: form.defaultAssignedToName ?? null,
       formId: form.id,
-    };
+    }, {
+      createdBy: 'form_submit',
+    });
 
-    // Dedup via company-phone-index GSI on phoneNorm — catches cross-format duplicates
-    // (e.g. form submits 919866141993 but an existing lead is stored as 9866141993).
-    const existing = await dynamodb.query({
-      TableName: TABLE,
-      IndexName: 'company-phone-index',
-      KeyConditionExpression: 'companyId = :cid AND phoneNorm = :norm',
-      FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
-      ExpressionAttributeValues: { ':cid': companyId, ':norm': normPhone, ':meta': 'METADATA' },
-      Limit: 1,
-    }).promise();
-    if ((existing.Items?.length ?? 0) > 0) {
+    // Public intake form keeps its existing "reject on duplicate" response — CIS still
+    // ran its enrichment against the existing record, recording this as a real touch.
+    if (result.existed) {
       return res.status(409).json({ error: 'This phone number is already in the system', duplicate: true });
     }
 
-    await dynamodb.put({ TableName: TABLE, Item: item }).promise();
+    const item = result.lead;
 
     // Increment form submission count
     await dynamodb.update({
@@ -199,9 +163,9 @@ router.post('/:id/submit', async (req, res, next) => {
     try {
       const { runAutomations } = require('./automations');
       await runAutomations(companyId, 'lead_created', {
-        leadId, leadPK: item.PK, phone: cleanPhone, name: name.trim(),
-        source: form.source, stage: defaultStage, tags: item.tags,
-        assignedTo: form.defaultAssignedTo,
+        leadId: item.leadId, leadPK: item.PK, phone: cleanPhone, name: name.trim(),
+        source: form.source, stage: item.stage, tags: item.tags,
+        assignedTo: item.assignedTo,
       });
     } catch (e) { logger.warn('Form submit automation error: ' + e.message); }
 
@@ -222,17 +186,15 @@ router.get('/meta-leads/webhook', (req, res) => {
 
 // ── POST /api/forms/meta-leads/webhook — Meta Lead Ads incoming leads ─────────
 router.post('/meta-leads/webhook', async (req, res, next) => {
-  res.sendStatus(200); // Always respond 200 immediately
+  // Verify BEFORE responding — fail closed with a real status code instead of accepting
+  // (200) then silently dropping, so a genuine signature mismatch (e.g. a rotated
+  // META_APP_SECRET not yet deployed) is visible in Meta's delivery log rather than hidden.
+  if (!verifyMetaWebhookSignature(req)) {
+    logger.warn('Meta Lead Ads webhook signature verification failed');
+    return res.sendStatus(401);
+  }
+  res.sendStatus(200); // Always respond 200 immediately once verified
   try {
-    // Verify signature
-    const secret = process.env.META_APP_SECRET;
-    if (secret) {
-      const sig = req.headers['x-hub-signature-256'];
-      if (!sig) return;
-      const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(JSON.stringify(req.body)).digest('hex');
-      if (sig !== expected) { logger.warn('Meta Lead Ads webhook signature mismatch'); return; }
-    }
-
     const entries = req.body?.entry ?? [];
     for (const entry of entries) {
       for (const change of entry.changes ?? []) {
@@ -252,7 +214,6 @@ router.post('/meta-leads/webhook', async (req, res, next) => {
         const email = fields.email ?? null;
 
         if (!phone || phone.length < 7) continue;
-        const normPhone = to10Digit(phone);
 
         // Find companyId by page ID (scan CONFIG#FORM# items for meta_page_id match)
         const formScan = await dynamodb.scan({
@@ -265,58 +226,41 @@ router.post('/meta-leads/webhook', async (req, res, next) => {
         if (!form) { logger.warn(`No form found for Meta page ${entry.id}`); continue; }
 
         const companyId = form.companyId;
-        const stages = await getPipelineStages(companyId);
-        const defaultStage = form.defaultStage ?? stages[0]?.key ?? 'new_lead';
 
-        // Deduplicate via GSI on phoneNorm — O(1) and format-invariant
-        const dupCheck = await dynamodb.query({
-          TableName: TABLE,
-          IndexName: 'company-phone-index',
-          KeyConditionExpression: 'companyId = :cid AND phoneNorm = :norm',
-          FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
-          ExpressionAttributeValues: { ':cid': companyId, ':norm': normPhone, ':meta': 'METADATA' },
-          Limit: 1,
-        }).promise();
-        if ((dupCheck.Items?.length ?? 0) > 0) continue;
+        // ADR-013: identity resolution, atomic phone locking, and dedup live in
+        // CustomerIdentityService. idempotencyKey is Meta's own leadgen_id — Meta does
+        // retry webhook deliveries, and this ensures a redelivery of the same lead is
+        // recognised as the same event rather than racing the dedup check again.
+        const result = await CIS.resolveOrCreate(companyId, {
+          phone,
+          name,
+          email,
+          productInterest: [],
+          source: 'meta_lead_ads',
+          notes: `Meta Lead Ads: leadgen_id=${lead.leadgen_id}`,
+          stage: form.defaultStage ?? undefined,
+          tags: ['meta-ads'],
+          assignedTo: form.defaultAssignedTo ?? null,
+          assignedToName: form.defaultAssignedToName ?? null,
+          idempotencyKey: `meta_lead_ads:${lead.leadgen_id}`,
+        }, {
+          createdBy: 'meta_lead_ads',
+        });
 
-        const leadId = uuidv4();
-        const now = new Date().toISOString();
+        // A redelivered/duplicate leadgen_id enriches the existing record (recording
+        // this as a real touch) rather than creating a duplicate — no automation fires
+        // for it, matching the previous "skip on duplicate" behavior for lead_created.
+        if (result.existed) continue;
 
-        let metaAssignedTo   = form.defaultAssignedTo   ?? null;
-        let metaAssignedName = form.defaultAssignedToName ?? null;
-        let metaAutoAssigned = false;
-        if (!metaAssignedTo) {
-          try {
-            const cfg = await getAutoAssignConfig(companyId);
-            if (cfg.enabled) {
-              const picked = await pickNextEmployee(companyId, 'meta_lead_ads', cfg);
-              if (picked) { metaAssignedTo = picked.id; metaAssignedName = picked.name ?? null; metaAutoAssigned = true; }
-            }
-          } catch (e) { logger.warn('meta lead auto-assign error: ' + e.message); }
-        }
-
-        await dynamodb.put({
-          TableName: TABLE,
-          Item: {
-            PK: leadPK(companyId, leadId), SK: 'METADATA',
-            leadId, companyId, name, phone, phoneNorm: normPhone, email,
-            productInterest: [], source: 'meta_lead_ads',
-            notes: `Meta Lead Ads: leadgen_id=${lead.leadgen_id}`,
-            stage: defaultStage, tags: ['meta-ads'],
-            assignedTo: metaAssignedTo,
-            assignedToName: metaAssignedName,
-            autoAssigned: metaAutoAssigned,
-            createdBy: 'meta_lead_ads', createdAt: now, updatedAt: now, convertedAt: null,
-          },
-        }).promise();
-
+        const item = result.lead;
         const { runAutomations } = require('./automations');
         await runAutomations(companyId, 'lead_created', {
-          leadId, leadPK: leadPK(companyId, leadId), phone, name,
-          source: 'meta_lead_ads', stage: defaultStage, tags: ['meta-ads'],
+          leadId: item.leadId, leadPK: item.PK, phone, name,
+          source: 'meta_lead_ads', stage: item.stage, tags: item.tags,
+          assignedTo: item.assignedTo,
         }).catch(() => {});
 
-        logger.info(`Meta Lead Ad: created lead ${leadId} for company ${companyId}`);
+        logger.info(`Meta Lead Ad: created lead ${item.leadId} for company ${companyId}`);
       }
     }
   } catch (err) { logger.error('Meta leads webhook error', err.message); }

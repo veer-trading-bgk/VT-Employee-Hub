@@ -4,12 +4,12 @@ const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const { logAudit } = require('../utils/audit');
 const logger = require('../config/logger');
-const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
 const { rateLimit } = require('../middleware/rateLimiter');
 const { createLeadSchema, updateLeadSchema, createFollowupSchema } = require('../utils/validation');
 const { notifyCompany } = require('../utils/wsNotify');
 const { to10Digit } = require('../utils/phone');
 const LeadService = require('../services/LeadService');
+const CIS = require('../services/CustomerIdentityService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -224,67 +224,54 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
 
     const companyId = req.user.companyId;
     const cleanPhone = String(phone).replace(/\D/g, '');
-    // phoneNorm is the canonical phone identity across the platform.
-    // phone stores the original format for display; phoneNorm is used for all dedup checks.
-    // Every lead creation path (manual, inbox, API, webhook, automation, CSV) must use this.
-    const normPhone = to10Digit(cleanPhone);
 
-    // Duplicate detection uses phoneNorm (canonical 10-digit) so that +91-prefixed,
-    // 12-digit, and plain 10-digit entries for the same number all resolve to the same key.
-    // Using the raw `phone` field would miss cross-format duplicates (e.g. WA sends
-    // 919866141993 while a manual entry stores 9866141993 — same subscriber, different bytes).
-    //
-    // Uses the company-phone-index GSI (companyId + phoneNorm) — O(1) vs full-table scan.
-    // Platform rule: phoneNorm is the canonical matching identity. Every lead creation path
-    // (manual, inbox, API, webhook, CSV, automation) must compute normPhone and use this check.
-    const dupCheck = await dynamodb.query({
-      TableName: TABLE,
-      IndexName: 'company-phone-index',
-      KeyConditionExpression: 'companyId = :cid AND phoneNorm = :norm',
-      FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
-      ExpressionAttributeValues: { ':cid': companyId, ':norm': normPhone, ':meta': 'METADATA' },
-      Limit: 1,
-    }).promise();
-    if ((dupCheck.Items?.length ?? 0) > 0) {
-      const existing = dupCheck.Items[0];
-      return res.status(409).json({ error: 'A lead with this phone number already exists', existingLeadId: existing.leadId, existingName: existing.name });
+    // ADR-013: identity resolution, atomic phone locking, and dedup all live in
+    // CustomerIdentityService — this route no longer reimplements them inline.
+    // Tags must be pre-resolved to catalog IDs before calling (CIS's documented contract).
+    const resolvedTags = await resolveTagIds(companyId, tags ?? []);
+
+    const result = await CIS.resolveOrCreate(companyId, {
+      phone: cleanPhone,
+      name: name.trim(),
+      email: email?.trim() ?? null,
+      productInterest: productInterest ?? [],
+      source: source ?? 'manual',
+      notes: notes?.trim() ?? '',
+      stage: stage ?? undefined,
+      tags: resolvedTags,
+      assignedTo: assignedTo ?? null,
+      assignedToName: assignedToName ?? null,
+    }, {
+      createdBy: req.user.id,
+      actorId:   req.user.id,
+      actorName: req.user.name ?? null,
+    });
+
+    // Manual creation via this route keeps its existing "reject on duplicate" contract
+    // (unlike forms.js's intake paths, where enrichment is the right behavior) — CIS still
+    // ran its enrichment against the existing record, recording this attempt as a real touch.
+    if (result.existed) {
+      const existing = await dynamodb.get({
+        TableName: TABLE, Key: { PK: leadPK(companyId, result.leadId), SK: 'METADATA' },
+      }).promise();
+      return res.status(409).json({
+        error: 'A lead with this phone number already exists',
+        existingLeadId: result.leadId,
+        existingName: existing.Item?.name ?? null,
+      });
     }
 
-    const stages = await getPipelineStages(companyId);
-    const defaultStage = stage ?? stages[0]?.key ?? 'new_lead';
+    const item = result.lead;
 
-    const leadId = uuidv4();
-    const now = new Date().toISOString();
-
-    // Auto-assign: if no explicit assignee, pick least-loaded performer
-    let resolvedAssignedTo   = assignedTo   ?? null;
-    let resolvedAssignedName = assignedToName ?? null;
-    let wasAutoAssigned      = false;
-    if (!resolvedAssignedTo) {
-      try {
-        const cfg = await getAutoAssignConfig(companyId);
-        if (cfg.enabled) {
-          const picked = await pickNextEmployee(companyId, 'crm', cfg);
-          if (picked) {
-            resolvedAssignedTo   = picked.id;
-            resolvedAssignedName = picked.name ?? null;
-            wasAutoAssigned      = true;
-          }
-        }
-      } catch (e) { logger.warn('auto-assign error: ' + e.message); }
-      // Fallback: assign to creator if auto-assign off or no employees found
-      if (!resolvedAssignedTo) {
-        resolvedAssignedTo   = req.user.id;
-        resolvedAssignedName = req.user.name ?? null;
-      }
-    }
-
-    // When creating a lead from an unknown WhatsApp inbox contact, copy its message
-    // history into the new LEAD# record. The inbox query (whatsapp.js:836) gates on
-    // lastMessageAt — without it the new lead is excluded from leadItems while the
-    // dedup logic simultaneously suppresses the originating INBOX# record (line 860),
-    // making the conversation invisible in all tabs until a new WA message arrives.
-    let inboxHistory = {};
+    // Fields CIS doesn't manage, patched on right after creation:
+    //  - closureDeadline: crm.js-specific field, not part of CIS's identity schema.
+    //  - WhatsApp inbox history: when creating from an unknown WhatsApp contact, copy its
+    //    message history onto the new LEAD# record. The inbox query (whatsapp.js:836) gates
+    //    on lastMessageAt — without it the new lead is excluded from leadItems while dedup
+    //    simultaneously suppresses the originating INBOX# record, making the conversation
+    //    invisible in all tabs until a new WA message arrives.
+    const patch = {};
+    if (closureDeadline) patch.closureDeadline = closureDeadline;
     if (source === 'whatsapp') {
       try {
         const inboxR = await dynamodb.get({
@@ -292,65 +279,30 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
           Key: { PK: `INBOX#${companyId}#${to10Digit(cleanPhone)}`, SK: 'CONTACT' },
         }).promise();
         if (inboxR.Item?.lastMessageAt) {
-          inboxHistory = {
+          Object.assign(patch, {
             lastMessageAt:        inboxR.Item.lastMessageAt,
             lastMessagePreview:   inboxR.Item.lastMessagePreview ?? '',
             lastMessageDirection: inboxR.Item.lastMessageDirection ?? 'inbound',
             lastInboundAt:        inboxR.Item.lastMessageAt,
             unreadCount:          inboxR.Item.unreadCount ?? 0,
-          };
+          });
         }
       } catch (e) {
         logger.warn('inbox→lead history copy failed: ' + e.message);
       }
     }
+    if (Object.keys(patch).length) {
+      await dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: item.PK, SK: 'METADATA' },
+        UpdateExpression: `SET ${Object.keys(patch).map((k) => `#${k} = :${k}`).join(', ')}`,
+        ExpressionAttributeNames: Object.fromEntries(Object.keys(patch).map((k) => [`#${k}`, k])),
+        ExpressionAttributeValues: Object.fromEntries(Object.entries(patch).map(([k, v]) => [`:${k}`, v])),
+      }).promise();
+      Object.assign(item, patch);
+    }
 
-    const item = {
-      PK: leadPK(companyId, leadId),
-      SK: 'METADATA',
-      leadId,
-      companyId,
-      name: name.trim(),
-      phone: cleanPhone,
-      phoneNorm: normPhone,
-      email: email?.trim() ?? null,
-      productInterest: productInterest ?? [],
-      source: source ?? 'manual',
-      notes: notes?.trim() ?? '',
-      stage: defaultStage,
-      tags: await resolveTagIds(companyId, tags ?? []),
-      closureDeadline: closureDeadline ?? null,
-      assignedTo: resolvedAssignedTo,
-      assignedToName: resolvedAssignedName,
-      autoAssigned: wasAutoAssigned,
-      createdBy: req.user.id,
-      createdAt: now,
-      updatedAt: now,
-      convertedAt: null,
-
-      // V2 entity links — null until background linkage runs
-      contactId:             null,
-      primaryConversationId: null,
-
-      // Reserved future-ready fields (Phase 2/3 pipeline, revenue, journey)
-      pipelineId:      null,
-      productId:       null,
-      expectedValue:   null,
-      probability:     null,
-      wonAt:           null,
-      lostReason:      null,
-      customerJourney: null,
-
-      // Append-only audit arrays (Phase 2 — populated by service layer, not API directly)
-      ownerHistory:      [],  // [{ employeeId, name, assignedAt, assignedBy }]
-      leadSourceHistory: [],  // [{ source, sourceId, recordedAt, recordedBy }]
-
-      // WhatsApp message history copied from INBOX# (only when source='whatsapp')
-      ...inboxHistory,
-    };
-
-    await dynamodb.put({ TableName: TABLE, Item: item }).promise();
-    await logAudit(req.user.id, 'crm_lead_created', leadId, 'success', req.ip, { name });
+    await logAudit(req.user.id, 'crm_lead_created', item.leadId, 'success', req.ip, { name });
 
     // Link Contact entity to this lead in the background (never blocks response)
     LeadService.linkContactToLead(companyId, item.PK, cleanPhone, name.trim()).catch(() => {});
@@ -358,13 +310,13 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
     // Fire automations
     const { runAutomations } = require('./automations');
     runAutomations(companyId, 'lead_created', {
-      leadId, leadPK: item.PK, phone: cleanPhone, name: name.trim(),
-      source: item.source, stage: defaultStage, tags: item.tags,
+      leadId: item.leadId, leadPK: item.PK, phone: cleanPhone, name: name.trim(),
+      source: item.source, stage: item.stage, tags: item.tags,
       assignedTo: item.assignedTo,
     }).catch((e) => logger.warn('automation error: ' + e.message));
 
     // Await before responding — same Lambda-freeze reason as lead_assigned.
-    await notifyCompany(companyId, { event: 'lead_created', leadId, stage: defaultStage }).catch(() => {});
+    await notifyCompany(companyId, { event: 'lead_created', leadId: item.leadId, stage: item.stage }).catch(() => {});
     res.status(201).json({ success: true, lead: item });
   } catch (err) {
     logger.error('crm/leads POST error', err);
@@ -935,53 +887,98 @@ router.post('/import', authMiddleware, checkRole(['admin', 'manager']), async (r
             ...(importTagId ? [importTagId] : []),
           ])];
 
-          const leadId = existing?.leadId ?? uuidv4();
-          await dynamodb.put({
+          if (existing) {
+            // duplicateAction === 'overwrite' — an explicit, deliberate force-overwrite of
+            // an existing lead's fields. Not routed through CIS: CIS's enrichment is a
+            // conservative smart-merge (fills blanks only, never replaces populated fields),
+            // a different and more cautious operation than what "overwrite" asks for here.
+            await dynamodb.put({
+              TableName: TABLE,
+              Item: {
+                PK: leadPK(companyId, existing.leadId),
+                SK: 'METADATA',
+                leadId: existing.leadId,
+                companyId,
+                name,
+                phone,
+                phoneNorm: to10Digit(phone),
+                email: String(lead.email ?? '').trim() || null,
+                productInterest: Array.isArray(lead.productInterest) ? lead.productInterest : [],
+                source: lead.source ?? 'import',
+                notes: String(lead.notes ?? '').trim(),
+                stage: finalStage,
+                tags,
+                closureDeadline: lead.closureDeadline ?? null,
+                assignedTo: defaultAssignedTo ?? req.user.id,
+                assignedToName: defaultAssignedToName ?? req.user.name ?? null,
+                createdBy: req.user.id,
+                createdAt: existing.createdAt ?? now,
+                updatedAt: now,
+                convertedAt: null,
+                importedAt: now,
+
+                // V2 entity links — null until background linkage runs
+                contactId:             existing.contactId ?? null,
+                primaryConversationId: existing.primaryConversationId ?? null,
+
+                // Reserved future-ready fields (Phase 2/3)
+                pipelineId:      existing.pipelineId      ?? null,
+                productId:       existing.productId       ?? null,
+                expectedValue:   existing.expectedValue   ?? null,
+                probability:     existing.probability     ?? null,
+                wonAt:           existing.wonAt           ?? null,
+                lostReason:      existing.lostReason      ?? null,
+                customerJourney: existing.customerJourney ?? null,
+
+                // Append-only audit arrays — preserve on overwrite
+                ownerHistory:      existing.ownerHistory      ?? [],
+                leadSourceHistory: existing.leadSourceHistory ?? [],
+              },
+            }).promise();
+            results.overwritten++;
+            return;
+          }
+
+          // New lead — routed through CIS for atomic phone-locking + idempotency, closing
+          // the TOCTOU race the pre-fetched phoneMap snapshot can't (ADR-013). assignedTo
+          // is always resolved explicitly here (never left for CIS to auto-assign) to keep
+          // this route's existing default of "importer owns it," not the auto-assign pool.
+          const result = await CIS.resolveOrCreate(companyId, {
+            phone,
+            name,
+            email: String(lead.email ?? '').trim() || null,
+            productInterest: Array.isArray(lead.productInterest) ? lead.productInterest : [],
+            source: lead.source ?? 'import',
+            notes: String(lead.notes ?? '').trim(),
+            stage: finalStage,
+            tags,
+            assignedTo: defaultAssignedTo ?? req.user.id,
+            assignedToName: defaultAssignedToName ?? req.user.name ?? null,
+          }, {
+            createdBy: req.user.id,
+            actorId:   req.user.id,
+            actorName: req.user.name ?? null,
+          });
+
+          if (result.existed) {
+            // Lost a race against a concurrent create for this phone since the phoneMap
+            // snapshot was taken — CIS enriched the winner instead of creating a duplicate.
+            results.skipped++;
+            return;
+          }
+
+          const patch = {};
+          if (lead.closureDeadline) patch.closureDeadline = lead.closureDeadline;
+          patch.importedAt = now;
+          await dynamodb.update({
             TableName: TABLE,
-            Item: {
-              PK: leadPK(companyId, leadId),
-              SK: 'METADATA',
-              leadId,
-              companyId,
-              name,
-              phone,
-              phoneNorm: to10Digit(phone),
-              email: String(lead.email ?? '').trim() || null,
-              productInterest: Array.isArray(lead.productInterest) ? lead.productInterest : [],
-              source: lead.source ?? 'import',
-              notes: String(lead.notes ?? '').trim(),
-              stage: finalStage,
-              tags,
-              closureDeadline: lead.closureDeadline ?? null,
-              assignedTo: defaultAssignedTo ?? req.user.id,
-              assignedToName: defaultAssignedToName ?? req.user.name ?? null,
-              createdBy: req.user.id,
-              createdAt: existing?.createdAt ?? now,
-              updatedAt: now,
-              convertedAt: null,
-              importedAt: now,
-
-              // V2 entity links — null until background linkage runs
-              contactId:             existing?.contactId ?? null,
-              primaryConversationId: existing?.primaryConversationId ?? null,
-
-              // Reserved future-ready fields (Phase 2/3)
-              pipelineId:      existing?.pipelineId      ?? null,
-              productId:       existing?.productId       ?? null,
-              expectedValue:   existing?.expectedValue   ?? null,
-              probability:     existing?.probability     ?? null,
-              wonAt:           existing?.wonAt           ?? null,
-              lostReason:      existing?.lostReason      ?? null,
-              customerJourney: existing?.customerJourney ?? null,
-
-              // Append-only audit arrays — preserve on overwrite
-              ownerHistory:      existing?.ownerHistory      ?? [],
-              leadSourceHistory: existing?.leadSourceHistory ?? [],
-            },
+            Key: { PK: result.lead.PK, SK: 'METADATA' },
+            UpdateExpression: `SET ${Object.keys(patch).map((k) => `#${k} = :${k}`).join(', ')}`,
+            ExpressionAttributeNames: Object.fromEntries(Object.keys(patch).map((k) => [`#${k}`, k])),
+            ExpressionAttributeValues: Object.fromEntries(Object.entries(patch).map(([k, v]) => [`:${k}`, v])),
           }).promise();
 
-          if (existing) results.overwritten++;
-          else results.imported++;
+          results.imported++;
         } catch (e) {
           results.errors.push({ row: idx + 2, phone: String(leads[idx]?.phone ?? ''), reason: e.message });
         }

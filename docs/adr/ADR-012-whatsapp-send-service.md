@@ -66,6 +66,7 @@ APForce will add Campaigns, AI Agents, CTWA (Click-to-WhatsApp Ads), Customer Jo
 | `sendTemplate()` | ✅ Implemented | Inbox, Broadcast, Welcome msg, Automation |
 | `sendInteractive()` | ✅ Implemented | Future buttons/lists |
 | `sendMedia()` | ✅ Implemented | Inbox file upload, direct media URL |
+| `sendReadReceipt()` | ✅ Implemented | Inbox mark-read (`POST /inbox/:leadId/mark-read`) |
 | `sendCatalog()` | 🔲 Stub (501) | Future |
 | `sendPayment()` | 🔲 Stub (501) | Future |
 | `sendFlow()` | 🔲 Stub (501) | Future |

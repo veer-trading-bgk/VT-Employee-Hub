@@ -1,17 +1,13 @@
 const express = require('express');
-const { authMiddleware } = require('../middleware/auth');
-const { METRIC_CONFIG } = require('../config/metricsConfig');
+const { authMiddleware, checkRole } = require('../middleware/auth');
+const { METRIC_CONFIG, TARGET_DEFAULTS, calcPoints, buildCustomWeights } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
-
-const { TARGET_DEFAULTS } = require('../config/metricsConfig');
 
 const router = express.Router();
 
 const TABLE = process.env.DYNAMODB_TABLE_BADGES || 'vt-badges';
 const TABLE_EMPLOYEES = process.env.DYNAMODB_TABLE_EMPLOYEES;
-
-const WEEKEND_MULTIPLIER = 1.5;
 
 async function fetchPointsWeights(companyId) {
   try {
@@ -26,8 +22,10 @@ async function fetchPointsWeights(companyId) {
   }
 }
 
-// POST /api/points/award — award points for a metric entry
-router.post('/award', authMiddleware, async (req, res, next) => {
+// POST /api/points/award — award points for a metric entry.
+// Proxy action on behalf of another employee — restricted the same way as
+// metrics.js's POST /add-for-member (team_lead/manager/admin only).
+router.post('/award', authMiddleware, checkRole(['admin', 'manager', 'team_lead']), async (req, res, next) => {
   try {
     const { employeeId, metricType, quantity } = req.body;
     if (!employeeId || !metricType || !quantity) {
@@ -37,10 +35,7 @@ router.post('/award', authMiddleware, async (req, res, next) => {
     const cfg = METRIC_CONFIG[metricType];
     if (!cfg) return res.json({ success: true, pointsAwarded: 0 });
     const targetCfg = await fetchPointsWeights(req.user?.companyId);
-    const w = targetCfg[metricType]?.pointsWeight ?? cfg.pointsWeight;
-    const basePoints = cfg.isCurrency ? quantity / w : quantity * w;
-    const isWeekend = [0, 6].includes(new Date().getDay());
-    const points = Math.round(basePoints * (isWeekend ? WEEKEND_MULTIPLIER : 1));
+    const points = calcPoints({ [metricType]: quantity }, buildCustomWeights(targetCfg));
     if (points === 0) return res.json({ success: true, pointsAwarded: 0 });
 
     // Store per-day points record

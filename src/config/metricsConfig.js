@@ -121,6 +121,18 @@ function emptyTotals() {
   return METRIC_KEYS.reduce((o, k) => { o[k] = 0; return o; }, {});
 }
 
+// Builds the customWeights map calcPoints() expects, from a stored CONFIG#TARGETS
+// item's `targets` object (admin-configurable per-metric pointsWeight overrides).
+// Shared by points.js, admin.js's rebuild, and metrics.js's leaderboard so all three
+// points surfaces read the override the same way.
+function buildCustomWeights(targetCfg) {
+  const customWeights = {};
+  Object.entries(targetCfg ?? {}).forEach(([k, v]) => {
+    if (v && v.pointsWeight != null) customWeights[k] = v.pointsWeight;
+  });
+  return Object.keys(customWeights).length > 0 ? customWeights : null;
+}
+
 function toDailyTargets(cfg) {
   return Object.fromEntries(
     Object.entries(cfg).map(([k, v]) => [
@@ -145,6 +157,7 @@ module.exports = {
   TARGET_DEFAULTS,
   calcPoints,
   emptyTotals,
+  buildCustomWeights,
   toDailyTargets,
   toMonthlyTargets,
 };

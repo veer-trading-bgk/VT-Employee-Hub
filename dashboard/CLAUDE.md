@@ -145,3 +145,20 @@ These principles are permanent project rules.
 ### Reason
 Claude Code environment does not have AWS credentials or correct PATH.
 Every deploy attempt from Claude Code wastes tokens and fails silently.
+---
+
+## Documentation Rule
+
+Before modifying Customer 360:
+
+Read:
+
+- docs/bible/20_CURRENT_STATE.md
+- docs/bible/08_MODULES.md
+- docs/bible/06_ARCHITECTURE.md
+
+Do not introduce duplicate state ownership.
+
+Do not bypass Customer360Provider.
+
+Update documentation if module ownership changes.

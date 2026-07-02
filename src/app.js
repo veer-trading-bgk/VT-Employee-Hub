@@ -56,7 +56,12 @@ const corsMiddleware = cors({
 // Security middleware
 app.use(helmet());
 app.use(corsMiddleware);
-app.use(express.json({ limit: '10mb' }));
+// verify captures the raw bytes onto req.rawBody — required for Meta webhook signature
+// verification (HMAC must be computed over the exact bytes Meta sent, not a re-serialization).
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, res, buf) => { req.rawBody = buf; },
+}));
 app.use(cookieParser());
 
 // Routes
