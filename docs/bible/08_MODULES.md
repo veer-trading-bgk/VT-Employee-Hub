@@ -463,6 +463,24 @@ Everything else (`_normPhone`, `_findByPhone`, `_createCustomer`, `_enrichCustom
 
 ---
 
+### `src/services/PipelineService.js` (single owner of the CRM pipeline + stage-key validation)
+
+**Purpose:** Single source of truth for the company's CRM pipeline (`CONFIG#CRM#<companyId>` / `PIPELINE`) and for validating a `stage` value against it before it's ever written.
+
+**Owns:** `DEFAULT_STAGES` (the 6-stage fallback used when a company hasn't customized their pipeline), `getPipelineStages(companyId)`, and `isValidStage(companyId, stageKey)` — every write path that persists a lead's `stage` must call the latter first.
+
+**Key exports:** `DEFAULT_STAGES`, `getPipelineStages(companyId)` → `Promise<PipelineStage[]>`, `isValidStage(companyId, stageKey)` → `Promise<boolean>`.
+
+**Depended on by:** `routes/crm.js` (extracted from here — was previously duplicated inline; now used by `GET/PUT /pipeline`, `PUT /leads/:id/stage`, `POST /leads`, `POST /import`, `GET /stats`, `GET /crm-analytics`), `routes/contacts.js` (`PUT /stage`, the shared LEAD#/INBOX# setter), `services/AutomationEngine.js` (`change_stage` action).
+
+**History:** Before this existed, `PUT /leads/:id/stage` was the only write path that validated a stage key against the real pipeline. `crm.js POST /leads`, `contacts.js PUT /stage`, and `AutomationEngine.js`'s `change_stage` action all wrote an unvalidated `stage` value straight to DynamoDB — meaning a stage key that didn't exist in a company's customized pipeline would silently corrupt a lead record (no downstream code could ever resolve a label/color for it again). All three now call `isValidStage()` first and reject/throw on a bad key. `AutomationEngine`'s case is the most important of the three: it runs unattended from a workflow step, so there's no user-facing save/toast to ever have surfaced the bad write before this fix — the thrown error is caught by the existing per-step try/catch and recorded onto the execution's `steps[].error`, visible in the Executions tab with no new plumbing.
+
+**Known, deliberately unconsolidated duplicate:** `CustomerIdentityService.js` has its own near-identical `_getPipelineStages()` (used only to default an *omitted* stage on lead creation, not to validate a *supplied* one — so it isn't a corruption risk the way the three above were). Left alone: CIS is the ADR-013 chokepoint with zero existing test coverage, and folding it in is a separate, more careful pass.
+
+**Tests:** `tests/pipelineService.test.js`, `tests/automationEngine.test.js` (the `change_stage` validation specifically).
+
+---
+
 ### `src/services/notifications.js` (880 bytes — dead code)
 
 **Purpose:** A stateless wrapper around Expo's push-notification API.
@@ -865,7 +883,7 @@ full detail only for the context/provider files that own shared state.
 | `layout/` | `ProtectedRoute.tsx` — auth-gate wrapper used by the v3 root layout |
 | `settings/` | WABA health/status widget |
 | `tags/` | Tag display/pick UI shared by inbox and contacts |
-| `hooks/` *(sibling of `components/`, not inside it — `dashboard/src/hooks/`)* | Shared cross-page hooks. Two own single React Query keys and should be reused rather than re-queried inline: `useTagCatalog` (`['tag-catalog']`, `GET /api/tags`) and `usePipelineStages` (`['pipeline-stages']`, `GET /api/crm/pipeline` — the live counterpart to the dead `Customer360Context`'s `['crm-pipeline']` query, see finding below). Rest are single-purpose (`useContactMutations`, `useOwnerAssign`, `useEmployeesList`, `useDebounce`, `useMetrics*`, `useWebSocket`/`useWsEvent`, `useRealTime`, `useFetch`) |
+| `hooks/` *(sibling of `components/`, not inside it — `dashboard/src/hooks/`)* | Shared cross-page hooks. Two own single React Query keys and should be reused rather than re-queried inline: `useTagCatalog` (`['tag-catalog']`, `GET /api/tags`) and `usePipelineStages` (`['pipeline-stages']`, `GET /api/crm/pipeline` — the live counterpart to the dead `Customer360Context`'s `['crm-pipeline']` query, see finding below). `usePipelineStages` is now the sole source of stage options/labels/colors across the app — every hardcoded `STAGE_LABELS`-derived list has been replaced with it (inbox, contacts list + detail, sales board, campaigns audience builder + review, workflow automation builder, new-contact drawer, home dashboard). Rest are single-purpose (`useContactMutations`, `useOwnerAssign`, `useEmployeesList`, `useDebounce`, `useMetrics*`, `useWebSocket`/`useWsEvent`, `useRealTime`, `useFetch`) |
 | `templates/` | WhatsApp message template management (category/quality/status badges, live preview) |
 | `ui/` | Pre-v3 generic UI kit (DataTable, Leaderboard, MetricCard) — legacy counterpart to `v3/ui/` |
 | `v3/` | Current design-system + feature-shell folder — see below |
@@ -944,4 +962,4 @@ Instantiates the single app-wide `QueryClient` (2-min staleTime, 10-min gcTime, 
 2. The same shape of duplication exists for Inbox: `InboxContext` is real and used by the legacy `components/whatsapp/*` UI, but the current `/inbox` route reimplements its own state independently.
 3. Legacy and v3 UI kits coexist deliberately and are both live (`components/ui/` + `components/whatsapp/` pre-v3; `components/v3/ui/` current) — this is not migration debt so much as an incomplete migration in progress.
 4. Several routes are pure redirect stubs preserving old URLs: `customers/*` → `contacts/*`, `communications` → `inbox`, `automation/logs` → `automation`.
-5. Two independent `PipelineStage` type definitions exist — the live one in `hooks/usePipelineStages.ts` (`{key,label,color,order}`, consumed by the shipped `[contactId]/page.tsx`) and the dead one inside `Customer360Context.tsx` (`{key,label,color}`, unused per finding above). Structurally compatible (the live one is a superset) but not the same declaration — a future consolidation of the two Customer 360 implementations should collapse these into one shared type rather than leaving both.
+5. **Resolved for the live surface, still open for the dead one.** Two independent `PipelineStage` type definitions exist — the live one in `hooks/usePipelineStages.ts` (`{key,label,color,order}`) and the dead one inside `Customer360Context.tsx` (`{key,label,color}`, unused per finding #1). Structurally compatible (the live one is a superset) but not the same declaration. As of the stage-hardcoding remediation, `hooks/usePipelineStages.ts`'s type is now the sole one in active use — the hardcoded `STAGE_LABELS`/`Stage`-union pattern it replaced was traced to 10 files across the frontend (originating at the V3 launch, `efe9c7c`, not a later regression) and all 10 now read the live pipeline instead: 3 were write-payload risk (`inbox/page.tsx`'s stage select, `WorkflowBuilder.tsx`'s `change_stage` action config, `NewContactDrawer.tsx`'s initial-stage picker), 1 was a duplicate fetch (`sales/page.tsx` independently queried the same `GET /api/crm/pipeline` under the same `['pipeline-stages']` key `usePipelineStages` now owns), 2 were filter-availability gaps (`AudienceBuilder.tsx`, `contacts/page.tsx`'s list filter), and 4 were cosmetic label-only lookups (`contacts/page.tsx`'s CSV/table/chip, `CampaignCreateDrawer.tsx`, `home/page.tsx`). `components/v3/ui/Badge.tsx`'s `variant="stage"` also gained an optional `color` prop so a custom stage key renders with a real color instead of shape-only. A future consolidation of the two Customer 360 implementations should still collapse the two `PipelineStage` declarations into one shared type rather than leaving the dead one to drift.
