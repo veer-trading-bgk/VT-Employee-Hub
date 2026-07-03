@@ -1,13 +1,12 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { useRouter, usePathname } from 'next/navigation';
-import { apiFetch } from '@/lib/api';
 import { TagBadge } from '@/components/tags/TagBadge';
 import type { Tag } from '@/components/tags/TagBadge';
 import type { ContactDetail } from '@/lib/contacts/types';
 import { useContactMutations } from '@/hooks/useContactMutations';
+import { useTagCatalog } from '@/hooks/useTagCatalog';
 
 const SOURCE_LABELS: Record<string, string> = {
   whatsapp:    'WhatsApp Inbound',
@@ -97,12 +96,7 @@ export function ProfileTab({ contact, leadId }: ProfileTabProps) {
   const [editingField, setEditingField] = useState<'name' | 'email' | null>(null);
   const [editValue, setEditValue]       = useState('');
 
-  const { data: tagCatalogData } = useQuery({
-    queryKey: ['tag-catalog'],
-    queryFn:  () => apiFetch<{ success: boolean; tags: Tag[] }>('/api/tags'),
-    staleTime: 5 * 60_000,
-  });
-  const tagCatalog = useMemo(() => tagCatalogData?.tags ?? [], [tagCatalogData]);
+  const { tags: tagCatalog } = useTagCatalog();
 
   const resolvedTags = useMemo(
     () => (contact.tags ?? [])

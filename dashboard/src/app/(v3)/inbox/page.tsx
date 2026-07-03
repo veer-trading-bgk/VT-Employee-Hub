@@ -6,13 +6,11 @@ import Link from 'next/link';
 import {
   MessageSquare, Search, Send, MoreHorizontal, Phone,
   CheckCheck, Check, Clock, AlertCircle, Plus, X, ChevronLeft,
-  FileText, Download, ZoomIn, Tag as TagIcon,
+  FileText, Download, ZoomIn,
   Loader2, ChevronDown, Lock, AlertTriangle,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { TagBadge } from '@/components/tags/TagBadge';
-import type { Tag } from '@/components/tags/TagBadge';
-import { TagSelector } from '@/components/tags/TagSelector';
+import { ContactTags } from '@/components/tags/ContactTags';
 import { Avatar } from '@/components/v3/ui/Avatar';
 import { Badge } from '@/components/v3/ui/Badge';
 import { Button } from '@/components/v3/ui/Button';
@@ -1366,7 +1364,6 @@ function CustomerSnapshotPanel({
   const canEditOwner = ['owner', 'admin'].includes(v3Role);
   const STAGE_OPTIONS = Object.entries(STAGE_LABELS).map(([value, label]) => ({ value, label }));
   const displayName = convDisplayName(conversation);
-  const [showTagSelector, setShowTagSelector] = useState(false);
 
   // Subscribe to live assignment cache — updates immediately when useOwnerAssign fires
   const { data: cachedAssign } = useQuery<AssignmentRecord>({
@@ -1400,47 +1397,6 @@ function CustomerSnapshotPanel({
       toast.success('Stage updated');
     },
     onError: () => toast.error('Failed to update stage'),
-  });
-
-  const { data: tagCatalogData, isLoading: tagCatalogLoading } = useQuery({
-    queryKey: ['tag-catalog'],
-    queryFn: () => apiFetch<{ success: boolean; tags: Tag[] }>('/api/tags'),
-    staleTime: 5 * 60_000,
-  });
-  const tagCatalog = tagCatalogData?.tags ?? [];
-
-  const contactTagIds = conversation.tags ?? [];
-  const contactTags = contactTagIds
-    .map((id) => tagCatalog.find((t) => t.id === id))
-    .filter((t): t is Tag => Boolean(t));
-
-  const tagMut = useMutation({
-    mutationFn: ({ add, remove }: { add: string[]; remove: string[] }) =>
-      apiFetch('/api/tags/contacts', {
-        method: 'PUT',
-        body: JSON.stringify({
-          ...(conversation.leadId ? { leadId: conversation.leadId } : { phone: conversation.phone }),
-          add,
-          remove,
-        }),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
-      toast.success('Tags updated');
-    },
-    onError: () => toast.error('Failed to update tags'),
-  });
-
-  const createTagMut = useMutation({
-    mutationFn: ({ label, color }: { label: string; color: string }) =>
-      apiFetch<{ success: boolean; tag: Tag }>('/api/tags', {
-        method: 'POST',
-        body: JSON.stringify({ label, color }),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['tag-catalog'] });
-    },
-    onError: () => toast.error('Failed to create tag'),
   });
 
   return (
@@ -1497,53 +1453,13 @@ function CustomerSnapshotPanel({
 
         {/* Tags — available for all contacts (leads and unknown) */}
         <div>
-          <div className="mb-1.5 flex items-center justify-between">
-            <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">Tags</p>
-            <button
-              onClick={() => setShowTagSelector((v) => !v)}
-              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20"
-            >
-              <TagIcon className="h-3 w-3" />
-              {showTagSelector ? 'Done' : 'Add / Edit'}
-            </button>
-          </div>
-          <div className="relative">
-            <div className="flex flex-wrap gap-1 min-h-[20px]">
-              {contactTags.map((tag) => (
-                <TagBadge
-                  key={tag.id}
-                  tag={tag}
-                  onRemove={(e) => {
-                    e.stopPropagation();
-                    tagMut.mutate({ add: [], remove: [tag.id] });
-                  }}
-                />
-              ))}
-              {contactTags.length === 0 && !showTagSelector && (
-                <span className="text-xs text-neutral-400">No tags yet — click Add / Edit</span>
-              )}
-            </div>
-            {showTagSelector && (
-              <div className="absolute left-0 top-full z-20 mt-1">
-                <TagSelector
-                  catalogTags={tagCatalog}
-                  selectedIds={contactTagIds}
-                  loading={tagCatalogLoading}
-                  onToggle={(tagId) => {
-                    const isSelected = contactTagIds.includes(tagId);
-                    tagMut.mutate({ add: isSelected ? [] : [tagId], remove: isSelected ? [tagId] : [] });
-                  }}
-                  onCreate={async (label, color) => {
-                    const res = await createTagMut.mutateAsync({ label, color });
-                    if (res.tag?.id) {
-                      tagMut.mutate({ add: [res.tag.id], remove: [] });
-                    }
-                  }}
-                  onClose={() => setShowTagSelector(false)}
-                />
-              </div>
-            )}
-          </div>
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-400">Tags</p>
+          <ContactTags
+            tagIds={conversation.tags ?? []}
+            leadId={conversation.leadId ?? undefined}
+            phone={conversation.phone}
+            onMutated={() => qc.invalidateQueries({ queryKey: ['wa-inbox'] })}
+          />
         </div>
 
         {/* Assigned to — editable for leads and (via create-CRM-lead) for unknown contacts */}

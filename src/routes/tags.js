@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
+const { getCatalog, saveCatalog } = require('../services/TagService');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -13,21 +14,6 @@ function to10Digit(phone) {
 
 function newTagId() {
   return `t_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-}
-
-async function getCatalog(companyId) {
-  const r = await dynamodb.get({
-    TableName: TABLE,
-    Key: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG' },
-  }).promise();
-  return r.Item?.tags ?? [];
-}
-
-async function saveCatalog(companyId, tags) {
-  await dynamodb.put({
-    TableName: TABLE,
-    Item: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG', tags },
-  }).promise();
 }
 
 // GET /api/tags — fetch company tag catalog

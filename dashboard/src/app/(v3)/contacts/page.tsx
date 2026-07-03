@@ -32,6 +32,9 @@ import { format } from 'date-fns';
 import { OwnerSelect } from '@/components/v3/ui/OwnerSelect';
 import { NewContactDrawer } from '@/components/contacts/NewContactDrawer';
 import { ImportContactsDrawer } from '@/components/contacts/ImportContactsDrawer';
+import { TagBadge, type Tag as CatalogTag } from '@/components/tags/TagBadge';
+import { TagSelector } from '@/components/tags/TagSelector';
+import { useTagCatalog } from '@/hooks/useTagCatalog';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -57,14 +60,14 @@ function escapeCell(v: string | null | undefined): string {
 
 const CSV_HEADERS = ['Name', 'Phone', 'Email', 'Stage', 'Assigned To', 'Tags', 'Source', 'Created At'];
 
-function contactToRow(c: Contact): string[] {
+function contactToRow(c: Contact, tagLabel: (id: string) => string): string[] {
   return [
     c.displayName ?? c.name ?? '',
     c.phone ?? '',
     c.email ?? '',
     STAGE_LABELS[c.stage as Stage] ?? c.stage ?? '',
     c.assignedToName ?? '',
-    (c.tags ?? []).join('; '),
+    (c.tags ?? []).map(tagLabel).join('; '),
     (c as any).source ?? '',
     c.createdAt ? format(new Date(c.createdAt), 'd MMM yyyy') : '',
   ];
@@ -78,21 +81,21 @@ function triggerDownload(csv: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-function buildCSV(contacts: Contact[]): string {
-  return [CSV_HEADERS, ...contacts.map(contactToRow)]
+function buildCSV(contacts: Contact[], tagLabel: (id: string) => string): string {
+  return [CSV_HEADERS, ...contacts.map((c) => contactToRow(c, tagLabel))]
     .map((r) => r.map(escapeCell).join(','))
     .join('\n');
 }
 
 // Selected-only export — instant, no API call needed
-function exportSelected(contacts: Contact[]) {
+function exportSelected(contacts: Contact[], tagLabel: (id: string) => string) {
   if (contacts.length === 0) { toast.info('Select at least one contact to export'); return; }
-  triggerDownload(buildCSV(contacts), `contacts_selected_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+  triggerDownload(buildCSV(contacts, tagLabel), `contacts_selected_${format(new Date(), 'yyyy-MM-dd')}.csv`);
   toast.success(`Exported ${contacts.length} selected contact${contacts.length !== 1 ? 's' : ''}`);
 }
 
 // Full export — paginates through API to collect all contacts matching current filters
-async function exportAllCSV(search: string, stageFilter: string): Promise<void> {
+async function exportAllCSV(search: string, stageFilter: string, tagLabel: (id: string) => string): Promise<void> {
   const PAGE = 100;
   const rows: Contact[] = [];
   let page = 1;
@@ -113,7 +116,7 @@ async function exportAllCSV(search: string, stageFilter: string): Promise<void> 
   }
 
   if (rows.length === 0) { toast.info('No contacts to export'); return; }
-  triggerDownload(buildCSV(rows), `contacts_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+  triggerDownload(buildCSV(rows, tagLabel), `contacts_${format(new Date(), 'yyyy-MM-dd')}.csv`);
   toast.success(`Exported ${rows.length} contact${rows.length !== 1 ? 's' : ''}`);
 }
 
@@ -123,7 +126,7 @@ function contactDisplayName(row: Contact): string {
   return row.displayName ?? row.name ?? row.phone ?? '';
 }
 
-function buildColumns(canEditOwner: boolean): TableColumn<Contact>[] {
+function buildColumns(canEditOwner: boolean, tagCatalog: CatalogTag[]): TableColumn<Contact>[] {
   return [
     {
       key: 'name',
@@ -172,20 +175,24 @@ function buildColumns(canEditOwner: boolean): TableColumn<Contact>[] {
       key: 'tags',
       header: 'Tags',
       width: 'w-48',
-      cell: (row) => (
-        <div className="flex flex-wrap gap-1">
-          {(row.tags ?? []).slice(0, 2).map((tag) => (
-            <Badge key={tag} variant="default" className="text-[10px]">
-              {tag}
-            </Badge>
-          ))}
-          {(row.tags ?? []).length > 2 && (
-            <Badge variant="default" className="text-[10px]">
-              +{(row.tags ?? []).length - 2}
-            </Badge>
-          )}
-        </div>
-      ),
+      cell: (row) => {
+        // Resolve catalog IDs to labeled badges; legacy label strings fall back as-is
+        const resolved = (row.tags ?? []).map(
+          (id) => tagCatalog.find((t) => t.id === id) ?? { id, label: id, color: '#64748b' },
+        );
+        return (
+          <div className="flex flex-wrap gap-1">
+            {resolved.slice(0, 2).map((tag) => (
+              <TagBadge key={tag.id} tag={tag} />
+            ))}
+            {resolved.length > 2 && (
+              <Badge variant="default" className="text-[10px]">
+                +{resolved.length - 2}
+              </Badge>
+            )}
+          </div>
+        );
+      },
     },
     {
       key: 'lastActivity',
@@ -223,6 +230,13 @@ function ContactsContent() {
   const [newContactOpen, setNewContactOpen] = useState(false);
   const [importOpen,     setImportOpen]     = useState(false);
   const [exporting,      setExporting]      = useState(false);
+  const [bulkTagOpen,    setBulkTagOpen]    = useState(false);
+
+  const { tags: tagCatalog } = useTagCatalog();
+  const tagLabel = useCallback(
+    (id: string) => tagCatalog.find((t) => t.id === id)?.label ?? id,
+    [tagCatalog],
+  );
 
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   const canCreate    = ['owner', 'admin', 'manager', 'sales'].includes(v3Role);
@@ -267,6 +281,32 @@ function ContactsContent() {
     onError: () => toast.error('Delete failed — you may not have permission to remove some contacts'),
   });
 
+  // Bulk tag — apply one catalog tag to every selected contact
+  const bulkTagMutation = useMutation({
+    mutationFn: async (tagId: string) => {
+      const targets = (data?.contacts ?? []).filter((c) => selectedIds.has(c.id));
+      await Promise.all(
+        targets.map((c) => {
+          const isLead = c.type === 'lead' || (c.leadId ?? null) !== null;
+          return apiFetch('/api/tags/contacts', {
+            method: 'PUT',
+            body: JSON.stringify({
+              ...(isLead ? { leadId: c.leadId ?? c.id } : { phone: c.phone }),
+              add: [tagId],
+              remove: [],
+            }),
+          });
+        }),
+      );
+      return targets.length;
+    },
+    onSuccess: (count) => {
+      toast.success(`Tagged ${count} contact${count !== 1 ? 's' : ''}`);
+      qc.invalidateQueries({ queryKey: ['contacts'] });
+    },
+    onError: () => toast.error('Failed to tag some contacts'),
+  });
+
   function handleSort(key: string, dir: SortDirection) {
     setSortKey(key);
     setSortDir(dir);
@@ -282,13 +322,13 @@ function ContactsContent() {
     if (selectedIds.size > 0) {
       // Export only the checked rows — already in memory, instant
       const selected = (data?.contacts ?? []).filter((c) => selectedIds.has(c.id));
-      exportSelected(selected);
+      exportSelected(selected, tagLabel);
       return;
     }
     // No selection — export everything matching the current filters
     setExporting(true);
     try {
-      await exportAllCSV(search, stageFilter);
+      await exportAllCSV(search, stageFilter, tagLabel);
     } catch {
       toast.error('Export failed');
     } finally {
@@ -296,7 +336,7 @@ function ContactsContent() {
     }
   }
 
-  const columns = buildColumns(canEditOwner);
+  const columns = buildColumns(canEditOwner, tagCatalog);
 
   const filterChips = stageFilter
     ? [{ key: 'stage', label: 'Stage', value: STAGE_LABELS[stageFilter as Stage] ?? stageFilter }]
@@ -424,15 +464,43 @@ function ContactsContent() {
                   >
                     Assign
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    iconLeft={<Tag className="h-4 w-4" />}
-                    disabled={selectedIds.size === 0}
-                    onClick={() => toast.info('Bulk tag coming soon')}
-                  >
-                    Tag
-                  </Button>
+                  <div className="relative">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      iconLeft={<Tag className="h-4 w-4" />}
+                      disabled={selectedIds.size === 0}
+                      loading={bulkTagMutation.isPending}
+                      onClick={() => setBulkTagOpen((v) => !v)}
+                    >
+                      Tag
+                    </Button>
+                    {bulkTagOpen && (
+                      <div className="absolute left-0 top-full z-20 mt-1">
+                        <TagSelector
+                          catalogTags={tagCatalog}
+                          selectedIds={[]}
+                          loading={bulkTagMutation.isPending}
+                          onToggle={(tagId) => {
+                            bulkTagMutation.mutate(tagId);
+                            setBulkTagOpen(false);
+                          }}
+                          onCreate={async (label, color) => {
+                            const res = await apiFetch<{ success: boolean; tag: CatalogTag }>('/api/tags', {
+                              method: 'POST',
+                              body: JSON.stringify({ label, color }),
+                            });
+                            await qc.invalidateQueries({ queryKey: ['tag-catalog'] });
+                            if (res.tag?.id) {
+                              bulkTagMutation.mutate(res.tag.id);
+                              setBulkTagOpen(false);
+                            }
+                          }}
+                          onClose={() => setBulkTagOpen(false)}
+                        />
+                      </div>
+                    )}
+                  </div>
                   <Button
                     size="sm"
                     variant="danger"

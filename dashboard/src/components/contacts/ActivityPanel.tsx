@@ -1,9 +1,7 @@
 'use client';
 
-import { useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { useCustomer360 } from '@/contexts/Customer360Context';
-import { apiFetch } from '@/lib/api';
+import { useTagCatalog } from '@/hooks/useTagCatalog';
 import type { ContactDetail } from '@/lib/contacts/types';
 
 const STATUS_STYLES: Record<string, string> = {
@@ -45,12 +43,7 @@ interface ActivityPanelProps {
 export function ActivityPanel({ className = '' }: ActivityPanelProps) {
   const { contact, stageObj, timeline, nextFollowup, followups } = useCustomer360();
 
-  const { data: tagCatalogData } = useQuery({
-    queryKey: ['tag-catalog'],
-    queryFn:  () => apiFetch<{ success: boolean; tags: Array<{ id: string; label: string; color: string }> }>('/api/tags'),
-    staleTime: 5 * 60_000,
-  });
-  const tagCatalog = useMemo(() => tagCatalogData?.tags ?? [], [tagCatalogData]);
+  const { tags: tagCatalog } = useTagCatalog();
 
   if (!contact) return null;
 

@@ -19,6 +19,7 @@ import {
   User,
 } from 'lucide-react';
 import { OwnerSelect } from '@/components/v3/ui/OwnerSelect';
+import { ContactTags } from '@/components/tags/ContactTags';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role } from '@/types/v3';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -193,6 +194,7 @@ function OverviewTab({
   onStageChange: (stage: Stage) => Promise<void>;
   canEditOwner: boolean;
 }) {
+  const qc = useQueryClient();
   return (
     <div className="space-y-4 p-4">
       <Card>
@@ -256,27 +258,20 @@ function OverviewTab({
         </div>
       </Card>
 
-      {contact.tags.length > 0 && (
-        <Card>
-          <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-400">
-            Tags
-          </h3>
-          <div className="flex flex-wrap gap-1.5">
-            {contact.tags.map((tag) => (
-              <Badge key={tag} variant="default">
-                {tag}
-              </Badge>
-            ))}
-            <button
-              className="flex items-center gap-1 rounded-full border border-dashed border-neutral-300 px-2 py-0.5 text-xs text-neutral-500 hover:border-primary-400 hover:text-primary-600"
-              aria-label="Add tag"
-            >
-              <Plus className="h-3 w-3" aria-hidden />
-              Add tag
-            </button>
-          </div>
-        </Card>
-      )}
+      <Card>
+        <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-400">
+          Tags
+        </h3>
+        <ContactTags
+          tagIds={contact.tags ?? []}
+          leadId={contact.leadId ?? contact.id}
+          phone={contact.phone}
+          onMutated={() => {
+            qc.invalidateQueries({ queryKey: ['contact', contact.id] });
+            qc.invalidateQueries({ queryKey: ['contacts'] });
+          }}
+        />
+      </Card>
     </div>
   );
 }

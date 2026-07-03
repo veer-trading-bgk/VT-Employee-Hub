@@ -4,6 +4,7 @@ const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const { rateLimit } = require('../middleware/rateLimiter');
 const { to10Digit } = require('../utils/phone');
+const TagService = require('../services/TagService');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -128,19 +129,10 @@ router.get('/', authMiddleware, async (req, res, next) => {
     // Stage filter
     if (stage) contacts = contacts.filter((c) => c.stage === stage);
 
-    // Tag filter — match by catalog ID; also match by label to support
-    // contacts imported before IDs were resolved (legacy text-label tags).
+    // Tag filter — ID/label tolerant matching via TagService (legacy text-label tags)
     if (tag) {
-      const catResult = await dynamodb.get({
-        TableName: TABLE,
-        Key: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG' },
-      }).promise();
-      const catalog = catResult.Item?.tags ?? [];
-      const tagLabel = catalog.find((t) => t.id === tag)?.label?.toLowerCase() ?? null;
-      contacts = contacts.filter((c) => {
-        const ct = c.tags ?? [];
-        return ct.includes(tag) || (tagLabel && ct.some((t) => t.toLowerCase() === tagLabel));
-      });
+      const accept = await TagService.expandTagFilter(companyId, [tag]);
+      contacts = contacts.filter((c) => TagService.matchesTagFilter(c.tags, accept));
     }
 
     const total = contacts.length;

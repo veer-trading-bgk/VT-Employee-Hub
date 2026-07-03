@@ -264,7 +264,7 @@ Endpoint-level detail confirmed by direct read/grep; full line-by-line audit not
 | `companies.js` | Company profile, trial status, onboarding checklist, data export | `GET/PUT /profile`, `GET /trial`, `GET /onboarding`, `GET /export` | Mix of bare + `adminMiddleware` |
 | `compensation.js` (~29KB) | Payroll: rate config, calculation, history, payroll snapshots, lock/unlock, adjustments | `GET/PUT/DELETE /rates`, `GET /calculate/:userId`, `GET /history/:userId`, `GET /payroll`, `POST /payroll/snapshot`, `PUT /payroll/status`, `GET/POST/DELETE /adjustments`, `POST /payroll/unlock` | `authMiddleware` + `checkRole(['admin'])` on writes |
 | `platform.js` | **Superadmin-only** cross-tenant console — list/inspect/suspend companies, platform-wide stats | `GET /companies`, `GET/PUT /companies/:companyId`, `POST /companies/:companyId/unsuspend`, `GET /stats` | `authMiddleware` + `platformAdminMiddleware` (superadmin only) |
-| `tags.js` | Tag catalog CRUD, contact-tag assignment | `GET/POST /`, `PUT /contacts`, `PUT/DELETE /:id` | `authMiddleware`, `checkRole` varies (`admin`/`manager`/`superadmin`) |
+| `tags.js` | Tag catalog CRUD, contact-tag assignment (catalog storage delegated to `TagService`) | `GET/POST /`, `PUT /contacts`, `PUT/DELETE /:id` | `authMiddleware`, `checkRole` varies (`admin`/`manager`/`superadmin`) |
 | `points.js` | Gamification point awards, leaderboard, personal point history | `POST /award`, `GET /leaderboard`, `GET /my` | `authMiddleware` on all |
 | `badges.js` | Achievement badge lookup and eligibility check | `GET /user/:userId`, `POST /check` | `authMiddleware` on both. `logAudit` is imported (line 3) but never called anywhere in the file — dead import. |
 | `analytics.js` | System-wide analytics dashboard data | `GET /` (`checkRole(['admin','manager'])`) | `authMiddleware` + role check |
@@ -446,6 +446,20 @@ Everything else (`_normPhone`, `_findByPhone`, `_createCustomer`, `_enrichCustom
 **Depended on by:** `src/routes/crm.js` (fire-and-forget, after lead creation).
 
 **Gap worth flagging:** not automatically invoked by CIS's `_createCustomer()` — if/when CIS is wired up per ADR-013's migration plan, `linkContactToLead()` will need to be called from inside or immediately after `resolveOrCreate()` to preserve the Contact-linking behavior `crm.js` currently provides.
+
+---
+
+### `src/services/TagService.js` (single owner of the tag catalog + tag filter matching)
+
+**Purpose:** Single source of truth for the company tag catalog (`TAG_CATALOG#<companyId>` / `CATALOG`) and for tag-filter matching semantics across the platform.
+
+**Owns:** Catalog reads/writes and the ID↔label tolerance rule: contacts store catalog tag IDs (`t_xxx`), but legacy records/filters may still hold label strings, so every filter value is expanded to accept both its ID and its label (case-insensitive).
+
+**Key exports:** `getCatalog(companyId)`, `saveCatalog(companyId, tags)`, `expandTagFilter(companyId, filterTags)` → lowercase accept-`Set`, `matchesTagFilter(contactTags, acceptSet)` → boolean.
+
+**Depended on by:** `routes/tags.js` (catalog CRUD), `routes/campaigns.js` (`_buildAudience` tag filter), `routes/whatsapp.js` (broadcast segment filter), `routes/contacts.js` (list tag filter).
+
+**Tests:** `tests/tagService.test.js`.
 
 ---
 

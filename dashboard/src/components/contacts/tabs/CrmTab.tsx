@@ -7,6 +7,7 @@ import { apiFetch } from '@/lib/api';
 import { useCustomer360 } from '@/contexts/Customer360Context';
 import type { PipelineStage } from '@/contexts/Customer360Context';
 import { useContactMutations } from '@/hooks/useContactMutations';
+import { useTagCatalog } from '@/hooks/useTagCatalog';
 import { TagSelector } from '@/components/tags/TagSelector';
 import { TagBadge } from '@/components/tags/TagBadge';
 import type { Tag } from '@/components/tags/TagBadge';
@@ -209,13 +210,7 @@ function CrmPanel() {
     ['telecaller', 'agent', 'intern', 'team_lead', 'manager'].includes(e.role)
   );
 
-  const { data: tagCatalogData } = useQuery({
-    queryKey: ['tag-catalog'],
-    queryFn: () =>
-      apiFetch<{ success: boolean; tags: Tag[] }>('/api/tags'),
-    staleTime: 5 * 60_000,
-  });
-  const tagCatalog: Tag[] = useMemo(() => tagCatalogData?.tags ?? [], [tagCatalogData]);
+  const { tags: tagCatalog } = useTagCatalog();
 
   // ── Optimistic stage (shows immediately on change) ────────────────────
   const [pendingStage, setPendingStage] = useState<string | null>(null);

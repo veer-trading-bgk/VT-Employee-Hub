@@ -13,6 +13,7 @@ const { notifyCompany } = require('../utils/wsNotify');
 const { resolveForInbox, resolveForLead, syncConvStatus, syncMarkRead } = require('../utils/conversationResolver');
 const ConversationService  = require('../services/ConversationService');
 const WASendSvc            = require('../services/WhatsAppSendService');
+const TagService           = require('../services/TagService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
 
 const router = express.Router();
@@ -1626,7 +1627,7 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
         waName: u.waName ?? null,
         agentName: u.agentName ?? null,
         displayName: u.agentName ?? u.waName ?? u.phone,
-        email: null, source: null, stage: null, tags: [], notes: '',
+        email: null, source: null, stage: null, tags: u.tags ?? [], notes: '',
         assignedTo: null, assignedToName: null,
         chatStatus: 'unassigned',
         lastMessageAt: u.lastMessageAt,
@@ -2342,7 +2343,11 @@ router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateL
 
     // Apply filters
     if (filter?.stages?.length) items = items.filter((l) => filter.stages.includes(l.stage));
-    if (filter?.tags?.length) items = items.filter((l) => filter.tags.some((t) => (l.tags ?? []).includes(t)));
+    if (filter?.tags?.length) {
+      // ID/label tolerant matching — filters may hold catalog IDs or legacy labels
+      const accept = await TagService.expandTagFilter(companyId, filter.tags);
+      items = items.filter((l) => TagService.matchesTagFilter(l.tags, accept));
+    }
     if (filter?.assignedTo) items = items.filter((l) => l.assignedTo === filter.assignedTo);
     if (filter?.source) items = items.filter((l) => l.source === filter.source);
 

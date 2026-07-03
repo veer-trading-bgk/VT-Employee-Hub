@@ -6,6 +6,7 @@ const { rateLimit } = require('../middleware/rateLimiter');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 const WASendSvc = require('../services/WhatsAppSendService');
+const TagService = require('../services/TagService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -33,7 +34,11 @@ async function _buildAudience(companyId, filter) {
 
   const f = filter ?? {};
   if (f.stages?.length)  items = items.filter((l) => f.stages.includes(l.stage));
-  if (f.tags?.length)    items = items.filter((l) => f.tags.some((t) => (l.tags ?? []).includes(t)));
+  if (f.tags?.length) {
+    // ID/label tolerant matching — filters may hold catalog IDs or legacy labels
+    const accept = await TagService.expandTagFilter(companyId, f.tags);
+    items = items.filter((l) => TagService.matchesTagFilter(l.tags, accept));
+  }
   if (f.assignedTo)      items = items.filter((l) => l.assignedTo === f.assignedTo);
   if (f.source)          items = items.filter((l) => l.source === f.source);
 

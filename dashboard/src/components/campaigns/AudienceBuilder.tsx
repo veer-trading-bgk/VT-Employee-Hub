@@ -2,9 +2,9 @@
 
 import { useEffect, useCallback, useState } from 'react';
 import { Users, Loader2 } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
+import { useTagCatalog } from '@/hooks/useTagCatalog';
 import { STAGE_LABELS, type Stage } from '@/types/v3';
 import type { AudienceFilter, AudiencePreviewResponse } from '@/types/campaigns';
 
@@ -31,13 +31,9 @@ export function AudienceBuilder({ value, onChange }: AudienceBuilderProps) {
   const [loading, setLoading] = useState(false);
   const [exceeds, setExceeds] = useState(false);
 
-  const { data: tagsData } = useQuery<{ success: boolean; tags: Array<{ id: string; label: string; color: string }> }>({
-    queryKey: ['tag-catalog'],
-    queryFn:  () => apiFetch('/api/tags'),
-    staleTime: 5 * 60 * 1000,
-  });
-  // tags endpoint returns objects; extract labels so allTags stays string[]
-  const allTags = (tagsData?.tags ?? []).map((t) => t.label);
+  // Filter values are catalog tag IDs — contacts store IDs, so the audience
+  // filter must send IDs too (labels never match; backend also tolerates both).
+  const { tags: allTags } = useTagCatalog();
 
   const fetchPreview = useCallback(async (filter: AudienceFilter) => {
     setLoading(true);
@@ -70,11 +66,11 @@ export function AudienceBuilder({ value, onChange }: AudienceBuilderProps) {
     });
   }
 
-  function toggleTag(tag: string) {
+  function toggleTag(tagId: string) {
     const tags = value.tags ?? [];
     onChange({
       ...value,
-      tags: tags.includes(tag) ? tags.filter((t) => t !== tag) : [...tags, tag],
+      tags: tags.includes(tagId) ? tags.filter((t) => t !== tagId) : [...tags, tagId],
     });
   }
 
@@ -139,20 +135,21 @@ export function AudienceBuilder({ value, onChange }: AudienceBuilderProps) {
           <p className="mb-2 text-sm font-medium text-neutral-700 dark:text-neutral-300">Tags</p>
           <div className="flex flex-wrap gap-2">
             {allTags.map((tag) => {
-              const on = (value.tags ?? []).includes(tag);
+              const on = (value.tags ?? []).includes(tag.id);
               return (
                 <button
-                  key={tag}
+                  key={tag.id}
                   type="button"
-                  onClick={() => toggleTag(tag)}
+                  onClick={() => toggleTag(tag.id)}
                   className={cn(
-                    'rounded-full border px-3 py-1 text-xs font-medium transition-colors',
+                    'flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors',
                     on
                       ? 'border-primary-400 bg-primary-100 text-primary-700 dark:border-primary-600 dark:bg-primary-900/30 dark:text-primary-300'
                       : 'border-neutral-200 bg-neutral-50 text-neutral-600 hover:border-neutral-300 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400',
                   )}
                 >
-                  {tag}
+                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: tag.color }} />
+                  {tag.label}
                 </button>
               );
             })}
