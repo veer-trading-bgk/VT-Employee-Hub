@@ -198,7 +198,7 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
     if (body.email === '') body.email = null;
     if (body.closureDeadline === '') body.closureDeadline = null;
     const parsed = createLeadSchema.safeParse(body);
-    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
     const { name, phone, email, productInterest, source, notes, assignedTo, assignedToName, closureDeadline, tags, stage } = body;
     if (!name?.trim() || !phone?.trim()) {
       return res.status(400).json({ error: 'name and phone are required' });
@@ -393,7 +393,7 @@ router.get('/leads/:id', authMiddleware, async (req, res, next) => {
 router.put('/leads/:id', authMiddleware, rateLimit(30, 60_000), async (req, res, next) => {
   try {
     const parsed = updateLeadSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
     const companyId = req.user.companyId;
     const PK = leadPK(companyId, req.params.id);
 
@@ -732,7 +732,7 @@ router.get('/followups', authMiddleware, async (req, res, next) => {
 router.post('/leads/:id/followup', authMiddleware, rateLimit(30, 60_000), async (req, res, next) => {
   try {
     const parsed = createFollowupSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.errors });
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
     const { date, note } = parsed.data;
 
     const companyId = req.user.companyId;

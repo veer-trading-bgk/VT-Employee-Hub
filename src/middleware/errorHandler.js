@@ -2,10 +2,11 @@ const logger = require('../config/logger');
 
 const errorHandler = (err, req, res, next) => {
   // Zod validation error — client mistake, not a server bug
+  // Zod v4's ZodError exposes issues via `.issues`, not the v3-era `.errors`.
   if (err.name === 'ZodError') {
     return res.status(400).json({
       error: 'Validation failed',
-      details: err.errors
+      details: err.issues
     });
   }
 
