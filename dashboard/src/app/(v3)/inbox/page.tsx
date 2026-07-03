@@ -25,7 +25,7 @@ import { wsClient } from '@/lib/wsClient';
 import type { WsMessage } from '@/lib/wsClient';
 import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role } from '@/types/v3';
+import { canAssignOwner } from '@/lib/permissions';
 import { OwnerSelect } from '@/components/v3/ui/OwnerSelect';
 import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { assignmentKey } from '@/hooks/useOwnerAssign';
@@ -1428,8 +1428,10 @@ function CustomerSnapshotPanel({
 }) {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const canEditOwner = ['owner', 'admin'].includes(v3Role);
+  // Raw role, not v3Role — v3Role collapses 'manager' and 'team_lead' into
+  // one bucket, which would wrongly show this control to team_lead (the
+  // backend's POST /api/crm/leads only allows admin/manager/superadmin).
+  const canEditOwner = canAssignOwner(user?.role);
   const { stages: pipelineStages } = usePipelineStages();
   const STAGE_OPTIONS = pipelineStages.map((s) => ({ value: s.key, label: s.label }));
   const displayName = convDisplayName(conversation);

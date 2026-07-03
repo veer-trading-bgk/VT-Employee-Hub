@@ -36,6 +36,7 @@ import { TagSelector } from '@/components/tags/TagSelector';
 import { ContactTags } from '@/components/tags/ContactTags';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
+import { buildContactDeleteRequest } from '@/lib/contactUrls';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -270,11 +271,10 @@ function ContactsContent() {
       const allContacts = data?.contacts ?? [];
       const targets = allContacts.filter((c) => ids.includes(c.id));
       await Promise.all(
-        targets.map((c) =>
-          c.type === 'lead' || (c.leadId ?? null) !== null
-            ? apiFetch(`/api/crm/leads/${c.id}`, { method: 'DELETE' })
-            : apiFetch(`/api/contacts/unknown/${c.phone}`, { method: 'DELETE' }),
-        ),
+        targets.map((c) => {
+          const { url, method } = buildContactDeleteRequest(c);
+          return apiFetch(url, { method });
+        }),
       );
     },
     onSuccess: () => {
