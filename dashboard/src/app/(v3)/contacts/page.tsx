@@ -36,6 +36,7 @@ import { type Tag as CatalogTag } from '@/components/tags/TagBadge';
 import { TagSelector } from '@/components/tags/TagSelector';
 import { ContactTags } from '@/components/tags/ContactTags';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
+import { usePipelineStages } from '@/hooks/usePipelineStages';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,11 +46,6 @@ interface ContactsResponse {
   page: number;
   pageSize: number;
 }
-
-const STAGE_OPTIONS = (Object.entries(STAGE_LABELS) as [Stage, string][]).map(([value, label]) => ({
-  value,
-  label,
-}));
 
 const PAGE_SIZE = 50;
 
@@ -232,6 +228,8 @@ function ContactsContent() {
     (id: string) => tagCatalog.find((t) => t.id === id)?.label ?? id,
     [tagCatalog],
   );
+  const { stages: pipelineStages } = usePipelineStages();
+  const STAGE_OPTIONS = pipelineStages.map((s) => ({ value: s.key, label: s.label }));
 
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   const canCreate    = ['owner', 'admin', 'manager', 'sales'].includes(v3Role);

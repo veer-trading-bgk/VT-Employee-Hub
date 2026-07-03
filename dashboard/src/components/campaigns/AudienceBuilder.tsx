@@ -5,12 +5,8 @@ import { Users, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
-import { STAGE_LABELS, type Stage } from '@/types/v3';
+import { usePipelineStages } from '@/hooks/usePipelineStages';
 import type { AudienceFilter, AudiencePreviewResponse } from '@/types/campaigns';
-
-const STAGE_OPTIONS: Stage[] = [
-  'new_lead', 'contacted', 'interested', 'kyc_done', 'demat_done', 'lost',
-];
 
 const SOURCE_OPTIONS = [
   { value: 'form',     label: 'Form'     },
@@ -34,6 +30,7 @@ export function AudienceBuilder({ value, onChange }: AudienceBuilderProps) {
   // Filter values are catalog tag IDs — contacts store IDs, so the audience
   // filter must send IDs too (labels never match; backend also tolerates both).
   const { tags: allTags } = useTagCatalog();
+  const { stages: pipelineStages } = usePipelineStages();
 
   const fetchPreview = useCallback(async (filter: AudienceFilter) => {
     setLoading(true);
@@ -56,13 +53,13 @@ export function AudienceBuilder({ value, onChange }: AudienceBuilderProps) {
     return () => clearTimeout(t);
   }, [value, fetchPreview]);
 
-  function toggleStage(stage: Stage) {
+  function toggleStage(stageKey: string) {
     const stages = value.stages ?? [];
     onChange({
       ...value,
-      stages: stages.includes(stage)
-        ? stages.filter((s) => s !== stage)
-        : [...stages, stage],
+      stages: stages.includes(stageKey)
+        ? stages.filter((s) => s !== stageKey)
+        : [...stages, stageKey],
     });
   }
 
@@ -102,13 +99,13 @@ export function AudienceBuilder({ value, onChange }: AudienceBuilderProps) {
         <p className="mb-1 text-sm font-medium text-neutral-700 dark:text-neutral-300">Pipeline Stage</p>
         <p className="mb-3 text-xs text-neutral-400">Leave all unchecked to include every stage.</p>
         <div className="grid grid-cols-2 gap-2">
-          {STAGE_OPTIONS.map((stage) => {
-            const on = (value.stages ?? []).includes(stage);
+          {pipelineStages.map((stage) => {
+            const on = (value.stages ?? []).includes(stage.key);
             return (
               <button
-                key={stage}
+                key={stage.key}
                 type="button"
-                onClick={() => toggleStage(stage)}
+                onClick={() => toggleStage(stage.key)}
                 className={cn(
                   'flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition-colors',
                   on
@@ -122,7 +119,7 @@ export function AudienceBuilder({ value, onChange }: AudienceBuilderProps) {
                 )}>
                   {on ? '✓' : ''}
                 </span>
-                {STAGE_LABELS[stage]}
+                {stage.label}
               </button>
             );
           })}

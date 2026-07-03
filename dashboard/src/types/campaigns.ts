@@ -1,12 +1,12 @@
-import type { Stage } from '@/types/v3';
-
 export type CampaignType      = 'whatsapp_broadcast' | 'ctwa';
 export type CampaignStatus    = 'draft' | 'scheduled' | 'launching' | 'active' | 'completed' | 'cancelled' | 'failed';
 export type CampaignObjective = 'awareness' | 'engagement' | 'conversion';
 export type ScheduleMode      = 'now' | 'scheduled' | 'draft';
 
 export interface AudienceFilter {
-  stages?:    Stage[];
+  // Company pipeline stage keys — an open string list, not the closed Stage
+  // union: a customized CONFIG#CRM#<companyId> pipeline can have any key.
+  stages?:    string[];
   tags?:      string[];
   assignedTo?: string;
   source?:    string;
