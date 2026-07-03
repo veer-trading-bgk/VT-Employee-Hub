@@ -75,6 +75,13 @@ ADR-013
 Customer creation and identity resolution use
 CustomerIdentityService.resolveOrCreate().
 
+ADR-015
+
+All LLM calls go through AIService.generate({ useCase, companyId, ... }).
+No route, component, or other service calls an LLM provider directly.
+Every call must be scoped by companyId — cross-tenant data must never
+appear in a single prompt's context.
+
 Never bypass approved ADRs.
 
 ------------------------------------------------------------------------
