@@ -30,21 +30,10 @@ const NotesTab = dynamic(
   { ssr: false, loading: () => <TabLoader label="notes" /> }
 );
 
-function ComingSoonPanel({ tab }: { tab: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center gap-3 py-24 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-3xl dark:bg-slate-800">
-        🚧
-      </div>
-      <p className="text-sm font-semibold text-slate-700 dark:text-slate-300">
-        {tab} tab
-      </p>
-      <p className="text-xs text-slate-400 dark:text-slate-500">
-        Implemented in an upcoming commit
-      </p>
-    </div>
-  );
-}
+const DocumentsTab = dynamic(
+  () => import('./tabs/DocumentsTab').then((m) => ({ default: m.DocumentsTab })),
+  { ssr: false, loading: () => <TabLoader label="documents" /> }
+);
 
 interface ContactTabPanelProps {
   activeTab: TabId;
@@ -66,7 +55,7 @@ export function ContactTabPanel({ activeTab, contactId, contact }: ContactTabPan
       {activeTab === 'crm'          && <CrmTab key={contactId} />}
       {activeTab === 'tasks'        && <TasksTab key={contactId} />}
       {activeTab === 'notes'        && <NotesTab key={contactId} />}
-      {activeTab === 'documents'    && <ComingSoonPanel tab="Documents" />}
+      {activeTab === 'documents'    && <DocumentsTab key={contactId} />}
     </div>
   );
 }

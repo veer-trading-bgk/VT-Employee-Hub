@@ -9,13 +9,10 @@ import {
 } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 import type { ContactDetail, ContactMessage, TimelineItem, ContactDetailResponse, Followup } from '@/lib/contacts/types';
 
-export interface PipelineStage {
-  key: string;
-  label: string;
-  color: string;
-}
+export type { PipelineStage };
 
 export interface Customer360ContextValue {
   leadId: string;
@@ -48,6 +45,15 @@ function is24hExpired(lastInboundAt?: string | null): boolean {
 }
 
 interface Customer360ProviderProps {
+  // A real CRM lead id (LEAD# record) — never a phone number or other
+  // synthetic value. Unknown/INBOX# contacts have no lead record and are
+  // not representable here: callers must branch before mounting this
+  // provider (see app/(v3)/contacts/[contactId]/page.tsx's isUnknown
+  // check) rather than pass a fake id in. Every tab this context feeds
+  // (CRM, Tasks, Notes, Conversation's resolve/reopen) writes through
+  // leadId-keyed endpoints with no unknown-contact equivalent, so a
+  // reduced context for unknown contacts belongs at the page level —
+  // render nothing from this provider rather than a partially-working one.
   leadId: string;
   children: ReactNode;
 }
@@ -62,12 +68,11 @@ export function Customer360Provider({ leadId, children }: Customer360ProviderPro
     enabled: !!leadId,
   });
 
-  const { data: pipelineData } = useQuery({
-    queryKey: ['crm-pipeline'],
-    queryFn: () =>
-      apiFetch<{ success: boolean; stages: PipelineStage[] }>('/api/crm/pipeline'),
-    staleTime: 10 * 60_000,
-  });
+  // Single shared owner of ['pipeline-stages'] — same hook every other
+  // stage-consuming surface in the app uses (contacts list, inbox, sales
+  // board, campaigns, automation builder). Replaces this context's former
+  // standalone ['crm-pipeline'] fetch of the same GET /api/crm/pipeline.
+  const { stages } = usePipelineStages();
 
   const { data: followupsData } = useQuery({
     queryKey: ['crm-followups', leadId],
@@ -80,7 +85,6 @@ export function Customer360Provider({ leadId, children }: Customer360ProviderPro
   });
 
   const contact = data?.lead ?? null;
-  const stages = pipelineData?.stages ?? [];
   const messages = (data?.messages ?? []) as ContactMessage[];
   const notes = (data?.internalNotes ?? []) as ContactMessage[];
 
@@ -127,7 +131,7 @@ export function Customer360Provider({ leadId, children }: Customer360ProviderPro
       refreshFollowups,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [leadId, data, pipelineData, followupsData, isLoading, isError, refresh, refreshFollowups],
+    [leadId, data, stages, followupsData, isLoading, isError, refresh, refreshFollowups],
   );
 
   return (
