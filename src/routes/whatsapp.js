@@ -1100,6 +1100,37 @@ function writeMediaIndex(companyId, contactKey, item) {
   }).promise().catch(() => {});
 }
 
+// Meta delivers a completed WhatsApp Flow answer as an inbound message with
+// type: 'interactive', interactive.type: 'nfm_reply' — a distinct shape from
+// a plain text reply, and from button_reply/list_reply (not handled here;
+// out of scope for the Flow-response work this pair of helpers supports).
+function isFlowResponse(msg) {
+  return msg.type === 'interactive' && msg.interactive?.type === 'nfm_reply';
+}
+
+// nfm_reply.response_json is a JSON *string* of the flow's field answers,
+// keyed by the field names the Flow JSON's screen components used — APForce
+// doesn't have that Flow JSON (no in-app Flow builder, by design), so field
+// keys are humanised best-effort rather than mapped to true labels.
+function parseFlowResponse(msg) {
+  const nfm = msg.interactive.nfm_reply;
+  let fields = [];
+  try {
+    const parsed = JSON.parse(nfm.response_json ?? '{}');
+    fields = Object.entries(parsed).map(([key, value]) => ({
+      key,
+      label: key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+      value: typeof value === 'string' ? value : JSON.stringify(value),
+    }));
+  } catch (e) {
+    logger.warn('flow_response JSON parse failed', e.message);
+  }
+  const summary = fields.length
+    ? fields.map((f) => `${f.label}: ${f.value}`).join('\n')
+    : (nfm.body || '[Flow response]');
+  return { flowName: nfm.name ?? null, fields, summary };
+}
+
 // ── POST /api/whatsapp/webhook — inbound messages + delivery/read statuses ────
 router.post('/webhook', async (req, res) => {
   if (!verifyMetaWebhookSignature(req)) {
@@ -1258,7 +1289,7 @@ router.post('/webhook', async (req, res) => {
     // media-download chain.  The 2 s ping detects new messages in ≤2 s instead
     // of the previous 15–20 s that storeInboundMedia was adding to the delay.
     const INBOUND_MSG_TYPES = ['text', 'image', 'document', 'audio', 'video', 'sticker'];
-    if (webhookCompanyId && messages.some((m) => INBOUND_MSG_TYPES.includes(m.type))) {
+    if (webhookCompanyId && messages.some((m) => INBOUND_MSG_TYPES.includes(m.type) || isFlowResponse(m))) {
       await dynamodb.update({
         TableName: TABLE,
         Key: { PK: `ACTIVITY#${webhookCompanyId}`, SK: 'WA' },
@@ -1270,7 +1301,8 @@ router.post('/webhook', async (req, res) => {
     for (const msg of messages) {
       const { type, from: fromPhone, id: waMessageId, timestamp: ts } = msg;
       const MEDIA_TYPES = ['image', 'document', 'audio', 'video', 'sticker'];
-      if (type !== 'text' && !MEDIA_TYPES.includes(type)) continue;
+      const flowResp = isFlowResponse(msg) ? parseFlowResponse(msg) : null;
+      if (type !== 'text' && !MEDIA_TYPES.includes(type) && !flowResp) continue;
 
       const timestamp = new Date(Number(ts) * 1000).toISOString();
       const phone10 = to10Digit(fromPhone);
@@ -1283,6 +1315,8 @@ router.post('/webhook', async (req, res) => {
       let filename = null;
       if (type === 'text') {
         text = msg.text?.body ?? '';
+      } else if (flowResp) {
+        text = flowResp.summary;
       } else {
         const m = msg[type] ?? {};
         mediaId = m.id ?? null;
@@ -1314,9 +1348,10 @@ router.post('/webhook', async (req, res) => {
       // s3Key is patched onto the MSG# record asynchronously after notifyCompany fires,
       // so media download does not block the WS push.
       const msgItem = {
-        direction: 'inbound', content: text, type,
+        direction: 'inbound', content: text, type: flowResp ? 'flow_response' : type,
         timestamp, waMessageId, messageId: waMessageId,
         ...(mediaId && { mediaId, mimeType, filename }),
+        ...(flowResp && { flowName: flowResp.flowName, flowFields: flowResp.fields }),
       };
 
       if (lead) {
@@ -1757,6 +1792,49 @@ router.put('/inbox/:leadId/pin', authMiddleware, rateLimit(20, 60_000), async (r
   } catch (err) { next(err); }
 });
 
+// ── POST /api/whatsapp/inbox/:leadId/send-flow — trigger a registered WhatsApp Flow ─
+// Sends via WhatsAppSendService.sendInteractive() unmodified (ADR-012) — the Meta
+// interactive-message payload shape for a Flow ({ type: 'flow', action: { name: 'flow', ... } })
+// fits the existing generic `interactive` parameter as-is.
+router.post('/inbox/:leadId/send-flow', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const { flowId } = req.body;
+    if (!flowId) return res.status(400).json({ error: 'flowId required' });
+    const companyId = req.user.companyId;
+
+    const flowCfg = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#FLOW#${companyId}`, SK: `FLOW#${flowId}` },
+    }).promise();
+    if (!flowCfg.Item) return res.status(404).json({ error: 'Flow not found — register it in Settings first' });
+
+    const { bodyText, ctaLabel, screenId } = flowCfg.Item;
+
+    const interactive = {
+      type: 'flow',
+      body: { text: bodyText },
+      action: {
+        name: 'flow',
+        parameters: {
+          flow_message_version: '3',
+          flow_token: randomUUID(),
+          flow_id: flowId,
+          flow_cta: ctaLabel,
+          flow_action: 'navigate',
+          ...(screenId && { flow_action_payload: { screen: screenId } }),
+        },
+      },
+    };
+
+    const result = await WASendSvc.sendInteractive(companyId, { leadId: req.params.leadId }, interactive, req.user);
+    res.json({ success: true, messageId: result.wamid, timestamp: result.timestamp });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    logger.error('send-flow error', err);
+    next(err);
+  }
+});
+
 // ── PUT /api/whatsapp/contact/name — set/edit contact display name ────────────
 router.put('/contact/name', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
@@ -2018,6 +2096,64 @@ router.delete('/inbox/canned/:id', authMiddleware, checkRole(['admin', 'manager'
     await dynamodb.delete({
       TableName: TABLE,
       Key: { PK: `CONFIG#CANNED#${req.user.companyId}`, SK: `CANNED#${req.params.id}` },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── GET /api/whatsapp/flows — list registered WhatsApp Flows ──────────────────
+// Flows are Meta-created (Flow Builder in WhatsApp Manager) — APForce only
+// references them by flow_id to trigger a send. Not related to CONFIG#FORM
+// (forms.js), the public embeddable web lead-capture forms — separate system.
+router.get('/flows', authMiddleware, async (req, res, next) => {
+  try {
+    const result = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: { ':pk': `CONFIG#FLOW#${req.user.companyId}`, ':sk': 'FLOW#' },
+    }).promise();
+    res.json({ success: true, flows: (result.Items ?? []).sort((a, b) => a.name?.localeCompare(b.name)) });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/flows — register a Meta-created Flow by its Flow ID ────
+router.post('/flows', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const { flowId, name, bodyText, ctaLabel, screenId } = req.body;
+    if (!flowId?.trim())    return res.status(400).json({ error: 'flowId required — copy it from WhatsApp Manager → Flows' });
+    if (!name?.trim())      return res.status(400).json({ error: 'name required' });
+    if (!bodyText?.trim())  return res.status(400).json({ error: 'bodyText required — shown to the customer above the Flow button' });
+    if (!ctaLabel?.trim())  return res.status(400).json({ error: 'ctaLabel required — the Flow button text' });
+    if (ctaLabel.trim().length > 20) return res.status(400).json({ error: 'ctaLabel must be 20 characters or fewer (Meta limit)' });
+
+    const item = {
+      PK: `CONFIG#FLOW#${req.user.companyId}`,
+      SK: `FLOW#${flowId.trim()}`,
+      companyId: req.user.companyId,
+      flowId: flowId.trim(),
+      name: name.trim(),
+      bodyText: bodyText.trim(),
+      ctaLabel: ctaLabel.trim(),
+      screenId: screenId?.trim() || null,
+      // Reserved for future welcome-message auto-trigger wiring — only
+      // manual send-from-Inbox is implemented today (see ADR context in
+      // docs/bible/08_MODULES.md's CONFIG#FLOW entry before changing this).
+      context: 'manual',
+      createdBy: req.user.id,
+      createdByName: req.user.name ?? null,
+      createdAt: new Date().toISOString(),
+    };
+    await dynamodb.put({ TableName: TABLE, Item: item }).promise();
+    res.json({ success: true, flow: item });
+  } catch (err) { next(err); }
+});
+
+// ── DELETE /api/whatsapp/flows/:flowId — unregister a Flow ────────────────────
+router.delete('/flows/:flowId', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    await dynamodb.delete({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#FLOW#${req.user.companyId}`, SK: `FLOW#${req.params.flowId}` },
     }).promise();
     res.json({ success: true });
   } catch (err) { next(err); }
@@ -2794,3 +2930,5 @@ ${success ? 'Done — Close Window' : 'Close & Retry'}</button></div></body></ht
 
 module.exports = router;
 module.exports.storeInboundMedia = storeInboundMedia;
+module.exports.isFlowResponse = isFlowResponse;
+module.exports.parseFlowResponse = parseFlowResponse;

@@ -63,6 +63,9 @@ export interface ContactMessage {
   s3Key?: string;
   mimeType?: string;
   filename?: string;
+  // Present when type === 'flow_response' — a completed WhatsApp Flow answer
+  flowName?: string | null;
+  flowFields?: { key: string; label: string; value: string }[];
   msgStatus?: 'sending' | 'sent' | 'delivered' | 'read' | 'failed';
   waMessageId?: string;
   replyToWaMessageId?: string;

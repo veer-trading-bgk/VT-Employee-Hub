@@ -286,6 +286,27 @@ function MediaBubble({ item, outbound }: { item: ContactMessage; outbound: boole
   return null;
 }
 
+// ── FlowResponseBubble — completed WhatsApp Flow answer, rendered structured ──
+function FlowResponseBubble({ item }: { item: ContactMessage }) {
+  return (
+    <div className="mb-1">
+      {item.flowName && (
+        <p className="mb-1 text-xs font-semibold opacity-80">
+          <span aria-hidden="true">📋</span> {item.flowName}
+        </p>
+      )}
+      <dl className="space-y-1">
+        {(item.flowFields ?? []).map((f) => (
+          <div key={f.key}>
+            <dt className="text-[11px] font-medium uppercase tracking-wide opacity-60">{f.label}</dt>
+            <dd className="text-sm break-words">{f.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
 // ── MsgTick ───────────────────────────────────────────────────────────────────
 function MsgTick({ status }: { status?: ContactMessage['msgStatus'] }) {
   if (!status || status === 'sent')  return <span className="ml-0.5 text-[10px] text-indigo-300" aria-label="Sent">✓</span>;
@@ -869,6 +890,8 @@ function ConversationPane() {
 
             // ── Chat message ──────────────────────────────────────────────
             const isMedia = MEDIA_TYPES.has(item.type ?? '');
+            const isFlowResponse = item.type === 'flow_response';
+            const hasStructuredFlow = isFlowResponse && (item.flowFields?.length ?? 0) > 0;
             const outbound = item.direction === 'outbound';
 
             return (
@@ -927,8 +950,11 @@ function ConversationPane() {
                     <MediaBubble item={item} outbound={outbound} />
                   )}
 
-                  {/* Text */}
-                  {item.content && item.content !== `[${item.type}]` && (
+                  {/* Completed WhatsApp Flow answer — structured, not raw JSON */}
+                  {hasStructuredFlow && <FlowResponseBubble item={item} />}
+
+                  {/* Text — also the fallback for a flow_response whose fields didn't parse */}
+                  {item.content && item.content !== `[${item.type}]` && !hasStructuredFlow && (
                     <p className="whitespace-pre-wrap break-words">{item.content}</p>
                   )}
                   {item.content === `[${item.type}]` && isMedia && !item.mediaId && !item.mediaUrl && (

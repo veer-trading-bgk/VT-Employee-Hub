@@ -235,7 +235,7 @@ the OAuth callback (`GET /auth/callback`) are intentionally public (Meta calls t
 | Method & Path | Request | Response | Notes |
 |---|---|---|---|
 | `GET /webhook` | Query: `hub.mode, hub.verify_token, hub.challenge` | Echoes `challenge` (200) or 403 | Meta subscription verification |
-| `POST /webhook` | Meta webhook payload | Always `200` (Meta retries on non-200) | Handles `messages` field (inbound text/media + delivery/read status updates) and `message_template_status_update` field. See ADR-013 note below. |
+| `POST /webhook` | Meta webhook payload | Always `200` (Meta retries on non-200) | Handles `messages` field (inbound text/media + delivery/read status updates), `message_template_status_update` field, and completed WhatsApp Flow answers (`type:'interactive'`, `interactive.type:'nfm_reply'` — stored as `type:'flow_response'` with a humanised per-field `content` summary, not raw JSON; `button_reply`/`list_reply` interactive subtypes are still not handled — out of scope, see WhatsApp Flows section below). See ADR-013 note below. |
 
 **ADR-013 gap confirmed at this exact line:** in the `POST /webhook` inbound-message handler, the
 "known lead" branch (`if (lead) {...}`) resolves via the `company-phone-index` GSI correctly, but the
@@ -258,6 +258,8 @@ first contact) correctly uses `WASendSvc.sendTemplate()`.
 | `PUT /inbox/:leadId/pin` | `rateLimit(20/min)` | — | `{ success, pinned }` — toggles |
 | `PUT /contact/name` | `rateLimit(20/min)` | `{ leadId? \| phone?, name }` | `{ success, name }` |
 | `POST /inbox/:leadId/note` | `rateLimit(20/min)` | `{ content }` (`@mentions` parsed, alerts on Telegram) | `{ success, timestamp }` |
+| `PUT /inbox/:leadId/note/:timestamp` / `DELETE /inbox/:leadId/note/:timestamp` | `rateLimit(20/min)` | `PUT`: `{ content }` | `{ success }` — author or `admin`/`manager`/`superadmin` only (`canModifyNote()`); 404 note not found, 403 not author/manager |
+| `POST /inbox/:leadId/send-flow` | `rateLimit(20/min)` | `{ flowId }` | `{ success, messageId, timestamp }` — via `WASendSvc.sendInteractive()`, unmodified; see WhatsApp Flows section below | 400 missing `flowId`; 404 flow not registered |
 | `GET /agent/availability` / `PUT /agent/availability` | `rateLimit(20/min)` on PUT | `PUT`: `{ available }` | `{ available }` / `{ success, available }` |
 | `POST /inbox/auto-assign` | `checkRole(['admin','manager'])`, `rateLimit(20/min)` | — | `{ success, assigned }` — round-robins unassigned conversations across available agents |
 | `GET /inbox/canned` / `POST /inbox/canned` / `DELETE /inbox/canned/:id` | `POST`/`DELETE`: `checkRole(['admin','manager'])`, `rateLimit(20/min)` | `POST`: `{ title, body, shortcut? }` | `{ success, responses }` / `{ success, response }` / `{ success }` — 409 shortcut collision |
@@ -279,6 +281,29 @@ first contact) correctly uses `WASendSvc.sendTemplate()`.
 | `POST /broadcast` | `checkRole(['admin','manager'])`, `rateLimit(20/min)` | `{ templateId, variableValues?, filter?: {stages?,tags?,assignedTo?,source?}, headerVariableValue? }` | `{ success, sent, failed, total, errors }` — via `WASendSvc.sendTemplate()` per recipient, capped 1000 leads | 400 no template / no matches / over 1000 |
 | `GET /broadcasts` | `checkRole(['admin','manager'])` | — | `{ success, broadcasts }` (last 50) | — |
 | `GET /welcome-config` / `PUT /welcome-config` | `checkRole(['admin'])` | `PUT`: `{ enabled, templateName, language? }` | `{ success, config }` / `{ success }` | — |
+
+### WhatsApp Flows
+
+Meta-native in-chat structured forms (filled out inside the WhatsApp conversation itself, sent as an
+`interactive` message with `type:'flow'`). **APForce does not build or edit Flow screens/JSON** — that's
+Meta's own Flow Builder in WhatsApp Manager. These routes only reference an already-built Flow by its
+Flow ID, trigger sending it, and store the customer's completed answer readably. **Not related to
+`CONFIG#FORM` (`forms.js`)** — the public embeddable web lead-capture form system — separate PK
+namespace (`CONFIG#FLOW#` vs `CONFIG#FORM#`), separate concern, no cross-wiring.
+
+| Method & Path | Auth | Request | Response | Notable errors |
+|---|---|---|---|---|
+| `GET /flows` | `authMiddleware` | — | `{ success, flows }` — every registered Flow for the caller's company | — |
+| `POST /flows` | `checkRole(['admin','manager'])`, `rateLimit(20/min)` | `{ flowId, name, bodyText, ctaLabel, screenId? }` — `bodyText` shown above the Flow button, `ctaLabel` is the button label (Meta's 20-char limit enforced), `screenId` only needed if the Flow requires an explicit first screen | `{ success, flow }` — `PK: CONFIG#FLOW#{companyId}`, `SK: FLOW#{flowId}` | 400 any required field missing / ctaLabel over 20 chars |
+| `DELETE /flows/:flowId` | `checkRole(['admin','manager'])`, `rateLimit(20/min)` | — | `{ success }` | — |
+
+`POST /inbox/:leadId/send-flow` (listed in Inbox / conversations above) looks up the registered Flow,
+builds the Meta interactive-flow payload (`{ type:'flow', body:{text}, action:{name:'flow', parameters:
+{flow_message_version:'3', flow_token: <generated per send>, flow_id, flow_cta, flow_action:'navigate',
+flow_action_payload?:{screen}} } }`), and sends it via `WASendSvc.sendInteractive()` **unmodified** —
+the existing generic `interactive` parameter (ADR-012) already covers this payload shape; no service
+extension was needed. The customer's completed answer arrives back through the ordinary `POST /webhook`
+inbound path — see the webhook row above.
 
 ### Media
 

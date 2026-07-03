@@ -60,7 +60,7 @@ interface WaMessage {
   direction: 'inbound' | 'outbound';
   content: string;
   timestamp: string;
-  type?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'template';
+  type?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'template' | 'flow_response';
   s3Key?: string;
   mediaId?: string;
   mediaUrl?: string;
@@ -69,6 +69,9 @@ interface WaMessage {
   msgStatus?: 'sent' | 'delivered' | 'read' | 'failed';
   sentByName?: string;
   templateId?: string;
+  // Present when type === 'flow_response' — a completed WhatsApp Flow answer
+  flowName?: string | null;
+  flowFields?: FlowFieldItem[];
 }
 
 interface InternalNoteItem {
@@ -79,6 +82,8 @@ interface InternalNoteItem {
   timestamp: string;
   editedAt?: string;
 }
+
+interface FlowFieldItem { key: string; label: string; value: string; }
 
 type ConvTab = 'open' | 'unassigned' | 'resolved';
 
@@ -602,6 +607,23 @@ function TemplateBubble({ message, isOut }: { message: WaMessage; isOut: boolean
   );
 }
 
+// ── Flow response bubble — completed WhatsApp Flow answer, structured ─────────
+
+function FlowResponseFields({ fields, isOut }: { fields: FlowFieldItem[]; isOut: boolean }) {
+  return (
+    <dl className="space-y-1">
+      {fields.map((f) => (
+        <div key={f.key}>
+          <dt className={cn('text-[10px] font-medium uppercase tracking-wide', isOut ? 'text-white/70' : 'text-neutral-400')}>
+            {f.label}
+          </dt>
+          <dd className="text-sm break-words">{f.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 // ── Message Bubble ────────────────────────────────────────────────────────────
 
 // Content is a backend-generated placeholder — suppress it when media renders
@@ -614,6 +636,38 @@ function MessageBubble({ message }: { message: WaMessage }) {
     return (
       <div className={cn('mb-1.5 flex', isOut ? 'justify-end' : 'justify-start')}>
         <TemplateBubble message={message} isOut={isOut} />
+      </div>
+    );
+  }
+
+  if (message.type === 'flow_response') {
+    const hasFields = (message.flowFields?.length ?? 0) > 0;
+    return (
+      <div className={cn('mb-1.5 flex', isOut ? 'justify-end' : 'justify-start')}>
+        <div
+          className={cn(
+            'max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-sm',
+            isOut
+              ? 'bg-primary-600 text-white rounded-br-sm'
+              : 'bg-white text-neutral-900 border border-neutral-200 rounded-bl-sm dark:bg-neutral-800 dark:text-neutral-100 dark:border-neutral-700',
+          )}
+        >
+          {message.flowName && (
+            <p className={cn('mb-1 text-xs font-semibold', isOut ? 'text-white/90' : 'text-neutral-500')}>
+              <span aria-hidden="true">📋</span> {message.flowName}
+            </p>
+          )}
+          {hasFields ? (
+            <FlowResponseFields fields={message.flowFields!} isOut={isOut} />
+          ) : (
+            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+          )}
+          <div className={cn('mt-1 flex items-center gap-1', isOut ? 'justify-end' : 'justify-start')}>
+            <span className={cn('text-[9px]', isOut ? 'text-white/70' : 'text-neutral-400')}>
+              {msgTime(message.timestamp)}
+            </span>
+          </div>
+        </div>
       </div>
     );
   }

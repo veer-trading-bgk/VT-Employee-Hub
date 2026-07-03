@@ -51,6 +51,7 @@ import type { Role } from '@/types';
 import { toast } from 'sonner';
 import { EmployeesSection } from '@/components/v3/team/EmployeesSection';
 import { WabaHealthPanel } from '@/components/settings/WabaHealthPanel';
+import { WhatsAppFlowsPanel } from '@/components/settings/WhatsAppFlowsPanel';
 
 // ── Section definitions ───────────────────────────────────────────────────────
 
@@ -840,6 +841,9 @@ function WhatsAppSection() {
 
       {/* ── WABA Health Check (connected only) ───────────────────── */}
       {connected && <WabaHealthPanel />}
+
+      {/* ── WhatsApp Flows (connected only) ─────────────────────── */}
+      {connected && <WhatsAppFlowsPanel />}
 
       {/* ── Credentials guide ─────────────────────────────────────── */}
       <Card variant="ghost" className="space-y-2">

@@ -5,7 +5,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Smile, FileText, Zap, Paperclip, MoreHorizontal, Search, X,
   Image as ImageIcon, Video, Music, File, List, MousePointerClick,
-  ShoppingBag, CreditCard, Loader2, Send as SendIcon,
+  ShoppingBag, CreditCard, Loader2, Send as SendIcon, Workflow,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
@@ -39,6 +39,11 @@ interface CannedResponse {
   title: string;
   body: string;
   shortcut?: string;
+}
+
+interface WaFlow {
+  flowId: string;
+  name: string;
 }
 
 type Panel = null | 'emoji' | 'template' | 'quickreply' | 'attachment' | 'more';
@@ -182,6 +187,7 @@ export function ComposerToolbar({
   const [newTitle, setNewTitle] = useState('');
   const [newShortcut, setNewShortcut] = useState('');
   const [newBody, setNewBody] = useState('');
+  const [showFlowPicker, setShowFlowPicker] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Close panel on outside click
@@ -205,6 +211,7 @@ export function ComposerToolbar({
     setNewTitle('');
     setNewShortcut('');
     setNewBody('');
+    setShowFlowPicker(false);
   }
 
   function togglePanel(p: Panel) {
@@ -216,6 +223,7 @@ export function ComposerToolbar({
     setNewTitle('');
     setNewShortcut('');
     setNewBody('');
+    setShowFlowPicker(false);
     setPanel(p);
   }
 
@@ -252,6 +260,18 @@ export function ComposerToolbar({
     c.shortcut?.toLowerCase().includes(qrSearch.toLowerCase()),
   );
 
+  // Flows are lead-scoped only (no unknown-contact send-flow endpoint) — same
+  // query key ['whatsapp-flows'] as the Settings registration panel, so a
+  // just-registered flow shows up here without an extra fetch.
+  const canSendFlow = conversation.type === 'lead' && !!conversation.leadId;
+  const { data: flowsData, isLoading: flowsLoading } = useQuery({
+    queryKey: ['whatsapp-flows'],
+    queryFn: () => apiFetch<{ flows: WaFlow[] }>('/api/whatsapp/flows'),
+    staleTime: 60_000,
+    enabled: showFlowPicker,
+  });
+  const flows = flowsData?.flows ?? [];
+
   // ── Template send mutation ─────────────────────────────────────────────────
 
   const sendTplMut = useMutation({
@@ -269,6 +289,21 @@ export function ComposerToolbar({
       onTemplateSent();
     },
     onError: (e: Error) => toast.error(e.message || 'Failed to send template'),
+  });
+
+  const sendFlowMut = useMutation({
+    mutationFn: (flowId: string) =>
+      apiFetch(`/api/whatsapp/inbox/${conversation.leadId}/send-flow`, {
+        method: 'POST',
+        body: JSON.stringify({ flowId }),
+      }),
+    onSuccess: () => {
+      toast.success('Flow sent');
+      closePanel();
+      qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+    },
+    onError: (e: Error) => toast.error(e.message || 'Failed to send flow'),
   });
 
   const createCannedMut = useMutation({
@@ -596,26 +631,69 @@ export function ComposerToolbar({
 
       {/* ── More panel ───────────────────────────────────────────────────── */}
       {panel === 'more' && (
-        <Panel width="w-52">
-          <PanelHeader title="More" onClose={closePanel} />
-          <div className="p-1">
-            {([
-              { label: 'Interactive List', icon: <List              className="h-4 w-4" /> },
-              { label: 'CTA Button',       icon: <MousePointerClick className="h-4 w-4" /> },
-              { label: 'Catalog',          icon: <ShoppingBag       className="h-4 w-4" /> },
-              { label: 'Payment',          icon: <CreditCard        className="h-4 w-4" /> },
-            ] as const).map(({ label, icon }) => (
+        <Panel width="w-64">
+          <PanelHeader title={showFlowPicker ? 'Send WhatsApp Flow' : 'More'} onClose={closePanel}>
+            {showFlowPicker && (
               <button
-                key={label}
-                onClick={() => { toast.info(`${label} — coming soon`); closePanel(); }}
-                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                onClick={() => setShowFlowPicker(false)}
+                className="text-xs text-primary-600 hover:underline dark:text-primary-400"
               >
-                <span className="text-neutral-400 dark:text-neutral-500">{icon}</span>
-                {label}
-                <span className="ml-auto text-[10px] text-neutral-300 dark:text-neutral-600">Soon</span>
+                ← Back
               </button>
-            ))}
-          </div>
+            )}
+          </PanelHeader>
+
+          {showFlowPicker ? (
+            <div className="max-h-56 overflow-y-auto p-1">
+              {flowsLoading || sendFlowMut.isPending ? (
+                <div className="flex items-center justify-center gap-2 py-6">
+                  <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />
+                  <span className="text-xs text-neutral-400">{sendFlowMut.isPending ? 'Sending…' : 'Loading flows…'}</span>
+                </div>
+              ) : flows.length === 0 ? (
+                <p className="px-2 py-4 text-center text-xs text-neutral-400">
+                  No Flows registered yet. Add one in Settings → WhatsApp.
+                </p>
+              ) : flows.map((f) => (
+                <button
+                  key={f.flowId}
+                  onClick={() => sendFlowMut.mutate(f.flowId)}
+                  disabled={sendFlowMut.isPending}
+                  className="w-full rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-50 disabled:opacity-50 dark:hover:bg-neutral-800"
+                >
+                  <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">{f.name}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="p-1">
+              <button
+                onClick={() => { if (canSendFlow) setShowFlowPicker(true); }}
+                disabled={!canSendFlow}
+                title={canSendFlow ? undefined : 'Available for CRM leads only'}
+                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-50 disabled:opacity-40 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                <span className="text-neutral-400 dark:text-neutral-500"><Workflow className="h-4 w-4" /></span>
+                Send Flow
+              </button>
+              {([
+                { label: 'Interactive List', icon: <List              className="h-4 w-4" /> },
+                { label: 'CTA Button',       icon: <MousePointerClick className="h-4 w-4" /> },
+                { label: 'Catalog',          icon: <ShoppingBag       className="h-4 w-4" /> },
+                { label: 'Payment',          icon: <CreditCard        className="h-4 w-4" /> },
+              ] as const).map(({ label, icon }) => (
+                <button
+                  key={label}
+                  onClick={() => { toast.info(`${label} — coming soon`); closePanel(); }}
+                  className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                >
+                  <span className="text-neutral-400 dark:text-neutral-500">{icon}</span>
+                  {label}
+                  <span className="ml-auto text-[10px] text-neutral-300 dark:text-neutral-600">Soon</span>
+                </button>
+              ))}
+            </div>
+          )}
         </Panel>
       )}
     </div>
