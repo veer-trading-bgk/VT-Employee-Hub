@@ -60,7 +60,7 @@ interface WaMessage {
   direction: 'inbound' | 'outbound';
   content: string;
   timestamp: string;
-  type?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'template' | 'flow_response';
+  type?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'template' | 'flow_response' | 'button_reply';
   s3Key?: string;
   mediaId?: string;
   mediaUrl?: string;
@@ -672,7 +672,10 @@ function MessageBubble({ message }: { message: WaMessage }) {
     );
   }
 
-  const isMedia = !!(message.type && message.type !== 'text');
+  // button_reply is a plain readable message (the tapped button's title) —
+  // excluded here so it renders as normal text, not the "media unavailable"
+  // italic placeholder style the isMedia branch below is meant for.
+  const isMedia = !!(message.type && message.type !== 'text' && message.type !== 'button_reply');
   const hasMediaSource = !!(message.s3Key || message.mediaId || message.mediaUrl);
   const showText = message.content && !(isMedia && PLACEHOLDER_RE.test(message.content));
 

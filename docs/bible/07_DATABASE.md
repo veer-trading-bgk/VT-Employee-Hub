@@ -366,10 +366,49 @@ lock (Contact uses E.164; Lead uses 10-digit phoneNorm)."*
 
 - **PK:** `CONFIG#WELCOME#{companyId}`
 - **SK:** `CURRENT`
-- **Fields:** `companyId, enabled, templateName, language, updatedAt`.
-- **Owner/readers:** `whatsapp.js` (`/welcome-config` GET/PUT; consumed by the
-  webhook's first-contact detection logic, which sends the configured template via
-  `WhatsAppSendService.sendTemplate()` when `isFirstContact && isNewMsg`).
+- **Fields:**
+
+  ```
+  companyId, enabled, updatedAt,
+  messageType: 'template' | 'reply_buttons' | 'cta_buttons',   // default 'template' — see backward-compat note below
+  templateName, language,          // used when messageType === 'template'
+  bodyText,                        // used when messageType is reply_buttons or cta_buttons
+  buttons: [                       // only when messageType === 'reply_buttons', max 3 (Meta limit)
+    {
+      id, title,                   // title max 20 chars, no emoji (Meta rule) — enforced server-side
+      followUp: {
+        type: 'none' | 'text' | 'image' | 'url_button' | 'flow',
+        content: { ... }           // shape per type — see below
+      }
+    }
+  ],
+  ctaButtons: [                    // only when messageType === 'cta_buttons', max 1 — see limit note below
+    { type: 'url', text, value }   // text max 20 chars, value is the target URL
+  ]
+  ```
+
+  `followUp.content` shape by type: `text` → `{ message }`; `image` → `{ mediaId?, url?, caption? }` (one of `mediaId`/`url` required); `url_button` → `{ message, buttonText, url }` (sent as its own separate `cta_url` message after the reply-button tap — legal, since it is not combined with the reply buttons that triggered it); `flow` → `{ flowId }` (references a §2.15a `CONFIG#FLOW` record below, sent by re-using the same `sendRegisteredFlow()` helper `POST /inbox/:leadId/send-flow` calls — not a duplicate implementation).
+
+- **Mutual exclusivity (hard platform rule, enforced server-side, never left to the frontend alone):** `buttons` and `ctaButtons` can never both be non-empty — Meta does not allow combining reply buttons and CTA buttons in one WhatsApp message. `messageType` determines which of the two arrays may be populated; the other must be empty. Enforced by `welcomeConfigSchema` (`src/utils/validation.js`, Zod `.superRefine()`) — `PUT /welcome-config` rejects a violating payload with `400`.
+
+- **CTA button count limit — narrower than a first read of "buttons, max 2, url or phone" suggests.** Meta's freeform, non-template interactive-message API (what `WhatsAppSendService.sendInteractive()` sends — no approval needed, works inside the 24h session window) supports exactly **one** CTA button per message: `interactive.type: 'cta_url'`, a single `{display_text, url}` pair. There is no `phone`-type CTA button available outside a pre-approved WhatsApp message **template** (`buttons: [{type: 'PHONE_NUMBER', ...}]`) — a completely different send mechanism this codebase's welcome-message feature does not use. `ctaButtons` is therefore capped at 1 entry, `type: 'url'` only, by both the Zod schema and `ButtonListEditor.tsx`'s `cta` mode.
+
+- **Backward compatible.** Configs written before this schema existed have no `messageType`/`bodyText`/`buttons`/`ctaButtons` fields at all — `GET /welcome-config` defaults a missing config to `{ enabled: false, messageType: 'template', templateName: '', language: 'en', bodyText: '', buttons: [], ctaButtons: [] }`, and the webhook's send logic (`sendWelcomeMessage()`) falls through to the `templateName` branch whenever `messageType` isn't `'reply_buttons'`/`'cta_buttons'` — which is always true for a legacy record, since `messageType` is `undefined` there.
+
+- **Owner/readers:** `whatsapp.js` (`/welcome-config` GET/PUT). Consumed by the webhook's first-contact branch (`isFirstContact && isNewMsg`) via `sendWelcomeMessage(companyId, phone10, cfg, systemUser)`, which dispatches to `WASendSvc.sendTemplate()` or `WASendSvc.sendInteractive()` depending on `messageType` — `sendInteractive()` itself is unmodified (ADR-012); only the payload passed to it differs by shape (`type: 'button'` vs `type: 'cta_url'`).
+
+- **Inbound button taps — trackability differs by button kind, this is a platform fact, not a gap:**
+  - **Reply buttons ARE trackable.** A tap arrives via webhook as `type: 'interactive'`, `interactive.type: 'button_reply'`, parsed by `isButtonReply()`/`parseButtonReply()` in `whatsapp.js`, stored as a normal readable `MSG#` item (`type: 'button_reply'`, `content` = the button's title, `buttonId` = the tapped button's `id`). If the matching button (looked up live from the *current* `CONFIG#WELCOME` record by `id` — not a snapshot from send time) has a `followUp` other than `'none'`, `fireButtonFollowUp()` sends it immediately.
+  - **CTA button taps are NOT trackable — Meta sends no webhook event for a CTA tap at all.** This is a platform limitation, not something to build around; there is no event to parse, ever, for a CTA-button tap. Don't file this as a bug if a CTA-buttons welcome message shows no reply-tracking data.
+
+### 2.15a CONFIG#FLOW — registered WhatsApp Flows (was missing from this doc; backfilled)
+
+- **PK:** `CONFIG#FLOW#{companyId}`
+- **SK:** `FLOW#{flowId}` (the Meta-issued Flow ID itself — not a generated UUID)
+- **Fields:** `companyId, flowId, name, bodyText, ctaLabel, screenId (nullable), context ('manual' — reserved for a future welcome-message auto-trigger wiring, not yet functional), createdBy, createdByName, createdAt`.
+- **Not related to `CONFIG#FORM` (§2.13)** — that's the unrelated public embeddable web lead-capture form system in `forms.js`. Separate PK namespace, no cross-wiring, verified by test (`tests/whatsappFlows.test.js`).
+- **APForce does not build or edit the Flow itself** — Meta's own Flow Builder in WhatsApp Manager owns the Flow JSON/screens. This record only stores enough to trigger a send: which Flow (`flowId`), what message text accompanies it (`bodyText`), the button label (`ctaLabel`, Meta's 20-char limit), and an optional starting screen (`screenId`) if the Flow requires one.
+- **Owner/readers:** `whatsapp.js` (`GET`/`POST /flows`, `DELETE /flows/:flowId` CRUD; `sendRegisteredFlow()` helper looks up a record and sends it via `WASendSvc.sendInteractive()` — reused identically by `POST /inbox/:leadId/send-flow` and welcome-message button follow-ups with `followUp.type === 'flow'`).
 
 ### 2.16 CONFIG#AUTO / AUTO_EXEC / AUTO_WAIT — automation workflows
 

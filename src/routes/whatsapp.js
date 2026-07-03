@@ -15,6 +15,7 @@ const ConversationService  = require('../services/ConversationService');
 const WASendSvc            = require('../services/WhatsAppSendService');
 const TagService           = require('../services/TagService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
+const { welcomeConfigSchema } = require('../utils/validation');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -1102,8 +1103,8 @@ function writeMediaIndex(companyId, contactKey, item) {
 
 // Meta delivers a completed WhatsApp Flow answer as an inbound message with
 // type: 'interactive', interactive.type: 'nfm_reply' — a distinct shape from
-// a plain text reply, and from button_reply/list_reply (not handled here;
-// out of scope for the Flow-response work this pair of helpers supports).
+// a plain text reply, and from button_reply/list_reply (list_reply is still
+// not handled here — no feature sends list messages yet).
 function isFlowResponse(msg) {
   return msg.type === 'interactive' && msg.interactive?.type === 'nfm_reply';
 }
@@ -1129,6 +1130,97 @@ function parseFlowResponse(msg) {
     ? fields.map((f) => `${f.label}: ${f.value}`).join('\n')
     : (nfm.body || '[Flow response]');
   return { flowName: nfm.name ?? null, fields, summary };
+}
+
+// A tap on a welcome-message reply button (max 3, quick-reply type) arrives
+// as type: 'interactive', interactive.type: 'button_reply'. This is the ONLY
+// button tap Meta reports via webhook — CTA buttons (url/phone, sent as
+// interactive.type: 'cta_url' or via a template's button component) generate
+// NO webhook event when tapped at all. That is a Meta platform limitation,
+// not a gap in this handler: there is no event to parse, ever, for a CTA tap.
+function isButtonReply(msg) {
+  return msg.type === 'interactive' && msg.interactive?.type === 'button_reply';
+}
+
+function parseButtonReply(msg) {
+  const br = msg.interactive.button_reply;
+  return { id: br?.id ?? null, title: br?.title || '[Button reply]' };
+}
+
+// Sends the configured welcome message on first contact — exactly one of
+// three shapes, never combined in one message (Meta platform rule): a
+// template, reply buttons (max 3, trackable via isButtonReply above), or a
+// single URL CTA button (untrackable — see isButtonReply's comment).
+async function sendWelcomeMessage(companyId, phone10, cfg, systemUser) {
+  if (cfg.messageType === 'reply_buttons' && cfg.bodyText && (cfg.buttons ?? []).length > 0) {
+    const interactive = {
+      type: 'button',
+      body: { text: cfg.bodyText },
+      action: { buttons: cfg.buttons.map((b) => ({ type: 'reply', reply: { id: b.id, title: b.title } })) },
+    };
+    return WASendSvc.sendInteractive(companyId, { phone: phone10 }, interactive, systemUser);
+  }
+  if (cfg.messageType === 'cta_buttons' && cfg.bodyText && (cfg.ctaButtons ?? []).length > 0) {
+    const cta = cfg.ctaButtons[0]; // schema caps ctaButtons at 1 — see validation.js comment
+    const interactive = {
+      type: 'cta_url',
+      body: { text: cfg.bodyText },
+      action: { name: 'cta_url', parameters: { display_text: cta.text, url: cta.value } },
+    };
+    return WASendSvc.sendInteractive(companyId, { phone: phone10 }, interactive, systemUser);
+  }
+  if (cfg.templateName) {
+    // messageType === 'template', or a legacy pre-messageType config (backward compatible)
+    return WASendSvc.sendTemplate(companyId, { phone: phone10 }, { templateName: cfg.templateName, language: cfg.language ?? 'en' }, [], systemUser);
+  }
+  return null;
+}
+
+// Fires the configured follow-up (if any) for a tapped welcome-message reply
+// button. Looked up live from the CURRENT CONFIG#WELCOME record by button id
+// — if the admin edited the welcome message's buttons after it was sent to
+// this customer, an id that no longer matches simply fires no follow-up
+// (same as followUp.type === 'none') rather than guessing at stale config.
+async function fireButtonFollowUp(companyId, target, buttonId, systemUser) {
+  try {
+    const wc = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#WELCOME#${companyId}`, SK: 'CURRENT' } }).promise();
+    const button = (wc.Item?.buttons ?? []).find((b) => b.id === buttonId);
+    const followUp = button?.followUp;
+    if (!followUp || followUp.type === 'none') return;
+
+    switch (followUp.type) {
+      case 'text':
+        await WASendSvc.sendText(companyId, target, followUp.content?.message ?? '', systemUser);
+        break;
+      case 'image':
+        await WASendSvc.sendMedia(companyId, target, {
+          mediaType: 'image',
+          mediaId: followUp.content?.mediaId,
+          url: followUp.content?.url,
+          caption: followUp.content?.caption,
+        }, systemUser);
+        break;
+      case 'url_button': {
+        // Its own separate message — legal per the platform rule, since it is
+        // not combined with the reply buttons that triggered it.
+        const interactive = {
+          type: 'cta_url',
+          body: { text: followUp.content?.message ?? '' },
+          action: {
+            name: 'cta_url',
+            parameters: { display_text: followUp.content?.buttonText ?? 'Open', url: followUp.content?.url },
+          },
+        };
+        await WASendSvc.sendInteractive(companyId, target, interactive, systemUser);
+        break;
+      }
+      case 'flow':
+        await sendRegisteredFlow(companyId, target, followUp.content?.flowId, systemUser);
+        break;
+    }
+  } catch (e) {
+    logger.warn('welcome button follow-up failed: ' + e.message);
+  }
 }
 
 // ── POST /api/whatsapp/webhook — inbound messages + delivery/read statuses ────
@@ -1289,7 +1381,7 @@ router.post('/webhook', async (req, res) => {
     // media-download chain.  The 2 s ping detects new messages in ≤2 s instead
     // of the previous 15–20 s that storeInboundMedia was adding to the delay.
     const INBOUND_MSG_TYPES = ['text', 'image', 'document', 'audio', 'video', 'sticker'];
-    if (webhookCompanyId && messages.some((m) => INBOUND_MSG_TYPES.includes(m.type) || isFlowResponse(m))) {
+    if (webhookCompanyId && messages.some((m) => INBOUND_MSG_TYPES.includes(m.type) || isFlowResponse(m) || isButtonReply(m))) {
       await dynamodb.update({
         TableName: TABLE,
         Key: { PK: `ACTIVITY#${webhookCompanyId}`, SK: 'WA' },
@@ -1302,7 +1394,8 @@ router.post('/webhook', async (req, res) => {
       const { type, from: fromPhone, id: waMessageId, timestamp: ts } = msg;
       const MEDIA_TYPES = ['image', 'document', 'audio', 'video', 'sticker'];
       const flowResp = isFlowResponse(msg) ? parseFlowResponse(msg) : null;
-      if (type !== 'text' && !MEDIA_TYPES.includes(type) && !flowResp) continue;
+      const buttonReply = isButtonReply(msg) ? parseButtonReply(msg) : null;
+      if (type !== 'text' && !MEDIA_TYPES.includes(type) && !flowResp && !buttonReply) continue;
 
       const timestamp = new Date(Number(ts) * 1000).toISOString();
       const phone10 = to10Digit(fromPhone);
@@ -1317,6 +1410,8 @@ router.post('/webhook', async (req, res) => {
         text = msg.text?.body ?? '';
       } else if (flowResp) {
         text = flowResp.summary;
+      } else if (buttonReply) {
+        text = buttonReply.title;
       } else {
         const m = msg[type] ?? {};
         mediaId = m.id ?? null;
@@ -1348,10 +1443,12 @@ router.post('/webhook', async (req, res) => {
       // s3Key is patched onto the MSG# record asynchronously after notifyCompany fires,
       // so media download does not block the WS push.
       const msgItem = {
-        direction: 'inbound', content: text, type: flowResp ? 'flow_response' : type,
+        direction: 'inbound', content: text,
+        type: flowResp ? 'flow_response' : buttonReply ? 'button_reply' : type,
         timestamp, waMessageId, messageId: waMessageId,
         ...(mediaId && { mediaId, mimeType, filename }),
         ...(flowResp && { flowName: flowResp.flowName, flowFields: flowResp.fields }),
+        ...(buttonReply && { buttonId: buttonReply.id }),
       };
 
       if (lead) {
@@ -1445,6 +1542,11 @@ router.post('/webhook', async (req, res) => {
           }
           // Fire-and-forget: create/update CONV# entity for this WhatsApp thread.
           resolveForLead(webhookCompanyId, lead.PK, phone10, { text, timestamp }).catch(() => {});
+          // A tap on a welcome-message reply button — fire its configured
+          // follow-up, if any (see fireButtonFollowUp's own internal try/catch).
+          if (buttonReply) {
+            await fireButtonFollowUp(webhookCompanyId, { leadPK: lead.PK }, buttonReply.id, { id: 'system', role: 'admin', name: 'System' });
+          }
         }
       } else {
         const companyId = webhookCompanyId; // already resolved above
@@ -1508,21 +1610,22 @@ router.post('/webhook', async (req, res) => {
           }
           // Fire-and-forget: create/update CONV# entity for this unknown-contact thread.
           resolveForInbox(companyId, phone10, { inboxPK: PK, text, timestamp, waName }).catch(() => {});
+          // A tap on a welcome-message reply button — fire its configured
+          // follow-up, if any. Still possible here: the customer may still be
+          // an unknown (INBOX#) contact when they tap, if no lead was created
+          // between the welcome send and the reply.
+          if (buttonReply) {
+            await fireButtonFollowUp(companyId, { phone: phone10 }, buttonReply.id, { id: 'system', role: 'admin', name: 'System' });
+          }
         }
 
         // Send welcome message on first contact (only for genuinely new messages)
         if (isNewMsg && isFirstContact) {
           try {
             const wc = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#WELCOME#${companyId}`, SK: 'CURRENT' } }).promise();
-            if (wc.Item?.enabled && wc.Item?.templateName) {
-              await WASendSvc.sendTemplate(
-                companyId,
-                { phone: phone10 },
-                { templateName: wc.Item.templateName, language: wc.Item.language ?? 'en' },
-                [],
-                { id: 'system', role: 'admin', name: 'System' },
-              );
-              logger.info(`Welcome message sent to ${phone10} for company ${companyId}`);
+            if (wc.Item?.enabled) {
+              const sent = await sendWelcomeMessage(companyId, phone10, wc.Item, { id: 'system', role: 'admin', name: 'System' });
+              if (sent) logger.info(`Welcome message (${wc.Item.messageType ?? 'template'}) sent to ${phone10} for company ${companyId}`);
             }
           } catch (e) { logger.warn('Welcome message failed: ' + e.message); }
           // Fire automation trigger for brand-new WhatsApp contact
@@ -1792,41 +1895,46 @@ router.put('/inbox/:leadId/pin', authMiddleware, rateLimit(20, 60_000), async (r
   } catch (err) { next(err); }
 });
 
+// Looks up a registered Flow and sends it via sendInteractive() unmodified
+// (ADR-012) — the single place that builds the Meta Flow-send payload, shared
+// by the manual /inbox/:leadId/send-flow route below and welcome-message
+// button follow-ups with followUp.type === 'flow' (see fireButtonFollowUp).
+async function sendRegisteredFlow(companyId, target, flowId, user) {
+  const flowCfg = await dynamodb.get({
+    TableName: TABLE,
+    Key: { PK: `CONFIG#FLOW#${companyId}`, SK: `FLOW#${flowId}` },
+  }).promise();
+  if (!flowCfg.Item) {
+    const err = new Error('Flow not found — register it in Settings first');
+    err.status = 404;
+    throw err;
+  }
+
+  const { bodyText, ctaLabel, screenId } = flowCfg.Item;
+  const interactive = {
+    type: 'flow',
+    body: { text: bodyText },
+    action: {
+      name: 'flow',
+      parameters: {
+        flow_message_version: '3',
+        flow_token: randomUUID(),
+        flow_id: flowId,
+        flow_cta: ctaLabel,
+        flow_action: 'navigate',
+        ...(screenId && { flow_action_payload: { screen: screenId } }),
+      },
+    },
+  };
+  return WASendSvc.sendInteractive(companyId, target, interactive, user);
+}
+
 // ── POST /api/whatsapp/inbox/:leadId/send-flow — trigger a registered WhatsApp Flow ─
-// Sends via WhatsAppSendService.sendInteractive() unmodified (ADR-012) — the Meta
-// interactive-message payload shape for a Flow ({ type: 'flow', action: { name: 'flow', ... } })
-// fits the existing generic `interactive` parameter as-is.
 router.post('/inbox/:leadId/send-flow', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { flowId } = req.body;
     if (!flowId) return res.status(400).json({ error: 'flowId required' });
-    const companyId = req.user.companyId;
-
-    const flowCfg = await dynamodb.get({
-      TableName: TABLE,
-      Key: { PK: `CONFIG#FLOW#${companyId}`, SK: `FLOW#${flowId}` },
-    }).promise();
-    if (!flowCfg.Item) return res.status(404).json({ error: 'Flow not found — register it in Settings first' });
-
-    const { bodyText, ctaLabel, screenId } = flowCfg.Item;
-
-    const interactive = {
-      type: 'flow',
-      body: { text: bodyText },
-      action: {
-        name: 'flow',
-        parameters: {
-          flow_message_version: '3',
-          flow_token: randomUUID(),
-          flow_id: flowId,
-          flow_cta: ctaLabel,
-          flow_action: 'navigate',
-          ...(screenId && { flow_action_payload: { screen: screenId } }),
-        },
-      },
-    };
-
-    const result = await WASendSvc.sendInteractive(companyId, { leadId: req.params.leadId }, interactive, req.user);
+    const result = await sendRegisteredFlow(req.user.companyId, { leadId: req.params.leadId }, flowId, req.user);
     res.json({ success: true, messageId: result.wamid, timestamp: result.timestamp });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
@@ -2634,22 +2742,37 @@ router.get('/welcome-config', authMiddleware, checkRole(['admin']), async (req, 
       TableName: TABLE,
       Key: { PK: `CONFIG#WELCOME#${req.user.companyId}`, SK: 'CURRENT' },
     }).promise();
-    res.json({ success: true, config: result.Item ?? { enabled: false, templateName: '', language: 'en' } });
+    res.json({
+      success: true,
+      // Backward-compatible default — pre-existing configs written before
+      // messageType/bodyText/buttons/ctaButtons existed are template-only.
+      config: result.Item ?? {
+        enabled: false, messageType: 'template', templateName: '', language: 'en',
+        bodyText: '', buttons: [], ctaButtons: [],
+      },
+    });
   } catch (err) { next(err); }
 });
 
 // ── PUT /api/whatsapp/welcome-config ──────────────────────────────────────────
 router.put('/welcome-config', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
-    const { enabled, templateName, language } = req.body;
+    const parsed = welcomeConfigSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+    const cfg = parsed.data;
+
     await dynamodb.put({
       TableName: TABLE,
       Item: {
         PK: `CONFIG#WELCOME#${req.user.companyId}`, SK: 'CURRENT',
         companyId: req.user.companyId,
-        enabled: !!enabled,
-        templateName: templateName?.trim() ?? '',
-        language: language?.trim() ?? 'en',
+        enabled: cfg.enabled,
+        messageType: cfg.messageType,
+        templateName: cfg.templateName,
+        language: cfg.language,
+        bodyText: cfg.bodyText,
+        buttons: cfg.buttons,
+        ctaButtons: cfg.ctaButtons,
         updatedAt: new Date().toISOString(),
       },
     }).promise();
@@ -2932,3 +3055,8 @@ module.exports = router;
 module.exports.storeInboundMedia = storeInboundMedia;
 module.exports.isFlowResponse = isFlowResponse;
 module.exports.parseFlowResponse = parseFlowResponse;
+module.exports.isButtonReply = isButtonReply;
+module.exports.parseButtonReply = parseButtonReply;
+module.exports.sendWelcomeMessage = sendWelcomeMessage;
+module.exports.fireButtonFollowUp = fireButtonFollowUp;
+module.exports.sendRegisteredFlow = sendRegisteredFlow;

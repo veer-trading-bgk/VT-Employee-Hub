@@ -98,6 +98,99 @@ const createFollowupSchema = z.object({
   note: z.string().max(500).optional().default(''),
 });
 
+// ── Welcome-message config (CONFIG#WELCOME) ─────────────────────────────────
+// Meta platform rules encoded here: reply buttons (max 3, 20-char titles, no
+// emoji) and CTA buttons cannot be combined in one WhatsApp message, so
+// messageType is mutually exclusive with which of buttons[]/ctaButtons[] may
+// be non-empty — enforced below via superRefine, not left to the frontend.
+//
+// ctaButtons is scoped to a single URL button (Meta's freeform, non-template
+// interactive API — what WhatsAppSendService.sendInteractive() sends — only
+// supports one `cta_url` action per message; there is no phone-number CTA
+// button outside a pre-approved message template, a different send mechanism
+// this codebase doesn't use for welcome messages).
+const NO_EMOJI_RE = /\p{Extended_Pictographic}/u;
+
+const welcomeButtonFollowUpSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('none') }),
+  z.object({
+    type: z.literal('text'),
+    content: z.object({ message: z.string().min(1).max(1000) }),
+  }),
+  z.object({
+    type: z.literal('image'),
+    content: z.object({
+      mediaId: z.string().optional(),
+      url: z.string().url().optional(),
+      caption: z.string().max(1000).optional(),
+    }).refine((c) => !!(c.mediaId || c.url), { message: 'mediaId or url required for an image follow-up' }),
+  }),
+  z.object({
+    type: z.literal('url_button'),
+    content: z.object({
+      message: z.string().min(1).max(1000),
+      buttonText: z.string().min(1).max(20),
+      url: z.string().url(),
+    }),
+  }),
+  z.object({
+    type: z.literal('flow'),
+    content: z.object({ flowId: z.string().min(1) }),
+  }),
+]);
+
+const welcomeReplyButtonSchema = z.object({
+  id: z.string().min(1).max(50),
+  title: z.string().min(1).max(20)
+    .refine((t) => !NO_EMOJI_RE.test(t), { message: 'Button title cannot contain emoji (Meta rule)' }),
+  followUp: welcomeButtonFollowUpSchema.default({ type: 'none' }),
+});
+
+const welcomeCtaButtonSchema = z.object({
+  type: z.literal('url'),
+  text: z.string().min(1).max(20),
+  value: z.string().url(),
+});
+
+const welcomeConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  messageType: z.enum(['template', 'reply_buttons', 'cta_buttons']).default('template'),
+  templateName: z.string().max(200).optional().default(''),
+  language: z.string().max(10).optional().default('en'),
+  bodyText: z.string().max(1024).optional().default(''),
+  buttons: z.array(welcomeReplyButtonSchema).max(3).optional().default([]),
+  ctaButtons: z.array(welcomeCtaButtonSchema).max(1).optional().default([]),
+}).superRefine((data, ctx) => {
+  if (data.messageType === 'reply_buttons') {
+    if (data.ctaButtons.length > 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ctaButtons'], message: 'ctaButtons must be empty when messageType is reply_buttons — Meta does not allow combining reply buttons and CTA buttons in one message' });
+    }
+    if (data.buttons.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['buttons'], message: 'At least one button is required when messageType is reply_buttons' });
+    }
+    if (new Set(data.buttons.map((b) => b.id)).size !== data.buttons.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['buttons'], message: 'Button ids must be unique' });
+    }
+    if (!data.bodyText.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['bodyText'], message: 'bodyText is required when messageType is reply_buttons' });
+    }
+  }
+  if (data.messageType === 'cta_buttons') {
+    if (data.buttons.length > 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['buttons'], message: 'buttons must be empty when messageType is cta_buttons — Meta does not allow combining reply buttons and CTA buttons in one message' });
+    }
+    if (data.ctaButtons.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ctaButtons'], message: 'At least one CTA button is required when messageType is cta_buttons' });
+    }
+    if (!data.bodyText.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['bodyText'], message: 'bodyText is required when messageType is cta_buttons' });
+    }
+  }
+  if (data.messageType === 'template' && (data.buttons.length > 0 || data.ctaButtons.length > 0)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['messageType'], message: 'buttons/ctaButtons must be empty when messageType is template' });
+  }
+});
+
 module.exports = {
   loginSchema,
   addMetricSchema,
@@ -109,4 +202,5 @@ module.exports = {
   createLeadSchema,
   updateLeadSchema,
   createFollowupSchema,
+  welcomeConfigSchema,
 };

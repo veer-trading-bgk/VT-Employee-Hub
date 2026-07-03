@@ -52,6 +52,7 @@ import { toast } from 'sonner';
 import { EmployeesSection } from '@/components/v3/team/EmployeesSection';
 import { WabaHealthPanel } from '@/components/settings/WabaHealthPanel';
 import { WhatsAppFlowsPanel } from '@/components/settings/WhatsAppFlowsPanel';
+import { WelcomeMessagePanel } from '@/components/settings/WelcomeMessagePanel';
 
 // ── Section definitions ───────────────────────────────────────────────────────
 
@@ -844,6 +845,9 @@ function WhatsAppSection() {
 
       {/* ── WhatsApp Flows (connected only) ─────────────────────── */}
       {connected && <WhatsAppFlowsPanel />}
+
+      {/* ── Welcome Message (connected only) ──────────────────────── */}
+      {connected && <WelcomeMessagePanel />}
 
       {/* ── Credentials guide ─────────────────────────────────────── */}
       <Card variant="ghost" className="space-y-2">
