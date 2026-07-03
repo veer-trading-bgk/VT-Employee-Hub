@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { MessageSquareText } from 'lucide-react';
+import { MessageSquareText, ChevronDown, ChevronUp } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card } from '@/components/v3/ui/Card';
 import { Badge } from '@/components/v3/ui/Badge';
@@ -63,6 +63,11 @@ function WelcomeMessageForm({ initialConfig }: { initialConfig: WelcomeConfig | 
   const qc = useQueryClient();
   const [form, setForm] = useState<WelcomeConfig>({ ...EMPTY_CONFIG, ...initialConfig });
   const [dirty, setDirty] = useState(false);
+  // Collapsed by default — this sits above the Workflows list now, so it
+  // shouldn't dominate the page on every visit. Independent of `enabled`:
+  // even when the welcome message is on, the config form stays tucked away
+  // until the admin explicitly wants to look at or edit it.
+  const [expanded, setExpanded] = useState(false);
 
   // Same ['wa-templates'] key ComposerToolbar.tsx's template picker already owns.
   const { data: tplData } = useQuery({
@@ -118,10 +123,22 @@ function WelcomeMessageForm({ initialConfig }: { initialConfig: WelcomeConfig | 
             </p>
           </div>
         </div>
-        <Toggle checked={form.enabled} onChange={(e) => update('enabled', e.target.checked)} aria-label="Enable welcome message" />
+        <div className="flex items-center gap-1">
+          <Toggle checked={form.enabled} onChange={(e) => update('enabled', e.target.checked)} aria-label="Enable welcome message" />
+          {form.enabled && (
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              aria-label={expanded ? 'Collapse welcome message settings' : 'Expand welcome message settings'}
+              className="rounded p-1 text-neutral-400 transition-colors hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800 dark:hover:text-neutral-300"
+            >
+              {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </button>
+          )}
+        </div>
       </div>
 
-      {form.enabled && (
+      {form.enabled && expanded && (
         <div className="mt-4 space-y-4 border-t border-neutral-100 pt-4 dark:border-neutral-800">
           <div>
             <label className="mb-1 block text-xs font-medium text-neutral-500">Message type</label>
