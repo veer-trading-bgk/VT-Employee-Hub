@@ -287,6 +287,26 @@ describe('sendWelcomeMessage — payload shape per messageType', () => {
     expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
     expect(WASendSvc.sendTemplate).not.toHaveBeenCalled();
   });
+
+  // Defensive: PUT /welcome-config's schema blocks this combination today, but
+  // a record written another way (manual DDB edit, future migration, a schema
+  // regression) could still reach this function with reply_buttons + no
+  // bodyText. It must fail silent-safe (send nothing) rather than send Meta a
+  // malformed empty-body interactive message that could error or look broken
+  // to the customer.
+  test('reply_buttons with empty bodyText (invalid record that bypassed validation) sends nothing rather than a malformed message', async () => {
+    const cfg = { messageType: 'reply_buttons', bodyText: '', buttons: [{ id: 'b1', title: 'Open Demat' }] };
+    const result = await whatsappRouter.sendWelcomeMessage('acme', '9876543210', cfg, { id: 'system' });
+    expect(result).toBeNull();
+    expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
+  });
+
+  test('cta_buttons with empty ctaButtons array (invalid record) sends nothing', async () => {
+    const cfg = { messageType: 'cta_buttons', bodyText: 'Hi', ctaButtons: [] };
+    const result = await whatsappRouter.sendWelcomeMessage('acme', '9876543210', cfg, { id: 'system' });
+    expect(result).toBeNull();
+    expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
+  });
 });
 
 describe('fireButtonFollowUp — dispatches by followUp.type', () => {
@@ -367,5 +387,314 @@ describe('fireButtonFollowUp — dispatches by followUp.type', () => {
     await expect(
       whatsappRouter.fireButtonFollowUp('acme', { leadPK: 'LEAD#acme#1' }, 'b1', { id: 'system' }),
     ).resolves.toBeUndefined();
+  });
+
+  test('a button object with NO followUp key at all (not even type:none) does nothing — distinct code path from explicit "none"', async () => {
+    mockWelcomeConfig([{ id: 'b1', title: 'A' }]); // no followUp property whatsoever
+    await whatsappRouter.fireButtonFollowUp('acme', { leadPK: 'LEAD#acme#1' }, 'b1', { id: 'system' });
+    expect(WASendSvc.sendText).not.toHaveBeenCalled();
+    expect(WASendSvc.sendMedia).not.toHaveBeenCalled();
+    expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
+  });
+
+  test('CONFIG#WELCOME record deleted/never existed (wc.Item undefined) fails gracefully, no crash', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) }); // no Item
+    await expect(
+      whatsappRouter.fireButtonFollowUp('acme', { leadPK: 'LEAD#acme#1' }, 'b1', { id: 'system' }),
+    ).resolves.toBeUndefined();
+    expect(WASendSvc.sendText).not.toHaveBeenCalled();
+  });
+
+  test('dynamodb.get itself rejecting (network/throttle error) is caught, not propagated', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.reject(new Error('ProvisionedThroughputExceededException')) });
+    await expect(
+      whatsappRouter.fireButtonFollowUp('acme', { leadPK: 'LEAD#acme#1' }, 'b1', { id: 'system' }),
+    ).resolves.toBeUndefined();
+    expect(WASendSvc.sendText).not.toHaveBeenCalled();
+  });
+
+  test('image follow-up with mediaId (pre-uploaded) instead of url — the other half of the optional-field contract', async () => {
+    mockWelcomeConfig([{ id: 'b1', title: 'A', followUp: { type: 'image', content: { mediaId: 'meta-media-id-123' } } }]);
+    WASendSvc.sendMedia.mockResolvedValue({});
+    await whatsappRouter.fireButtonFollowUp('acme', { leadPK: 'LEAD#acme#1' }, 'b1', { id: 'system' });
+    expect(WASendSvc.sendMedia).toHaveBeenCalledWith('acme', { leadPK: 'LEAD#acme#1' }, expect.objectContaining({
+      mediaType: 'image', mediaId: 'meta-media-id-123',
+    }), { id: 'system' });
+  });
+
+  test('url_button follow-up produces a cta_url shape, never a reply-button shape', async () => {
+    mockWelcomeConfig([{
+      id: 'b1', title: 'A',
+      followUp: { type: 'url_button', content: { message: 'Learn more', buttonText: 'Learn More', url: 'https://vt.com/learn' } },
+    }]);
+    WASendSvc.sendInteractive.mockResolvedValue({});
+    await whatsappRouter.fireButtonFollowUp('acme', { leadPK: 'LEAD#acme#1' }, 'b1', { id: 'system' });
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive.action.name).toBe('cta_url');
+    expect(interactive.action.buttons).toBeUndefined();      // never the reply-button shape
+    expect(interactive.action.parameters.url).toBe('https://vt.com/learn');
+  });
+
+  test('flow follow-up uses the REAL flowId from followUp.content, not a hardcoded/placeholder value', async () => {
+    const configuredFlowId = 'flow-id-7788990011'; // deliberately not "999" or any suspiciously round test value
+    mockWelcomeConfig([{ id: 'b1', title: 'A', followUp: { type: 'flow', content: { flowId: configuredFlowId } } }]);
+    dynamodb.get.mockImplementation((args) => {
+      if (args.Key.SK === `FLOW#${configuredFlowId}`) {
+        return { promise: () => Promise.resolve({ Item: { bodyText: 'Fill this out', ctaLabel: 'Start', screenId: null } }) };
+      }
+      if (args.Key.PK === 'CONFIG#WELCOME#acme') {
+        return { promise: () => Promise.resolve({ Item: { buttons: [{ id: 'b1', title: 'A', followUp: { type: 'flow', content: { flowId: configuredFlowId } } }] } }) };
+      }
+      // Any other flowId (a hardcoded/wrong value) resolves to "not found" — the
+      // production sendRegisteredFlow() 404s in that case, proving a wrong-flowId
+      // bug would surface as a thrown error, not a silent wrong-flow send.
+      return { promise: () => Promise.resolve({}) };
+    });
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w' });
+
+    await whatsappRouter.fireButtonFollowUp('acme', { leadPK: 'LEAD#acme#1' }, 'b1', { id: 'system' });
+
+    expect(WASendSvc.sendInteractive).toHaveBeenCalledTimes(1);
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive.action.parameters.flow_id).toBe(configuredFlowId);
+  });
+
+  test('the exact target object (leadPK or phone) reaches the downstream send call unchanged — no cross-target mixup', async () => {
+    mockWelcomeConfig([{ id: 'b1', title: 'A', followUp: { type: 'text', content: { message: 'hi' } } }]);
+    WASendSvc.sendText.mockResolvedValue({});
+    const unknownContactTarget = { phone: '9998887776' }; // unknown-contact shape, not leadPK
+    await whatsappRouter.fireButtonFollowUp('acme', unknownContactTarget, 'b1', { id: 'system' });
+    const [, targetArg] = WASendSvc.sendText.mock.calls[0];
+    expect(targetArg).toEqual({ phone: '9998887776' });
+    expect(targetArg).not.toHaveProperty('leadPK');
+  });
+});
+
+describe('parseButtonReply / isButtonReply — real Meta webhook envelope shape, not a simplified mock', () => {
+  // A realistic full inbound webhook body, matching Meta's documented Cloud
+  // API structure exactly (entry[].changes[].value.messages[]), the same
+  // shape the webhook handler actually destructures. Extra realistic fields
+  // (context, contacts, metadata) are included deliberately — a naive parser
+  // keyed on the wrong nesting level would fail against this even though it
+  // might pass against a hand-simplified {interactive:{button_reply:{...}}}.
+  const REAL_WEBHOOK_BODY = {
+    object: 'whatsapp_business_account',
+    entry: [{
+      id: '102290129340398',
+      changes: [{
+        value: {
+          messaging_product: 'whatsapp',
+          metadata: { display_phone_number: '15550001111', phone_number_id: '106540352242922' },
+          contacts: [{ profile: { name: 'Priya Sharma' }, wa_id: '919876543210' }],
+          messages: [{
+            context: { from: '15550001111', id: 'wamid.HBgLOTE5ODc2NTQzMjEwFQIAEhggQkY4NEUwOTQ0RTQ5MzY4RUJERUJEQzE1OTQ4RUE3RDAA' },
+            from: '919876543210',
+            id: 'wamid.HBgLOTE5ODc2NTQzMjEwFQIAEhgUM0FDM0YwQjE2RUE1RDFBOTk4RDgA',
+            timestamp: '1735900000',
+            type: 'interactive',
+            interactive: {
+              type: 'button_reply',
+              button_reply: { id: 'b1', title: 'Open Demat Account' },
+            },
+          }],
+        },
+        field: 'messages',
+      }],
+    }],
+  };
+
+  function extractInboundMessage(body) {
+    return body.entry[0].changes[0].value.messages[0];
+  }
+
+  test('isButtonReply recognises the real envelope-extracted message', () => {
+    const msg = extractInboundMessage(REAL_WEBHOOK_BODY);
+    expect(whatsappRouter.isButtonReply(msg)).toBe(true);
+  });
+
+  test('parseButtonReply extracts the correct id/title from the real envelope, ignoring sibling fields (context, from, timestamp)', () => {
+    const msg = extractInboundMessage(REAL_WEBHOOK_BODY);
+    expect(whatsappRouter.parseButtonReply(msg)).toEqual({ id: 'b1', title: 'Open Demat Account' });
+  });
+
+  test('a real text-message envelope is correctly rejected by isButtonReply (no false positive)', () => {
+    const textBody = JSON.parse(JSON.stringify(REAL_WEBHOOK_BODY));
+    textBody.entry[0].changes[0].value.messages[0] = {
+      from: '919876543210', id: 'wamid.abc', timestamp: '1735900001', type: 'text', text: { body: 'Hello' },
+    };
+    expect(whatsappRouter.isButtonReply(extractInboundMessage(textBody))).toBe(false);
+  });
+
+  test('a real nfm_reply (Flow response) envelope is correctly rejected by isButtonReply (no cross-feature confusion)', () => {
+    const flowBody = JSON.parse(JSON.stringify(REAL_WEBHOOK_BODY));
+    flowBody.entry[0].changes[0].value.messages[0].interactive = {
+      type: 'nfm_reply',
+      nfm_reply: { name: 'KYC Form', body: 'Sent', response_json: '{}' },
+    };
+    expect(whatsappRouter.isButtonReply(extractInboundMessage(flowBody))).toBe(false);
+  });
+
+  test('a button_reply with an empty-string title falls back to a readable placeholder, never renders blank', () => {
+    const msg = { interactive: { button_reply: { id: 'b2', title: '' } } };
+    expect(whatsappRouter.parseButtonReply(msg).title).toBe('[Button reply]');
+  });
+});
+
+describe('sendWelcomeMessage — deeper payload-shape and data-leak checks', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('reply_buttons payload is byte-exact against Meta\'s documented interactive/button schema — no extra or missing keys', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w1' });
+    const cfg = { messageType: 'reply_buttons', bodyText: 'Pick one', buttons: [{ id: 'b1', title: 'Open Demat' }] };
+    await whatsappRouter.sendWelcomeMessage('acme', '9876543210', cfg, { id: 'system' });
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive).toEqual({
+      type: 'button',
+      body: { text: 'Pick one' },
+      action: { buttons: [{ type: 'reply', reply: { id: 'b1', title: 'Open Demat' } }] },
+    });
+  });
+
+  test('cta_buttons payload is byte-exact against Meta\'s documented cta_url schema', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w2' });
+    const cfg = { messageType: 'cta_buttons', bodyText: 'Check this out', ctaButtons: [{ type: 'url', text: 'Visit Site', value: 'https://vt.com' }] };
+    await whatsappRouter.sendWelcomeMessage('acme', '9876543210', cfg, { id: 'system' });
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive).toEqual({
+      type: 'cta_url',
+      body: { text: 'Check this out' },
+      action: { name: 'cta_url', parameters: { display_text: 'Visit Site', url: 'https://vt.com' } },
+    });
+  });
+
+  test('a button carrying followUp config does NOT leak followUp into the outbound Meta payload — internal data must not reach the API', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w3' });
+    const cfg = {
+      messageType: 'reply_buttons', bodyText: 'Pick one',
+      buttons: [{ id: 'b1', title: 'Open Demat', followUp: { type: 'text', content: { message: 'internal only — must not be sent to Meta' } } }],
+    };
+    await whatsappRouter.sendWelcomeMessage('acme', '9876543210', cfg, { id: 'system' });
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive.action.buttons[0]).toEqual({ type: 'reply', reply: { id: 'b1', title: 'Open Demat' } });
+    expect(JSON.stringify(interactive)).not.toMatch(/followUp|internal only/);
+  });
+
+  test('reply_buttons with 3 buttons preserves order and count exactly — no silent truncation or reordering', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w4' });
+    const cfg = {
+      messageType: 'reply_buttons', bodyText: 'Pick one',
+      buttons: [{ id: 'b1', title: 'First' }, { id: 'b2', title: 'Second' }, { id: 'b3', title: 'Third' }],
+    };
+    await whatsappRouter.sendWelcomeMessage('acme', '9876543210', cfg, { id: 'system' });
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive.action.buttons.map((b) => b.reply.id)).toEqual(['b1', 'b2', 'b3']);
+  });
+});
+
+describe('PUT /api/whatsapp/welcome-config — mutual exclusivity end-to-end (route level, not just schema level)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('BOTH buttons[] and ctaButtons[] populated simultaneously (messageType reply_buttons) is rejected with 400, response body has real error detail', async () => {
+    const handler = getRouteHandler(whatsappRouter, '/welcome-config', 'put');
+    const req = {
+      body: {
+        enabled: true, messageType: 'reply_buttons', bodyText: 'Hi',
+        buttons: [{ id: 'b1', title: 'A' }],
+        ctaButtons: [{ type: 'url', text: 'Visit', value: 'https://x.com' }],
+      },
+      user: { companyId: 'acme' },
+    };
+    const res = mockRes();
+    await handler(req, res, jest.fn());
+
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    const [jsonBody] = res.json.mock.calls[0];
+    expect(jsonBody.error).toBe('Validation failed');
+    // Regression guard for the zod v4 .errors→undefined bug found this session
+    // (crm.js's schemas still have it) — this route must use .issues, and the
+    // response body must carry real, non-empty detail, not a silently-dropped field.
+    expect(jsonBody.details).toBeDefined();
+    expect(Array.isArray(jsonBody.details)).toBe(true);
+    expect(jsonBody.details.length).toBeGreaterThan(0);
+    expect(jsonBody.details[0]).toHaveProperty('message');
+    expect(typeof jsonBody.details[0].message).toBe('string');
+    expect(jsonBody.details[0].message.length).toBeGreaterThan(0);
+  });
+
+  test('BOTH populated with messageType cta_buttons is also rejected with 400 and real error detail', async () => {
+    const handler = getRouteHandler(whatsappRouter, '/welcome-config', 'put');
+    const req = {
+      body: {
+        enabled: true, messageType: 'cta_buttons', bodyText: 'Hi',
+        buttons: [{ id: 'b1', title: 'A' }],
+        ctaButtons: [{ type: 'url', text: 'Visit', value: 'https://x.com' }],
+      },
+      user: { companyId: 'acme' },
+    };
+    const res = mockRes();
+    await handler(req, res, jest.fn());
+
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    const [jsonBody] = res.json.mock.calls[0];
+    expect(jsonBody.details?.length).toBeGreaterThan(0);
+  });
+
+  test('BOTH populated with messageType omitted (defaults to template) is rejected — no default-value loophole around the mutual-exclusivity rule', async () => {
+    const handler = getRouteHandler(whatsappRouter, '/welcome-config', 'put');
+    const req = {
+      body: {
+        enabled: true,
+        buttons: [{ id: 'b1', title: 'A' }],
+        ctaButtons: [{ type: 'url', text: 'Visit', value: 'https://x.com' }],
+      },
+      user: { companyId: 'acme' },
+    };
+    const res = mockRes();
+    await handler(req, res, jest.fn());
+
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  test('a valid single-type save round-trips buttons[].followUp intact — schema must not silently strip or reset configured follow-up data', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(whatsappRouter, '/welcome-config', 'put');
+    const req = {
+      body: {
+        enabled: true, messageType: 'reply_buttons', bodyText: 'Hi',
+        buttons: [{ id: 'b1', title: 'A', followUp: { type: 'text', content: { message: 'Thanks!' } } }],
+      },
+      user: { companyId: 'acme' },
+    };
+    const res = mockRes();
+    await handler(req, res, jest.fn());
+
+    const [putArgs] = dynamodb.put.mock.calls[0];
+    expect(putArgs.Item.buttons[0].followUp).toEqual({ type: 'text', content: { message: 'Thanks!' } });
+  });
+
+  test('a valid save with ctaButtons populated and buttons empty is accepted (the non-violating counterpart to the rejection tests above)', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(whatsappRouter, '/welcome-config', 'put');
+    const req = {
+      body: {
+        enabled: true, messageType: 'cta_buttons', bodyText: 'Hi',
+        ctaButtons: [{ type: 'url', text: 'Visit', value: 'https://x.com' }],
+      },
+      user: { companyId: 'acme' },
+    };
+    const res = mockRes();
+    await handler(req, res, jest.fn());
+
+    expect(dynamodb.put).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled(); // no error status set on success
+    expect(res.json).toHaveBeenCalledWith({ success: true });
   });
 });
