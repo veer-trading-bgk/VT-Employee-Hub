@@ -6,7 +6,7 @@ import { Paperclip } from 'lucide-react';
 import { apiFetch, getMemoryToken } from '@/lib/api';
 import { useCustomer360 } from '@/contexts/Customer360Context';
 import { useWsEvent } from '@/hooks/useWsEvent';
-import { useAddNote } from '@/hooks/useAddNote';
+import { useAddNote } from '@/hooks/useNoteMutations';
 import { TemplatePicker } from '@/components/whatsapp/TemplatePicker';
 import { MediaPreviewModal } from '@/components/whatsapp/MediaPreviewModal';
 import { ActivityPanel } from '@/components/contacts/ActivityPanel';

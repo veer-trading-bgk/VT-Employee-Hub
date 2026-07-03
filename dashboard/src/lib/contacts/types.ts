@@ -53,8 +53,10 @@ export interface ContactMessage {
   direction: 'inbound' | 'outbound';
   content: string;
   sentByName?: string;
+  authorId?: string;
   authorName?: string;
   timestamp: string;
+  editedAt?: string;
   type?: string;
   mediaId?: string;
   mediaUrl?: string;

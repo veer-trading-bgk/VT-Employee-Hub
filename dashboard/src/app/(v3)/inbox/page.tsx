@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback, Suspense } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import {
@@ -31,7 +31,8 @@ import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { assignmentKey } from '@/hooks/useOwnerAssign';
 import type { AssignmentRecord } from '@/hooks/useOwnerAssign';
 import { ComposerToolbar } from '@/components/inbox/ComposerToolbar';
-import { useAddNote } from '@/hooks/useAddNote';
+import { useAddNote, useEditNote, useDeleteNote, canModifyNote } from '@/hooks/useNoteMutations';
+import { formatRelativeTime } from '@/utils/formatters';
 
 // ── V2 API shapes (backend response shapes, never invented) ───────────────────
 
@@ -68,6 +69,15 @@ interface WaMessage {
   msgStatus?: 'sent' | 'delivered' | 'read' | 'failed';
   sentByName?: string;
   templateId?: string;
+}
+
+interface InternalNoteItem {
+  SK: string;
+  content: string;
+  authorId?: string;
+  authorName?: string;
+  timestamp: string;
+  editedAt?: string;
 }
 
 type ConvTab = 'open' | 'unassigned' | 'resolved';
@@ -1404,17 +1414,54 @@ function CustomerSnapshotPanel({
     },
   });
 
-  // Notes are lead-scoped only (no unknown-contact notes endpoint exists yet)
+  // Notes are lead-scoped only (no unknown-contact notes endpoint exists yet).
+  // Shares the ['wa-conv', convKey] cache the main chat panel already owns —
+  // so a note posted here shows up immediately, and vice versa, with no
+  // extra network cost once both are mounted.
+  const convKey = conversation.leadId ?? conversation.phone;
+  const { data: convData } = useQuery<{ internalNotes?: InternalNoteItem[] }>({
+    queryKey: ['wa-conv', convKey],
+    queryFn: () => apiFetch(`/api/crm/leads/${conversation.leadId}`),
+    enabled: !!conversation.leadId,
+  });
+  const notesList = useMemo(() => [...(convData?.internalNotes ?? [])].reverse(), [convData]);
+
   const [noteText, setNoteText] = useState('');
+  const [editingSK, setEditingSK] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
+
+  function refreshNotes() {
+    qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
+  }
+
   const addNote = useAddNote(conversation.leadId, () => {
-    qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+    refreshNotes();
     setNoteText('');
     toast.success('Note saved');
   });
+  const editNote = useEditNote(conversation.leadId, () => {
+    refreshNotes();
+    setEditingSK(null);
+    toast.success('Note updated');
+  });
+  const deleteNote = useDeleteNote(conversation.leadId, () => {
+    refreshNotes();
+    toast.success('Note deleted');
+  });
+
   function handleAddNote() {
     const trimmed = noteText.trim();
     if (!trimmed) return;
     addNote.mutate(trimmed);
+  }
+  function startEdit(note: InternalNoteItem) {
+    setEditingSK(note.SK);
+    setEditText(note.content);
+  }
+  function saveEdit(note: InternalNoteItem) {
+    const trimmed = editText.trim();
+    if (!trimmed) return;
+    editNote.mutate({ timestamp: note.timestamp, content: trimmed });
   }
 
   return (
@@ -1559,6 +1606,80 @@ function CustomerSnapshotPanel({
                   {addNote.isPending ? 'Posting…' : 'Post Note'}
                 </button>
               </div>
+
+              {notesList.length > 0 && (
+                <ul className="mt-2.5 space-y-1.5">
+                  {notesList.map((note) => {
+                    const canModify = canModifyNote(note, user);
+                    const isEditing = editingSK === note.SK;
+                    return (
+                      <li
+                        key={note.SK}
+                        className="group rounded-lg border border-neutral-100 bg-neutral-50 p-2 dark:border-neutral-800 dark:bg-neutral-900/40"
+                      >
+                        {isEditing ? (
+                          <>
+                            <textarea
+                              value={editText}
+                              onChange={(e) => setEditText(e.target.value)}
+                              rows={2}
+                              autoFocus
+                              aria-label="Edit note"
+                              className="w-full resize-none rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs outline-none focus:border-primary-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200"
+                            />
+                            <div className="mt-1 flex justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setEditingSK(null)}
+                                className="text-[10px] text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => saveEdit(note)}
+                                disabled={editNote.isPending || !editText.trim()}
+                                className="text-[10px] font-semibold text-primary-600 hover:text-primary-700 disabled:opacity-50"
+                              >
+                                {editNote.isPending ? 'Saving…' : 'Save'}
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <p className="whitespace-pre-wrap text-xs text-neutral-700 dark:text-neutral-300">{note.content}</p>
+                            <div className="mt-1 flex items-center justify-between gap-2">
+                              <p className="text-[10px] text-neutral-400">
+                                {note.authorName ?? 'Agent'} · {formatRelativeTime(note.timestamp)}
+                                {note.editedAt ? ' (edited)' : ''}
+                              </p>
+                              {canModify && (
+                                <div className="flex shrink-0 gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+                                  <button
+                                    type="button"
+                                    onClick={() => startEdit(note)}
+                                    className="text-[10px] text-neutral-400 hover:text-primary-600"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => deleteNote.mutate(note.timestamp)}
+                                    disabled={deleteNote.isPending}
+                                    className="text-[10px] text-neutral-400 hover:text-error-600"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </>
           ) : (
             <p className="text-xs text-neutral-400">Notes require this contact to be a CRM lead first.</p>

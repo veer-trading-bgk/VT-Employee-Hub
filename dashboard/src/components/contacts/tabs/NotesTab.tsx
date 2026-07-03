@@ -3,6 +3,8 @@
 import { memo, useState, useMemo } from 'react';
 import { useCustomer360 } from '@/contexts/Customer360Context';
 import { useContactMutations } from '@/hooks/useContactMutations';
+import { useEditNote, useDeleteNote, canModifyNote } from '@/hooks/useNoteMutations';
+import { useAuth } from '@/context/AuthContext';
 
 function fmtRelTime(iso: string): string {
   const ms   = Date.now() - new Date(iso).getTime();
@@ -21,9 +23,15 @@ function initials(name: string): string {
 }
 
 function NotesPanel() {
-  const { leadId, notes }  = useCustomer360();
-  const { addNote }        = useContactMutations(leadId);
-  const [text, setText]    = useState('');
+  const { leadId, notes, refresh } = useCustomer360();
+  const { user }            = useAuth();
+  const { addNote }         = useContactMutations(leadId);
+  const [text, setText]     = useState('');
+  const [editingSK, setEditingSK] = useState<string | null>(null);
+  const [editText, setEditText]   = useState('');
+
+  const editNote   = useEditNote(leadId, () => { refresh(); setEditingSK(null); });
+  const deleteNote = useDeleteNote(leadId, refresh);
 
   const sortedNotes = useMemo(() => [...notes].reverse(), [notes]);
 
@@ -31,6 +39,15 @@ function NotesPanel() {
     const trimmed = text.trim();
     if (!trimmed) return;
     addNote.mutate(trimmed, { onSuccess: () => setText('') });
+  }
+  function startEdit(note: { SK: string; content: string }) {
+    setEditingSK(note.SK);
+    setEditText(note.content);
+  }
+  function saveEdit(note: { timestamp: string }) {
+    const trimmed = editText.trim();
+    if (!trimmed) return;
+    editNote.mutate({ timestamp: note.timestamp, content: trimmed });
   }
 
   return (
@@ -80,10 +97,12 @@ function NotesPanel() {
         <ul className="space-y-3" role="list" aria-label="Internal notes">
           {sortedNotes.map((note) => {
             const author = note.sentByName || note.authorName || 'Agent';
+            const canModify = canModifyNote(note, user);
+            const isEditing = editingSK === note.SK;
             return (
               <li
                 key={note.SK}
-                className="rounded-xl border border-slate-100 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
+                className="group rounded-xl border border-slate-100 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
               >
                 <div className="flex items-start gap-3">
                   <div
@@ -97,16 +116,63 @@ function NotesPanel() {
                       <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
                         {author}
                       </span>
-                      <time
-                        dateTime={note.timestamp}
-                        className="flex-shrink-0 text-[10px] text-slate-400"
-                      >
-                        {fmtRelTime(note.timestamp)}
-                      </time>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <time
+                          dateTime={note.timestamp}
+                          className="text-[10px] text-slate-400"
+                        >
+                          {fmtRelTime(note.timestamp)}{note.editedAt ? ' (edited)' : ''}
+                        </time>
+                        {canModify && !isEditing && (
+                          <div className="flex gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+                            <button
+                              onClick={() => startEdit(note)}
+                              className="text-[10px] font-medium text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => deleteNote.mutate(note.timestamp)}
+                              disabled={deleteNote.isPending}
+                              className="text-[10px] font-medium text-slate-400 hover:text-red-600 dark:hover:text-red-400"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-slate-600 dark:text-slate-400">
-                      {note.content}
-                    </p>
+                    {isEditing ? (
+                      <div className="mt-1.5">
+                        <textarea
+                          value={editText}
+                          onChange={(e) => setEditText(e.target.value)}
+                          rows={3}
+                          autoFocus
+                          aria-label="Edit note"
+                          className="w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none transition focus:border-indigo-400 focus:ring-1 focus:ring-indigo-200 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                        />
+                        <div className="mt-1.5 flex justify-end gap-2">
+                          <button
+                            onClick={() => setEditingSK(null)}
+                            className="text-xs font-medium text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={() => saveEdit(note)}
+                            disabled={editNote.isPending || !editText.trim()}
+                            className="rounded-lg bg-indigo-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-indigo-700 disabled:opacity-50"
+                          >
+                            {editNote.isPending ? 'Saving…' : 'Save'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="mt-1.5 whitespace-pre-wrap text-sm leading-relaxed text-slate-600 dark:text-slate-400">
+                        {note.content}
+                      </p>
+                    )}
                   </div>
                 </div>
               </li>

@@ -12,6 +12,9 @@
 
 jest.mock('../src/config/dynamodb', () => ({
   put: jest.fn(),
+  get: jest.fn(),
+  update: jest.fn(),
+  delete: jest.fn(),
 }));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
@@ -83,5 +86,173 @@ describe('POST /api/whatsapp/inbox/:leadId/note', () => {
   // crm.js — there should be exactly one notes route in the whole backend.
   test('crm.js does not define a competing /leads/:id/note route', () => {
     expect(getRouteHandler(crmRouter, '/leads/:id/note', 'post')).toBeNull();
+  });
+});
+
+describe('PUT /api/whatsapp/inbox/:leadId/note/:timestamp', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('route is registered', () => {
+    expect(getRouteHandler(whatsappRouter, '/inbox/:leadId/note/:timestamp', 'put')).toBeInstanceOf(Function);
+  });
+
+  test('author can edit their own note', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({ Item: { authorId: 'emp_1', content: 'old text' } }),
+    });
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(whatsappRouter, '/inbox/:leadId/note/:timestamp', 'put');
+
+    const req = {
+      params: { leadId: 'lead_123', timestamp: '2026-07-03T10:00:00.000Z' },
+      body: { content: 'corrected text' },
+      user: { companyId: 'acme', id: 'emp_1', name: 'Test Agent', role: 'telecaller' },
+    };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(dynamodb.update).toHaveBeenCalledTimes(1);
+    const [updateArgs] = dynamodb.update.mock.calls[0];
+    expect(updateArgs.Key).toEqual({ PK: 'LEAD#acme#lead_123', SK: 'NOTE#2026-07-03T10:00:00.000Z' });
+    expect(updateArgs.ExpressionAttributeValues[':c']).toBe('corrected text');
+    // content/mentions/editedAt must be aliased via ExpressionAttributeNames — several
+    // ordinary-looking words are reserved in DynamoDB's UpdateExpression grammar, and a
+    // mocked dynamodb.update() won't catch a real reserved-word failure the way this would.
+    expect(updateArgs.ExpressionAttributeNames).toEqual(
+      expect.objectContaining({ '#content': 'content', '#editedAt': 'editedAt' }),
+    );
+    expect(updateArgs.UpdateExpression).not.toMatch(/(?<!#)\bcontent\s*=/); // must use #content, not bare `content`
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  test('a different non-manager agent cannot edit someone else\'s note (403, no write)', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({ Item: { authorId: 'emp_1', content: 'old text' } }),
+    });
+    const handler = getRouteHandler(whatsappRouter, '/inbox/:leadId/note/:timestamp', 'put');
+
+    const req = {
+      params: { leadId: 'lead_123', timestamp: '2026-07-03T10:00:00.000Z' },
+      body: { content: 'tampered text' },
+      user: { companyId: 'acme', id: 'emp_2', name: 'Other Agent', role: 'telecaller' },
+    };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(dynamodb.update).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  test('a manager can edit any note even if not the author', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({ Item: { authorId: 'emp_1', content: 'old text' } }),
+    });
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(whatsappRouter, '/inbox/:leadId/note/:timestamp', 'put');
+
+    const req = {
+      params: { leadId: 'lead_123', timestamp: '2026-07-03T10:00:00.000Z' },
+      body: { content: 'manager correction' },
+      user: { companyId: 'acme', id: 'emp_manager', name: 'Manager', role: 'manager' },
+    };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(dynamodb.update).toHaveBeenCalledTimes(1);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  test('404s on a nonexistent note without writing', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(whatsappRouter, '/inbox/:leadId/note/:timestamp', 'put');
+
+    const req = {
+      params: { leadId: 'lead_123', timestamp: '2026-07-03T10:00:00.000Z' },
+      body: { content: 'x' },
+      user: { companyId: 'acme', id: 'emp_1', name: 'Test Agent', role: 'telecaller' },
+    };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(dynamodb.update).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+});
+
+describe('DELETE /api/whatsapp/inbox/:leadId/note/:timestamp', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('route is registered', () => {
+    expect(getRouteHandler(whatsappRouter, '/inbox/:leadId/note/:timestamp', 'delete')).toBeInstanceOf(Function);
+  });
+
+  test('author can delete their own note', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({ Item: { authorId: 'emp_1', content: 'text' } }),
+    });
+    dynamodb.delete.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(whatsappRouter, '/inbox/:leadId/note/:timestamp', 'delete');
+
+    const req = {
+      params: { leadId: 'lead_123', timestamp: '2026-07-03T10:00:00.000Z' },
+      body: {},
+      user: { companyId: 'acme', id: 'emp_1', name: 'Test Agent', role: 'telecaller' },
+    };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(dynamodb.delete).toHaveBeenCalledTimes(1);
+    const [deleteArgs] = dynamodb.delete.mock.calls[0];
+    expect(deleteArgs.Key).toEqual({ PK: 'LEAD#acme#lead_123', SK: 'NOTE#2026-07-03T10:00:00.000Z' });
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  test('a different non-manager agent cannot delete someone else\'s note (403, no delete)', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({ Item: { authorId: 'emp_1', content: 'text' } }),
+    });
+    const handler = getRouteHandler(whatsappRouter, '/inbox/:leadId/note/:timestamp', 'delete');
+
+    const req = {
+      params: { leadId: 'lead_123', timestamp: '2026-07-03T10:00:00.000Z' },
+      body: {},
+      user: { companyId: 'acme', id: 'emp_2', name: 'Other Agent', role: 'telecaller' },
+    };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(dynamodb.delete).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  test('404s on a nonexistent note without deleting', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(whatsappRouter, '/inbox/:leadId/note/:timestamp', 'delete');
+
+    const req = {
+      params: { leadId: 'lead_123', timestamp: '2026-07-03T10:00:00.000Z' },
+      body: {},
+      user: { companyId: 'acme', id: 'emp_1', name: 'Test Agent', role: 'telecaller' },
+    };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const next = jest.fn();
+
+    await handler(req, res, next);
+
+    expect(dynamodb.delete).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(404);
   });
 });

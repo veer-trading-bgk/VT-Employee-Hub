@@ -3,7 +3,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { toast } from 'sonner';
-import { useAddNote } from './useAddNote';
+import { useAddNote } from './useNoteMutations';
 
 // Centralised mutations for Customer 360.
 // Skeleton created in Commit 1 — mutations are activated as tabs are wired in subsequent commits.

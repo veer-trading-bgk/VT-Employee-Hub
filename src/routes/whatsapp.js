@@ -1814,6 +1814,64 @@ router.post('/inbox/:leadId/note', authMiddleware, rateLimit(20, 60_000), async 
   } catch (err) { next(err); }
 });
 
+// Only the note's author or an admin/manager/superadmin may edit or delete it.
+function canModifyNote(note, user) {
+  return note.authorId === user.id || ['admin', 'manager', 'superadmin'].includes(user.role);
+}
+
+// ── PUT /api/whatsapp/inbox/:leadId/note/:timestamp — edit an internal note ────
+router.put('/inbox/:leadId/note/:timestamp', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const { content } = req.body;
+    if (!content?.trim()) return res.status(400).json({ error: 'content required' });
+    const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
+    const SK = `NOTE#${req.params.timestamp}`;
+
+    const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK } }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'Note not found' });
+    if (!canModifyNote(existing.Item, req.user)) {
+      return res.status(403).json({ error: 'Only the author or a manager can edit this note' });
+    }
+
+    const mentionNames = [...content.matchAll(/@(\w+)/g)].map((m) => m[1]);
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK, SK },
+      // ExpressionAttributeNames used for every target attribute — several
+      // ordinary-looking words (timestamp, count, ttl elsewhere in this repo)
+      // turn out to be reserved in DynamoDB's UpdateExpression grammar, so
+      // aliasing everything here avoids re-litigating that per attribute.
+      UpdateExpression: mentionNames.length
+        ? 'SET #content = :c, #editedAt = :e, #mentions = :m'
+        : 'SET #content = :c, #editedAt = :e REMOVE #mentions',
+      ExpressionAttributeNames: { '#content': 'content', '#editedAt': 'editedAt', '#mentions': 'mentions' },
+      ExpressionAttributeValues: {
+        ':c': content.trim(),
+        ':e': new Date().toISOString(),
+        ...(mentionNames.length && { ':m': mentionNames }),
+      },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── DELETE /api/whatsapp/inbox/:leadId/note/:timestamp — delete an internal note ─
+router.delete('/inbox/:leadId/note/:timestamp', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
+    const SK = `NOTE#${req.params.timestamp}`;
+
+    const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK } }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'Note not found' });
+    if (!canModifyNote(existing.Item, req.user)) {
+      return res.status(403).json({ error: 'Only the author or a manager can delete this note' });
+    }
+
+    await dynamodb.delete({ TableName: TABLE, Key: { PK, SK } }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
 // ── GET /api/whatsapp/agent/availability — get own availability status ─────────
 router.get('/agent/availability', authMiddleware, async (req, res, next) => {
   try {
