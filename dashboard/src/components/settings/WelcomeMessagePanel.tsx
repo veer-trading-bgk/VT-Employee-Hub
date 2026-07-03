@@ -159,6 +159,9 @@ function WelcomeMessageForm({ initialConfig }: { initialConfig: WelcomeConfig | 
                   placeholder="Shown to the customer above the button(s)"
                   className={inputCls}
                 />
+                <p className="mt-1 text-xs text-neutral-500">
+                  Supported variables: {'{{name}}'}, {'{{phone}}'}. Other {'{{...}}'} patterns (e.g. from a Meta template) are sent as literal text — they are not substituted here.
+                </p>
               </div>
               {form.messageType === 'reply_buttons' ? (
                 <ButtonListEditor mode="reply" value={form.buttons} onChange={(v) => update('buttons', v)} />

@@ -309,6 +309,92 @@ describe('sendWelcomeMessage — payload shape per messageType', () => {
   });
 });
 
+// Reproduces the production incident (2026-07-03, contact 9901251785): the
+// admin's bodyText contained a raw "{{1}}" — real-template syntax, meaningless
+// here — and it reached the customer completely unsubstituted. sendWelcomeMessage
+// now runs bodyText through resolveWelcomeVariables() before sending, for both
+// interactive shapes. Only {{name}}/{{phone}} are resolved; anything else
+// (like the {{1}} that caused this bug) is deliberately left untouched.
+describe('sendWelcomeMessage — {{name}}/{{phone}} substitution (fix for the unsubstituted {{1}} incident)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('reply_buttons: {{name}} resolves to the real waName when known', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w1' });
+    const cfg = {
+      messageType: 'reply_buttons', bodyText: 'Hi {{name}}, your number is {{phone}}',
+      buttons: [{ id: 'b1', title: 'Open Demat' }],
+    };
+    await whatsappRouter.sendWelcomeMessage('acme', '9876543210', cfg, { id: 'system' }, 'Priya');
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive.body.text).toBe('Hi Priya, your number is 9876543210');
+  });
+
+  test('cta_buttons: {{name}} falls back to "there" when waName is unknown (null) — first contact, no profile name yet', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w2' });
+    const cfg = {
+      messageType: 'cta_buttons', bodyText: 'Hi {{name}} 👋 welcome',
+      ctaButtons: [{ type: 'url', text: 'Open Demat', value: 'https://vt.com' }],
+    };
+    await whatsappRouter.sendWelcomeMessage('acme', '9876543210', cfg, { id: 'system' }, null);
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive.body.text).toBe('Hi there 👋 welcome');
+    // A raw, unresolved {{name}} must never reach a real customer.
+    expect(interactive.body.text).not.toMatch(/\{\{name\}\}/);
+  });
+
+  test('cta_buttons: {{name}} falls back to "there" when waName is omitted entirely (backward compatible call signature)', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w3' });
+    const cfg = {
+      messageType: 'cta_buttons', bodyText: 'Hi {{name}}',
+      ctaButtons: [{ type: 'url', text: 'Open', value: 'https://vt.com' }],
+    };
+    // No 5th argument — exercises every pre-existing call site's signature.
+    await whatsappRouter.sendWelcomeMessage('acme', '9876543210', cfg, { id: 'system' });
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive.body.text).toBe('Hi there');
+  });
+
+  test('a {{1}} (real-template syntax, meaningless here) is left untouched, not silently dropped — reproduces the production bug verbatim', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w4' });
+    const cfg = {
+      messageType: 'cta_buttons',
+      bodyText: "Hi {{1}} 👋\n\nYou're connected with Viir Trading",
+      ctaButtons: [{ type: 'url', text: 'Open Demat', value: 'https://angel-one.onelink.me/Wjgr/d6mh9cuu' }],
+    };
+    await whatsappRouter.sendWelcomeMessage('acme', '9901251785', cfg, { id: 'system' }, 'Some Customer');
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    // {{1}} is not a supported token — left exactly as authored (visible
+    // leftover placeholder is a safer failure than a silent, wrong guess).
+    expect(interactive.body.text).toBe("Hi {{1}} 👋\n\nYou're connected with Viir Trading");
+  });
+
+  test('{{phone}} always resolves (the send target is always known, no fallback needed)', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w5' });
+    const cfg = {
+      messageType: 'reply_buttons', bodyText: 'Reach us re: {{phone}}',
+      buttons: [{ id: 'b1', title: 'OK' }],
+    };
+    await whatsappRouter.sendWelcomeMessage('acme', '9999999999', cfg, { id: 'system' }, undefined);
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive.body.text).toBe('Reach us re: 9999999999');
+  });
+
+  test('template messageType is unaffected — real Meta {{n}} substitution stays server-side via sendTemplate, not touched by this fix', async () => {
+    WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'w6' });
+    const cfg = { messageType: 'template', templateName: 'hello_world', language: 'en' };
+    await whatsappRouter.sendWelcomeMessage('acme', '9876543210', cfg, { id: 'system' }, 'Priya');
+
+    expect(WASendSvc.sendTemplate).toHaveBeenCalledWith(
+      'acme', { phone: '9876543210' }, { templateName: 'hello_world', language: 'en' }, [], { id: 'system' },
+    );
+  });
+});
+
 describe('fireButtonFollowUp — dispatches by followUp.type', () => {
   beforeEach(() => jest.clearAllMocks());
 

@@ -16,6 +16,7 @@ const WASendSvc            = require('../services/WhatsAppSendService');
 const TagService           = require('../services/TagService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
 const { welcomeConfigSchema } = require('../utils/validation');
+const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -1151,11 +1152,18 @@ function parseButtonReply(msg) {
 // three shapes, never combined in one message (Meta platform rule): a
 // template, reply buttons (max 3, trackable via isButtonReply above), or a
 // single URL CTA button (untrackable — see isButtonReply's comment).
-async function sendWelcomeMessage(companyId, phone10, cfg, systemUser) {
+//
+// waName (optional): the contact's WhatsApp profile name, if Meta sent one
+// on this webhook. Used only to resolve {{name}}/{{phone}} in the free-text
+// reply_buttons/cta_buttons bodyText — see utils/welcomeVariables.js. The
+// templateName branch does NOT need this: real Meta templates substitute
+// {{n}} server-side via sendTemplate()'s own variables array, an entirely
+// different, already-correct mechanism.
+async function sendWelcomeMessage(companyId, phone10, cfg, systemUser, waName = null) {
   if (cfg.messageType === 'reply_buttons' && cfg.bodyText && (cfg.buttons ?? []).length > 0) {
     const interactive = {
       type: 'button',
-      body: { text: cfg.bodyText },
+      body: { text: resolveWelcomeVariables(cfg.bodyText, { name: waName, phone: phone10 }) },
       action: { buttons: cfg.buttons.map((b) => ({ type: 'reply', reply: { id: b.id, title: b.title } })) },
     };
     return WASendSvc.sendInteractive(companyId, { phone: phone10 }, interactive, systemUser);
@@ -1164,7 +1172,7 @@ async function sendWelcomeMessage(companyId, phone10, cfg, systemUser) {
     const cta = cfg.ctaButtons[0]; // schema caps ctaButtons at 1 — see validation.js comment
     const interactive = {
       type: 'cta_url',
-      body: { text: cfg.bodyText },
+      body: { text: resolveWelcomeVariables(cfg.bodyText, { name: waName, phone: phone10 }) },
       action: { name: 'cta_url', parameters: { display_text: cta.text, url: cta.value } },
     };
     return WASendSvc.sendInteractive(companyId, { phone: phone10 }, interactive, systemUser);
@@ -1624,7 +1632,7 @@ router.post('/webhook', async (req, res) => {
           try {
             const wc = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#WELCOME#${companyId}`, SK: 'CURRENT' } }).promise();
             if (wc.Item?.enabled) {
-              const sent = await sendWelcomeMessage(companyId, phone10, wc.Item, { id: 'system', role: 'admin', name: 'System' });
+              const sent = await sendWelcomeMessage(companyId, phone10, wc.Item, { id: 'system', role: 'admin', name: 'System' }, waName);
               if (sent) logger.info(`Welcome message (${wc.Item.messageType ?? 'template'}) sent to ${phone10} for company ${companyId}`);
             }
           } catch (e) { logger.warn('Welcome message failed: ' + e.message); }

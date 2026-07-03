@@ -60,7 +60,7 @@ interface WaMessage {
   direction: 'inbound' | 'outbound';
   content: string;
   timestamp: string;
-  type?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'template' | 'flow_response' | 'button_reply';
+  type?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'template' | 'flow_response' | 'button_reply' | 'interactive';
   s3Key?: string;
   mediaId?: string;
   mediaUrl?: string;
@@ -666,6 +666,35 @@ function MessageBubble({ message }: { message: WaMessage }) {
             <span className={cn('text-[9px]', isOut ? 'text-white/70' : 'text-neutral-400')}>
               {msgTime(message.timestamp)}
             </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Interactive messages (welcome buttons, CTA) carry real body text, not a
+  // media attachment — the generic isMedia path below is for actual media
+  // types (image/video/etc) and was double-rendering this content once as an
+  // italic "media placeholder" AND once as plain text, since the placeholder
+  // regex only matches bracket tags like [image], not sentence content.
+  // Dedicated branch, same shape as template/flow_response above: one render.
+  if (message.type === 'interactive') {
+    return (
+      <div className={cn('mb-1.5 flex', isOut ? 'justify-end' : 'justify-start')}>
+        <div
+          className={cn(
+            'max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-sm',
+            isOut
+              ? 'bg-primary-600 text-white rounded-br-sm'
+              : 'bg-white text-neutral-900 border border-neutral-200 rounded-bl-sm dark:bg-neutral-800 dark:text-neutral-100 dark:border-neutral-700',
+          )}
+        >
+          <p className="whitespace-pre-wrap break-words">{message.content}</p>
+          <div className={cn('mt-0.5 flex items-center gap-1', isOut ? 'justify-end' : 'justify-start')}>
+            <span className={cn('text-[9px]', isOut ? 'text-white/70' : 'text-neutral-400')}>
+              {msgTime(message.timestamp)}
+            </span>
+            {isOut && <DeliveryIcon status={message.msgStatus} />}
           </div>
         </div>
       </div>
