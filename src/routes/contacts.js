@@ -5,6 +5,7 @@ const dynamodb = require('../config/dynamodb');
 const { rateLimit } = require('../middleware/rateLimiter');
 const { to10Digit } = require('../utils/phone');
 const TagService = require('../services/TagService');
+const PipelineService = require('../services/PipelineService');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -197,6 +198,9 @@ router.put('/stage', authMiddleware, rateLimit(20, 60_000), async (req, res, nex
     const { leadId, phone, stage } = req.body;
     const companyId = req.user.companyId;
     if (!stage) return res.status(400).json({ error: 'stage required' });
+    if (!(await PipelineService.isValidStage(companyId, stage))) {
+      return res.status(400).json({ error: 'Invalid stage key' });
+    }
 
     if (leadId) {
       await dynamodb.update({

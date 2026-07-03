@@ -10,18 +10,10 @@ const { notifyCompany } = require('../utils/wsNotify');
 const { to10Digit } = require('../utils/phone');
 const LeadService = require('../services/LeadService');
 const CIS = require('../services/CustomerIdentityService');
+const PipelineService = require('../services/PipelineService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
-
-const DEFAULT_STAGES = [
-  { key: 'new_lead',   label: 'New Lead',   color: '#94a3b8', order: 0 },
-  { key: 'contacted',  label: 'Contacted',  color: '#3b82f6', order: 1 },
-  { key: 'interested', label: 'Interested', color: '#f59e0b', order: 2 },
-  { key: 'kyc_done',   label: 'KYC Done',   color: '#8b5cf6', order: 3 },
-  { key: 'demat_done', label: 'Demat Done', color: '#22c55e', order: 4 },
-  { key: 'lost',       label: 'Lost',       color: '#ef4444', order: 5 },
-];
 
 // Stages that auto-credit a payroll metric
 const METRIC_STAGE_MAP = { kyc_done: 'kyc', demat_done: 'demat' };
@@ -30,17 +22,7 @@ function leadPK(companyId, leadId) {
   return `LEAD#${companyId}#${leadId}`;
 }
 
-async function getPipelineStages(companyId) {
-  try {
-    const result = await dynamodb.get({
-      TableName: TABLE,
-      Key: { PK: `CONFIG#CRM#${companyId}`, SK: 'PIPELINE' },
-    }).promise();
-    return result.Item?.stages ?? DEFAULT_STAGES;
-  } catch {
-    return DEFAULT_STAGES;
-  }
-}
+const { getPipelineStages, isValidStage } = PipelineService;
 
 async function scanAllLeads(companyId) {
   // GSI query on leadsByCompany � O(company-size) instead of O(table-size)
@@ -223,6 +205,16 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
     }
 
     const companyId = req.user.companyId;
+
+    // stage is optional on creation (CIS defaults to the pipeline's first stage
+    // when omitted) but if one IS supplied, it must exist in the real pipeline —
+    // same rule PUT /leads/:id/stage already enforces. Without this, a hardcoded
+    // frontend stage list can silently create a lead with an orphaned stage key
+    // CIS has no validation of its own to catch.
+    if (stage !== undefined && !(await isValidStage(companyId, stage))) {
+      return res.status(400).json({ error: 'Invalid stage key' });
+    }
+
     const cleanPhone = String(phone).replace(/\D/g, '');
 
     // ADR-013: identity resolution, atomic phone locking, and dedup all live in
@@ -518,8 +510,7 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
     if (!stage) return res.status(400).json({ error: 'stage required' });
 
     const companyId = req.user.companyId;
-    const stages = await getPipelineStages(companyId);
-    if (!stages.find((s) => s.key === stage)) {
+    if (!(await isValidStage(companyId, stage))) {
       return res.status(400).json({ error: 'Invalid stage key' });
     }
 

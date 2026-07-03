@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const dynamodb  = require('../config/dynamodb');
 const logger    = require('../config/logger');
 const WASendSvc = require('./WhatsAppSendService');
+const PipelineService = require('./PipelineService');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -246,6 +247,11 @@ class AutomationEngine {
       case 'change_stage': {
         const { stage } = step.config ?? {};
         if (!stage || !leadPK) throw new Error('change_stage: stage required');
+        // Runs unattended — a bad stage key here has no manual save/toast to catch it,
+        // so it must be rejected the same way the manual PUT /stage route rejects it.
+        if (!(await PipelineService.isValidStage(companyId, stage))) {
+          throw new Error(`change_stage: "${stage}" is not a valid stage in the current pipeline`);
+        }
         await dynamodb.update({
           TableName: TABLE,
           Key: { PK: leadPK, SK: 'METADATA' },
