@@ -33,7 +33,7 @@ import { Card } from '@/components/v3/ui/Card';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
 import type { Contact, Stage } from '@/types/v3';
-import { STAGE_LABELS } from '@/types/v3';
+import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 import { toast } from 'sonner';
 import { format } from 'date-fns';
 
@@ -51,10 +51,12 @@ const TABS: { id: C360Tab; label: string; icon: React.ReactNode }[] = [
   { id: 'documents',      label: 'Documents',      icon: <FolderOpen className="h-4 w-4" /> },
 ];
 
-const STAGE_OPTIONS = (Object.entries(STAGE_LABELS) as [Stage, string][]).map(([value, label]) => ({
-  value,
-  label,
-}));
+// Resolve a stage key against the company's real pipeline (GET /api/crm/pipeline),
+// falling back to a neutral badge for a key the current pipeline no longer has —
+// same defensive shape as the tag catalog's "unresolved id" fallback.
+function resolveStage(stages: PipelineStage[], key: string): PipelineStage {
+  return stages.find((s) => s.key === key) ?? { key, label: key, color: '#64748b', order: 999 };
+}
 
 // ── Backend data shapes ───────────────────────────────────────────────────────
 
@@ -188,13 +190,18 @@ function OverviewTab({
   onUpdate,
   onStageChange,
   canEditOwner,
+  stages,
+  stagePending,
 }: {
   contact: Contact;
   onUpdate: (patch: Partial<Contact>) => Promise<void>;
   onStageChange: (stage: Stage) => Promise<void>;
   canEditOwner: boolean;
+  stages: PipelineStage[];
+  stagePending: boolean;
 }) {
   const qc = useQueryClient();
+  const stageOptions = stages.map((s) => ({ value: s.key, label: s.label }));
   return (
     <div className="space-y-4 p-4">
       <Card>
@@ -237,11 +244,15 @@ function OverviewTab({
         </h3>
         <div className="space-y-3">
           <div>
-            <p className="mb-1 text-xs text-neutral-500">Stage</p>
+            <div className="mb-1 flex items-center gap-1.5">
+              <p className="text-xs text-neutral-500">Stage</p>
+              {stagePending && <span className="text-[10px] text-neutral-400">Saving…</span>}
+            </div>
             <Select
-              options={STAGE_OPTIONS}
+              options={stageOptions}
               value={contact.stage}
               onChange={(e) => onStageChange(e.target.value as Stage)}
+              disabled={stagePending}
               aria-label="Contact stage"
             />
           </div>
@@ -580,6 +591,8 @@ function Contact360Content({ contactId }: { contactId: string }) {
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   const canEditOwner = ['owner', 'admin'].includes(v3Role);
 
+  const { stages: pipelineStages } = usePipelineStages();
+
   const tabParam = searchParams.get('tab') as C360Tab | null;
   const [activeTab, setActiveTab] = useState<C360Tab>(tabParam ?? 'overview');
 
@@ -725,6 +738,8 @@ function Contact360Content({ contactId }: { contactId: string }) {
     );
   }
 
+  const currentStage = resolveStage(pipelineStages, contact.stage);
+
   return (
     <div className="flex h-full flex-col">
       {/* Breadcrumb + back */}
@@ -751,8 +766,8 @@ function Contact360Content({ contactId }: { contactId: string }) {
           </h1>
           <div className="flex flex-wrap items-center gap-3 mt-0.5">
             <span className="text-sm text-neutral-500">{contact.phone}</span>
-            <Badge variant="stage" stage={contact.stage}>
-              {STAGE_LABELS[contact.stage]}
+            <Badge style={{ backgroundColor: currentStage.color + '20', color: currentStage.color }}>
+              {currentStage.label}
             </Badge>
             {contact.ownerName && (
               <span className="text-xs text-neutral-400">
@@ -796,7 +811,7 @@ function Contact360Content({ contactId }: { contactId: string }) {
       <div className="flex flex-1 min-h-0">
         {/* Main tab area */}
         <div className="scrollbar-thin flex-1 overflow-y-auto" role="tabpanel">
-          {activeTab === 'overview'      && <OverviewTab contact={contact} onUpdate={handleUpdate} onStageChange={handleStageChange} canEditOwner={canEditOwner} />}
+          {activeTab === 'overview'      && <OverviewTab contact={contact} onUpdate={handleUpdate} onStageChange={handleStageChange} canEditOwner={canEditOwner} stages={pipelineStages} stagePending={stageMutation.isPending} />}
           {activeTab === 'conversations' && <ConversationsTab contactId={contactId} messageCount={messageCount} />}
           {activeTab === 'notes'         && <NotesTab notes={internalNotes} />}
           {activeTab === 'followups'     && <FollowupsTab contactId={contactId} />}
@@ -815,7 +830,9 @@ function Contact360Content({ contactId }: { contactId: string }) {
           <div className="p-4 space-y-3">
             <div className="flex items-center justify-between text-sm">
               <span className="text-neutral-500">Stage</span>
-              <Badge variant="stage" stage={contact.stage}>{STAGE_LABELS[contact.stage]}</Badge>
+              <Badge style={{ backgroundColor: currentStage.color + '20', color: currentStage.color }}>
+                {currentStage.label}
+              </Badge>
             </div>
             <div className="flex items-center justify-between text-sm">
               <span className="text-neutral-500">Owner</span>

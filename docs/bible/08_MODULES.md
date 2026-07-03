@@ -865,6 +865,7 @@ full detail only for the context/provider files that own shared state.
 | `layout/` | `ProtectedRoute.tsx` — auth-gate wrapper used by the v3 root layout |
 | `settings/` | WABA health/status widget |
 | `tags/` | Tag display/pick UI shared by inbox and contacts |
+| `hooks/` *(sibling of `components/`, not inside it — `dashboard/src/hooks/`)* | Shared cross-page hooks. Two own single React Query keys and should be reused rather than re-queried inline: `useTagCatalog` (`['tag-catalog']`, `GET /api/tags`) and `usePipelineStages` (`['pipeline-stages']`, `GET /api/crm/pipeline` — the live counterpart to the dead `Customer360Context`'s `['crm-pipeline']` query, see finding below). Rest are single-purpose (`useContactMutations`, `useOwnerAssign`, `useEmployeesList`, `useDebounce`, `useMetrics*`, `useWebSocket`/`useWsEvent`, `useRealTime`, `useFetch`) |
 | `templates/` | WhatsApp message template management (category/quality/status badges, live preview) |
 | `ui/` | Pre-v3 generic UI kit (DataTable, Leaderboard, MetricCard) — legacy counterpart to `v3/ui/` |
 | `v3/` | Current design-system + feature-shell folder — see below |
@@ -943,3 +944,4 @@ Instantiates the single app-wide `QueryClient` (2-min staleTime, 10-min gcTime, 
 2. The same shape of duplication exists for Inbox: `InboxContext` is real and used by the legacy `components/whatsapp/*` UI, but the current `/inbox` route reimplements its own state independently.
 3. Legacy and v3 UI kits coexist deliberately and are both live (`components/ui/` + `components/whatsapp/` pre-v3; `components/v3/ui/` current) — this is not migration debt so much as an incomplete migration in progress.
 4. Several routes are pure redirect stubs preserving old URLs: `customers/*` → `contacts/*`, `communications` → `inbox`, `automation/logs` → `automation`.
+5. Two independent `PipelineStage` type definitions exist — the live one in `hooks/usePipelineStages.ts` (`{key,label,color,order}`, consumed by the shipped `[contactId]/page.tsx`) and the dead one inside `Customer360Context.tsx` (`{key,label,color}`, unused per finding above). Structurally compatible (the live one is a superset) but not the same declaration — a future consolidation of the two Customer 360 implementations should collapse these into one shared type rather than leaving both.
