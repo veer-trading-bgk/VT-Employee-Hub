@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { Customer360Provider, useCustomer360 } from '@/contexts/Customer360Context';
 import { ContactTabPanel } from '@/components/contacts/ContactTabPanel';
+import { ContactTags } from '@/components/tags/ContactTags';
 import { Avatar } from '@/components/v3/ui/Avatar';
 import { Badge } from '@/components/v3/ui/Badge';
 import { Button } from '@/components/v3/ui/Button';
@@ -87,7 +88,7 @@ function UnknownContactView({ contactId }: { contactId: string }) {
 function Contact360Shell({ contactId }: { contactId: string }) {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { contact, stageObj, isLoading } = useCustomer360();
+  const { contact, stageObj, isLoading, refresh } = useCustomer360();
 
   const [activeTab, setActiveTab] = useState<TabId>(resolveTab(searchParams.get('tab')));
 
@@ -168,6 +169,16 @@ function Contact360Shell({ contactId }: { contactId: string }) {
                 Owner: {contact.assignedToName}
               </span>
             )}
+          </div>
+          {/* Always visible regardless of active tab — CrmTab also has its own
+              tag editor for the deal-context view, this is the quick-access one. */}
+          <div className="mt-1.5">
+            <ContactTags
+              tagIds={contact.tags ?? []}
+              leadId={contact.leadId}
+              phone={contact.phone}
+              onMutated={refresh}
+            />
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
