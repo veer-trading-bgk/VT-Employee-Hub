@@ -22,8 +22,7 @@ import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { SkeletonTable } from '@/components/v3/ui/Skeleton';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
-import type { Contact, Stage } from '@/types/v3';
-import { STAGE_LABELS } from '@/types/v3';
+import type { Contact } from '@/types/v3';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role } from '@/types/v3';
 import { toast } from 'sonner';
@@ -36,7 +35,7 @@ import { type Tag as CatalogTag } from '@/components/tags/TagBadge';
 import { TagSelector } from '@/components/tags/TagSelector';
 import { ContactTags } from '@/components/tags/ContactTags';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
-import { usePipelineStages } from '@/hooks/usePipelineStages';
+import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -57,12 +56,12 @@ function escapeCell(v: string | null | undefined): string {
 
 const CSV_HEADERS = ['Name', 'Phone', 'Email', 'Stage', 'Assigned To', 'Tags', 'Source', 'Created At'];
 
-function contactToRow(c: Contact, tagLabel: (id: string) => string): string[] {
+function contactToRow(c: Contact, tagLabel: (id: string) => string, stageLabel: (key: string) => string): string[] {
   return [
     c.displayName ?? c.name ?? '',
     c.phone ?? '',
     c.email ?? '',
-    STAGE_LABELS[c.stage as Stage] ?? c.stage ?? '',
+    c.stage ? stageLabel(c.stage) : '',
     c.assignedToName ?? '',
     (c.tags ?? []).map(tagLabel).join('; '),
     (c as any).source ?? '',
@@ -78,21 +77,26 @@ function triggerDownload(csv: string, filename: string) {
   URL.revokeObjectURL(url);
 }
 
-function buildCSV(contacts: Contact[], tagLabel: (id: string) => string): string {
-  return [CSV_HEADERS, ...contacts.map((c) => contactToRow(c, tagLabel))]
+function buildCSV(contacts: Contact[], tagLabel: (id: string) => string, stageLabel: (key: string) => string): string {
+  return [CSV_HEADERS, ...contacts.map((c) => contactToRow(c, tagLabel, stageLabel))]
     .map((r) => r.map(escapeCell).join(','))
     .join('\n');
 }
 
 // Selected-only export — instant, no API call needed
-function exportSelected(contacts: Contact[], tagLabel: (id: string) => string) {
+function exportSelected(contacts: Contact[], tagLabel: (id: string) => string, stageLabel: (key: string) => string) {
   if (contacts.length === 0) { toast.info('Select at least one contact to export'); return; }
-  triggerDownload(buildCSV(contacts, tagLabel), `contacts_selected_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+  triggerDownload(buildCSV(contacts, tagLabel, stageLabel), `contacts_selected_${format(new Date(), 'yyyy-MM-dd')}.csv`);
   toast.success(`Exported ${contacts.length} selected contact${contacts.length !== 1 ? 's' : ''}`);
 }
 
 // Full export — paginates through API to collect all contacts matching current filters
-async function exportAllCSV(search: string, stageFilter: string, tagLabel: (id: string) => string): Promise<void> {
+async function exportAllCSV(
+  search: string,
+  stageFilter: string,
+  tagLabel: (id: string) => string,
+  stageLabel: (key: string) => string,
+): Promise<void> {
   const PAGE = 100;
   const rows: Contact[] = [];
   let page = 1;
@@ -113,7 +117,7 @@ async function exportAllCSV(search: string, stageFilter: string, tagLabel: (id: 
   }
 
   if (rows.length === 0) { toast.info('No contacts to export'); return; }
-  triggerDownload(buildCSV(rows, tagLabel), `contacts_${format(new Date(), 'yyyy-MM-dd')}.csv`);
+  triggerDownload(buildCSV(rows, tagLabel, stageLabel), `contacts_${format(new Date(), 'yyyy-MM-dd')}.csv`);
   toast.success(`Exported ${rows.length} contact${rows.length !== 1 ? 's' : ''}`);
 }
 
@@ -123,7 +127,7 @@ function contactDisplayName(row: Contact): string {
   return row.displayName ?? row.name ?? row.phone ?? '';
 }
 
-function buildColumns(canEditOwner: boolean, onTagsChanged: () => void): TableColumn<Contact>[] {
+function buildColumns(canEditOwner: boolean, onTagsChanged: () => void, pipelineStages: PipelineStage[]): TableColumn<Contact>[] {
   return [
     {
       key: 'name',
@@ -146,11 +150,14 @@ function buildColumns(canEditOwner: boolean, onTagsChanged: () => void): TableCo
       header: 'Stage',
       sortable: true,
       width: 'w-32',
-      cell: (row) => (
-        <Badge variant="stage" stage={row.stage}>
-          {STAGE_LABELS[row.stage] ?? row.stage}
-        </Badge>
-      ),
+      cell: (row) => {
+        const stageObj = pipelineStages.find((s) => s.key === row.stage);
+        return (
+          <Badge variant="stage" stage={row.stage} color={stageObj?.color}>
+            {stageObj?.label ?? row.stage}
+          </Badge>
+        );
+      },
     },
     {
       key: 'owner',
@@ -229,6 +236,10 @@ function ContactsContent() {
     [tagCatalog],
   );
   const { stages: pipelineStages } = usePipelineStages();
+  const stageLabel = useCallback(
+    (key: string) => pipelineStages.find((s) => s.key === key)?.label ?? key,
+    [pipelineStages],
+  );
   const STAGE_OPTIONS = pipelineStages.map((s) => ({ value: s.key, label: s.label }));
 
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
@@ -315,13 +326,13 @@ function ContactsContent() {
     if (selectedIds.size > 0) {
       // Export only the checked rows — already in memory, instant
       const selected = (data?.contacts ?? []).filter((c) => selectedIds.has(c.id));
-      exportSelected(selected, tagLabel);
+      exportSelected(selected, tagLabel, stageLabel);
       return;
     }
     // No selection — export everything matching the current filters
     setExporting(true);
     try {
-      await exportAllCSV(search, stageFilter, tagLabel);
+      await exportAllCSV(search, stageFilter, tagLabel, stageLabel);
     } catch {
       toast.error('Export failed');
     } finally {
@@ -329,10 +340,10 @@ function ContactsContent() {
     }
   }
 
-  const columns = buildColumns(canEditOwner, () => qc.invalidateQueries({ queryKey: ['contacts'] }));
+  const columns = buildColumns(canEditOwner, () => qc.invalidateQueries({ queryKey: ['contacts'] }), pipelineStages);
 
   const filterChips = stageFilter
-    ? [{ key: 'stage', label: 'Stage', value: STAGE_LABELS[stageFilter as Stage] ?? stageFilter }]
+    ? [{ key: 'stage', label: 'Stage', value: stageLabel(stageFilter) }]
     : [];
 
   return (

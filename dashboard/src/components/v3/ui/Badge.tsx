@@ -12,7 +12,13 @@ export type BadgeVariant =
 
 export interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
   variant?: BadgeVariant;
-  stage?: Stage;
+  // Widened from Stage to string — a company's CONFIG#CRM pipeline can have
+  // custom stage keys the closed Stage union doesn't cover.
+  stage?: string;
+  // Explicit color for variant="stage", e.g. a live PipelineStage's `color`.
+  // Without it, only the 6 default stage keys get a real color via
+  // stageStyleMap below; any other key renders shape-only (no color).
+  color?: string;
   dot?: boolean;
 }
 
@@ -38,12 +44,19 @@ const stageStyleMap: Record<Stage, string> = {
 export function Badge({
   variant = 'default',
   stage,
+  color,
   dot = false,
   className,
   children,
+  style,
   ...props
 }: BadgeProps) {
-  const stageStyle = variant === 'stage' && stage ? stageStyleMap[stage] : '';
+  // color (from a live pipeline stage) takes precedence; stageStyleMap is
+  // only a fallback for the 6 default keys when no explicit color is given.
+  const stageStyle = variant === 'stage' && stage && !color ? stageStyleMap[stage as Stage] : '';
+  const colorStyle = variant === 'stage' && color
+    ? { backgroundColor: color + '20', color }
+    : undefined;
 
   return (
     <span
@@ -53,6 +66,7 @@ export function Badge({
         stageStyle,
         className,
       )}
+      style={{ ...colorStyle, ...style }}
       {...props}
     >
       {dot && (

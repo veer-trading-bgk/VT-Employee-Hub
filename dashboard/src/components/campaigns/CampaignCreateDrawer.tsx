@@ -14,7 +14,7 @@ import { Badge } from '@/components/v3/ui/Badge';
 import { AudienceBuilder } from './AudienceBuilder';
 import { apiFetch } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { STAGE_LABELS, type Stage } from '@/types/v3';
+import { usePipelineStages } from '@/hooks/usePipelineStages';
 import type {
   CampaignType, CampaignObjective, ScheduleMode,
   CampaignFormData, CampaignResponse, LaunchResponse, AudienceFilter,
@@ -645,6 +645,7 @@ function StepReview({
   audienceData:     AudiencePreviewResponse | undefined;
   audienceLoading:  boolean;
 }) {
+  const { stages: pipelineStages } = usePipelineStages();
   const rows = [
     { label: 'Name',      value: form.name },
     { label: 'Type',      value: form.type === 'whatsapp_broadcast' ? 'WhatsApp Broadcast' : 'Click-to-WhatsApp' },
@@ -704,7 +705,7 @@ function StepReview({
                   <p className="text-xs text-neutral-400">{r.phone}</p>
                 </div>
                 <div className="shrink-0 text-right">
-                  <p className="text-xs text-neutral-500">{STAGE_LABELS[r.stage as Stage] ?? r.stage}</p>
+                  <p className="text-xs text-neutral-500">{pipelineStages.find((s) => s.key === r.stage)?.label ?? r.stage}</p>
                   {r.tags.length > 0 && (
                     <p className="text-xs text-neutral-400 max-w-[100px] truncate">{r.tags.slice(0, 2).join(', ')}{r.tags.length > 2 ? ` +${r.tags.length - 2}` : ''}</p>
                   )}
@@ -814,6 +815,8 @@ function AudienceChangedView({
   onRefresh:  () => void;
   onCancel:   () => void;
 }) {
+  const { stages: pipelineStages } = usePipelineStages();
+  const stageLabel = (key: string) => pipelineStages.find((s) => s.key === key)?.label ?? key;
   const [showChanges, setShowChanges] = useState(false);
   const delta = validation.delta; // negative = fewer, positive = more
   const hasDetailedDiff = (validation.removed?.length ?? 0) + (validation.added?.length ?? 0) > 0;
@@ -902,7 +905,7 @@ function AudienceChangedView({
                         <td className="px-3 py-2"><span className="inline-flex items-center gap-1 text-error-600 dark:text-error-400 font-medium"><XCircle className="h-3 w-3" />Removed</span></td>
                         <td className="px-3 py-2 text-neutral-700 dark:text-neutral-300 max-w-[100px] truncate">{r.name}</td>
                         <td className="px-3 py-2 text-neutral-500 font-mono">{r.phone}</td>
-                        <td className="px-3 py-2 text-neutral-500">{STAGE_LABELS[r.stage as Stage] ?? r.stage}</td>
+                        <td className="px-3 py-2 text-neutral-500">{stageLabel(r.stage)}</td>
                         <td className="px-3 py-2 text-neutral-500 max-w-[120px] truncate">{r.reason}</td>
                       </tr>
                     ))}
@@ -911,7 +914,7 @@ function AudienceChangedView({
                         <td className="px-3 py-2"><span className="inline-flex items-center gap-1 text-success-600 dark:text-success-400 font-medium"><ArrowRight className="h-3 w-3" />Added</span></td>
                         <td className="px-3 py-2 text-neutral-700 dark:text-neutral-300 max-w-[100px] truncate">{r.name}</td>
                         <td className="px-3 py-2 text-neutral-500 font-mono">{r.phone}</td>
-                        <td className="px-3 py-2 text-neutral-500">{STAGE_LABELS[r.stage as Stage] ?? r.stage}</td>
+                        <td className="px-3 py-2 text-neutral-500">{stageLabel(r.stage)}</td>
                         <td className="px-3 py-2 text-neutral-500 max-w-[120px] truncate">{r.reason}</td>
                       </tr>
                     ))}

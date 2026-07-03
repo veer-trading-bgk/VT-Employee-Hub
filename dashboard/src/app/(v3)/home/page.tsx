@@ -26,7 +26,8 @@ import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role, STAGE_LABELS, type Stage } from '@/types/v3';
+import { toV3Role } from '@/types/v3';
+import { usePipelineStages } from '@/hooks/usePipelineStages';
 import { format, isToday, isTomorrow, isPast } from 'date-fns';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -62,7 +63,9 @@ interface RecentContact {
   id: string;
   name: string;
   phone: string;
-  stage: Stage;
+  // Company pipeline stage key — display-only here, so a plain string is
+  // enough; a customized pipeline's keys aren't in the closed Stage union.
+  stage: string;
   updatedAt: string;
 }
 
@@ -337,6 +340,7 @@ function TodaysFollowupsSection({ items, loading }: { items: Followup[]; loading
 // ── Section 4: Recent Contacts ────────────────────────────────────────────────
 
 function RecentContactsSection({ items, loading }: { items: RecentContact[]; loading: boolean }) {
+  const { stages: pipelineStages } = usePipelineStages();
   return (
     <Card noPadding>
       <div className="border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
@@ -365,25 +369,28 @@ function RecentContactsSection({ items, loading }: { items: RecentContact[]; loa
         />
       ) : (
         <ul role="list">
-          {items.slice(0, 5).map((item) => (
-            <li key={item.id}>
-              <Link
-                href={`/contacts/${item.id}`}
-                className="flex items-center gap-3 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-800/30 transition-colors border-b border-neutral-100 dark:border-neutral-800/50 last:border-0"
-              >
-                <Avatar name={item.name} size={32} />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
-                    {item.name}
-                  </p>
-                  <p className="text-xs text-neutral-500">{item.phone}</p>
-                </div>
-                <Badge variant="stage" stage={item.stage}>
-                  {STAGE_LABELS[item.stage]}
-                </Badge>
-              </Link>
-            </li>
-          ))}
+          {items.slice(0, 5).map((item) => {
+            const stageObj = pipelineStages.find((s) => s.key === item.stage);
+            return (
+              <li key={item.id}>
+                <Link
+                  href={`/contacts/${item.id}`}
+                  className="flex items-center gap-3 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-800/30 transition-colors border-b border-neutral-100 dark:border-neutral-800/50 last:border-0"
+                >
+                  <Avatar name={item.name} size={32} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">
+                      {item.name}
+                    </p>
+                    <p className="text-xs text-neutral-500">{item.phone}</p>
+                  </div>
+                  <Badge variant="stage" stage={item.stage} color={stageObj?.color}>
+                    {stageObj?.label ?? item.stage}
+                  </Badge>
+                </Link>
+              </li>
+            );
+          })}
         </ul>
       )}
     </Card>

@@ -621,7 +621,7 @@ function buildListColumns(tagMap: Map<string, Tag>, stages: PipelineStage[]): Ta
       sortable: true,
       width: 'w-32',
       cell: (row) => (
-        <Badge variant="stage" stage={row.stage}>
+        <Badge variant="stage" stage={row.stage} color={stages.find((s) => s.key === row.stage)?.color}>
           {getStageLabel(row.stage, stages)}
         </Badge>
       ),
