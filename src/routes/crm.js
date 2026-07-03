@@ -8,6 +8,7 @@ const { rateLimit } = require('../middleware/rateLimiter');
 const { createLeadSchema, updateLeadSchema, createFollowupSchema } = require('../utils/validation');
 const { notifyCompany } = require('../utils/wsNotify');
 const { to10Digit } = require('../utils/phone');
+const { leadPhoneLockPK, leadPhoneLockSK } = require('../core/entityKeys');
 const LeadService = require('../services/LeadService');
 const CIS = require('../services/CustomerIdentityService');
 const PipelineService = require('../services/PipelineService');
@@ -642,6 +643,23 @@ router.delete('/leads/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 
 
     // 2. Delete all items under INBOX# PK for this phone (shadow CONTACT + pre-promotion MSG#*)
     if (phone) await purgePartition(`INBOX#${companyId}#${phone}`).catch(() => {});
+
+    // 3. Release the LEAD_PHONE# uniqueness lock (a separate PK, written by
+    //    CustomerIdentityService._createCustomer). This was previously left
+    //    behind, orphaning the lock: every future create for this number then
+    //    failed its ConditionExpression and surfaced a raw "Transaction
+    //    cancelled" 500 (production incident 2026-07-03). phoneNorm is the
+    //    lock's key component — fall back to normalising the stored phone for
+    //    older records written before phoneNorm was persisted.
+    //    Associated IDEM# locks (24h TTL) can't be enumerated by leadId here;
+    //    CIS ignores a stale idem lock whose lead no longer exists instead.
+    const phoneNorm = existing.Item.phoneNorm || (phone ? to10Digit(phone) : null);
+    if (phoneNorm) {
+      await dynamodb.delete({
+        TableName: TABLE,
+        Key: { PK: leadPhoneLockPK(companyId, phoneNorm), SK: leadPhoneLockSK() },
+      }).promise().catch((e) => logger.warn(`crm/leads purge: phone lock delete failed phoneNorm=${phoneNorm}: ${e.message}`));
+    }
 
     await logAudit(req.user.id, 'crm_lead_purged', leadId, 'success', req.ip, { phone });
     res.json({ success: true });

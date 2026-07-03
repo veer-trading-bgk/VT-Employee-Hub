@@ -24,7 +24,10 @@ function phoneLockSK()                      { return 'LOCK'; }
 // Prevents concurrent requests from creating two leads for the same phoneNorm.
 // Distinct prefix from Contact phone lock (Contact uses E.164; Lead uses 10-digit phoneNorm).
 // PK = LEAD_PHONE#${companyId}#${phoneNorm}  SK = LOCK
-// NOTE: When a lead is hard-deleted, this lock must also be deleted. See crm.js DELETE handler.
+// NOTE: When a lead is hard-deleted, this lock MUST also be deleted, or it is
+// orphaned and the phone number becomes permanently un-creatable (2026-07-03
+// production incident). Enforced in crm.js's DELETE handler; CIS also self-heals
+// a surviving orphaned lock via _reclaimIfOrphaned() as a backstop.
 function leadPhoneLockPK(companyId, phoneNorm) { return `LEAD_PHONE#${companyId}#${phoneNorm}`; }
 function leadPhoneLockSK()                      { return 'LOCK'; }
 

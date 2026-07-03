@@ -119,6 +119,19 @@ async function _findByPhone(companyId, phoneNorm) {
   return r.Items?.[0] ?? null;
 }
 
+// Strongly-consistent existence check for a LEAD# METADATA item, by leadId.
+// Used to tell a still-live lead apart from a hard-purged one — the GSI
+// (eventually consistent) is the wrong tool for that decision; this reads the
+// base table directly.
+async function _leadExists(companyId, leadId) {
+  const r = await dynamodb.get({
+    TableName:    TABLE(),
+    Key:          { PK: leadPK(companyId, leadId), SK: 'METADATA' },
+    ConsistentRead: true,
+  }).promise();
+  return !!r.Item && !r.Item.deletedAt;
+}
+
 // ── Pipeline stage helper ─────────────────────────────────────────────────────
 
 async function _getPipelineStages(companyId) {
@@ -320,6 +333,61 @@ async function _enrichCustomer(companyId, existing, data, context, idemKey, inte
   return { existed: true, leadId: lid, action: 'enriched', interactionId };
 }
 
+// ── Orphaned-lock reclaim ─────────────────────────────────────────────────────
+
+/**
+ * Self-heal a permanently-orphaned phone lock: a LEAD_PHONE# lock whose
+ * referenced lead was hard-purged but which itself survived, leaving the phone
+ * number un-creatable forever. Confirmed as the root cause of the 2026-07-03
+ * production "Transaction cancelled" incidents (an admin purge that didn't
+ * release the lock). Returns a create/enrich result on success, or null if the
+ * lock is not actually orphaned (the referenced lead still exists → a genuine,
+ * still-propagating race that must not be reclaimed).
+ */
+async function _reclaimIfOrphaned(companyId, phoneNorm, leadItem, phoneLockItem, iemItem, data, context, idemKey, interactionId) {
+  const lockRes = await dynamodb.get({
+    TableName:      TABLE(),
+    Key:            { PK: leadPhoneLockPK(companyId, phoneNorm), SK: leadPhoneLockSK() },
+    ConsistentRead: true,
+  }).promise();
+  const staleLeadId = lockRes.Item?.leadId;
+  if (!staleLeadId) return null;                               // no lock (or malformed) — nothing to reclaim
+  if (await _leadExists(companyId, staleLeadId)) return null;  // lead is live → genuine lag, not an orphan
+
+  const lid = leadItem.leadId;
+  logger.warn(`[CIS] orphaned phone lock detected phoneNorm=${phoneNorm} — leadId=${staleLeadId} no longer exists (hard-purged?); reclaiming as leadId=${lid}`);
+  try {
+    await dynamodb.transactWrite({
+      TransactItems: [
+        { Put: { TableName: TABLE(), Item: leadItem, ConditionExpression: 'attribute_not_exists(PK)' } },
+        // Overwrite the orphan, but only if it still references the exact stale
+        // leadId we observed — a concurrent legitimate create would change it,
+        // failing this condition and backing us off to an enrich below.
+        {
+          Put: {
+            TableName:                 TABLE(),
+            Item:                      phoneLockItem,
+            ConditionExpression:       'leadId = :stale',
+            ExpressionAttributeValues: { ':stale': staleLeadId },
+          },
+        },
+        { Put: { TableName: TABLE(), Item: iemItem, ConditionExpression: 'attribute_not_exists(PK)' } },
+      ],
+    }).promise();
+  } catch (reclaimErr) {
+    if (reclaimErr.code === 'TransactionCanceledException') {
+      // Someone reclaimed/created between our read and write — resolve as enrich.
+      const w = await _findByPhone(companyId, phoneNorm);
+      if (w) return _enrichCustomer(companyId, w, data, context, idemKey, interactionId);
+    }
+    throw reclaimErr;
+  }
+
+  _recordInteraction(companyId, lid, data, context, true, 1, interactionId);
+  logger.info(`[CIS] created (reclaimed orphaned lock) leadId=${lid} phoneNorm=${phoneNorm} source=${data.source ?? '?'}`);
+  return { existed: false, leadId: lid, action: 'created', interactionId, lead: leadItem };
+}
+
 // ── Customer creation ─────────────────────────────────────────────────────────
 
 async function _createCustomer(companyId, phoneNorm, data, context, idemKey, interactionId) {
@@ -447,27 +515,38 @@ async function _createCustomer(companyId, phoneNorm, data, context, idemKey, int
         }
       }
 
-      // Slot 1: phone lock claimed by a concurrent create that won the race.
-      // Re-resolve: find the winner and enrich with our data instead.
+      // Slot 1: the LEAD_PHONE# lock already exists. Two distinct causes:
+      //   (a) a concurrent create genuinely won the race — re-resolve as an
+      //       enrich against the winner's record; or
+      //   (b) the lock is ORPHANED — its referenced lead was hard-purged but
+      //       the lock was left behind (see crm.js DELETE handler; the fix
+      //       there now releases the lock, but locks orphaned before that fix,
+      //       or by any other delete path, must still self-heal here).
       if (reasons[1]?.Code === 'ConditionalCheckFailed') {
         logger.warn(`[CIS] concurrent create race phoneNorm=${phoneNorm} — re-resolving as enrich`);
-        // The phone lock (LEAD_PHONE#) is a base-table write, immediately
-        // consistent — but _findByPhone reads via the company-phone-index GSI,
-        // which is only eventually consistent. The winner's LEAD# METADATA item
-        // can still be invisible to this query for a short window after the
-        // lock already exists. Confirmed in production (2026-07-03): a single
-        // phoneNorm raced 3 times across ~2s, and the GSI lookup found no
-        // winner on any of the 3 attempts, so every one fell through to this
-        // catch's throw err — a raw "Transaction cancelled" surfaced as an
-        // unhandled 500 for what is actually a routine, self-resolving race.
-        // Retry with backoff instead of giving up after a single GSI read.
+        // Case (a): find the winner. It may be briefly invisible to the GSI
+        // (eventually consistent) right after winning, so retry with backoff.
         let winner = await _findByPhone(companyId, phoneNorm);
         for (let attempt = 0; !winner && attempt < 4; attempt++) {
           await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
           winner = await _findByPhone(companyId, phoneNorm);
         }
         if (winner) return _enrichCustomer(companyId, winner, data, context, idemKey, interactionId);
-        logger.error(`[CIS] phone lock race unresolved after retries phoneNorm=${phoneNorm} — GSI never returned a winner`);
+
+        // No winner after the retry budget. Case (b) check: read the lock and
+        // its referenced lead DIRECTLY from the base table (strongly
+        // consistent — not the GSI). If the referenced lead no longer exists,
+        // the lock is orphaned; reclaim it rather than surfacing a raw 500 for
+        // a number that would otherwise be permanently un-creatable.
+        // Root cause of the 2026-07-03 production incident: an admin purged a
+        // lead (crm_lead_purged) which deleted the LEAD# METADATA but not this
+        // lock — every subsequent create then fell through to `throw err`.
+        const reclaimed = await _reclaimIfOrphaned(
+          companyId, phoneNorm, leadItem, phoneLockItem, iemItem, data, context, idemKey, interactionId,
+        );
+        if (reclaimed) return reclaimed;
+
+        logger.error(`[CIS] phone lock race unresolved after retries phoneNorm=${phoneNorm} — GSI returned no winner and the lock is not orphaned`);
       }
     }
     throw err;
@@ -532,8 +611,24 @@ async function resolveOrCreate(companyId, data, context) {
   // ── Fast path: idempotency check ──────────────────────────────────────────
   const cached = await _checkIdem(companyId, idemKey);
   if (cached) {
-    logger.info(`[CIS] idempotent hit idemKey=${idemKey.slice(0, 8)}…`);
-    return _toIdemResult(cached);
+    // Guard against a STALE idem lock: a hard-purge removes the LEAD# item but
+    // an idem lock (24h TTL) can outlive it. Returning its leadId would hand
+    // the caller a dangling id. Validate the referenced lead still exists
+    // (strongly consistent) before short-circuiting.
+    if (!cached.leadId || await _leadExists(companyId, cached.leadId)) {
+      logger.info(`[CIS] idempotent hit idemKey=${idemKey.slice(0, 8)}…`);
+      return _toIdemResult(cached);
+    }
+    // Stale: delete the orphaned idem lock so it neither returns a dangling id
+    // nor blocks the impending create's own idempotency write (slot 2), then
+    // fall through to normal resolution/creation. This is the lazy equivalent
+    // of the purge deleting associated IDEM# locks — which it can't do eagerly,
+    // as idem locks are keyed by opaque hash and not enumerable by leadId.
+    logger.warn(`[CIS] stale idem lock cleared idemKey=${idemKey.slice(0, 8)}… — referenced leadId=${cached.leadId} no longer exists (purged?)`);
+    await dynamodb.delete({
+      TableName: TABLE(),
+      Key:       { PK: idemPK(companyId, idemKey), SK: idemSK() },
+    }).promise().catch((e) => logger.warn(`[CIS] stale idem lock delete failed: ${e.message}`));
   }
 
   // ── Identity resolution ───────────────────────────────────────────────────

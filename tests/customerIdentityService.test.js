@@ -18,7 +18,7 @@
  */
 
 jest.mock('../src/config/dynamodb', () => ({
-  get: jest.fn(), put: jest.fn(), query: jest.fn(), transactWrite: jest.fn(), update: jest.fn(),
+  get: jest.fn(), put: jest.fn(), query: jest.fn(), transactWrite: jest.fn(), update: jest.fn(), delete: jest.fn(),
 }));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
@@ -131,6 +131,10 @@ describe('CustomerIdentityService.resolveOrCreate — phone-lock race recovery',
     const cachedResult = { leadId: 'cached-lead-id', action: 'created', interactionId: 'int_cached' };
     dynamodb.get.mockImplementation((args) => {
       if (args.Key.PK.startsWith('IDEM#')) return { promise: () => Promise.resolve({ Item: cachedResult }) };
+      // The idem fast path now validates the referenced lead still exists
+      // (strongly consistent) before returning cached — model a live lead so
+      // this is a genuine idempotent hit, not a stale/purged one.
+      if (args.Key.PK.startsWith('LEAD#')) return { promise: () => Promise.resolve({ Item: { PK: args.Key.PK, SK: 'METADATA', leadId: 'cached-lead-id' } }) };
       return { promise: () => Promise.resolve({}) };
     });
     dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [] }) });
