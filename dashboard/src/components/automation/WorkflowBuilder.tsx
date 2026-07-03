@@ -8,7 +8,7 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { STAGE_LABELS, type Stage } from '@/types/v3';
+import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 import {
   type WorkflowTrigger, type WorkflowStep, type ActionType,
   type TriggerType, TRIGGER_META, ACTION_META, PHASE1_ACTIONS,
@@ -31,8 +31,6 @@ const ACTION_ICONS: Record<string, React.ElementType> = {
   campaign_completed:           Zap,
 };
 
-const STAGE_OPTIONS: Stage[] = ['new_lead', 'contacted', 'interested', 'kyc_done', 'demat_done', 'lost'];
-
 const newId = () => `step-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -48,6 +46,7 @@ export function WorkflowBuilder({ trigger, steps, onTriggerChange, onStepsChange
   const [editingTrigger,  setEditingTrigger]  = useState(false);
   const [editingStepId,   setEditingStepId]   = useState<string | null>(null);
   const [addingStep,      setAddingStep]       = useState(false);
+  const { stages: pipelineStages } = usePipelineStages();
 
   // Non-'end' steps for rendering; 'end' is always shown last
   const actionSteps = steps.filter((s) => s.type !== 'end');
@@ -115,7 +114,7 @@ export function WorkflowBuilder({ trigger, steps, onTriggerChange, onStepsChange
             <Connector />
             <StepCard
               label={meta?.label ?? step.type}
-              sublabel={stepSummary(step)}
+              sublabel={stepSummary(step, pipelineStages)}
               icon={Icon}
               accent="neutral"
               isOpen={editingStepId === step.id}
@@ -425,6 +424,7 @@ function ActionEditor({ step, onChange }: { step: WorkflowStep; onChange: (c: Wo
     staleTime: 5 * 60_000,
     enabled:  step.type === 'add_tag',
   });
+  const { stages: pipelineStages } = usePipelineStages();
 
   const set = (key: string, value: unknown) => onChange({ ...cfg, [key]: value } as WorkflowStep['config']);
 
@@ -485,7 +485,7 @@ function ActionEditor({ step, onChange }: { step: WorkflowStep; onChange: (c: Wo
         <Field label="New Stage">
           <select value={String(cfg.stage ?? '')} onChange={(e) => set('stage', e.target.value)} className={selectCls}>
             <option value="">Select stage…</option>
-            {STAGE_OPTIONS.map((s) => <option key={s} value={s}>{STAGE_LABELS[s]}</option>)}
+            {pipelineStages.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
           </select>
         </Field>
       );
@@ -575,7 +575,9 @@ function defaultConfig(type: ActionType): WorkflowStep['config'] {
   switch (type) {
     case 'send_template':   return { templateName: '', language: 'en', variables: [] };
     case 'assign_employee': return { employeeId: '', employeeName: '' };
-    case 'change_stage':    return { stage: 'contacted' as Stage };
+    // No default stage key — the live pipeline is company-specific, so forcing
+    // an explicit pick from the real list beats guessing a key that might not exist.
+    case 'change_stage':    return { stage: '' };
     case 'add_tag':         return { tag: '' };
     case 'create_task':     return { daysFromNow: 1, note: '' };
     case 'wait':            return { amount: 5, unit: 'minutes' };
@@ -583,12 +585,15 @@ function defaultConfig(type: ActionType): WorkflowStep['config'] {
   }
 }
 
-function stepSummary(step: WorkflowStep): string {
+function stepSummary(step: WorkflowStep, stages: PipelineStage[]): string {
   const cfg = step.config as Record<string, unknown>;
   switch (step.type) {
     case 'send_template':   return String(cfg.templateName ?? '') || 'No template selected';
     case 'assign_employee': return String(cfg.employeeName ?? cfg.employeeId ?? '') || 'No employee selected';
-    case 'change_stage':    return (STAGE_LABELS[cfg.stage as Stage] ?? String(cfg.stage ?? '')) || 'No stage selected';
+    case 'change_stage': {
+      const key = String(cfg.stage ?? '');
+      return (stages.find((s) => s.key === key)?.label ?? key) || 'No stage selected';
+    }
     case 'add_tag':         return String(cfg.tag ?? '') || 'No tag selected';
     case 'create_task':     return `In ${cfg.daysFromNow ?? 1} day(s)`;
     case 'wait':            return `${cfg.amount ?? 5} ${cfg.unit ?? 'minutes'}`;

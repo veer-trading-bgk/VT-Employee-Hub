@@ -10,8 +10,7 @@ import { Button } from '@/components/v3/ui/Button';
 import { Input } from '@/components/v3/ui/Input';
 import { apiFetch } from '@/lib/api';
 import { toast } from 'sonner';
-import { STAGE_LABELS } from '@/types/v3';
-import type { Stage } from '@/types/v3';
+import { usePipelineStages } from '@/hooks/usePipelineStages';
 
 interface EmployeeRecord { id: string; name: string; role: string; }
 
@@ -53,6 +52,8 @@ export function NewContactDrawer({ open, onClose }: NewContactDrawerProps) {
   const [notes,      setNotes]      = useState('');
   const [errors,     setErrors]     = useState<Record<string, string>>({});
   const [dupContact, setDupContact] = useState<{ name: string; id: string } | null>(null);
+
+  const { stages: pipelineStages } = usePipelineStages();
 
   const { data: empData } = useQuery({
     queryKey: ['admin-employees'],
@@ -98,6 +99,12 @@ export function NewContactDrawer({ open, onClose }: NewContactDrawerProps) {
         const existingId   = (err?.body?.existingLeadId as string | undefined) ?? '';
         setErrors((p) => ({ ...p, phone: ' ' })); // triggers red border on Input
         setDupContact({ name: existingName, id: existingId });
+      } else if (err?.status === 400) {
+        // Covers the stage-key validation added server-side — e.g. the pipeline
+        // was edited by someone else between this drawer opening and submit.
+        const msg = (err?.body?.error as string | undefined) ?? 'Invalid contact details';
+        toast.error(msg);
+        if (msg.toLowerCase().includes('stage')) setErrors((p) => ({ ...p, stage: msg }));
       } else {
         toast.error('Failed to create contact — check your permissions');
       }
@@ -212,12 +219,17 @@ export function NewContactDrawer({ open, onClose }: NewContactDrawerProps) {
         <div className="grid grid-cols-2 gap-4">
           <div className={FIELD_CLS}>
             <label className={LABEL_CLS}>Stage</label>
-            <select value={stage} onChange={(e) => setStage(e.target.value)} className={SEL_CLS}>
-              <option value="">New Lead (default)</option>
-              {(Object.entries(STAGE_LABELS) as [Stage, string][]).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
+            <select
+              value={stage}
+              onChange={(e) => { setStage(e.target.value); setErrors((p) => ({ ...p, stage: '' })); }}
+              className={SEL_CLS}
+            >
+              <option value="">{pipelineStages[0]?.label ?? 'New Lead'} (default)</option>
+              {pipelineStages.map((s) => (
+                <option key={s.key} value={s.key}>{s.label}</option>
               ))}
             </select>
+            {errors.stage && <p className="text-xs text-error-600" role="alert">{errors.stage}</p>}
           </div>
 
           <div className={FIELD_CLS}>

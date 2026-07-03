@@ -1,5 +1,3 @@
-import type { Stage } from './v3';
-
 // ── Trigger types ─────────────────────────────────────────────────────────────
 export type TriggerType =
   | 'whatsapp_conversation_started'
@@ -48,7 +46,10 @@ export interface AssignEmployeeConfig {
 }
 
 export interface ChangeStageConfig {
-  stage: Stage;
+  // Company pipeline stage key — an open string, not the closed Stage union:
+  // a customized CONFIG#CRM#<companyId> pipeline can have any key, not just
+  // the 6 defaults that union represents.
+  stage: string;
 }
 
 export interface AddTagConfig {

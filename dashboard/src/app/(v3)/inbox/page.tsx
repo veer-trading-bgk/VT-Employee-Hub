@@ -20,7 +20,7 @@ import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { cn } from '@/lib/cn';
 import { apiFetch, getMemoryToken, ApiClientError } from '@/lib/api';
 import { format, isToday, isYesterday } from 'date-fns';
-import { STAGE_LABELS } from '@/types/v3';
+import { usePipelineStages } from '@/hooks/usePipelineStages';
 import { wsClient } from '@/lib/wsClient';
 import type { WsMessage } from '@/lib/wsClient';
 import { toast } from 'sonner';
@@ -1362,7 +1362,8 @@ function CustomerSnapshotPanel({
   const { user } = useAuth();
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   const canEditOwner = ['owner', 'admin'].includes(v3Role);
-  const STAGE_OPTIONS = Object.entries(STAGE_LABELS).map(([value, label]) => ({ value, label }));
+  const { stages: pipelineStages } = usePipelineStages();
+  const STAGE_OPTIONS = pipelineStages.map((s) => ({ value: s.key, label: s.label }));
   const displayName = convDisplayName(conversation);
 
   // Subscribe to live assignment cache — updates immediately when useOwnerAssign fires
@@ -1396,7 +1397,10 @@ function CustomerSnapshotPanel({
       qc.invalidateQueries({ queryKey: ['wa-inbox'] });
       toast.success('Stage updated');
     },
-    onError: () => toast.error('Failed to update stage'),
+    onError: (err) => {
+      const msg = err instanceof ApiClientError ? (err.body?.error as string | undefined) ?? err.message : undefined;
+      toast.error(msg ?? 'Failed to update stage');
+    },
   });
 
   return (
