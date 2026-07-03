@@ -1,8 +1,8 @@
 'use client';
 
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
-import { STAGE_LABELS, type Stage } from '@/types/v3';
 
 export interface PipelineStage {
   key: string;
@@ -11,15 +11,19 @@ export interface PipelineStage {
   order: number;
 }
 
-// Client-side mirror of crm.js's DEFAULT_STAGES — used only while the real
-// pipeline is loading or if the fetch fails, same fallback role the backend's
-// own DEFAULT_STAGES plays when CONFIG#CRM#<companyId>/PIPELINE is absent.
-const FALLBACK_STAGES: PipelineStage[] = (Object.keys(STAGE_LABELS) as Stage[]).map((key, i) => ({
-  key,
-  label: STAGE_LABELS[key],
-  color: '#64748b',
-  order: i,
-}));
+// Exact client-side mirror of src/services/PipelineService.js's DEFAULT_STAGES —
+// used only while the real pipeline is loading or if the fetch fails, same
+// fallback role the backend's own DEFAULT_STAGES plays when
+// CONFIG#CRM#<companyId>/PIPELINE is absent. Keep colors in sync with that
+// file — some consumers (e.g. the sales pipeline board) render stage.color.
+const FALLBACK_STAGES: PipelineStage[] = [
+  { key: 'new_lead',   label: 'New Lead',   color: '#94a3b8', order: 0 },
+  { key: 'contacted',  label: 'Contacted',  color: '#3b82f6', order: 1 },
+  { key: 'interested', label: 'Interested', color: '#f59e0b', order: 2 },
+  { key: 'kyc_done',   label: 'KYC Done',   color: '#8b5cf6', order: 3 },
+  { key: 'demat_done', label: 'Demat Done', color: '#22c55e', order: 4 },
+  { key: 'lost',       label: 'Lost',       color: '#ef4444', order: 5 },
+];
 
 /**
  * Shared CRM pipeline (company-configurable stage list) — single React
@@ -35,8 +39,11 @@ export function usePipelineStages() {
     queryFn: () => apiFetch<{ success: boolean; stages: PipelineStage[] }>('/api/crm/pipeline'),
     staleTime: 5 * 60_000,
   });
-  const stages = (data?.stages?.length ? data.stages : FALLBACK_STAGES)
-    .slice()
-    .sort((a, b) => a.order - b.order);
+  // Stable reference across renders where `data` hasn't changed — several
+  // consumers key their own useMemo/useEffect off this array.
+  const stages = useMemo(
+    () => (data?.stages?.length ? data.stages : FALLBACK_STAGES).slice().sort((a, b) => a.order - b.order),
+    [data],
+  );
   return { stages, isLoading };
 }

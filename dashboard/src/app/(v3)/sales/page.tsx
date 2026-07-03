@@ -27,29 +27,11 @@ import { TagBadge, type Tag } from '@/components/tags/TagBadge';
 import { cn } from '@/lib/cn';
 import { apiFetch, ApiClientError } from '@/lib/api';
 import type { Contact, Stage } from '@/types/v3';
-import { STAGE_LABELS } from '@/types/v3';
+import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role } from '@/types/v3';
 import { toast } from 'sonner';
 import { format, subDays, differenceInDays, isToday, isYesterday } from 'date-fns';
-
-// ── Pipeline stage type ───────────────────────────────────────────────────────
-
-interface PipelineStage {
-  key: string;
-  label: string;
-  color: string;
-  order: number;
-}
-
-const DEFAULT_PIPELINE_STAGES: PipelineStage[] = [
-  { key: 'new_lead',   label: 'New Lead',   color: '#94a3b8', order: 0 },
-  { key: 'contacted',  label: 'Contacted',  color: '#3b82f6', order: 1 },
-  { key: 'interested', label: 'Interested', color: '#f59e0b', order: 2 },
-  { key: 'kyc_done',   label: 'KYC Done',   color: '#8b5cf6', order: 3 },
-  { key: 'demat_done', label: 'Demat Done', color: '#22c55e', order: 4 },
-  { key: 'lost',       label: 'Lost',       color: '#ef4444', order: 5 },
-];
 
 function slugify(label: string): string {
   return label.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'stage';
@@ -87,7 +69,9 @@ function relTime(ts: string | undefined | null): string {
 }
 
 function getStageLabel(key: string, stages: PipelineStage[]): string {
-  return stages.find((s) => s.key === key)?.label ?? STAGE_LABELS[key as Stage] ?? key;
+  // usePipelineStages() always returns a full list (falls back to defaults
+  // itself while loading/on error), so no second fallback layer is needed here.
+  return stages.find((s) => s.key === key)?.label ?? key;
 }
 
 function exportCSV(contacts: Contact[], stages: PipelineStage[]) {
@@ -1106,17 +1090,9 @@ export default function SalesPage() {
   const isAdmin  = ['owner', 'admin'].includes(v3Role);
   const canCreate = ['owner', 'admin', 'manager', 'sales'].includes(v3Role);
 
-  // ── Pipeline stages (dynamic) ─────────────────────────────────────────────
+  // ── Pipeline stages (dynamic, single shared owner of ['pipeline-stages']) ──
 
-  const { data: pipelineData, refetch: refetchPipeline } = useQuery({
-    queryKey: ['pipeline-stages'],
-    queryFn: () => apiFetch<{ success: boolean; stages: PipelineStage[] }>('/api/crm/pipeline'),
-    staleTime: 5 * 60_000,
-  });
-  const stages = useMemo(
-    () => [...(pipelineData?.stages ?? DEFAULT_PIPELINE_STAGES)].sort((a, b) => a.order - b.order),
-    [pipelineData],
-  );
+  const { stages } = usePipelineStages();
 
   // ── Queries ───────────────────────────────────────────────────────────────
 
@@ -1396,10 +1372,7 @@ export default function SalesPage() {
         open={showManagePipeline}
         onClose={() => setShowManagePipeline(false)}
         initialStages={stages}
-        onSaved={() => {
-          refetchPipeline();
-          qc.invalidateQueries({ queryKey: ['pipeline-stages'] });
-        }}
+        onSaved={() => qc.invalidateQueries({ queryKey: ['pipeline-stages'] })}
       />
     </div>
   );
