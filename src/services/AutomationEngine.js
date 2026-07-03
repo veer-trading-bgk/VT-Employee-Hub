@@ -119,8 +119,17 @@ class AutomationEngine {
           this._tlWrite(companyId, context, workflow.name, step.type, result).catch(() => {});
         }
       } catch (e) {
-        stepResults[i] = { ...stepResults[i], status: 'failed', completedAt: ts(), error: e.message };
-        logger.warn(`AutomationEngine: step "${step.type}" failed in "${workflow.name}": ${e.message}`);
+        // A failed WhatsAppSendService call throws the raw axios error, whose
+        // .message is a generic "Request failed with status code 400" — Meta's
+        // actual rejection reason lives in .response.data.error.message and was
+        // previously dropped here entirely, both from the log line and from the
+        // stepResults.error field the dashboard's Executions tab renders
+        // (ExecutionList.tsx), making template failures undiagnosable from the
+        // UI or CloudWatch alike. Same err.response.data.error.message accessor
+        // already used by whatsapp.js's /send-template and /broadcast routes.
+        const detail = e.response?.data?.error?.message ?? e.message;
+        stepResults[i] = { ...stepResults[i], status: 'failed', completedAt: ts(), error: detail };
+        logger.warn(`AutomationEngine: step "${step.type}" failed in "${workflow.name}": ${detail}`);
         // Continue to next step — a single action failure never halts the workflow
       }
     }
