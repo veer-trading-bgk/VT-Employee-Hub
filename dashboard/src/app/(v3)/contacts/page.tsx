@@ -32,8 +32,9 @@ import { format } from 'date-fns';
 import { OwnerSelect } from '@/components/v3/ui/OwnerSelect';
 import { NewContactDrawer } from '@/components/contacts/NewContactDrawer';
 import { ImportContactsDrawer } from '@/components/contacts/ImportContactsDrawer';
-import { TagBadge, type Tag as CatalogTag } from '@/components/tags/TagBadge';
+import { type Tag as CatalogTag } from '@/components/tags/TagBadge';
 import { TagSelector } from '@/components/tags/TagSelector';
+import { ContactTags } from '@/components/tags/ContactTags';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -126,7 +127,7 @@ function contactDisplayName(row: Contact): string {
   return row.displayName ?? row.name ?? row.phone ?? '';
 }
 
-function buildColumns(canEditOwner: boolean, tagCatalog: CatalogTag[]): TableColumn<Contact>[] {
+function buildColumns(canEditOwner: boolean, onTagsChanged: () => void): TableColumn<Contact>[] {
   return [
     {
       key: 'name',
@@ -174,25 +175,19 @@ function buildColumns(canEditOwner: boolean, tagCatalog: CatalogTag[]): TableCol
     {
       key: 'tags',
       header: 'Tags',
-      width: 'w-48',
-      cell: (row) => {
-        // Resolve catalog IDs to labeled badges; legacy label strings fall back as-is
-        const resolved = (row.tags ?? []).map(
-          (id) => tagCatalog.find((t) => t.id === id) ?? { id, label: id, color: '#64748b' },
-        );
-        return (
-          <div className="flex flex-wrap gap-1">
-            {resolved.slice(0, 2).map((tag) => (
-              <TagBadge key={tag.id} tag={tag} />
-            ))}
-            {resolved.length > 2 && (
-              <Badge variant="default" className="text-[10px]">
-                +{resolved.length - 2}
-              </Badge>
-            )}
-          </div>
-        );
-      },
+      width: 'w-56',
+      // stopPropagation — this cell is interactive (add/remove tags inline);
+      // without it, clicks bubble to the row's onClick and navigate to Customer 360.
+      cell: (row) => (
+        <div onClick={(e) => e.stopPropagation()}>
+          <ContactTags
+            tagIds={row.tags ?? []}
+            leadId={row.leadId ?? (row.type === 'lead' ? row.id : undefined)}
+            phone={row.phone}
+            onMutated={onTagsChanged}
+          />
+        </div>
+      ),
     },
     {
       key: 'lastActivity',
@@ -336,7 +331,7 @@ function ContactsContent() {
     }
   }
 
-  const columns = buildColumns(canEditOwner, tagCatalog);
+  const columns = buildColumns(canEditOwner, () => qc.invalidateQueries({ queryKey: ['contacts'] }));
 
   const filterChips = stageFilter
     ? [{ key: 'stage', label: 'Stage', value: STAGE_LABELS[stageFilter as Stage] ?? stageFilter }]
