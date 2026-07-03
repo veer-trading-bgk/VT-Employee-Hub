@@ -13,15 +13,18 @@ judged against whether it correctly defers to them:
 | `src/services/WhatsAppSendService.js` | The only code path allowed to call `graph.facebook.com/*/messages` for outbound sends | ADR-012 |
 | `src/services/CustomerIdentityService.js` | The only code path allowed to create/dedupe customers | ADR-013 |
 
-**Headline finding, stated once here and referenced throughout:** `CustomerIdentityService.js`
-is fully built and correct, but **zero routes call it** — verified exhaustively by reading all 20
-files in `src/routes/` (`grep -rn "require.*CustomerIdentityService" src/` → only `entityKeys.js`
-and `events/catalog.js`, both comment-only references). ADR-013's own "Migration Required" table
-lists three gaps (`whatsapp.js:1410`, `crm.js:867-868`, `contacts.js:100`); this audit found three
-more customer-creating paths that also bypass CIS but weren't in that table: `crm.js`'s
-`POST /leads`, and both of `forms.js`'s lead-creating routes (`POST /:id/submit`,
-`POST /meta-leads/webhook`). All six are detailed per-file below, along with which ones at least
-get the `phoneNorm`/GSI lookup right even though none call `CIS.resolveOrCreate()`.
+**Headline finding — UPDATED 2026-07-03, no longer current, kept for history:** this section
+originally reported that `CustomerIdentityService.js` was fully built and correct but **zero
+routes called it** (verified as of 2026-07-02 by reading all 20 files in `src/routes/`). As of
+commit `1b89521`, that has changed: `crm.js`'s `POST /leads` and `POST /import` (new-lead branch)
+and both of `forms.js`'s lead-creating routes now call `CIS.resolveOrCreate()` directly. This is
+no longer a "ready but unused" service — it is live and load-bearing, and (2026-07-03) had its
+first production incident: a DynamoDB GSI eventual-consistency race in the phone-lock recovery
+path, root-caused and fixed, see `src/services/CustomerIdentityService.js`'s per-file entry below
+for the full writeup and `tests/customerIdentityService.test.js` for its first test coverage.
+`whatsapp.js`'s unknown-contact path and `contacts.js`'s dedup remain unmigrated (ADR-013's
+original items 1 and 3) — those two gaps are still open and still the highest-leverage remaining
+work against the ADR-013 contract.
 
 **Second headline finding:** ADR-012 is close to fully enforced. Exactly one call site bypasses
 `WhatsAppSendService` — `whatsapp.js` line 2478, a read-receipt POST to the same Graph
@@ -340,7 +343,9 @@ Verified directly against the source — ADR-012's method-status table is accura
 
 ### `src/services/CustomerIdentityService.js` — ADR-013 single owner (23,469 bytes, read in full)
 
-**Purpose:** The sole authorized path for customer identity resolution, atomic deduplication, and creation/enrichment. **Confirmed unused by any route** — see headline finding at the top of this document.
+**Purpose:** The sole authorized path for customer identity resolution, atomic deduplication, and creation/enrichment.
+
+**Update (2026-07-02, commit `1b89521`, discovered stale during this entry's own bug-fix pass):** the "confirmed unused by any route" claim below is now **false** — `crm.js`'s `POST /leads` and `POST /import` (new-lead branch), and both of `forms.js`'s lead-creating routes, now call `CIS.resolveOrCreate()`. The claim is left in place below verbatim (not deleted) because it was true when written and the surrounding grep evidence is still a useful record of the pre-migration state — but do not trust it as current. `whatsapp.js`'s unknown-contact path and `contacts.js`'s dedup remain unmigrated (ADR-013's items 1 and 3).
 
 **Owns (exhaustive):**
 - Phone normalisation to canonical `phoneNorm` via `_normPhone()` → `to10Digit()` (line 48-52).
@@ -348,7 +353,7 @@ Verified directly against the source — ADR-012's method-status table is accura
 - Atomic phone uniqueness via `LEAD_PHONE#${companyId}#${phoneNorm}` lock item, written in the same `TransactWrite` as the `LEAD#` METADATA item (`_createCustomer()`, lines 325-465).
 - Customer enrichment with an explicit immutability contract (`computeDelta()`, lines 190-246): protected fields never overwritten (`assignedTo`, `stage`, `notes`, `closureDeadline`); smart-update fields replaced only under specific conditions (`name` only if current value is a phone-placeholder; `email`/`company` only if currently null); additive-only union for `tags`/`productInterest`; always-updated fields (`lastInteractionAt`, `lastInteractionSource`, `updatedAt`, a 10-entry-capped rolling `leadSourceHistory`).
 - Idempotency via `IDEM#${companyId}#${sha256(key)}` lock, 24h TTL (`IDEM_TTL_SECONDS = 86_400`) — explicit caller-provided key or auto-derived SHA-256 of `companyId|phoneNorm|source|campaign` plus a **5-minute time bucket** (`_deriveIdemKey()`, lines 71-76) — note this 5-minute bucket window is a *different* constant from the 24-hour lock TTL; don't conflate them.
-- Race resolution: if a concurrent create loses the `LEAD_PHONE#` lock race, it transparently re-resolves as an enrich against the winner's record (lines 452-456) — no 409 ever surfaces to the caller.
+- Race resolution: if a concurrent create loses the `LEAD_PHONE#` lock race, it re-resolves as an enrich against the winner's record. **As of 2026-07-03 (production incident, see below), this is a retry loop, not a single lookup**: `_findByPhone()` reads via the `company-phone-index` GSI, which is only eventually consistent, while the `LEAD_PHONE#` lock itself is an immediately-consistent base-table write — so the winner's record can be briefly invisible to the GSI query right after it wins the race. The fix retries the GSI lookup up to 4 times with linear backoff (250ms, 500ms, 750ms, 1000ms) before giving up and re-throwing. Confirmed via CloudWatch: a single `phoneNorm` raced 3 times within ~2s in production, and the pre-fix single-attempt lookup found no winner on any of the 3, surfacing a raw `TransactionCanceledException` as an unhandled 500 for what is actually a routine, self-resolving race. First test coverage for this file added in `tests/customerIdentityService.test.js` (5 cases, mutation-tested against a revert of this fix).
 - Auto-assignment on creation via `../utils/autoAssign` (`getAutoAssignConfig`, `pickNextEmployee`), falling back to the triggering actor if auto-assign is disabled.
 - Fire-and-forget `TL#` touchpoint recording via `publishEvent(E.TOUCH_RECEIVED, ...)` on every call, both create and enrich paths (`_recordInteraction()`).
 
@@ -363,11 +368,13 @@ Everything else (`_normPhone`, `_findByPhone`, `_createCustomer`, `_enrichCustom
 
 **DynamoDB keys written:** `LEAD#${companyId}#${leadId}` / `METADATA` (customer record), `LEAD_PHONE#${companyId}#${phoneNorm}` / `LOCK` (uniqueness lock), `IDEM#${companyId}#${sha256HexKey}` / `LOCK` (idempotency lock).
 
-**Depended on by:** **No route file, confirmed exhaustively.** `grep -rn "require.*CustomerIdentityService\|resolveOrCreate" src/` returns only `src/core/entityKeys.js` and `src/events/catalog.js` — both are **comment-only** references explaining what the key patterns are for, not actual `require()` calls. Confirmed independently three times across this audit (twice via background research passes covering different layers, once by a full read of all 20 route files specifically checking for this). Every one of the 20 files in `src/routes/` was read in full and none imports or calls this service.
+**Depended on by (current, 2026-07-03):** `src/routes/crm.js`'s `POST /leads` and `POST /import` (new-lead branch) call `CIS.resolveOrCreate()` directly — confirmed both by code and by CloudWatch production logs (`crm/leads POST error` originates from this call, see the race-resolution note above). `forms.js`'s two lead-creating routes also call it as of commit `1b89521`.
+
+*(Historical note, no longer accurate — kept for record of the pre-migration state:)* At the time this section was first written, `grep -rn "require.*CustomerIdentityService\|resolveOrCreate" src/` returned only comment-only references in `src/core/entityKeys.js` and `src/events/catalog.js`, and every route file was confirmed to not call this service. That has since changed; see the "Update" note near the top of this entry. `whatsapp.js`'s unknown-contact path and `contacts.js`'s dedup are still unmigrated.
 
 **Internal dependencies:** `uuid`, `crypto`, `../config/dynamodb`, `../config/logger`, `../events/publisher` (`publishEvent`), `../events/catalog` (`E`, `ENTITY`), `../utils/phone` (`to10Digit`), `../core/entityKeys` (`leadPK`, `idemPK`, `idemSK`, `leadPhoneLockPK`, `leadPhoneLockSK`, `GSI`), `../utils/autoAssign`.
 
-**What this means practically:** every one of ADR-013's "Migration Required" items (`whatsapp.js:1410`, `crm.js:867-868`, `contacts.js:100`, plus the not-yet-built CTWA/partner-API entry points) remains open. This service is architecturally correct and ready — wiring the three known entry points to call it is the single highest-leverage backend change available in this codebase relative to the ADR-013 contract.
+**What this means practically:** as of commit `1b89521`, `crm.js` and `forms.js` are migrated onto this service; `whatsapp.js`'s unknown-contact path and `contacts.js`'s dedup (ADR-013's items 1 and 3) remain open, along with the not-yet-built CTWA/partner-API entry points. Wiring the remaining two known entry points is still the highest-leverage backend change available relative to the ADR-013 contract, but the service is no longer merely "ready and unused" — it is live, load-bearing, and (as of 2026-07-03) has its first production incident and fix on record.
 
 ---
 

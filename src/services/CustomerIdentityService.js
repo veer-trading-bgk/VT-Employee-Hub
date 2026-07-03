@@ -451,8 +451,23 @@ async function _createCustomer(companyId, phoneNorm, data, context, idemKey, int
       // Re-resolve: find the winner and enrich with our data instead.
       if (reasons[1]?.Code === 'ConditionalCheckFailed') {
         logger.warn(`[CIS] concurrent create race phoneNorm=${phoneNorm} — re-resolving as enrich`);
-        const winner = await _findByPhone(companyId, phoneNorm);
+        // The phone lock (LEAD_PHONE#) is a base-table write, immediately
+        // consistent — but _findByPhone reads via the company-phone-index GSI,
+        // which is only eventually consistent. The winner's LEAD# METADATA item
+        // can still be invisible to this query for a short window after the
+        // lock already exists. Confirmed in production (2026-07-03): a single
+        // phoneNorm raced 3 times across ~2s, and the GSI lookup found no
+        // winner on any of the 3 attempts, so every one fell through to this
+        // catch's throw err — a raw "Transaction cancelled" surfaced as an
+        // unhandled 500 for what is actually a routine, self-resolving race.
+        // Retry with backoff instead of giving up after a single GSI read.
+        let winner = await _findByPhone(companyId, phoneNorm);
+        for (let attempt = 0; !winner && attempt < 4; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+          winner = await _findByPhone(companyId, phoneNorm);
+        }
         if (winner) return _enrichCustomer(companyId, winner, data, context, idemKey, interactionId);
+        logger.error(`[CIS] phone lock race unresolved after retries phoneNorm=${phoneNorm} — GSI never returned a winner`);
       }
     }
     throw err;
