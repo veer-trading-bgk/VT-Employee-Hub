@@ -31,6 +31,7 @@ import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { assignmentKey } from '@/hooks/useOwnerAssign';
 import type { AssignmentRecord } from '@/hooks/useOwnerAssign';
 import { ComposerToolbar } from '@/components/inbox/ComposerToolbar';
+import { useAddNote } from '@/hooks/useAddNote';
 
 // ── V2 API shapes (backend response shapes, never invented) ───────────────────
 
@@ -1403,6 +1404,19 @@ function CustomerSnapshotPanel({
     },
   });
 
+  // Notes are lead-scoped only (no unknown-contact notes endpoint exists yet)
+  const [noteText, setNoteText] = useState('');
+  const addNote = useAddNote(conversation.leadId, () => {
+    qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+    setNoteText('');
+    toast.success('Note saved');
+  });
+  function handleAddNote() {
+    const trimmed = noteText.trim();
+    if (!trimmed) return;
+    addNote.mutate(trimmed);
+  }
+
   return (
     <div className="flex h-full flex-col border-l border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950">
       <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
@@ -1522,11 +1536,33 @@ function CustomerSnapshotPanel({
         {/* Internal notes */}
         <div>
           <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-neutral-400">Internal Notes</p>
-          <textarea
-            placeholder="Add a note visible only to your team…"
-            rows={3}
-            className="w-full resize-none rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600/20 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:placeholder:text-neutral-600"
-          />
+          {conversation.leadId ? (
+            <>
+              <textarea
+                value={noteText}
+                onChange={(e) => setNoteText(e.target.value)}
+                placeholder="Add a note visible only to your team…"
+                rows={3}
+                disabled={addNote.isPending}
+                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleAddNote(); }}
+                aria-label="Internal note"
+                className="w-full resize-none rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-xs text-neutral-700 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600/20 disabled:opacity-60 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 dark:placeholder:text-neutral-600"
+              />
+              <div className="mt-1.5 flex items-center justify-between">
+                <p className="text-[10px] text-neutral-400">Cmd/Ctrl + Enter to post</p>
+                <button
+                  type="button"
+                  onClick={handleAddNote}
+                  disabled={addNote.isPending || !noteText.trim()}
+                  className="rounded-md bg-primary-600 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-primary-700 disabled:opacity-50"
+                >
+                  {addNote.isPending ? 'Posting…' : 'Post Note'}
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="text-xs text-neutral-400">Notes require this contact to be a CRM lead first.</p>
+          )}
         </div>
 
         {/* Open Customer360 */}

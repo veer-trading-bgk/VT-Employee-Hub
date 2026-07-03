@@ -6,6 +6,7 @@ import { Paperclip } from 'lucide-react';
 import { apiFetch, getMemoryToken } from '@/lib/api';
 import { useCustomer360 } from '@/contexts/Customer360Context';
 import { useWsEvent } from '@/hooks/useWsEvent';
+import { useAddNote } from '@/hooks/useAddNote';
 import { TemplatePicker } from '@/components/whatsapp/TemplatePicker';
 import { MediaPreviewModal } from '@/components/whatsapp/MediaPreviewModal';
 import { ActivityPanel } from '@/components/contacts/ActivityPanel';
@@ -656,14 +657,7 @@ function ConversationPane() {
     onSettled: () => { refresh(); },
   });
 
-  const noteMutation = useMutation({
-    mutationFn: (content: string) =>
-      apiFetch(`/api/whatsapp/inbox/${leadId}/note`, {
-        method: 'POST',
-        body: JSON.stringify({ content }),
-      }),
-    onSuccess: () => { setMsgText(''); refresh(); },
-  });
+  const noteMutation = useAddNote(leadId, () => { setMsgText(''); refresh(); });
 
   const resolveMutation = useMutation({
     mutationFn: () => apiFetch(`/api/whatsapp/inbox/${leadId}/resolve`, { method: 'PUT' }),

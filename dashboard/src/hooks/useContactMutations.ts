@@ -3,6 +3,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { toast } from 'sonner';
+import { useAddNote } from './useAddNote';
 
 // Centralised mutations for Customer 360.
 // Skeleton created in Commit 1 — mutations are activated as tabs are wired in subsequent commits.
@@ -53,15 +54,10 @@ export function useContactMutations(leadId: string) {
     onError: () => toast.error('Failed to remove tag'),
   });
 
-  const addNote = useMutation({
-    mutationFn: (text: string) =>
-      apiFetch(`/api/crm/leads/${leadId}/note`, {
-        method: 'POST',
-        body: JSON.stringify({ text }),
-      }),
-    onSuccess: invalidateContact,
-    onError: () => toast.error('Failed to save note'),
-  });
+  // Was posting to /api/crm/leads/:id/note, a route that never existed on
+  // the backend (guaranteed 404) — the one real notes endpoint lives at
+  // /api/whatsapp/inbox/:leadId/note. See useAddNote for the shared owner.
+  const addNote = useAddNote(leadId, invalidateContact);
 
   const createTask = useMutation({
     mutationFn: (data: { date: string; note: string; assignedTo?: string }) =>
