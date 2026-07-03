@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { MessageSquareText } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card } from '@/components/v3/ui/Card';
+import { Badge } from '@/components/v3/ui/Badge';
 import { Button } from '@/components/v3/ui/Button';
 import { Toggle } from '@/components/v3/ui/Toggle';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
@@ -108,8 +109,13 @@ function WelcomeMessageForm({ initialConfig }: { initialConfig: WelcomeConfig | 
         <div className="flex items-center gap-2">
           <MessageSquareText className="h-4 w-4 text-neutral-400" aria-hidden />
           <div>
-            <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Welcome Message</p>
-            <p className="text-xs text-neutral-500">Sent automatically the first time a new contact messages you</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Welcome Message</p>
+              <Badge variant="primary">Built-in trigger</Badge>
+            </div>
+            <p className="text-xs text-neutral-500">
+              Sent automatically the first time a new contact messages you — not a workflow you create below
+            </p>
           </div>
         </div>
         <Toggle checked={form.enabled} onChange={(e) => update('enabled', e.target.checked)} aria-label="Enable welcome message" />

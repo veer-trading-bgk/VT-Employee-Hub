@@ -7,6 +7,7 @@ import { AutomationDashboard } from '@/components/automation/AutomationDashboard
 import { WorkflowList } from '@/components/automation/WorkflowList';
 import { ExecutionList } from '@/components/automation/ExecutionList';
 import { WorkflowCreateDrawer } from '@/components/automation/WorkflowCreateDrawer';
+import { WelcomeMessagePanel } from '@/components/settings/WelcomeMessagePanel';
 
 type Tab = 'dashboard' | 'workflows' | 'executions';
 
@@ -67,7 +68,12 @@ export default function AutomationPage() {
               onCreateWorkflow={() => setCreateOpen(true)}
             />
           )}
-          {activeTab === 'workflows'  && <WorkflowList />}
+          {activeTab === 'workflows'  && (
+            <>
+              <WelcomeMessagePanel />
+              <WorkflowList />
+            </>
+          )}
           {activeTab === 'executions' && <ExecutionList />}
         </div>
       </div>
