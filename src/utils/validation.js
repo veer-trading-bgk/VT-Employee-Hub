@@ -20,6 +20,34 @@ const delayedResponseConfigSchema = z.object({
   messageText: z.string().max(1024).optional().default(''),
 }).strict();
 
+// Working Hours (CONFIG#HOURS) + Out of Office (CONFIG#OOO) — Item 2.
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+const daySchema = z.object({
+  closed: z.boolean().default(false),
+  open: z.string().regex(HHMM, 'Use HH:MM, 24-hour').default('09:00'),
+  close: z.string().regex(HHMM, 'Use HH:MM, 24-hour').default('18:00'),
+}).strict();
+
+const DEFAULT_DAY = { closed: false, open: '09:00', close: '18:00' };
+const DEFAULT_SCHEDULE = {
+  monday: DEFAULT_DAY, tuesday: DEFAULT_DAY, wednesday: DEFAULT_DAY, thursday: DEFAULT_DAY,
+  friday: DEFAULT_DAY, saturday: { ...DEFAULT_DAY, closed: true }, sunday: { ...DEFAULT_DAY, closed: true },
+};
+
+const workingHoursConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  timezone: z.string().min(1).max(64).default('Asia/Kolkata'),
+  schedule: z.object({
+    monday: daySchema, tuesday: daySchema, wednesday: daySchema, thursday: daySchema,
+    friday: daySchema, saturday: daySchema, sunday: daySchema,
+  }).default(DEFAULT_SCHEDULE),
+}).strict();
+
+const oooConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  messageText: z.string().max(1024).optional().default(''),
+}).strict();
+
 const addMetricSchema = z.object({
   metric_type: z.enum(['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching', 'pms', 'pro_insight', 'ltpp']),
   value: z.number().min(0, 'Value cannot be negative').max(999999),
@@ -210,6 +238,8 @@ module.exports = {
   loginSchema,
   aiConfigSchema,
   delayedResponseConfigSchema,
+  workingHoursConfigSchema,
+  oooConfigSchema,
   addMetricSchema,
   registerSchema,
   verifyTotpSchema,

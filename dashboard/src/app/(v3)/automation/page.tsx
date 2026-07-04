@@ -8,6 +8,7 @@ import { WorkflowList } from '@/components/automation/WorkflowList';
 import { ExecutionList } from '@/components/automation/ExecutionList';
 import { WorkflowCreateDrawer } from '@/components/automation/WorkflowCreateDrawer';
 import { WelcomeMessagePanel } from '@/components/settings/WelcomeMessagePanel';
+import { WorkingHoursPanel } from '@/components/settings/WorkingHoursPanel';
 import { DelayedResponsePanel } from '@/components/settings/DelayedResponsePanel';
 
 type Tab = 'dashboard' | 'workflows' | 'executions';
@@ -72,6 +73,7 @@ export default function AutomationPage() {
           {activeTab === 'workflows'  && (
             <>
               <WelcomeMessagePanel />
+              <WorkingHoursPanel />
               <DelayedResponsePanel />
               <WorkflowList />
             </>

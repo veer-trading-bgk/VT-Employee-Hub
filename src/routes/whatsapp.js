@@ -16,7 +16,7 @@ const IntentDetectionService = require('../services/IntentDetectionService');
 const WASendSvc            = require('../services/WhatsAppSendService');
 const TagService           = require('../services/TagService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
-const { welcomeConfigSchema, delayedResponseConfigSchema } = require('../utils/validation');
+const { welcomeConfigSchema, delayedResponseConfigSchema, workingHoursConfigSchema, oooConfigSchema } = require('../utils/validation');
 const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
 
 const router = express.Router();
@@ -1570,6 +1570,17 @@ router.post('/webhook', async (req, res) => {
           require('../services/DelayedResponseService')
             .scheduleIfEnabled(webhookCompanyId, { phone: phone10, leadPK: lead.PK, name: lead.name })
             .catch(() => {});
+          // Out of Office (Item 2) — a known lead never gets a Welcome message
+          // (that's first-contact only, see the INBOX# branch below), so there
+          // is no precedence conflict to resolve on this path: OOO just fires
+          // on its own terms whenever the business is closed. Awaited + try/
+          // catch, matching the existing Welcome-message block's own style.
+          try {
+            const WorkingHoursService = require('../services/WorkingHoursService');
+            if (await WorkingHoursService.shouldSendOOO(webhookCompanyId, { leadPK: lead.PK })) {
+              await WorkingHoursService.sendOOO(webhookCompanyId, { leadPK: lead.PK, phone: phone10, name: lead.name });
+            }
+          } catch (e) { logger.warn('OOO message failed: ' + e.message); }
           // A tap on a welcome-message reply button — fire its configured
           // follow-up, if any (see fireButtonFollowUp's own internal try/catch).
           if (buttonReply) {
@@ -1670,8 +1681,28 @@ router.post('/webhook', async (req, res) => {
           }
         }
 
-        // Send welcome message on first contact (only for genuinely new messages)
-        if (isNewMsg && isFirstContact) {
+        // Out of Office (Item 2) — checked on EVERY new message (not just
+        // first contact), unlike Welcome. PRECEDENCE RULE: if OOO fires here,
+        // Welcome is skipped entirely for this message, even on a contact's
+        // very first message — see WorkingHoursService.js's own doc comment
+        // for the full reasoning. The two can never both fire for the same
+        // inbound message.
+        let oooSent = false;
+        if (isNewMsg) {
+          try {
+            const WorkingHoursService = require('../services/WorkingHoursService');
+            if (await WorkingHoursService.shouldSendOOO(companyId, { inboxPK: PK })) {
+              await WorkingHoursService.sendOOO(companyId, { inboxPK: PK, phone: phone10, name: waName });
+              oooSent = true;
+            }
+          } catch (e) { logger.warn('OOO message failed: ' + e.message); }
+        }
+
+        // Send welcome message on first contact (only for genuinely new
+        // messages, and only when OOO didn't already respond to this one) —
+        // the automation trigger below is a separate concern (a new contact
+        // arrived) and fires regardless of which auto-reply, if any, fired.
+        if (isNewMsg && isFirstContact && !oooSent) {
           try {
             const wc = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#WELCOME#${companyId}`, SK: 'CURRENT' } }).promise();
             if (wc.Item?.enabled) {
@@ -1679,6 +1710,8 @@ router.post('/webhook', async (req, res) => {
               if (sent) logger.info(`Welcome message (${wc.Item.messageType ?? 'template'}) sent to ${phone10} for company ${companyId}`);
             }
           } catch (e) { logger.warn('Welcome message failed: ' + e.message); }
+        }
+        if (isNewMsg && isFirstContact) {
           // Fire automation trigger for brand-new WhatsApp contact
           const { runAutomations } = require('./automations');
           runAutomations(companyId, 'whatsapp_conversation_started', {
@@ -2860,6 +2893,71 @@ router.put('/delayed-response-config', authMiddleware, checkRole(['admin']), rat
         enabled: cfg.enabled,
         delayAmount: cfg.delayAmount,
         delayUnit: cfg.delayUnit,
+        messageText: cfg.messageText,
+        updatedAt: new Date().toISOString(),
+      },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── GET /api/whatsapp/hours-config ─────────────────────────────────────────────
+router.get('/hours-config', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const result = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#HOURS#${req.user.companyId}`, SK: 'CURRENT' },
+    }).promise();
+    res.json({ success: true, config: result.Item ?? workingHoursConfigSchema.parse({}) });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /api/whatsapp/hours-config ──────────────────────────────────────────────
+router.put('/hours-config', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const parsed = workingHoursConfigSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+    const cfg = parsed.data;
+
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: `CONFIG#HOURS#${req.user.companyId}`, SK: 'CURRENT',
+        companyId: req.user.companyId,
+        enabled: cfg.enabled,
+        timezone: cfg.timezone,
+        schedule: cfg.schedule,
+        updatedAt: new Date().toISOString(),
+      },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── GET /api/whatsapp/ooo-config ────────────────────────────────────────────────
+router.get('/ooo-config', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const result = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#OOO#${req.user.companyId}`, SK: 'CURRENT' },
+    }).promise();
+    res.json({ success: true, config: result.Item ?? { enabled: false, messageText: '' } });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /api/whatsapp/ooo-config ────────────────────────────────────────────────
+router.put('/ooo-config', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const parsed = oooConfigSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+    const cfg = parsed.data;
+
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: `CONFIG#OOO#${req.user.companyId}`, SK: 'CURRENT',
+        companyId: req.user.companyId,
+        enabled: cfg.enabled,
         messageText: cfg.messageText,
         updatedAt: new Date().toISOString(),
       },

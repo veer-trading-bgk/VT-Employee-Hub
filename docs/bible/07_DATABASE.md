@@ -664,6 +664,31 @@ All follow the same shape: `PK = CONFIG#{NAME}#{companyId}` (or the bare
 - **Reader:** `DelayedResponseService.scheduleIfEnabled()` — read fresh (no
   cache) on every new inbound message.
 
+### 2.32 CONFIG#HOURS / CONFIG#OOO — Working Hours + Out of Office (Item 2)
+
+- **PK:** `CONFIG#HOURS#{companyId}` / **SK:** `CURRENT` —
+  `companyId, enabled, timezone (IANA, e.g. 'Asia/Kolkata'), schedule: { monday..sunday: { closed, open ('HH:MM'), close ('HH:MM') } }, updatedAt`
+- **PK:** `CONFIG#OOO#{companyId}` / **SK:** `CURRENT` —
+  `companyId, enabled, messageText, updatedAt`. Same enabled/message-content
+  shape as `CONFIG#WELCOME` (§2.15); supports `{{name}}`/`{{phone}}`
+  substitution via the same `resolveWelcomeVariables()` helper.
+- **PRECEDENCE RULE WITH WELCOME MESSAGE** (the two can never both fire for
+  the same inbound message): if Out of Office applies, Welcome is skipped
+  entirely for that message — even a contact's very first message. Reasoning
+  and enforcement live in `WorkingHoursService.js`'s own doc comment and in
+  `whatsapp.js`'s webhook (checked for every new message on the INBOX# path,
+  ahead of the existing first-contact Welcome check; checked independently on
+  the LEAD# path, which never sends Welcome at all). OOO resends are throttled
+  to once per 6 hours per contact (`lastOOOSentAt`, mirrored onto the same
+  `LEAD#`/`INBOX#` record Welcome/intent-detection/delayed-response already use)
+  so a rapid back-and-forth outside hours doesn't repeat the auto-reply after
+  every message.
+- **Owner:** `whatsapp.js` (`GET`/`PUT /hours-config`, `/ooo-config`,
+  admin-only, same pattern as `/welcome-config`); `WorkingHoursService.js`
+  (`isWithinWorkingHours()` — pure function using Node's built-in
+  `Intl.DateTimeFormat` for IANA-timezone-aware day/time resolution, no new
+  date/timezone dependency; `shouldSendOOO()`/`sendOOO()`).
+
 ---
 
 ## 3. Entity reference — other tables
