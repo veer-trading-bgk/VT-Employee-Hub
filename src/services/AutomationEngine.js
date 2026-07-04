@@ -8,10 +8,22 @@ const PipelineService = require('./PipelineService');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
+// A button_reply condition node with no configured timeout still can't wait forever —
+// this bounds it so AUTO_WAIT# items can't accumulate indefinitely for an abandoned chat.
+const UNBOUNDED_REPLY_WAIT_MS = 30 * 86_400_000; // 30 days
+
 // ── AutomationEngine ─────────────────────────────────────────────────────────
 // Orchestrates workflows: fires triggers, evaluates conditions, runs actions.
 // ADR-012: all WA sends delegated to WhatsAppSendService.
 // ADR-013: never creates customers; reads existing leads only.
+//
+// Two execution shapes coexist by design, never mixed within one workflow:
+//   - Linear (legacy): workflow.steps[] — a flat array, run by _runSteps().
+//   - Graph (branching): workflow.nodes[]/edges[]/entryNodeId — run by _runGraph().
+// _startExecution() dispatches on whether workflow.nodes is present. Both shapes
+// share the same AUTO_EXEC#/AUTO_WAIT# storage and the same distributed-claim
+// resume infra (processDueWaits()) — only the execution-record's result field
+// differs ('steps' vs 'path', see _finalizeExecution()).
 // ─────────────────────────────────────────────────────────────────────────────
 
 class AutomationEngine {
@@ -54,7 +66,8 @@ class AutomationEngine {
   async _startExecution(companyId, workflow, context, triggerType) {
     const executionId = uuidv4();
     const now         = new Date().toISOString();
-    const steps       = this._normalizeSteps(workflow.steps ?? [], workflow.actions ?? []);
+    const isGraph     = Array.isArray(workflow.nodes) && workflow.nodes.length > 0;
+    const steps       = isGraph ? null : this._normalizeSteps(workflow.steps ?? [], workflow.actions ?? []);
 
     const execItem = {
       PK:           `AUTO_EXEC#${companyId}`,
@@ -68,13 +81,17 @@ class AutomationEngine {
       leadPK:       context.leadPK     ?? null,
       contactId:    context.contactId  ?? null,
       contactName:  context.name ?? context.contactName ?? null,
-      steps:        steps.map((s) => ({ stepId: s.id, type: s.type, status: 'pending' })),
+      ...(isGraph
+        ? { path: [] }
+        : { steps: steps.map((s) => ({ stepId: s.id, type: s.type, status: 'pending' })) }),
       startedAt:    now,
       TTL:          Math.floor(Date.now() / 1000) + 90 * 86400, // 90-day retention
     };
 
     await dynamodb.put({ TableName: TABLE, Item: execItem }).promise();
-    await this._runSteps(companyId, workflow, steps, execItem, context, 0);
+
+    if (isGraph) await this._runGraph(companyId, workflow, execItem, context, workflow.entryNodeId);
+    else         await this._runSteps(companyId, workflow, steps, execItem, context, 0);
   }
 
   // ── Sequential step runner ───────────────────────────────────────────────
@@ -134,34 +151,118 @@ class AutomationEngine {
       }
     }
 
-    const completedAt = ts();
-    const durationMs  = Date.now() - new Date(execItem.startedAt).getTime();
-    const failedCount = stepResults.filter((s) => s.status === 'failed').length;
-    const actionCount = stepResults.filter((s) => s.type  !== 'end').length;
-    const finalStatus = failedCount === 0        ? 'completed'
-                      : failedCount === actionCount ? 'failed'
-                      :                               'partial_failure';
+    await this._finalizeExecution(companyId, workflow, execItem, 'steps', stepResults);
+  }
 
-    await dynamodb.update({
-      TableName: TABLE,
-      Key:       { PK: `AUTO_EXEC#${companyId}`, SK: execItem.SK },
-      UpdateExpression: 'SET #st = :st, steps = :steps, completedAt = :ca, durationMs = :dm',
-      ExpressionAttributeNames:  { '#st': 'status' },
-      ExpressionAttributeValues: { ':st': finalStatus, ':steps': stepResults, ':ca': completedAt, ':dm': durationMs },
-    }).promise();
+  // ── Graph runner — walks nodes[]/edges[] instead of a flat steps[] array ──
+  // Shares _runAction() (node.config is the same shape as a legacy step's config),
+  // the AUTO_WAIT#/_storeWait() distributed-claim resume infra, and _finalizeExecution()
+  // with the linear runner — only the traversal and the execution-record field differ.
+  async _runGraph(companyId, workflow, execItem, context, nodeId, resumeSignal = null) {
+    const nodeMap = new Map((workflow.nodes ?? []).map((n) => [n.id, n]));
+    const edges   = workflow.edges ?? [];
+    const path    = [...(execItem.path ?? [])];
+    const ts      = () => new Date().toISOString();
+    let pending   = resumeSignal;
 
-    // Bump workflow stats (fire-and-forget)
-    dynamodb.update({
-      TableName: TABLE,
-      Key:       { PK: `CONFIG#AUTO#${companyId}`, SK: `AUTO#${workflow.id}` },
-      UpdateExpression: 'SET runCount = if_not_exists(runCount, :z) + :one, lastRunAt = :lra, updatedAt = :ua',
-      ExpressionAttributeValues: { ':one': 1, ':z': 0, ':lra': completedAt, ':ua': completedAt },
-    }).promise().catch(() => {});
+    while (nodeId) {
+      const node = nodeMap.get(nodeId);
+      if (!node) {
+        logger.warn(`AutomationEngine: dangling edge to missing node "${nodeId}" in workflow "${workflow.name}" — execution ends here`);
+        break;
+      }
+
+      // Resuming a node that was previously paused (wait, or a button_reply condition
+      // waiting on a reply/timeout) — its outcome was already decided by the caller
+      // (resumeExecution). Replace the 'waiting'/'waiting_reply' placeholder already in
+      // path (written when it first paused) with its resolved outcome, then move
+      // straight to the resolved next node.
+      if (pending) {
+        const resolvedEntry = { nodeId, type: node.type, status: pending.status, completedAt: ts(), ...(pending.branchKey !== undefined && { branchKey: pending.branchKey }) };
+        if (path.length > 0 && path[path.length - 1].nodeId === nodeId) path[path.length - 1] = resolvedEntry;
+        else path.push(resolvedEntry);
+
+        const edge = pending.branchKey !== undefined
+          ? edges.find((e) => e.source === nodeId && e.sourceHandle === pending.branchKey)
+          : edges.find((e) => e.source === nodeId);
+        nodeId  = edge?.target ?? null;
+        pending = null;
+        continue;
+      }
+
+      if (node.type === 'end') {
+        path.push({ nodeId, type: 'end', status: 'completed', completedAt: ts() });
+        break;
+      }
+
+      if (node.type === 'wait') {
+        const delayMs  = this._parseWait(node.config ?? {});
+        const resumeAt = new Date(Date.now() + delayMs).toISOString();
+        await this._storeWait(companyId, {
+          executionId: execItem.executionId, workflowId: workflow.id, execSK: execItem.SK,
+          graph: true, nodeId, resumeAt, context,
+        });
+        path.push({ nodeId, type: 'wait', status: 'waiting', resumeAt });
+        await this._patchExecPath(companyId, execItem.SK, path, 'paused');
+        return;
+      }
+
+      // A condition node in 'button_reply' mode is inherently a pause point: it sends
+      // no message itself (the preceding send_template/interactive node did that) and
+      // waits for either a matching inbound button tap (event-driven resume, see
+      // whatsapp.js's webhook + resumeOnButtonReply()) or its own timeout (time-driven
+      // resume via the existing processDueWaits() sweep) — whichever comes first.
+      if (node.type === 'condition' && node.config?.mode === 'button_reply') {
+        const { timeoutAmount, timeoutUnit } = node.config;
+        const resumeAt = timeoutAmount
+          ? new Date(Date.now() + this._parseWait({ amount: timeoutAmount, unit: timeoutUnit })).toISOString()
+          : new Date(Date.now() + UNBOUNDED_REPLY_WAIT_MS).toISOString(); // no configured timeout — still expires eventually so AUTO_WAIT# can't accumulate forever
+        const expectedButtonIds = (node.config.branches ?? []).map((b) => b.buttonId).filter(Boolean);
+        await this._storeWait(companyId, {
+          executionId: execItem.executionId, workflowId: workflow.id, execSK: execItem.SK,
+          graph: true, nodeId, resumeAt, context,
+          awaitReply: { phone: context.phone ?? null, expectedButtonIds },
+        });
+        path.push({ nodeId, type: 'condition', status: 'waiting_reply', resumeAt });
+        await this._patchExecPath(companyId, execItem.SK, path, 'paused');
+        return;
+      }
+
+      if (node.type === 'condition') {
+        const branchKey = await this._evalCondition(companyId, node, context);
+        path.push({ nodeId, type: 'condition', status: 'evaluated', completedAt: ts(), branchKey });
+        const edge = edges.find((e) => e.source === nodeId && e.sourceHandle === branchKey);
+        nodeId = edge?.target ?? null;
+        continue;
+      }
+
+      // Action node — send_template / assign_employee / change_stage / add_tag / create_task.
+      try {
+        const result = await this._runAction(companyId, node, context);
+        path.push({ nodeId, type: node.type, status: 'completed', completedAt: ts(), result });
+        if (context.leadId) {
+          this._tlWrite(companyId, context, workflow.name, node.type, result).catch(() => {});
+        }
+      } catch (e) {
+        const detail = e.response?.data?.error?.message ?? e.message;
+        path.push({ nodeId, type: node.type, status: 'failed', completedAt: ts(), error: detail });
+        logger.warn(`AutomationEngine: node "${node.type}" failed in "${workflow.name}": ${detail}`);
+      }
+
+      const edge = edges.find((e) => e.source === nodeId);
+      nodeId = edge?.target ?? null;
+    }
+
+    await this._finalizeExecution(companyId, workflow, execItem, 'path', path);
   }
 
   // ── Resume after wait ────────────────────────────────────────────────────
-  async resumeExecution(companyId, waitRecord) {
-    const { workflowId, execSK, steps, context, nextStepIndex } = waitRecord;
+  // resolvedBranch: only meaningful for a graph wait paused on a button_reply condition
+  // node. null/undefined (the processDueWaits time-sweep case) means "no reply arrived in
+  // time" — follow the node's own fallbackKey. A branch key (from resumeOnButtonReply,
+  // an inbound reply that matched) means follow that branch instead.
+  async resumeExecution(companyId, waitRecord, resolvedBranch = null) {
+    const { workflowId, execSK, steps, context, nextStepIndex, graph, nodeId } = waitRecord;
     const [wfRes, execRes] = await Promise.all([
       dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#AUTO#${companyId}`, SK: `AUTO#${workflowId}` } }).promise(),
       dynamodb.get({ TableName: TABLE, Key: { PK: `AUTO_EXEC#${companyId}`,   SK: execSK             } }).promise(),
@@ -171,6 +272,16 @@ class AutomationEngine {
       logger.info(`AutomationEngine: workflow ${workflowId} no longer active; skipping resume`);
       return;
     }
+
+    if (graph) {
+      const node = (wfRes.Item.nodes ?? []).find((n) => n.id === nodeId);
+      const isReplyWait = node?.type === 'condition' && node.config?.mode === 'button_reply';
+      const resumeSignal = isReplyWait
+        ? { status: resolvedBranch ? 'evaluated' : 'timed_out', branchKey: resolvedBranch ?? node.config.fallbackKey ?? null }
+        : { status: 'completed' }; // plain 'wait' node — single outgoing edge, no branch
+      return this._runGraph(companyId, wfRes.Item, execRes.Item, context, nodeId, resumeSignal);
+    }
+
     await this._runSteps(companyId, wfRes.Item, steps, execRes.Item, context, nextStepIndex);
   }
 
@@ -212,6 +323,54 @@ class AutomationEngine {
       }
     }
     return resumed;
+  }
+
+  // ── Event-driven resume for button_reply condition nodes ─────────────────
+  // Called from whatsapp.js's inbound webhook when an inbound message is a button tap
+  // (isButtonReply()/parseButtonReply()) — mirrors processDueWaits()'s conditional-delete
+  // claim so a reply and a concurrent timeout sweep can never both resume the same wait.
+  // Queries the whole AUTO_WAIT#{companyId} partition (a Query on a known PK, not a Scan)
+  // rather than a time-bounded range, since a reply can arrive at any point before its
+  // node's timeout — accepted at today's scale (a handful of paused executions per
+  // company), same accepted-scale reasoning as ADR-014's CampaignScheduler Scan.
+  async resumeOnButtonReply(companyId, phone10, buttonId) {
+    try {
+      const { Items = [] } = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk',
+        ExpressionAttributeValues: { ':pk': `AUTO_WAIT#${companyId}` },
+        Limit: 100,
+      }).promise();
+
+      const candidates = Items.filter((item) =>
+        item.awaitReply?.phone === phone10 &&
+        (item.awaitReply.expectedButtonIds ?? []).includes(buttonId),
+      );
+
+      for (const item of candidates) {
+        try {
+          await dynamodb.delete({
+            TableName: TABLE,
+            Key:       { PK: item.PK, SK: item.SK },
+            ConditionExpression: 'attribute_exists(PK)',
+          }).promise();
+        } catch (e) {
+          if (e.code === 'ConditionalCheckFailedException') continue; // already claimed (e.g. by the timeout sweep)
+          logger.warn(`AutomationEngine: reply-claim failed for ${item.executionId}: ${e.message}`);
+          continue;
+        }
+
+        const wfRes  = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#AUTO#${companyId}`, SK: `AUTO#${item.workflowId}` } }).promise();
+        const node   = (wfRes.Item?.nodes ?? []).find((n) => n.id === item.nodeId);
+        const branch = (node?.config?.branches ?? []).find((b) => b.buttonId === buttonId);
+
+        await this.resumeExecution(companyId, item, branch?.key ?? null).catch((e) =>
+          logger.warn(`AutomationEngine: resume-on-reply failed for ${item.executionId}: ${e.message}`),
+        );
+      }
+    } catch (e) {
+      logger.warn(`AutomationEngine.resumeOnButtonReply: ${e.message}`);
+    }
   }
 
   // ── Action executor ──────────────────────────────────────────────────────
@@ -310,7 +469,7 @@ class AutomationEngine {
     }
   }
 
-  // ── Condition evaluator ──────────────────────────────────────────────────
+  // ── Condition evaluator (trigger-time — always frozen context) ───────────
   _evalConditions(conditions, ctx) {
     for (const c of conditions) {
       if (!this._evalOne(c, ctx)) return false;
@@ -319,19 +478,54 @@ class AutomationEngine {
   }
 
   _evalOne({ field, operator = 'equals', value }, ctx) {
-    const actual = this._ctxField(field, ctx);
+    // Legacy operator names from crm.js (backward compat)
+    if (operator === 'from_stage') return ctx.fromStage === value;
+    if (operator === 'to_stage')   return ctx.toStage   === value;
+    if (operator === 'has_tag')    return (ctx.tags ?? []).includes(value);
+    return this._matchesOperator(this._ctxField(field, ctx), operator, value);
+  }
+
+  _matchesOperator(actual, operator, value) {
     switch (operator) {
-      case 'equals':      return actual === value;
-      case 'not_equals':  return actual !== value;
-      case 'contains':    return Array.isArray(actual) ? actual.includes(value) : String(actual ?? '').includes(String(value ?? ''));
-      case 'not_contains':return Array.isArray(actual) ? !actual.includes(value) : !String(actual ?? '').includes(String(value ?? ''));
-      case 'exists':      return actual !== undefined && actual !== null && actual !== '';
-      case 'not_exists':  return actual === undefined  || actual === null  || actual === '';
-      // Legacy operator names from crm.js (backward compat)
-      case 'from_stage':  return ctx.fromStage === value;
-      case 'to_stage':    return ctx.toStage   === value;
-      case 'has_tag':     return (ctx.tags ?? []).includes(value);
-      default:            return false; // unknown operator → condition fails safely (don't fire)
+      case 'equals':       return actual === value;
+      case 'not_equals':   return actual !== value;
+      case 'contains':     return Array.isArray(actual) ? actual.includes(value) : String(actual ?? '').includes(String(value ?? ''));
+      case 'not_contains': return Array.isArray(actual) ? !actual.includes(value) : !String(actual ?? '').includes(String(value ?? ''));
+      case 'exists':       return actual !== undefined && actual !== null && actual !== '';
+      case 'not_exists':   return actual === undefined  || actual === null  || actual === '';
+      default:             return false; // unknown operator → condition fails safely
+    }
+  }
+
+  // ── Graph condition-node evaluator (mid-workflow — live re-fetch when possible) ──
+  // Unlike trigger conditions (_evalConditions, always evaluated the instant a trigger
+  // fires), a graph condition node can run after a wait — so it re-reads the lead's
+  // current METADATA rather than trusting context captured when the workflow started.
+  // Falls back to frozen context for contacts with no leadPK (unknown/INBOX contacts,
+  // nothing to re-fetch) or if the re-fetch itself fails.
+  async _evalCondition(companyId, node, context) {
+    const cfg    = node.config ?? {};
+    const actual = await this._resolveConditionField(cfg.field, context);
+
+    if (cfg.mode === 'boolean') {
+      return this._matchesOperator(actual, cfg.operator ?? 'equals', cfg.value) ? 'yes' : 'no';
+    }
+
+    // field_match — first branch whose own comparison value matches wins
+    for (const branch of cfg.branches ?? []) {
+      if (this._matchesOperator(actual, cfg.operator ?? 'equals', branch.value)) return branch.key;
+    }
+    return cfg.fallbackKey ?? null;
+  }
+
+  async _resolveConditionField(field, context) {
+    if (!context.leadPK) return this._ctxField(field, context);
+    try {
+      const { Item } = await dynamodb.get({ TableName: TABLE, Key: { PK: context.leadPK, SK: 'METADATA' } }).promise();
+      return this._ctxField(field, { ...context, ...Item });
+    } catch (e) {
+      logger.warn(`AutomationEngine: condition live re-fetch failed, using frozen context: ${e.message}`);
+      return this._ctxField(field, context);
     }
   }
 
@@ -373,6 +567,44 @@ class AutomationEngine {
       ExpressionAttributeNames:  { '#st': 'status' },
       ExpressionAttributeValues: { ':st': status, ':steps': steps },
     }).promise();
+  }
+
+  async _patchExecPath(companyId, SK, path, status) {
+    await dynamodb.update({
+      TableName: TABLE,
+      Key:       { PK: `AUTO_EXEC#${companyId}`, SK },
+      UpdateExpression: 'SET #st = :st, #p = :path',
+      ExpressionAttributeNames:  { '#st': 'status', '#p': 'path' },
+      ExpressionAttributeValues: { ':st': status, ':path': path },
+    }).promise();
+  }
+
+  // ── Shared finalizer — both _runSteps ('steps') and _runGraph ('path') end here ──
+  async _finalizeExecution(companyId, workflow, execItem, fieldName, results) {
+    const completedAt = new Date().toISOString();
+    const durationMs  = Date.now() - new Date(execItem.startedAt).getTime();
+    const failedCount = results.filter((r) => r.status === 'failed').length;
+    const actionCount = results.filter((r) => r.type !== 'end' && r.type !== 'condition').length;
+    const finalStatus = failedCount === 0        ? 'completed'
+                      : failedCount === actionCount ? 'failed'
+                      :                               'partial_failure';
+    const valKey = `:${fieldName}`; // ':steps' or ':path'
+
+    await dynamodb.update({
+      TableName: TABLE,
+      Key:       { PK: `AUTO_EXEC#${companyId}`, SK: execItem.SK },
+      UpdateExpression: `SET #st = :st, ${fieldName} = ${valKey}, completedAt = :ca, durationMs = :dm`,
+      ExpressionAttributeNames:  { '#st': 'status' },
+      ExpressionAttributeValues: { ':st': finalStatus, [valKey]: results, ':ca': completedAt, ':dm': durationMs },
+    }).promise();
+
+    // Bump workflow stats (fire-and-forget)
+    dynamodb.update({
+      TableName: TABLE,
+      Key:       { PK: `CONFIG#AUTO#${companyId}`, SK: `AUTO#${workflow.id}` },
+      UpdateExpression: 'SET runCount = if_not_exists(runCount, :z) + :one, lastRunAt = :lra, updatedAt = :ua',
+      ExpressionAttributeValues: { ':one': 1, ':z': 0, ':lra': completedAt, ':ua': completedAt },
+    }).promise().catch(() => {});
   }
 
   // ── Timeline integration ─────────────────────────────────────────────────

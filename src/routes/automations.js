@@ -20,6 +20,30 @@ async function runAutomations(companyId, triggerType, context) {
   return AutomationEngine.fireTrigger(companyId, triggerType, context);
 }
 
+// ── Minimal shape validation for graph workflows (nodes/edges/entryNodeId) ──
+// Deliberately shallow — checks referential integrity only (every id exists, every
+// edge points at a real node), not deeper graph properties like cycles or
+// unreachable nodes. Full graph-integrity validation is a canvas-UI (Phase 2)
+// concern where a human is actively building the graph and can be guided
+// interactively; this route-level check exists to reject obviously broken payloads.
+function validateGraphShape(nodes, edges, entryNodeId) {
+  if (!Array.isArray(nodes) || nodes.some((n) => !n?.id || !n?.type)) {
+    return 'nodes must be an array of { id, type, config }';
+  }
+  if (edges !== undefined && (!Array.isArray(edges) || edges.some((e) => !e?.id || !e?.source || !e?.target))) {
+    return 'edges must be an array of { id, source, target, sourceHandle? }';
+  }
+  if (!entryNodeId) return 'entryNodeId is required for a graph workflow';
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  if (!nodeIds.has(entryNodeId)) return 'entryNodeId must reference an existing node';
+  for (const e of edges ?? []) {
+    if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) {
+      return `edge "${e.id}" references a node id that does not exist in nodes[]`;
+    }
+  }
+  return null;
+}
+
 // ── GET /stats — must be before /:id ────────────────────────────────────────
 router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
@@ -110,11 +134,21 @@ router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res
 router.post('/', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), async (req, res, next) => {
   try {
     const { companyId, id: userId, name: userName } = req.user;
-    const { name, description, trigger, steps, status = 'draft' } = req.body;
+    const { name, description, trigger, steps, nodes, edges, entryNodeId, status = 'draft' } = req.body;
 
-    if (!name?.trim())                               return res.status(400).json({ error: 'name is required' });
-    if (!trigger?.type)                              return res.status(400).json({ error: 'trigger.type is required' });
-    if (!Array.isArray(steps) || steps.length === 0) return res.status(400).json({ error: 'at least one step is required' });
+    if (!name?.trim())  return res.status(400).json({ error: 'name is required' });
+    if (!trigger?.type) return res.status(400).json({ error: 'trigger.type is required' });
+
+    // A workflow is either graph-shaped (nodes/edges) or linear-shaped (steps) —
+    // never both. Presence of a non-empty nodes[] selects the graph shape.
+    const isGraph = Array.isArray(nodes) && nodes.length > 0;
+    if (!isGraph && (!Array.isArray(steps) || steps.length === 0)) {
+      return res.status(400).json({ error: 'at least one step is required' });
+    }
+    if (isGraph) {
+      const err = validateGraphShape(nodes, edges, entryNodeId);
+      if (err) return res.status(400).json({ error: err });
+    }
 
     const id     = uuidv4();
     const now    = new Date().toISOString();
@@ -127,7 +161,7 @@ router.post('/', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), as
       description:   description?.trim() ?? null,
       status:        safeStatus,
       trigger:       { type: trigger.type, conditions: trigger.conditions ?? [] },
-      steps,
+      ...(isGraph ? { nodes, edges: edges ?? [], entryNodeId } : { steps }),
       runCount:      0,
       lastRunAt:     null,
       createdBy:     userId,
@@ -164,7 +198,7 @@ router.put('/:id', authMiddleware, checkRole(['admin']), async (req, res, next) 
     }).promise();
     if (!existing.Item) return res.status(404).json({ error: 'Workflow not found' });
 
-    const { name, description, trigger, steps, status } = req.body;
+    const { name, description, trigger, steps, nodes, edges, entryNodeId, status } = req.body;
     const expNames = {};
     const expVals  = { ':ua': new Date().toISOString() };
     const sets     = ['updatedAt = :ua'];
@@ -177,6 +211,12 @@ router.put('/:id', authMiddleware, checkRole(['admin']), async (req, res, next) 
     if (description !== undefined) { sets.push('description = :d');                           expVals[':d']     = description?.trim() ?? null; }
     if (trigger     !== undefined) { sets.push('#t = :t');       expNames['#t']  = 'trigger'; expVals[':t']     = { type: trigger.type, conditions: trigger.conditions ?? [] }; }
     if (steps       !== undefined) { sets.push('steps = :steps');                             expVals[':steps'] = steps; }
+    if (nodes       !== undefined) {
+      const graphErr = validateGraphShape(nodes, edges, entryNodeId);
+      if (graphErr) return res.status(400).json({ error: graphErr });
+      sets.push('nodes = :nodes, edges = :edges, entryNodeId = :enid');
+      expVals[':nodes'] = nodes; expVals[':edges'] = edges ?? []; expVals[':enid'] = entryNodeId;
+    }
     if (status      !== undefined) {
       if (!['active', 'draft', 'paused', 'archived'].includes(status)) {
         return res.status(400).json({ error: 'status must be: active | draft | paused | archived' });

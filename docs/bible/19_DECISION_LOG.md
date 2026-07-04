@@ -625,6 +625,63 @@ surfaced this bug — see the new feature's own tracking once Phase 1 lands).
 
 ---
 
+## Era 10 — Branching automation builder, Phase 1: graph engine (backend only) (2026-07-04)
+
+**What:** `AutomationEngine.js` now supports a second, graph-shaped workflow representation
+(`nodes[]`/`edges[]`/`entryNodeId`) alongside the original flat `steps[]` model — a real
+if/else branching engine, not just sequential actions. A new `condition` node type supports
+three modes: `field_match`/`boolean` (CRM-field branching, e.g. "stage = Won," with a **live
+re-fetch** of the lead's current state at evaluation time rather than the frozen context
+captured when the trigger fired — the actual point of putting a condition after a `wait`) and
+`button_reply` (branches on which WhatsApp reply button a contact taps, racing an event-driven
+resume against the node's own timeout).
+
+**Design decisions, confirmed with the product owner before implementation:**
+1. Condition nodes re-fetch live lead state (not frozen trigger-time context) — approved
+   over the frozen-context alternative specifically to support "check current CRM state
+   after waiting."
+2. Graph executions get their own `path[]` field on `AUTO_EXEC#` records (append-only,
+   additive) instead of reusing linear's fixed-size `steps[]` — approved, with the note that
+   `ExecutionList.tsx` will need a second render branch once the canvas UI (Phase 2) lands.
+3. A separate, pre-existing bug found during the Phase 0 audit for this feature (`crm.js`
+   firing `'stage_change'` instead of the canonical `'stage_changed'`) was fixed immediately
+   as its own small commit (`e536bc2`), not bundled into this feature — see the entry above
+   this one for detail.
+
+**Backward compatibility:** zero migration. `_startExecution()` dispatches purely on whether
+`workflow.nodes` is a non-empty array — a workflow is graph-shaped or linear-shaped for its
+whole lifetime. The two live workflows in production (`viir_trading`'s "testing" and "Welcome
+new leads," both simple `send_template → end`, both currently paused, confirmed via direct
+DynamoDB read) are unaffected and never exercise the new code path. `automations.js`'s
+`POST /`/`PUT /:id` gained purely additive `nodes`/`edges`/`entryNodeId` support next to the
+existing `steps` handling, with a new shallow `validateGraphShape()` check (referential
+integrity only — every edge's `source`/`target` must reference a real node id; deeper
+graph-integrity concerns like cycles or unreachable nodes are deferred to the Phase 2 canvas
+UI, where a human is actively building the graph and can be guided interactively).
+
+**Scope of this Phase:** backend engine only — `AutomationEngine.js` (graph walk, condition
+evaluator, wait/resume dispatch, new `resumeOnButtonReply()`), `automations.js` (additive CRUD
+support), `whatsapp.js` (new `resumeOnButtonReply()` call from both the known-lead and
+unknown-contact inbound button-tap branches, independent of and additional to the pre-existing
+`fireButtonFollowUp()` welcome-message mechanism). No frontend/canvas work — the existing
+`WorkflowBuilder.tsx` linear UI is completely untouched, per explicit instruction; a React
+Flow-based visual canvas is Phase 2, not yet started, and needs `reactflow`/`dagre` added as
+new `dashboard` dependencies (not yet installed as of this entry).
+
+**ADR conflicts checked:** none. ADR-012 — the graph runner's `send_template` node still goes
+through the same `_runAction()` → `WASendSvc.sendTemplate()` call as the linear runner, no new
+Graph API call sites. ADR-013 — the live re-fetch reads an already-known `leadPK`'s `METADATA`
+by direct `dynamodb.get`; it never creates or deduplicates a customer.
+
+**Status:** implemented and validated. `tests/automationEngine.test.js` grew from 7 to 14
+tests (7 new, covering the graph walk, live re-fetch, plain-wait pause/resume, `button_reply`
+pause + event-driven resume + timeout-fallback resume, and dangling-edge handling); the
+original 7 pass unchanged. Full suite: 600/600 passing (up from the 593 baseline at the start
+of this session). See `08_MODULES.md`'s `AutomationEngine.js` entry for the full technical
+writeup.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or

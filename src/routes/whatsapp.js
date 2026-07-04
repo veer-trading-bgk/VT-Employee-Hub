@@ -1554,6 +1554,12 @@ router.post('/webhook', async (req, res) => {
           // follow-up, if any (see fireButtonFollowUp's own internal try/catch).
           if (buttonReply) {
             await fireButtonFollowUp(webhookCompanyId, { leadPK: lead.PK }, buttonReply.id, { id: 'system', role: 'admin', name: 'System' });
+            // Independent of welcome-message follow-ups: resume any paused automation
+            // graph execution whose button_reply condition node is waiting on this exact
+            // tap (branching automation builder, Phase 1 — see AutomationEngine.js).
+            require('../services/AutomationEngine')
+              .resumeOnButtonReply(webhookCompanyId, phone10, buttonReply.id)
+              .catch((e) => logger.warn('automation button-reply resume failed: ' + e.message));
           }
         }
       } else {
@@ -1624,6 +1630,12 @@ router.post('/webhook', async (req, res) => {
           // between the welcome send and the reply.
           if (buttonReply) {
             await fireButtonFollowUp(companyId, { phone: phone10 }, buttonReply.id, { id: 'system', role: 'admin', name: 'System' });
+            // Independent of welcome-message follow-ups: resume any paused automation
+            // graph execution whose button_reply condition node is waiting on this exact
+            // tap (branching automation builder, Phase 1 — see AutomationEngine.js).
+            require('../services/AutomationEngine')
+              .resumeOnButtonReply(companyId, phone10, buttonReply.id)
+              .catch((e) => logger.warn('automation button-reply resume failed: ' + e.message));
           }
         }
 
