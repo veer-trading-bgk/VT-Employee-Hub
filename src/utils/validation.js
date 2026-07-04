@@ -5,6 +5,12 @@ const loginSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters')
 });
 
+// Settings > AI tab — master switch + per-useCase module toggles (ADR-015 point 13).
+const aiConfigSchema = z.object({
+  masterEnabled: z.boolean(),
+  moduleToggles: z.record(z.string(), z.boolean()).optional(),
+}).strict();
+
 const addMetricSchema = z.object({
   metric_type: z.enum(['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching', 'pms', 'pro_insight', 'ltpp']),
   value: z.number().min(0, 'Value cannot be negative').max(999999),
@@ -193,6 +199,7 @@ const welcomeConfigSchema = z.object({
 
 module.exports = {
   loginSchema,
+  aiConfigSchema,
   addMetricSchema,
   registerSchema,
   verifyTotpSchema,

@@ -17,7 +17,7 @@ jest.mock('../src/config/dynamodb', () => ({
 
 process.env.DYNAMODB_TABLE_AUDIT = 'audit_logs';
 
-const { loginRateLimiter } = require('../src/middleware/rateLimiter');
+const { loginRateLimiter, atomicIncrement, getCount } = require('../src/middleware/rateLimiter');
 
 describe('loginRateLimiter', () => {
   beforeEach(() => jest.clearAllMocks());
@@ -70,5 +70,40 @@ describe('loginRateLimiter', () => {
     mockUpdate.mockRejectedValue(new Error('DynamoDB unavailable'));
     const count = await loginRateLimiter.recordFail('user@test.com');
     expect(count).toBe(0);
+  });
+});
+
+// atomicIncrement/getCount are exported directly (not just via the loginRateLimiter/
+// rateLimit closures) so AIService can key its own per-company/per-useCase counters
+// (rate limit + monthly quota) off the exact same primitive, instead of reinventing
+// atomic-counter DynamoDB semantics a second time.
+describe('atomicIncrement / getCount — reusable primitives', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('atomicIncrement ADDs 1 and sets a TTL only if not already present', async () => {
+    mockUpdate.mockResolvedValue({ Attributes: { count: 7 } });
+    const count = await atomicIncrement('ai_ratelimit#comp_1#metrics-insights', 'window#1000', 60_000);
+    expect(count).toBe(7);
+    expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      TableName: 'audit_logs',
+      Key: { PK: 'ai_ratelimit#comp_1#metrics-insights', SK: 'window#1000' },
+      UpdateExpression: expect.stringContaining('ADD'),
+    }));
+  });
+
+  test('atomicIncrement fails open (returns 0) on a DynamoDB error', async () => {
+    mockUpdate.mockRejectedValue(new Error('DynamoDB unavailable'));
+    const count = await atomicIncrement('ai_quota#comp_1', 'month#2026-07', 2_592_000_000);
+    expect(count).toBe(0);
+  });
+
+  test('getCount returns 0 when no record exists', async () => {
+    mockGet.mockResolvedValue({});
+    expect(await getCount('ai_quota#comp_1', 'month#2026-07')).toBe(0);
+  });
+
+  test('getCount returns the stored count', async () => {
+    mockGet.mockResolvedValue({ Item: { count: 301 } });
+    expect(await getCount('ai_quota#comp_1', 'month#2026-07')).toBe(301);
   });
 });

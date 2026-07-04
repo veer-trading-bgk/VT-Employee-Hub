@@ -29,6 +29,7 @@ import {
   Edit2,
   Save,
   X,
+  Sparkles,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card } from '@/components/v3/ui/Card';
@@ -50,6 +51,7 @@ import { formatMetricValue } from '@/lib/metrics.config';
 import type { Role } from '@/types';
 import { toast } from 'sonner';
 import { EmployeesSection } from '@/components/v3/team/EmployeesSection';
+import { AISection } from '@/components/v3/settings/AISection';
 import { WabaHealthPanel } from '@/components/settings/WabaHealthPanel';
 import { WhatsAppFlowsPanel } from '@/components/settings/WhatsAppFlowsPanel';
 
@@ -60,6 +62,7 @@ type SettingsSection =
   | 'organisation'
   | 'employees'
   | 'whatsapp'
+  | 'ai'
   | 'notifications'
   | 'security'
   | 'billing'
@@ -88,6 +91,7 @@ const SECTIONS: SectionDef[] = [
   { id: 'organisation',  label: 'Organisation',     description: 'Company name, logo, settings',           icon: <Building2 className="h-5 w-5" />, adminOnly: true },
   { id: 'employees',     label: 'Employees',        description: 'Invite, manage roles and permissions',   icon: <Users className="h-5 w-5" />, adminOnly: true },
   { id: 'whatsapp',      label: 'WhatsApp',         description: 'Connect and manage WhatsApp Business',   icon: <Smartphone className="h-5 w-5" />, adminOnly: true },
+  { id: 'ai',            label: 'AI',               description: 'Master switch and per-feature AI controls', icon: <Sparkles className="h-5 w-5" />, adminOnly: true },
   { id: 'pipeline',      label: 'Pipeline Stages',  description: 'Customise your sales stages',            icon: <LayoutGrid className="h-5 w-5" />, adminOnly: true },
   { id: 'tags',          label: 'Tags',             description: 'Manage contact tags',                    icon: <Tag className="h-5 w-5" />, adminOnly: true },
   { id: 'workflows',     label: 'Workflow settings',description: 'Manage and configure automations',       icon: <Zap className="h-5 w-5" />, adminOnly: true },
@@ -1443,6 +1447,7 @@ function SettingsPageInner() {
       case 'appearance':    return <AppearanceSection />;
       case 'employees':     return <EmployeesSection />;
       case 'whatsapp':      return <WhatsAppSection />;
+      case 'ai':            return <AISection />;
       case 'notifications': return <StubSection title="Notifications" description="Manage your notification preferences" />;
       case 'security':      return <StubSection title="Security" description="Password, 2FA, and session management" />;
       case 'organisation':  return <StubSection title="Organisation" description="Company name, logo, and timezone" />;

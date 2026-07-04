@@ -562,6 +562,80 @@ All follow the same shape: `PK = CONFIG#{NAME}#{companyId}` (or the bare
   availability before assigning — see §5 for a bug in how that candidate list
   itself is built).
 
+### 2.27 CONFIG#AI — per-company AI master switch + module toggles (ADR-015)
+
+- **PK:** `CONFIG#AI#{companyId}`
+- **SK:** `CURRENT` (matches `CONFIG#WABA#`'s casing, not the lowercase `current`
+  used by §2.23's config singletons)
+- **Fields:** `companyId, masterEnabled (bool), moduleToggles ({ [useCase]: bool }), updatedAt, updatedBy`
+- **Represents:** The two-level AI control surface — one master kill switch,
+  plus per-`useCase` toggles beneath it. No row for a company defaults to fully
+  enabled (AI already works today ungated); this is an opt-out switch, not
+  opt-in.
+- **Owner:** `ai.js` (`GET`/`PUT /config`, admin-only both directions)
+- **Reader:** `AIService.generate()` — read fresh via `dynamodb.get()` on
+  **every call, no caching**, so toggling either level off takes effect on the
+  very next request, not after a delay.
+
+### 2.28 AIUSAGE — per-call AI usage/cost log
+
+- **PK:** `AIUSAGE#{companyId}#{date}` (date = `YYYY-MM-DD`)
+- **SK:** `{ISO-timestamp}#{useCase}`
+- **Fields:** `companyId, useCase, promptVersion, model, inputTokens, outputTokens, costUsd, walletPoints, userId, overQuota (bool), createdAt`
+- **Represents:** Real usage data logged for every `AIService.generate()` call
+  that reached the provider, regardless of outcome (written even when JSON-mode
+  output ultimately failed validation, since real tokens were still spent).
+  `costUsd`/`walletPoints` are computed from `src/config/aiConfig.js`'s
+  `PRICING` block — **placeholder values, flagged pre-launch TODO**, not yet
+  verified against Anthropic's real current pricing.
+- **Owner:** `AIService._logUsage()` — write failures are logged and swallowed,
+  never surfaced to the caller (a logging failure must not break an otherwise-
+  successful AI response).
+- **Note:** crossing `PRICING.freeCallsPerMonth` (a separate `ai_quota#{companyId}`
+  counter in `DYNAMODB_TABLE_AUDIT`, via `rateLimiter.js`'s `atomicIncrement()`)
+  sets `overQuota: true` on the log record and logs an info line — it does
+  **not** block the call or deduct from `WALLET#` in this phase.
+
+### 2.29 APPROVAL — human-in-the-loop AI approval queue (ADR-015 Rule 6)
+
+- **PK:** `APPROVAL#{companyId}`
+- **SK:** `{status}#{createdAt}#{approvalId}` (status is `pending`/`approved`/
+  `rejected` — resolving an approval is a delete-old-SK + put-new-SK, since
+  status lives in the key, not just an attribute)
+- **Fields:** `approvalId, companyId, useCase, output, confidence, riskLevel, promptVersion, assignedTo, originalAssignee, routingReason ('direct'|'leave-fallback-teamlead'|'leave-fallback-admin'|'unassigned'), status, createdAt, resolvedBy, resolvedAt, resolutionNote`
+- **Represents:** A pending human sign-off for a `customerFacing` useCase's
+  output, before any downstream customer-facing action may act on it. Routing
+  (`ApprovalService.resolveRoutingTarget()`) checks `LEAVE#` (§2.25) for the
+  assignee, falling back through `teamLeadId` → any active admin
+  (`companyIdIndex` GSI on the EMPLOYEES table) → `assignedTo: null` (never
+  silently dropped) — genuinely new logic; confirmed via audit that no prior
+  leave-aware routing existed anywhere in this codebase (`autoAssign.js`'s own
+  fallback is capacity/overflow load-balancing only, not leave-aware).
+- **Owner:** `ApprovalService.js`
+- **Note:** not yet populated by any real useCase — both of today's real AI
+  features (`metrics-insights`, `team-metrics-insights`) are internal analyst
+  reports (`customerFacing: false`), which never engage this gate.
+
+### 2.30 WALLET — generic prepaid balance ("points")
+
+- **PK:** `WALLET#{companyId}`
+- **SK:** `CURRENT` (balance) or `TXN#{ISO-timestamp}#{uuid}` (ledger entry)
+- **Fields (balance):** `companyId, balancePoints, createdAt, updatedAt`
+- **Fields (ledger entry):** `companyId, type ('credit'|'debit'), amountPoints, meterType, reason, relatedId?, balanceAfter, createdAt`
+- **Represents:** A company-scoped prepaid balance, deliberately **not**
+  AI-specific in shape — `meterType` tags which feature a debit/credit belongs
+  to (`'ai'`, future `'calling'`, etc.), so one fungible balance can back any
+  metered feature without a schema change per feature.
+- **Owner:** `WalletService.js` (`ensureWallet`, `getBalance`, `credit`, `debit`
+  — `debit()` is a conditional `ADD` guarded by `balancePoints >= :points`, so a
+  balance can never go negative under concurrent debits)
+- **Note:** **not debited by `AIService` in this phase** — AI usage is fully
+  covered by the subscription plan today (see §2.28's `overQuota` note). This
+  entity exists as the reusable foundation for WhatsApp Calling's real
+  per-minute pass-through deduction, the first feature expected to actually
+  draw it down. `GET /api/ai/wallet` exposes a read-only balance for the
+  Settings > AI tab's placeholder display.
+
 ---
 
 ## 3. Entity reference — other tables

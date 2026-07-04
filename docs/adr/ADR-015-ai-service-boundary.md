@@ -121,17 +121,55 @@ const result = await AIService.generate({ useCase, companyId, context, user });
 
 ---
 
-## Migration Required
+## Migration Status — DONE (2026-07-04)
 
-`ai.js`'s two existing endpoints (`POST /insights`, `POST /team-insights`) are the **first migration target** once `AIService` exists. That migration is a separate, future implementation task — **not part of this ADR-writing task**, which is documentation-only. Until migrated, both endpoints are in the same **transition** state ADR-013 used for its pre-migration entry points: documented as a known, temporary exception, not a silent violation.
+`ai.js`'s two endpoints now call `AIService.generate()` instead of fetching Anthropic directly. Both preserve their exact pre-migration response shape (`{ insights, generatedAt, model }` / `{ insights, generatedAt }`) — `dashboard/src/components/ai/InsightsPanel.tsx` required zero changes.
 
-| # | Entry Point | Gap | Required Change |
+| # | Entry Point | Gap (pre-migration) | Status |
 |---|---|---|---|
-| 1 | `ai.js` `POST /insights` | Direct `fetch()` to Anthropic; hardcoded model/prompt; no `companyId` scoping in the call | Route through `AIService.generate({ useCase: 'metrics-insights', companyId, ... })` |
-| 2 | `ai.js` `POST /team-insights` | Same | Route through `AIService.generate({ useCase: 'team-metrics-insights', companyId, ... })` |
+| 1 | `ai.js` `POST /insights` | Direct `fetch()` to Anthropic; hardcoded model/prompt; no `companyId` scoping in the call | **Migrated** — `AIService.generate({ useCase: 'metrics-insights', companyId, context: { metrics, period, userRole }, user })` |
+| 2 | `ai.js` `POST /team-insights` | Same | **Migrated** — `AIService.generate({ useCase: 'team-metrics-insights', companyId, ... })` |
 | 3 | AI Inbox (not yet built) | N/A — greenfield | Must call `AIService` from the first commit; no direct provider call ever written |
 | 4 | Campaign Intelligence (not yet built) | N/A — greenfield | Same |
 | 5 | AI Automation (not yet built) | N/A — greenfield | Same |
+
+Route handlers still own request validation, RBAC (`checkRole`), and input-hygiene (role coercion, performer-list sanitisation) exactly as Rule 3's constraint requires — only the LLM call itself moved into `AIService`.
+
+---
+
+## Rule 5 — No send capability (hard boundary)
+
+`AIService` generates text/data and returns it to the caller. **It must never call `WhatsAppSendService` or send anything itself, directly or transitively.** `AIService.js` has zero `require()` dependency on `WhatsAppSendService` — enforced by a repo-grep-style unit test (`tests/aiService.test.js`), not just this sentence. Sending a customer-facing message stays exclusively `WhatsAppSendService`'s responsibility per ADR-012, always initiated by the caller after inspecting `AIService.generate()`'s result — never by `AIService` on its own initiative.
+
+```js
+// ❌ NEVER — AIService deciding to send its own output
+class AIService {
+  async generate(...) {
+    const result = await this._callAnthropic(...);
+    await WhatsAppSendService.sendText(...); // NEVER — not AIService's job, ever
+    return result;
+  }
+}
+
+// ✅ Required — the caller sends, after its own judgment (and, where the
+// approval gate applies, after a human has signed off)
+const result = await AIService.generate({ useCase: 'inbox-reply-suggestion', ... });
+if (result.ok && !result.approvalRequired) {
+  await WhatsAppSendService.sendText(companyId, target, result.data, user);
+}
+```
+
+---
+
+## Rule 6 — Human-in-the-loop approval routing
+
+Per `docs/bible/ROADMAP.md`'s guiding principle "AI as an assistant, not a replacement," any `useCase` whose output is itself a customer-facing action (`customerFacing: true` in `aiConfig.js`) is gated by an approval rule: `autonomous: false` (the default) always requires human sign-off; `autonomous: true` still gets force-routed to approval when the model's self-rated confidence is below the useCase's `confidenceThreshold` or `risk: 'high'` — confidence/risk override autonomy, never the reverse. Routing (`src/services/ApprovalService.js`) accounts for the assigned employee being on leave: assignee → their `teamLeadId` if the assignee is on approved leave today → any active admin if the team lead is also unavailable → an unassigned entry in the admin queue if literally nobody is available (never silently dropped). `useCase`s that are not `customerFacing` (both of today's real use cases — internal analyst reports the requesting user reads directly) never engage this gate at all.
+
+---
+
+## Rule 7 — Two-level AI control, checked fresh on every call
+
+`CONFIG#AI#{companyId}` / `CURRENT` holds a company-level `masterEnabled` kill switch plus a `moduleToggles` map keyed by `useCase`. `generate()` reads this record directly (`dynamodb.get`, no in-process cache, unlike `WhatsAppSendService`'s deliberate 10-minute WABA-config cache) so toggling either off takes effect on the very next call, not after a caching delay. No row yet for a company defaults to fully enabled — AI already works today ungated; the master switch is an opt-out kill switch, not an opt-in gate.
 
 ---
 
@@ -142,7 +180,19 @@ const result = await AIService.generate({ useCase, companyId, context, user });
 - **One place to add a provider, change a model, or fix a prompt bug.** A correction to how prompts are assembled, how errors are handled, or a model version bump applies to every AI feature at once.
 - **Cross-tenant leakage becomes structurally harder, not just policy.** A missing `companyId` fails at the `AIService` boundary instead of depending on every route author remembering to scope their own prompt.
 - **New AI features are additive, not architectural.** AI Inbox, Campaign Intelligence, and AI Automation each add a `useCase` config entry and a caller — they do not each require deciding how to call Anthropic, where to put the API key, or how to rate-limit.
-- **Usage/cost tracking has exactly one attachment point** when it's needed for pricing tier enforcement, instead of requiring an audit of every AI call site.
+- **Usage/cost tracking has exactly one attachment point** — `AIUSAGE#{companyId}#{date}` records every call's tokens/cost/promptVersion regardless of which useCase or feature made it.
+- **PII redaction, approval routing, and rate limiting are enforced once, at the boundary**, not re-implemented (or forgotten) per feature.
+
+### Data model additions (2026-07-04)
+
+| Entity | Purpose | Owner |
+|---|---|---|
+| `CONFIG#AI#{companyId}` / `CURRENT` | Master switch + per-useCase module toggles (Rule 7) | `ai.js` (`GET`/`PUT /config`); read by `AIService` |
+| `AIUSAGE#{companyId}#{date}` / `{timestamp}#{useCase}` | Per-call usage log: tokens, cost, useCase, promptVersion, userId, overQuota flag | Written by `AIService` only |
+| `APPROVAL#{companyId}` / `{status}#{createdAt}#{approvalId}` | Human-in-the-loop approval queue (Rule 6) | `ApprovalService` |
+| `WALLET#{companyId}` / `CURRENT` + `TXN#{timestamp}#{txnId}` | Generic prepaid balance ("points") — deliberately not AI-specific in shape; backs any future metered feature via a `meterType`-tagged ledger. **Not debited by AI in this phase** — AI usage is fully covered by the subscription plan; this is the reusable foundation for WhatsApp Calling's real per-minute deduction. | `WalletService` |
+
+### Constraints
 
 ### Constraints
 
@@ -162,6 +212,9 @@ Before merging any PR that touches AI/LLM functionality:
 - [ ] New AI features add a `useCase` entry to `src/config/aiConfig.js`, not a new method or a new service
 - [ ] Every `AIService.generate()` call passes an explicit `companyId` resolved from the authenticated request — never from unvalidated client input alone
 - [ ] Prompt templates and model names are not hardcoded in route handlers or components
+- [ ] `AIService.js` has no `require()` on `WhatsAppSendService` (Rule 5) — sending stays the caller's job
+- [ ] A `customerFacing: true` useCase declares its `approval` block explicitly; `autonomous: true` is a deliberate, justified opt-in, not the default
+- [ ] Any `redaction.allowFields` opt-out on a useCase carries a `justification` string (logged on every call that uses it)
 
 ### Adding a new AI feature
 
@@ -175,10 +228,15 @@ Before merging any PR that touches AI/LLM functionality:
 
 ## Related
 
-- `src/routes/ai.js` — the two endpoints this ADR's migration section targets (not yet migrated)
+- `src/services/AIService.js` — the implementation of this ADR; `src/config/aiConfig.js` — the useCase registry (Rule 3)
+- `src/services/ApprovalService.js` — human-in-the-loop routing (Rule 6), genuinely new logic — confirmed via audit that no prior leave-aware routing pattern existed anywhere in this codebase to reuse
+- `src/services/WalletService.js` — generic prepaid balance, not wired to AI deduction yet (see Data model additions)
+- `src/utils/aiRedaction.js` — PII/sensitive-data redaction (field denylist + PAN/Aadhaar pattern scrub)
+- `src/routes/ai.js` — migrated (`POST /insights`, `POST /team-insights`); also owns `GET`/`PUT /config` and `GET /wallet`
+- `dashboard/src/components/v3/settings/AISection.tsx` — Settings > AI tab (Rule 7's two-level control)
 - `dashboard/src/components/ai/InsightsPanel.tsx` — the existing frontend AI slot, currently unwired into Customer 360
 - `src/config/metricsConfig.js` — the config-as-single-source-of-truth pattern this ADR's Rule 3 mirrors
 - `docs/bible/FUTURE.md` — AI Platform section (AI Inbox, AI Campaigns, AI Automation)
-- `docs/bible/ROADMAP.md` — Phase 3 (AI Inbox, Campaign Intelligence)
-- ADR-012 — outbound WhatsApp messaging (same single-service-boundary pattern, applied here to LLM calls)
+- `docs/bible/ROADMAP.md` — Phase 3 (AI Inbox, Campaign Intelligence); "AI as an assistant, not a replacement" (Rule 6)
+- ADR-012 — outbound WhatsApp messaging (same single-service-boundary pattern, applied here to LLM calls; Rule 5's no-send boundary is this ADR's mirror of it)
 - ADR-013 — customer identity resolution (same single-entry-point pattern; this ADR's `companyId`-scoping rule mirrors its phone-normalization "never trust the caller" stance)

@@ -86,4 +86,4 @@ const loginRateLimiter = {
   },
 };
 
-module.exports = { rateLimit, loginRateLimiter };
+module.exports = { rateLimit, loginRateLimiter, atomicIncrement, getCount };
