@@ -83,6 +83,8 @@
   --color-success-500: #22C55E;
   --color-success-600: #16A34A;
   --color-success-700: #15803D;
+  --color-success-800: #166534;
+  --color-success-900: #14532D;
 
   /* Warning Amber */
   --color-warning-50: #FFFBEB;
@@ -90,6 +92,8 @@
   --color-warning-500: #F59E0B;
   --color-warning-600: #D97706;
   --color-warning-700: #B45309;
+  --color-warning-800: #92400E;
+  --color-warning-900: #78350F;
 
   /* Error Red */
   --color-error-50: #FEF2F2;
@@ -97,6 +101,8 @@
   --color-error-500: #EF4444;
   --color-error-600: #DC2626;
   --color-error-700: #B91C1C;
+  --color-error-800: #991B1B;
+  --color-error-900: #7F1D1D;
 
   /* Z-index layers */
   --z-dropdown: 100;
