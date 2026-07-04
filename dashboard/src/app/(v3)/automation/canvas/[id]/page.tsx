@@ -4,7 +4,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft, Zap } from 'lucide-react';
 import { toast } from 'sonner';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, ApiClientError } from '@/lib/api';
 import { WorkflowCanvas } from '@/components/automation/canvas/WorkflowCanvas';
 import type { AutomationResponse, GraphNode, GraphEdge } from '@/types/automations';
 
@@ -59,7 +59,21 @@ export default function WorkflowCanvasEditPage() {
         {isLoading ? (
           <div className="flex h-full items-center justify-center text-sm text-neutral-400">Loading workflow…</div>
         ) : error || !data?.automation ? (
-          <div className="flex h-full items-center justify-center text-sm text-error-500">Workflow not found.</div>
+          <div className="flex h-full flex-col items-center justify-center gap-1 text-sm text-error-500">
+            {error instanceof ApiClientError && error.status === 404 ? (
+              <p>Workflow not found.</p>
+            ) : error ? (
+              <>
+                <p>Couldn&apos;t load this workflow.</p>
+                <p className="text-xs text-neutral-400">
+                  {error instanceof ApiClientError ? `${error.status}: ${error.message}` : (error as Error).message}
+                </p>
+                <p className="text-xs text-neutral-400">Check the backend is running and reachable.</p>
+              </>
+            ) : (
+              <p>Workflow not found.</p>
+            )}
+          </div>
         ) : (
           <WorkflowCanvas
             key={data.automation.updatedAt}

@@ -502,25 +502,25 @@ export default function MyWorkPage() {
             <div className="grid grid-cols-2 gap-3">
               <KpiCard
                 label="Messages replied"
-                value={data?.kpis.messagesReplied ?? 0}
+                value={data?.kpis?.messagesReplied ?? 0}
                 icon={<MessageSquare className="h-5 w-5" aria-hidden />}
                 href="/communications"
               />
               <KpiCard
                 label="Leads progressed"
-                value={data?.kpis.leadsProgressed ?? 0}
+                value={data?.kpis?.leadsProgressed ?? 0}
                 icon={<TrendingUp className="h-5 w-5" aria-hidden />}
                 href="/sales"
               />
               <KpiCard
                 label="Follow-ups done"
-                value={data?.kpis.followupsDone ?? 0}
+                value={data?.kpis?.followupsDone ?? 0}
                 icon={<CheckCircle2 className="h-5 w-5" aria-hidden />}
                 href="/sales/followups"
               />
               <KpiCard
                 label="New contacts"
-                value={data?.kpis.newContacts ?? 0}
+                value={data?.kpis?.newContacts ?? 0}
                 icon={<Users className="h-5 w-5" aria-hidden />}
                 href="/contacts"
               />
