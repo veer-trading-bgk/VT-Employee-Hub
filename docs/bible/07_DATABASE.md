@@ -716,6 +716,27 @@ All follow the same shape: `PK = CONFIG#{NAME}#{companyId}` (or the bare
   `ConversationService` sync, and the `_fireDelayedResponseCancel()` hook
   every other real send method already has).
 
+### 2.34 Inbox list intent badge — `GET /api/whatsapp/inbox` field pass-through (Item 7)
+
+- IntentDetectionService (earlier work, undocumented here — a pre-existing
+  gap, not introduced by this change) already mirrors `intent`/`confidence`
+  onto both `LEAD#` and `INBOX#CONTACT` records. That mirroring alone did
+  **not** reach the Inbox conversation list: `GET /api/whatsapp/inbox`
+  (`whatsapp.js`) builds a curated field-projection object per conversation,
+  not a raw item spread, so any field not explicitly listed is silently
+  dropped.
+- Fix: added `intent: l.intent ?? null, confidence: l.confidence ?? null`
+  to both map() projections (the `visibleLeads` lead-path branch and the
+  `dedupedUnknown` unknown-contact-path branch) in the same route.
+- Frontend: `WaConversation` (inline in `app/(v3)/inbox/page.tsx`) gained
+  `intent?: string | null; confidence?: number | null`, and the inline
+  `ConversationList` row renders a `Badge variant="primary"` next to
+  `WindowStatusChip` when `conv.intent` is set — same `INTENT_LABEL` map
+  and confidence-percentage tooltip convention as `ConversationTab.tsx`'s
+  Customer 360 Conversation tab.
+- No new DynamoDB access pattern — this is a projection-completeness fix
+  on an existing route, not a new read path.
+
 ---
 
 ## 3. Entity reference — other tables

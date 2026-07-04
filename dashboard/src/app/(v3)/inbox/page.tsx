@@ -53,7 +53,22 @@ interface WaConversation {
   assignedToName?: string | null;
   stage?: string | null;
   tags?: string[];
+  intent?: string | null;
+  confidence?: number | null;
 }
+
+// Mirrors ConversationTab.tsx's INTENT_LABEL — IntentDetectionService's 8
+// approved categories (src/config/aiConfig.js, 'inbox-intent-detection' useCase).
+const INTENT_LABEL: Record<string, string> = {
+  interested:        'Interested',
+  not_interested:    'Not Interested',
+  kyc_query:         'KYC Query',
+  pricing_question:  'Pricing Question',
+  complaint:         'Complaint',
+  support_request:   'Support Request',
+  renewal_inquiry:   'Renewal Inquiry',
+  other:             'Other',
+};
 
 interface WaMessage {
   SK: string;
@@ -546,6 +561,14 @@ function ConversationList({
                       </span>
                     )}
                     <WindowStatusChip lastInboundAt={conv.lastInboundAt} />
+                    {conv.intent && (
+                      <Badge
+                        variant="primary"
+                        title={conv.confidence != null ? `AI confidence: ${Math.round(conv.confidence * 100)}%` : undefined}
+                      >
+                        {INTENT_LABEL[conv.intent] ?? conv.intent}
+                      </Badge>
+                    )}
                   </div>
                 </div>
               </button>

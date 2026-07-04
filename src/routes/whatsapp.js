@@ -1841,6 +1841,8 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
         lastInboundAt: l.lastInboundAt ?? null,
         createdAt: l.createdAt,
         unreadCount: l.unreadCount ?? 0,
+        intent: l.intent ?? null,
+        confidence: l.confidence ?? null,
       })),
       ...dedupedUnknown.map((u) => ({
         type: 'unknown',
@@ -1858,6 +1860,8 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
         lastInboundAt: u.lastMessageAt ?? null,
         createdAt: u.createdAt ?? null,
         unreadCount: u.unreadCount ?? 0,
+        intent: u.intent ?? null,
+        confidence: u.confidence ?? null,
       })),
     ].sort((a, b) => {
       const pinDiff = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
