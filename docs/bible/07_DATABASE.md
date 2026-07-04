@@ -436,6 +436,18 @@ lock (Contact uses E.164; Lead uses 10-digit phoneNorm)."*
   query, not a scan; claims each due wait via a conditional `delete` acting as a
   distributed lock so concurrent `/automations/_tick` invocations can't double-resume
   the same execution).
+- **Extended for "Delayed Response Message" (2026-07-05):** a wait item may
+  instead carry `waitType: 'delayed_response'` (workflow wait items have no
+  `waitType` field at all, so this is purely additive) plus a `delayedResponse:
+  { phone, leadPK, inboxPK, name, messageText }` payload —
+  `processDueWaits()` dispatches these to `DelayedResponseService.resume()`
+  instead of `resumeExecution()`, reusing the exact same `AUTO_WAIT#` partition
+  and claim loop rather than a second timer mechanism. Scheduled from
+  `whatsapp.js`'s webhook on a new inbound message
+  (`DelayedResponseService.scheduleIfEnabled()`, no-op if one is already
+  pending for that phone) and cancelled the moment a real (non-`'system'`)
+  agent sends any outbound reply, via a hook in all 4 of
+  `WhatsAppSendService`'s send methods (`_fireDelayedResponseCancel()`).
 
 ### 2.17 MEDIA — per-contact media gallery index
 
@@ -635,6 +647,22 @@ All follow the same shape: `PK = CONFIG#{NAME}#{companyId}` (or the bare
   per-minute pass-through deduction, the first feature expected to actually
   draw it down. `GET /api/ai/wallet` exposes a read-only balance for the
   Settings > AI tab's placeholder display.
+
+### 2.31 CONFIG#DELAYED_RESPONSE — "Delayed Response Message" configuration
+
+- **PK:** `CONFIG#DELAYED_RESPONSE#{companyId}`
+- **SK:** `CURRENT`
+- **Fields:** `companyId, enabled, delayAmount, delayUnit ('minutes'|'hours'), messageText, updatedAt`
+- **Represents:** Same enabled/message-content shape as `CONFIG#WELCOME` (§2.15),
+  but for the delayed-response feature — see §2.16's "Extended for Delayed
+  Response Message" note for how this actually fires (reuses `AUTO_WAIT#`, not
+  a new timer). Supports `{{name}}`/`{{phone}}` substitution via the same
+  `resolveWelcomeVariables()` helper the welcome message and AutomationEngine
+  actions already use.
+- **Owner:** `whatsapp.js` (`GET`/`PUT /delayed-response-config`, admin-only,
+  same pattern as `/welcome-config`)
+- **Reader:** `DelayedResponseService.scheduleIfEnabled()` — read fresh (no
+  cache) on every new inbound message.
 
 ---
 

@@ -11,6 +11,9 @@ jest.mock('../src/services/PipelineService');
 jest.mock('../src/services/WhatsAppSendService', () => ({
   sendTemplate: jest.fn(), sendInteractive: jest.fn(), sendMedia: jest.fn(), resolveMediaId: jest.fn(),
 }));
+jest.mock('../src/services/DelayedResponseService', () => ({
+  resume: jest.fn(),
+}));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
 }));
@@ -18,6 +21,7 @@ jest.mock('../src/config/logger', () => ({
 const dynamodb = require('../src/config/dynamodb');
 const PipelineService = require('../src/services/PipelineService');
 const WASendSvc = require('../src/services/WhatsAppSendService');
+const DelayedResponseService = require('../src/services/DelayedResponseService');
 const logger = require('../src/config/logger');
 const engine = require('../src/services/AutomationEngine');
 
@@ -645,5 +649,71 @@ describe('AutomationEngine — graph engine (nodes[]/edges[])', () => {
     const vals = finalPatch();
     expect(vals[':st']).toBe('completed'); // one action ran and succeeded; the dangling edge just stops traversal
     expect(vals[':path'].map((p) => p.nodeId)).toEqual(['n1']);
+  });
+});
+
+// ─── processDueWaits — delayed_response dispatch (Item 3) ────────────────────
+// Same AUTO_WAIT# partition, same claim loop as every workflow wait — a
+// waitType: 'delayed_response' item dispatches to DelayedResponseService
+// instead of resumeExecution(), with zero changes to the scan/claim mechanism
+// itself. Existing workflow wait items have no waitType field, so this is
+// purely additive to the existing behavior.
+describe('AutomationEngine — processDueWaits() delayed_response dispatch', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    dynamodb.delete.mockReturnValue({ promise: () => Promise.resolve({}) });
+  });
+
+  test('dispatches a claimed delayed_response item to DelayedResponseService.resume(), not resumeExecution', async () => {
+    const item = { PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-01-01T00:00:00.000Z#x', waitType: 'delayed_response', delayedResponse: { phone: '9876543210', messageText: 'hi' } };
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [item] }) });
+    DelayedResponseService.resume.mockResolvedValue(undefined);
+    const resumeExecSpy = jest.spyOn(engine, 'resumeExecution');
+
+    const resumed = await engine.processDueWaits(CID);
+
+    expect(DelayedResponseService.resume).toHaveBeenCalledWith(CID, item);
+    expect(resumeExecSpy).not.toHaveBeenCalled();
+    expect(resumed).toBe(1);
+    resumeExecSpy.mockRestore();
+  });
+
+  test('a workflow wait item (no waitType) still dispatches to resumeExecution exactly as before', async () => {
+    const item = { PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-01-01T00:00:00.000Z#y', workflowId: 'wf1', execSK: 'exec1', steps: [], context: {}, nextStepIndex: 0 };
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [item] }) });
+    const resumeExecSpy = jest.spyOn(engine, 'resumeExecution').mockResolvedValue(undefined);
+
+    const resumed = await engine.processDueWaits(CID);
+
+    expect(resumeExecSpy).toHaveBeenCalledWith(CID, item);
+    expect(DelayedResponseService.resume).not.toHaveBeenCalled();
+    expect(resumed).toBe(1);
+    resumeExecSpy.mockRestore();
+  });
+
+  test('claims each item via conditional delete before dispatching (unchanged distributed-claim behavior)', async () => {
+    const item = { PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#x', waitType: 'delayed_response', delayedResponse: { phone: '1', messageText: 'hi' } };
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [item] }) });
+    DelayedResponseService.resume.mockResolvedValue(undefined);
+
+    await engine.processDueWaits(CID);
+
+    expect(dynamodb.delete).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: item.PK, SK: item.SK },
+      ConditionExpression: 'attribute_exists(PK)',
+    }));
+  });
+
+  test('a failed claim (already resumed by a concurrent tick) skips both dispatch paths', async () => {
+    const item = { PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#x', waitType: 'delayed_response', delayedResponse: { phone: '1', messageText: 'hi' } };
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [item] }) });
+    const err = new Error('conditional check failed');
+    err.code = 'ConditionalCheckFailedException';
+    dynamodb.delete.mockReturnValue({ promise: () => Promise.reject(err) });
+
+    const resumed = await engine.processDueWaits(CID);
+
+    expect(DelayedResponseService.resume).not.toHaveBeenCalled();
+    expect(resumed).toBe(0);
   });
 });

@@ -90,6 +90,26 @@ class WhatsAppSendService {
     await dynamodb.put({ TableName: TABLE, Item: { PK: pk, SK: msgSK, ...fields } }).promise();
   }
 
+  /**
+   * Cancels any pending "Delayed Response Message" wait for this contact —
+   * called from all 4 send methods after a successful outbound send. Only
+   * fires for a real human agent (user.id !== 'system'); a system-initiated
+   * send (automation, welcome message, the delayed response itself once it
+   * fires) must not cancel a still-pending timer for an unrelated reason.
+   *
+   * DelayedResponseService is required lazily, not at module load, because it
+   * calls sendText() itself when a delayed response actually fires — a
+   * top-level require in both directions would be circular. This mirrors the
+   * existing lazy-require pattern whatsapp.js's webhook already uses for
+   * AutomationEngine.resumeOnButtonReply().
+   *
+   * Fire-and-forget by design: never awaited by callers, never throws.
+   */
+  _fireDelayedResponseCancel(companyId, contact, user) {
+    if (user.id === 'system') return;
+    require('./DelayedResponseService').cancelPending(companyId, contact.phone).catch(() => {});
+  }
+
   async _storeWamidLookup(wamid, pk, msgSK, companyId, extras = {}) {
     if (!wamid) return;
     try {
@@ -269,6 +289,8 @@ class WhatsAppSendService {
       }).catch(() => {});
     }
 
+    this._fireDelayedResponseCancel(companyId, contact, user);
+
     return { waMessageId, timestamp: ts, pk: contact.pk, msgSK };
   }
 
@@ -366,6 +388,8 @@ class WhatsAppSendService {
       }).catch(() => {});
     }
 
+    this._fireDelayedResponseCancel(companyId, contact, user);
+
     return { wamid, timestamp: ts, pk: contact.pk, msgSK };
   }
 
@@ -413,6 +437,8 @@ class WhatsAppSendService {
         text: preview, timestamp: ts,
       }).catch(() => {});
     }
+
+    this._fireDelayedResponseCancel(companyId, contact, user);
 
     return { wamid, timestamp: ts, pk: contact.pk, msgSK };
   }
@@ -482,6 +508,8 @@ class WhatsAppSendService {
         text: preview, timestamp: ts,
       }).catch(() => {});
     }
+
+    this._fireDelayedResponseCancel(companyId, contact, user);
 
     return { wamid, timestamp: ts, pk: contact.pk, msgSK };
   }

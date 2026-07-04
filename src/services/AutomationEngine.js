@@ -317,7 +317,17 @@ class AutomationEngine {
         continue;
       }
       try {
-        await this.resumeExecution(companyId, item);
+        // Same AUTO_WAIT# partition, same claim loop — a non-workflow wait
+        // (e.g. DelayedResponseService's "Delayed Response Message" feature)
+        // is discriminated by waitType and dispatched separately, rather than
+        // building a second scan/claim mechanism. Existing workflow wait items
+        // have no waitType field, so they fall through to resumeExecution()
+        // exactly as before — this dispatch is purely additive.
+        if (item.waitType === 'delayed_response') {
+          await require('./DelayedResponseService').resume(companyId, item);
+        } else {
+          await this.resumeExecution(companyId, item);
+        }
         resumed++;
       } catch (e) {
         logger.warn(`AutomationEngine: resume failed for ${item.executionId}: ${e.message}`);

@@ -16,7 +16,7 @@ const IntentDetectionService = require('../services/IntentDetectionService');
 const WASendSvc            = require('../services/WhatsAppSendService');
 const TagService           = require('../services/TagService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
-const { welcomeConfigSchema } = require('../utils/validation');
+const { welcomeConfigSchema, delayedResponseConfigSchema } = require('../utils/validation');
 const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
 
 const router = express.Router();
@@ -1563,6 +1563,13 @@ router.post('/webhook', async (req, res) => {
               }
             })
             .catch(() => {});
+          // "Delayed Response Message" (Item 3) — independent of the CONV#/intent
+          // chain above, since it doesn't need a conversationId. Reuses
+          // AutomationEngine's AUTO_WAIT# timer infra; no-ops if disabled or
+          // already pending (see DelayedResponseService.scheduleIfEnabled).
+          require('../services/DelayedResponseService')
+            .scheduleIfEnabled(webhookCompanyId, { phone: phone10, leadPK: lead.PK, name: lead.name })
+            .catch(() => {});
           // A tap on a welcome-message reply button — fire its configured
           // follow-up, if any (see fireButtonFollowUp's own internal try/catch).
           if (buttonReply) {
@@ -1643,6 +1650,10 @@ router.post('/webhook', async (req, res) => {
                 return IntentDetectionService.classifyIfNeededForInbox(companyId, conv.conversationId, PK, text);
               }
             })
+            .catch(() => {});
+          // "Delayed Response Message" (Item 3) — see the lead-path comment above.
+          require('../services/DelayedResponseService')
+            .scheduleIfEnabled(companyId, { phone: phone10, inboxPK: PK, name: waName })
             .catch(() => {});
           // A tap on a welcome-message reply button — fire its configured
           // follow-up, if any. Still possible here: the customer may still be
@@ -2813,6 +2824,43 @@ router.put('/welcome-config', authMiddleware, checkRole(['admin']), rateLimit(20
         bodyText: cfg.bodyText,
         buttons: cfg.buttons,
         ctaButtons: cfg.ctaButtons,
+        updatedAt: new Date().toISOString(),
+      },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── GET /api/whatsapp/delayed-response-config ─────────────────────────────────
+router.get('/delayed-response-config', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const result = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#DELAYED_RESPONSE#${req.user.companyId}`, SK: 'CURRENT' },
+    }).promise();
+    res.json({
+      success: true,
+      config: result.Item ?? { enabled: false, delayAmount: 5, delayUnit: 'minutes', messageText: '' },
+    });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /api/whatsapp/delayed-response-config ──────────────────────────────────
+router.put('/delayed-response-config', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const parsed = delayedResponseConfigSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+    const cfg = parsed.data;
+
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: `CONFIG#DELAYED_RESPONSE#${req.user.companyId}`, SK: 'CURRENT',
+        companyId: req.user.companyId,
+        enabled: cfg.enabled,
+        delayAmount: cfg.delayAmount,
+        delayUnit: cfg.delayUnit,
+        messageText: cfg.messageText,
         updatedAt: new Date().toISOString(),
       },
     }).promise();

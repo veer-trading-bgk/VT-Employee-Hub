@@ -11,6 +11,15 @@ const aiConfigSchema = z.object({
   moduleToggles: z.record(z.string(), z.boolean()).optional(),
 }).strict();
 
+// "Delayed Response Message" — same enabled/message-content shape as
+// welcomeConfigSchema, plus the delay itself.
+const delayedResponseConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  delayAmount: z.number().int().min(1).max(1440).default(5),
+  delayUnit: z.enum(['minutes', 'hours']).default('minutes'),
+  messageText: z.string().max(1024).optional().default(''),
+}).strict();
+
 const addMetricSchema = z.object({
   metric_type: z.enum(['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching', 'pms', 'pro_insight', 'ltpp']),
   value: z.number().min(0, 'Value cannot be negative').max(999999),
@@ -200,6 +209,7 @@ const welcomeConfigSchema = z.object({
 module.exports = {
   loginSchema,
   aiConfigSchema,
+  delayedResponseConfigSchema,
   addMetricSchema,
   registerSchema,
   verifyTotpSchema,
