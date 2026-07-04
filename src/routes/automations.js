@@ -177,6 +177,61 @@ router.post('/', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), as
   } catch (err) { next(err); }
 });
 
+// ── POST /:id/duplicate — "Save as Template" (Item 5) ──────────────────────────
+// Personal save-and-reuse only, per company — no superadmin/marketplace
+// publishing surface exists yet, so this deliberately stays a same-company
+// copy (audited: no cross-company template-sharing route or entity exists
+// anywhere in this codebase to extend instead of duplicating).
+// Deep-copies steps/nodes/edges (JSON round-trip) so the duplicate shares no
+// object references with the original — safe to edit independently even
+// though both live in the same Node process for the length of this request.
+// Always created as status: 'draft' (never inherits 'active') so duplicating
+// a live workflow can never result in two active workflows both firing on
+// the same trigger; run stats (runCount/lastRunAt) reset to fresh, and
+// createdBy/createdByName record the duplicating user, not the original author.
+router.post('/:id/duplicate', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const { companyId, id: userId, name: userName } = req.user;
+    const existing = await dynamodb.get({
+      TableName: TABLE, Key: { PK: autoPK(companyId), SK: autoSK(req.params.id) },
+    }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'Workflow not found' });
+
+    const original = existing.Item;
+    const isGraph  = Array.isArray(original.nodes) && original.nodes.length > 0;
+    const newId    = uuidv4();
+    const now      = new Date().toISOString();
+    const requestedName = req.body?.name?.trim();
+
+    const duplicate = {
+      PK: autoPK(companyId), SK: autoSK(newId),
+      id: newId, companyId,
+      name:          requestedName || `${original.name} (Copy)`,
+      description:   original.description ?? null,
+      status:        'draft',
+      enabled:       false,
+      trigger:       JSON.parse(JSON.stringify(original.trigger ?? { type: null, conditions: [] })),
+      ...(isGraph
+        ? {
+            nodes:       JSON.parse(JSON.stringify(original.nodes)),
+            edges:       JSON.parse(JSON.stringify(original.edges ?? [])),
+            entryNodeId: original.entryNodeId,
+          }
+        : { steps: JSON.parse(JSON.stringify(original.steps ?? [])) }),
+      runCount:      0,
+      lastRunAt:     null,
+      createdBy:     userId,
+      createdByName: userName ?? null,
+      createdAt:     now,
+      updatedAt:     now,
+    };
+
+    await dynamodb.put({ TableName: TABLE, Item: duplicate }).promise();
+    logger.info(`Automation duplicated: "${original.name}" (${original.id}) -> "${duplicate.name}" (${newId}) by ${userId}`);
+    res.status(201).json({ success: true, automation: duplicate });
+  } catch (err) { next(err); }
+});
+
 // ── GET /:id ──────────────────────────────────────────────────────────────────
 router.get('/:id', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {

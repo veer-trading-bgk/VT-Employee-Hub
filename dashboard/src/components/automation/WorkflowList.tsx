@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Search, Trash2, Play, Pause, Zap, GitBranch, ListOrdered } from 'lucide-react';
+import { Plus, Search, Trash2, Play, Pause, Zap, GitBranch, ListOrdered, Copy } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/v3/ui/Button';
@@ -53,6 +53,18 @@ export function WorkflowList() {
       toast.success('Workflow deleted');
     },
     onError: (err: Error) => toast.error(err.message ?? 'Delete failed'),
+  });
+
+  // "Save as Template" (Item 5) — personal save-and-reuse duplicate, always
+  // created as a draft so duplicating an active workflow can never result in
+  // two active workflows firing on the same trigger.
+  const duplicateMutation = useMutation({
+    mutationFn: (id: string) => apiFetch(`/api/automations/${id}/duplicate`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['automations'] });
+      toast.success('Workflow duplicated as a draft');
+    },
+    onError: (err: Error) => toast.error(err.message ?? 'Duplicate failed'),
   });
 
   const workflows = (data?.automations ?? []).filter((w) =>
@@ -161,6 +173,7 @@ export function WorkflowList() {
                     onDelete={(wf) => {
                       if (window.confirm('Delete this workflow permanently?')) deleteMutation.mutate(wf.id);
                     }}
+                    onDuplicate={(wf) => duplicateMutation.mutate(wf.id)}
                   />
                 ))}
               </tbody>
@@ -180,13 +193,14 @@ export function WorkflowList() {
 }
 
 function WorkflowRow({
-  workflow: w, isAdmin, onEdit, onToggle, onDelete,
+  workflow: w, isAdmin, onEdit, onToggle, onDelete, onDuplicate,
 }: {
-  workflow:  Workflow;
-  isAdmin:   boolean;
-  onEdit:    (w: Workflow) => void;
-  onToggle:  (w: Workflow) => void;
-  onDelete:  (w: Workflow) => void;
+  workflow:    Workflow;
+  isAdmin:     boolean;
+  onEdit:      (w: Workflow) => void;
+  onToggle:    (w: Workflow) => void;
+  onDelete:    (w: Workflow) => void;
+  onDuplicate: (w: Workflow) => void;
 }) {
   const status = getWorkflowStatus(w);
   const meta   = WORKFLOW_STATUS_META[status];
@@ -245,6 +259,15 @@ function WorkflowRow({
               )}
             >
               {status === 'active' ? <Pause className="h-4 w-4" aria-hidden /> : <Play className="h-4 w-4" aria-hidden />}
+            </button>
+          )}
+          {isAdmin && (
+            <button
+              onClick={() => onDuplicate(w)}
+              title="Save as Template (duplicate as a new draft)"
+              className="rounded p-1 text-neutral-400 transition-colors hover:bg-primary-50 hover:text-primary-600 dark:hover:bg-primary-900/20"
+            >
+              <Copy className="h-4 w-4" aria-hidden />
             </button>
           )}
           {canDelete && (

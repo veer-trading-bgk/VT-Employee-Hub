@@ -428,7 +428,13 @@ lock (Contact uses E.164; Lead uses 10-digit phoneNorm)."*
 - **Wait fields:** full serialized resume context — `executionId, workflowId,
   execSK, steps, context, resumeAt, nextStepIndex, companyId, TTL`.
 - **Owner:** `src/services/AutomationEngine.js` (execution/wait lifecycle),
-  `automations.js` route (workflow CRUD).
+  `automations.js` route (workflow CRUD, plus `POST /:id/duplicate` — "Save as
+  Template", Item 5: deep-copies `steps`/`nodes`/`edges` to a new `id` with no
+  shared object references, always `status: 'draft'`/`enabled: false`
+  regardless of the source's status so duplicating a live workflow can never
+  produce two active workflows on the same trigger, and resets `runCount`/
+  `lastRunAt`. Personal save-and-reuse only, same company — no cross-company
+  template marketplace/publishing surface exists to extend instead).
 - **Readers:** `AutomationEngine.fireTrigger()` (Query on `CONFIG#AUTO#{companyId}`
   + `begins_with(SK,'AUTO#')`, filtered in-memory by trigger type — not a GSI query),
   `AutomationEngine.processDueWaits()` (Query on `AUTO_WAIT#{companyId}` with a
