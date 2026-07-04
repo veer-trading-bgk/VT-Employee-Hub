@@ -15,7 +15,7 @@ import { NodeConfigPanel } from './NodeConfigPanel';
 import { NodePalette } from './NodePalette';
 import {
   toReactFlow, fromReactFlow, applyDagreLayout, needsLayout,
-  newNodeId, newEdgeId, defaultConditionConfig, defaultSendButtonsConfig, nextNodePosition,
+  newNodeId, newEdgeId, defaultConditionConfig, defaultSendButtonsConfig, defaultSendDocumentConfig, nextNodePosition,
   findIncompleteBranches, getUpstreamButtons, type CanvasNodeData,
 } from '@/lib/automationGraph';
 import { defaultConfig } from '../WorkflowBuilder';
@@ -82,9 +82,10 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
 
   function addNode(type: NodeType) {
     const config: NodeConfig =
-      type === 'condition'    ? defaultConditionConfig() :
-      type === 'send_buttons' ? defaultSendButtonsConfig() :
-                                 defaultConfig(type as ActionType);
+      type === 'condition'     ? defaultConditionConfig() :
+      type === 'send_buttons'  ? defaultSendButtonsConfig() :
+      type === 'send_document' ? defaultSendDocumentConfig() :
+                                  defaultConfig(type as ActionType);
     const newNode: Node<CanvasNodeData> = {
       id: newNodeId(),
       type,

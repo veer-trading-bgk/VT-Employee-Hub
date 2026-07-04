@@ -2982,53 +2982,16 @@ router.post('/upload-send', authMiddleware, rateLimit(20, 60_000), async (req, r
       pk = `INBOX#${companyId}#${phone}`;
     }
 
-    // Dedup: if we've uploaded this exact file to Meta recently, reuse the media_id
-    let mediaId = null;
-    if (fileHash) {
-      const cached = await dynamodb.get({
-        TableName: TABLE,
-        Key: { PK: `MEDIACACHE#${companyId}`, SK: fileHash },
-      }).promise();
-      if (cached.Item?.mediaId) {
-        mediaId = cached.Item.mediaId;
-        logger.info(`Media dedup hit: reusing mediaId ${mediaId}`);
-      }
-    }
-
-    if (!mediaId) {
-      // Download from S3 (internal AWS network — fast, no Lambda payload limit)
-      const s3Obj = await s3Client.getObject({ Bucket: MEDIA_BUCKET, Key: s3Key }).promise();
-
-      // Upload bytes to Meta's media storage
-      const formData = new FormData();
-      formData.append('messaging_product', 'whatsapp');
-      formData.append('type', mimeType);
-      formData.append('file', new Blob([s3Obj.Body], { type: mimeType }), safeFilename);
-
-      const uploadRes = await fetch(`${GRAPH}/${cfg.phoneNumberId}/media`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${cfg.accessToken}` },
-        body: formData,
-      });
-      if (!uploadRes.ok) {
-        const errBody = await uploadRes.json().catch(() => ({}));
-        logger.error('Meta media upload failed', errBody);
-        return res.status(400).json({ error: 'Media upload to Meta failed', details: errBody });
-      }
-      ({ id: mediaId } = await uploadRes.json());
-      if (!mediaId) return res.status(500).json({ error: 'Meta did not return a media_id' });
-
-      // Cache for 29 days (Meta media_id valid 30 days)
-      if (fileHash) {
-        dynamodb.put({
-          TableName: TABLE,
-          Item: {
-            PK: `MEDIACACHE#${companyId}`, SK: fileHash,
-            mediaId, mimeType, filename: safeFilename,
-            ttl: Math.floor(Date.now() / 1000) + 29 * 24 * 3600,
-          },
-        }).promise().catch(() => {});
-      }
+    // S3→Meta upload + 29-day dedup cache — delegated to WhatsAppSendService so
+    // AutomationEngine's send_document action (which needs the exact same step at
+    // execution time, with no lead/target to resolve at config time) can reuse it
+    // instead of duplicating this logic a second place.
+    let mediaId;
+    try {
+      mediaId = await WASendSvc.resolveMediaId(companyId, { s3Key, mimeType, filename: safeFilename, fileHash });
+    } catch (e) {
+      logger.error('Meta media upload failed', e.details ?? e.message);
+      return res.status(e.status ?? 400).json({ error: e.message, details: e.details });
     }
 
     // Do NOT delete S3 object — kept for direct presigned GET streaming (video/large files).

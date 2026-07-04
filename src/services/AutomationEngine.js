@@ -407,7 +407,7 @@ class AutomationEngine {
       // substitution, just delegated to WASendSvc.sendInteractive() mid-workflow
       // instead of on first contact.
       case 'send_buttons': {
-        const { messageType, bodyText, buttons = [], ctaButtons = [] } = step.config ?? {};
+        const { messageType, bodyText, buttons = [], ctaButtons = [], header } = step.config ?? {};
         if (!phone) throw new Error('send_buttons: phone required');
         if (!bodyText) throw new Error('send_buttons: bodyText required');
         const target = leadPK
@@ -433,8 +433,50 @@ class AutomationEngine {
           };
         }
 
+        // Optional image/video/document shown above the body text — Meta's Interactive
+        // Message header field. sendInteractive() is a raw pass-through (see its own
+        // JSDoc), so this needs no service change, only the object built here. Same
+        // url-or-s3Key resolution as send_document below: an uploaded header image
+        // only has an s3Key at config time, resolved to a media_id here, at
+        // execution time, via the same WASendSvc.resolveMediaId() call.
+        if (header?.type && (header.url || header.s3Key)) {
+          const headerMediaId = header.url
+            ? undefined
+            : await WASendSvc.resolveMediaId(companyId, { s3Key: header.s3Key, mimeType: header.mimeType, filename: header.filename });
+          interactive.header = {
+            type: header.type,
+            [header.type]: header.url ? { link: header.url } : { id: headerMediaId },
+          };
+        }
+
         const r = await WASendSvc.sendInteractive(
           companyId, target, interactive,
+          { id: 'system', role: 'admin', name: 'Automation' },
+        );
+        return { wamid: r.wamid };
+      }
+
+      // Reuses WASendSvc.sendMedia() exactly as it already handles documents for the
+      // Inbox's manual send flow. A url is passed straight through (Meta fetches the
+      // link itself, no extra step). An uploaded file only has an s3Key at config
+      // time — there is no lead/target yet to send to, so the S3→Meta media_id
+      // resolution (WASendSvc.resolveMediaId(), same method whatsapp.js's
+      // POST /upload-send route uses) has to happen here, at execution time, once a
+      // real contact is known.
+      case 'send_document': {
+        const { url, s3Key, mimeType, caption, filename } = step.config ?? {};
+        if (!phone) throw new Error('send_document: phone required');
+        if (!url && !s3Key) throw new Error('send_document: a URL or an uploaded file is required');
+        const target = leadPK
+          ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
+          : { phone };
+        const resolvedCaption = caption ? resolveWelcomeVariables(caption, { name, phone }) : undefined;
+
+        const mediaId = url ? undefined : await WASendSvc.resolveMediaId(companyId, { s3Key, mimeType, filename });
+
+        const r = await WASendSvc.sendMedia(
+          companyId, target,
+          { mediaType: 'document', mediaId, url, caption: resolvedCaption, filename, mimeType, s3Key },
           { id: 'system', role: 'admin', name: 'Automation' },
         );
         return { wamid: r.wamid };

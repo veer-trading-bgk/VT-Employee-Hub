@@ -8,7 +8,9 @@ jest.mock('../src/config/dynamodb', () => ({
   delete: jest.fn(),
 }));
 jest.mock('../src/services/PipelineService');
-jest.mock('../src/services/WhatsAppSendService', () => ({ sendTemplate: jest.fn(), sendInteractive: jest.fn() }));
+jest.mock('../src/services/WhatsAppSendService', () => ({
+  sendTemplate: jest.fn(), sendInteractive: jest.fn(), sendMedia: jest.fn(), resolveMediaId: jest.fn(),
+}));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
 }));
@@ -289,6 +291,130 @@ describe('AutomationEngine — send_buttons action', () => {
       engine._runAction(CID, { type: 'send_buttons', config: { messageType: 'cta_buttons', bodyText: 'Hi', ctaButtons: [] } }, { phone: '9000000000' }),
     ).rejects.toThrow('send_buttons: ctaButtons required for cta_buttons mode');
     expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
+  });
+
+  test('header with an uploaded file (s3Key) resolves a mediaId first, then builds an id reference', async () => {
+    WASendSvc.resolveMediaId.mockResolvedValue('META_MEDIA_ID_123');
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.hdr1' });
+
+    await engine._runAction(
+      CID,
+      {
+        type: 'send_buttons',
+        config: {
+          messageType: 'reply_buttons', bodyText: 'Look at this',
+          buttons: [{ id: 'b1', title: 'Ok' }],
+          header: { type: 'image', s3Key: 'uploads/comp_test/pic.jpg', mimeType: 'image/jpeg' },
+        },
+      },
+      { phone: '9000000000', name: 'Priya' },
+    );
+
+    expect(WASendSvc.resolveMediaId).toHaveBeenCalledWith(
+      CID, { s3Key: 'uploads/comp_test/pic.jpg', mimeType: 'image/jpeg', filename: undefined },
+    );
+    expect(WASendSvc.sendInteractive).toHaveBeenCalledWith(
+      CID, expect.any(Object),
+      expect.objectContaining({ header: { type: 'image', image: { id: 'META_MEDIA_ID_123' } } }),
+      expect.any(Object),
+    );
+  });
+
+  test('header with a url builds interactive.header with a link reference', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.hdr2' });
+
+    await engine._runAction(
+      CID,
+      {
+        type: 'send_buttons',
+        config: {
+          messageType: 'cta_buttons', bodyText: 'Check this out',
+          ctaButtons: [{ type: 'url', text: 'Open', value: 'https://example.com' }],
+          header: { type: 'video', url: 'https://example.com/clip.mp4' },
+        },
+      },
+      { phone: '9000000000', name: 'Priya' },
+    );
+
+    expect(WASendSvc.sendInteractive).toHaveBeenCalledWith(
+      CID, expect.any(Object),
+      expect.objectContaining({ header: { type: 'video', video: { link: 'https://example.com/clip.mp4' } } }),
+      expect.any(Object),
+    );
+  });
+
+  test('no header key is added when header config is absent', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.nohdr' });
+
+    await engine._runAction(
+      CID,
+      { type: 'send_buttons', config: { messageType: 'reply_buttons', bodyText: 'Hi', buttons: [{ id: 'b1', title: 'Ok' }] } },
+      { phone: '9000000000' },
+    );
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive.header).toBeUndefined();
+  });
+});
+
+describe('AutomationEngine — send_document action', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  test('a url is passed straight through to sendMedia — no resolveMediaId call', async () => {
+    WASendSvc.sendMedia.mockResolvedValue({ wamid: 'wamid.doc1' });
+
+    const result = await engine._runAction(
+      CID,
+      { type: 'send_document', config: { url: 'https://example.com/brochure.pdf', caption: 'Hi {{name}}, here you go', filename: 'brochure.pdf' } },
+      { leadPK: LEAD_PK, phone: '9000000000', name: 'Priya' },
+    );
+
+    expect(WASendSvc.resolveMediaId).not.toHaveBeenCalled();
+    expect(WASendSvc.sendMedia).toHaveBeenCalledWith(
+      CID, expect.any(Object),
+      expect.objectContaining({
+        mediaType: 'document', url: 'https://example.com/brochure.pdf',
+        caption: 'Hi Priya, here you go', filename: 'brochure.pdf',
+      }),
+      expect.any(Object),
+    );
+    expect(result).toEqual({ wamid: 'wamid.doc1' });
+  });
+
+  test('an uploaded file (s3Key) resolves a mediaId first, then sends it', async () => {
+    WASendSvc.resolveMediaId.mockResolvedValue('META_DOC_MEDIA_ID');
+    WASendSvc.sendMedia.mockResolvedValue({ wamid: 'wamid.doc2' });
+
+    await engine._runAction(
+      CID,
+      { type: 'send_document', config: { s3Key: 'uploads/comp_test/abc.pdf', mimeType: 'application/pdf', filename: 'terms.pdf' } },
+      { phone: '9000000000' },
+    );
+
+    expect(WASendSvc.resolveMediaId).toHaveBeenCalledWith(
+      CID, { s3Key: 'uploads/comp_test/abc.pdf', mimeType: 'application/pdf', filename: 'terms.pdf' },
+    );
+    expect(WASendSvc.sendMedia).toHaveBeenCalledWith(
+      CID, expect.any(Object),
+      expect.objectContaining({ mediaType: 'document', mediaId: 'META_DOC_MEDIA_ID' }),
+      expect.any(Object),
+    );
+  });
+
+  test('rejects — no phone', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_document', config: { url: 'https://example.com/a.pdf' } }, {}),
+    ).rejects.toThrow('send_document: phone required');
+  });
+
+  test('rejects — neither url nor s3Key configured', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_document', config: {} }, { phone: '9000000000' }),
+    ).rejects.toThrow('send_document: a URL or an uploaded file is required');
+    expect(WASendSvc.sendMedia).not.toHaveBeenCalled();
   });
 });
 

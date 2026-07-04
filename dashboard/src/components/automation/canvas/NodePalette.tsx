@@ -1,18 +1,19 @@
 'use client';
 
-import { Zap, GitBranch, MousePointerClick } from 'lucide-react';
+import { Zap, GitBranch, MousePointerClick, FileText } from 'lucide-react';
 import { ACTION_META, type ActionType, type NodeType } from '@/types/automations';
 import { ACTION_ICONS } from '../WorkflowBuilder';
 
 const PALETTE_TYPES: NodeType[] = [
-  'send_template', 'send_buttons', 'assign_employee', 'change_stage', 'add_tag', 'create_task', 'wait', 'condition', 'end',
+  'send_template', 'send_buttons', 'send_document', 'assign_employee', 'change_stage', 'add_tag', 'create_task', 'wait', 'condition', 'end',
 ];
 
 // Node types outside ActionType (graph-only — see NodeType's own comment) need
 // their own label/icon here, same as 'condition' already does.
 const EXTRA_META: Partial<Record<NodeType, { label: string; icon: typeof GitBranch }>> = {
-  condition:     { label: 'Condition',    icon: GitBranch },
-  send_buttons:  { label: 'Send Buttons', icon: MousePointerClick },
+  condition:     { label: 'Condition',     icon: GitBranch },
+  send_buttons:  { label: 'Send Buttons',  icon: MousePointerClick },
+  send_document: { label: 'Send Document', icon: FileText },
 };
 
 interface NodePaletteProps {

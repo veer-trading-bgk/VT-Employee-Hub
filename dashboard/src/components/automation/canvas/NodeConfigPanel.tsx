@@ -1,12 +1,13 @@
 'use client';
 
-import { X, GitBranch, MousePointerClick } from 'lucide-react';
+import { X, GitBranch, MousePointerClick, FileText } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ACTION_META, isConditionConfig, type ActionType, type NodeType } from '@/types/automations';
-import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, StepConfig } from '@/types/automations';
+import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig, StepConfig } from '@/types/automations';
 import { ActionEditor } from '../ActionEditor';
 import { ConditionEditor } from '../ConditionEditor';
 import { SendButtonsEditor } from '../SendButtonsEditor';
+import { SendDocumentEditor } from '../SendDocumentEditor';
 import { ACTION_ICONS } from '../WorkflowBuilder';
 
 interface NodeConfigPanelProps {
@@ -22,8 +23,9 @@ interface NodeConfigPanelProps {
 }
 
 const EXTRA_TITLES: Partial<Record<NodeType, { label: string; icon: typeof GitBranch }>> = {
-  condition:    { label: 'Condition',    icon: GitBranch },
-  send_buttons: { label: 'Send Buttons', icon: MousePointerClick },
+  condition:     { label: 'Condition',     icon: GitBranch },
+  send_buttons:  { label: 'Send Buttons',  icon: MousePointerClick },
+  send_document: { label: 'Send Document', icon: FileText },
 };
 
 /**
@@ -78,6 +80,11 @@ export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose, u
         ) : nodeType === 'send_buttons' ? (
           <SendButtonsEditor
             config={config as SendButtonsConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'send_document' ? (
+          <SendDocumentEditor
+            config={config as SendDocumentConfig}
             onChange={(c) => onChange(c)}
           />
         ) : (

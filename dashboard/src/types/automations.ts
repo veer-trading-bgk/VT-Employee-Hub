@@ -87,10 +87,23 @@ export interface WorkflowStep {
 // A workflow is either linear (steps[], above) or graph-shaped (nodes[]/edges[]/
 // entryNodeId, below) for its whole lifetime — never both. See AutomationEngine.js's
 // _startExecution() on the backend for the dispatch logic this mirrors.
-// 'send_buttons' is graph-only (paired with a downstream button_reply condition) —
-// deliberately not added to ActionType, which the legacy linear model also uses and
-// has no button_reply condition to pair it with.
-export type NodeType = ActionType | 'condition' | 'send_buttons';
+// 'send_buttons'/'send_document' are graph-only — deliberately not added to
+// ActionType, which the legacy linear model also uses and has no equivalent for.
+export type NodeType = ActionType | 'condition' | 'send_buttons' | 'send_document';
+
+// Optional image/video/document shown above the body text — Meta's Interactive
+// Message header field. WhatsAppSendService.sendInteractive() is a raw pass-through
+// (confirmed by reading it), so this is UI/config only, no service change. Same
+// url-or-s3Key shape as SendDocumentConfig below (deliberately — a config-time
+// upload only has an s3Key; Meta media_ids expire in 30 days, so this resolves to
+// one at send time via WhatsAppSendService.resolveMediaId(), never stores one).
+export interface SendButtonsHeader {
+  type:      'image' | 'video' | 'document';
+  url?:      string;
+  s3Key?:    string;
+  mimeType?: string;
+  filename?: string;
+}
 
 // Reuses the exact config shape CONFIG#WELCOME# / ButtonListEditor.tsx already
 // define for WhatsApp buttons — a canvas "Send Buttons" node sends the identical
@@ -102,6 +115,21 @@ export interface SendButtonsConfig {
   bodyText:    string;
   buttons?:    ReplyButtonValue[];  // reply_buttons mode, max 3 (Meta limit)
   ctaButtons?: CtaButtonValue[];    // cta_buttons mode, max 1 (Meta limit)
+  header?:     SendButtonsHeader;
+}
+
+// A document (or other media) sent with an optional caption, in one message —
+// WhatsAppSendService.sendMedia() already supports this fully (confirmed: caption
+// is set on the same Graph API call as the document, not a second message). Either
+// a public url (Meta fetches it directly) or an uploaded file (s3Key, resolved to
+// a Meta media_id at send time via WhatsAppSendService.resolveMediaId() — there's
+// no lead/target yet to send to at config time, only at real execution time).
+export interface SendDocumentConfig {
+  url?:      string;
+  s3Key?:    string;
+  mimeType?: string;
+  filename?: string;
+  caption?:  string;
 }
 
 export type ConditionMode = 'field_match' | 'boolean' | 'button_reply';
@@ -124,7 +152,7 @@ export interface ConditionNodeConfig {
   timeoutUnit?:   'minutes' | 'hours' | 'days';
 }
 
-export type NodeConfig = StepConfig | ConditionNodeConfig | SendButtonsConfig;
+export type NodeConfig = StepConfig | ConditionNodeConfig | SendButtonsConfig | SendDocumentConfig;
 
 export interface NodePosition {
   x: number;

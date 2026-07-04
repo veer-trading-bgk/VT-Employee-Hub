@@ -20,6 +20,7 @@
  */
 
 const axios               = require('axios');
+const S3                  = require('aws-sdk/clients/s3');
 const dynamodb            = require('../config/dynamodb');
 const logger              = require('../config/logger');
 const { to10Digit }       = require('../utils/phone');
@@ -27,6 +28,7 @@ const ConversationService = require('./ConversationService');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0'}`;
+const s3Client = new S3({ region: process.env.AWS_REGION ?? 'ap-south-1' });
 
 // Roles whose send permission is limited to their own assigned leads
 const RESTRICTED_ROLES = new Set(['telecaller', 'agent', 'intern']);
@@ -482,6 +484,76 @@ class WhatsAppSendService {
     }
 
     return { wamid, timestamp: ts, pk: contact.pk, msgSK };
+  }
+
+  // ── resolveMediaId ────────────────────────────────────────────────────────
+  /**
+   * Turns an S3-uploaded file into a Meta media_id, ready to pass as
+   * sendMedia()'s media.mediaId. Extracted from whatsapp.js's POST /upload-send
+   * route (which still owns the S3-key-scoping/auth checks and calls this for
+   * the S3→Meta step) so a second caller — AutomationEngine's send_document
+   * action, which has no lead/target to resolve at config time, only at
+   * execution time — can reuse the exact same upload + 29-day dedup-cache
+   * logic instead of duplicating it.
+   *
+   * @param {object} media
+   * @param {string} media.s3Key     — must already be scoped/validated by the caller
+   * @param {string} media.mimeType
+   * @param {string} [media.filename]
+   * @param {string} [media.fileHash] — sha256 hex; enables the MEDIACACHE dedup
+   * @returns {Promise<string>} mediaId
+   */
+  async resolveMediaId(companyId, { s3Key, mimeType, filename, fileHash }) {
+    const mediaBucket = process.env.WA_MEDIA_BUCKET;
+    if (!mediaBucket) { const e = new Error('WA_MEDIA_BUCKET env var not set'); e.status = 500; throw e; }
+    const cfg = await this._requireConfig(companyId);
+
+    if (fileHash) {
+      const cached = await dynamodb.get({
+        TableName: TABLE,
+        Key: { PK: `MEDIACACHE#${companyId}`, SK: fileHash },
+      }).promise();
+      if (cached.Item?.mediaId) {
+        logger.info(`Media dedup hit: reusing mediaId ${cached.Item.mediaId}`);
+        return cached.Item.mediaId;
+      }
+    }
+
+    // Download from S3 (internal AWS network — fast, no Lambda payload limit)
+    const s3Obj = await s3Client.getObject({ Bucket: mediaBucket, Key: s3Key }).promise();
+    const safeFilename = filename ?? s3Key.split('/').pop() ?? 'file';
+
+    const formData = new FormData();
+    formData.append('messaging_product', 'whatsapp');
+    formData.append('type', mimeType);
+    formData.append('file', new Blob([s3Obj.Body], { type: mimeType }), safeFilename);
+
+    const uploadRes = await fetch(`${this._graphUrl(cfg)}/${cfg.phoneNumberId}/media`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${cfg.accessToken}` },
+      body: formData,
+    });
+    if (!uploadRes.ok) {
+      const errBody = await uploadRes.json().catch(() => ({}));
+      logger.error('Meta media upload failed', errBody);
+      const e = new Error('Media upload to Meta failed'); e.status = 400; e.details = errBody; throw e;
+    }
+    const { id: mediaId } = await uploadRes.json();
+    if (!mediaId) { const e = new Error('Meta did not return a media_id'); e.status = 500; throw e; }
+
+    // Cache for 29 days (Meta media_id valid 30 days)
+    if (fileHash) {
+      dynamodb.put({
+        TableName: TABLE,
+        Item: {
+          PK: `MEDIACACHE#${companyId}`, SK: fileHash,
+          mediaId, mimeType, filename: safeFilename,
+          ttl: Math.floor(Date.now() / 1000) + 29 * 24 * 3600,
+        },
+      }).promise().catch(() => {});
+    }
+
+    return mediaId;
   }
 
   // ── sendReadReceipt ──────────────────────────────────────────────────────
