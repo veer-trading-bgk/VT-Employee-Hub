@@ -401,7 +401,10 @@ function TriggerEditor({ trigger, onChange }: { trigger: WorkflowTrigger; onChan
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function defaultConfig(type: ActionType): WorkflowStep['config'] {
+// Exported — the branching canvas's node palette (Phase 2) reuses this for the
+// action-type nodes it can add; it only needs its own default for 'condition',
+// which has no equivalent in the linear model.
+export function defaultConfig(type: ActionType): WorkflowStep['config'] {
   switch (type) {
     case 'send_template':   return { templateName: '', language: 'en', variables: [] };
     case 'assign_employee': return { employeeId: '', employeeName: '' };

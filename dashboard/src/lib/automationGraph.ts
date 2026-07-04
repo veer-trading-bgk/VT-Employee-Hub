@@ -120,7 +120,10 @@ export function needsLayout(nodes: GraphNode[]): boolean {
 export function applyDagreLayout(nodes: CanvasNode[], edges: CanvasEdge[]): CanvasNode[] {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({ rankdir: 'TB', nodesep: 56, ranksep: 72 });
+  // nodesep/ranksep wider than dagre's defaults — converging edges (multiple branches
+  // feeding one downstream node) need enough lateral room that their labels don't
+  // visually overlap where the paths come together.
+  g.setGraph({ rankdir: 'TB', nodesep: 72, ranksep: 96 });
 
   nodes.forEach((n) => g.setNode(n.id, dimsFor(n.type)));
   edges.forEach((e) => g.setEdge(e.source, e.target));
@@ -158,4 +161,23 @@ export function getConditionQuestion(config: ConditionNodeConfig): string {
 export function getConditionBranches(config: ConditionNodeConfig): Array<{ key: string; label: string }> {
   if (config.mode === 'boolean') return [{ key: 'yes', label: 'Yes' }, { key: 'no', label: 'No' }];
   return (config.branches ?? []).map((b) => ({ key: b.key, label: b.label ?? b.value ?? b.buttonId ?? b.key }));
+}
+
+// ── Node palette (add nodes from the canvas toolbar) ──────────────────────────
+export const newNodeId = () => `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+export const newEdgeId = () => `edge-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+export function defaultConditionConfig(): ConditionNodeConfig {
+  return { mode: 'field_match', field: 'stage', operator: 'equals', branches: [] };
+}
+
+// Placement for a freshly-added node with no position yet — below the current
+// graph's lowest node, centered under it. Not run through Dagre immediately (Dagre
+// only runs on first load or the explicit "Auto-arrange" action, never on every
+// edit, so it can't fight a user mid-drag); "Auto-arrange" tidies it up later.
+export function nextNodePosition(existingNodes: CanvasNode[]): { x: number; y: number } {
+  if (existingNodes.length === 0) return { x: 0, y: 0 };
+  const maxY = Math.max(...existingNodes.map((n) => n.position.y));
+  const avgX = existingNodes.reduce((sum, n) => sum + n.position.x, 0) / existingNodes.length;
+  return { x: avgX, y: maxY + 160 };
 }

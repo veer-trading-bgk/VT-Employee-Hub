@@ -3,16 +3,22 @@
 import { useCallback, useMemo, useState } from 'react';
 import {
   ReactFlow, ReactFlowProvider, Background, Controls, MiniMap, Panel,
-  useNodesState, useEdgesState, BackgroundVariant, type NodeMouseHandler,
+  useNodesState, useEdgesState, BackgroundVariant, addEdge,
+  type NodeMouseHandler, type OnConnect, type OnNodesDelete, type Node,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Save, Loader2, CheckCircle2 } from 'lucide-react';
+import { Save, Loader2, CheckCircle2, LayoutGrid } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { nodeTypes } from './nodes';
 import { NodeConfigPanel } from './NodeConfigPanel';
-import { toReactFlow, fromReactFlow, applyDagreLayout, needsLayout } from '@/lib/automationGraph';
+import { NodePalette } from './NodePalette';
 import {
-  getTriggerLabel, type Workflow, type GraphNode, type GraphEdge, type NodeConfig, type ActionType,
+  toReactFlow, fromReactFlow, applyDagreLayout, needsLayout,
+  newNodeId, newEdgeId, defaultConditionConfig, nextNodePosition, type CanvasNodeData,
+} from '@/lib/automationGraph';
+import { defaultConfig } from '../WorkflowBuilder';
+import {
+  getTriggerLabel, type Workflow, type GraphNode, type GraphEdge, type NodeConfig, type ActionType, type NodeType,
 } from '@/types/automations';
 
 interface WorkflowCanvasProps {
@@ -39,7 +45,7 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
   }, [workflow.id]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, , onEdgesChange] = useEdgesState(initialEdges);
+  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
 
@@ -55,6 +61,36 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
   function updateSelectedConfig(config: NodeConfig) {
     if (!selectedNodeId) return;
     setNodes((nds) => nds.map((n) => (n.id === selectedNodeId ? { ...n, data: { ...n.data, config } } : n)));
+  }
+
+  // Drawing an edge by dragging from a node's Handle to another node — React
+  // Flow's native connect interaction. sourceHandle carries the branch key for a
+  // condition node's outgoing edge (the Handle's own id), matching the backend's
+  // edge.sourceHandle field directly, no translation needed.
+  const onConnect: OnConnect = useCallback((connection) => {
+    setEdges((eds) => addEdge({ ...connection, id: newEdgeId(), type: 'smoothstep' }, eds));
+  }, [setEdges]);
+
+  // React Flow removes a deleted node from `nodes` on its own (via onNodesChange),
+  // but leaves any edge that referenced it dangling in `edges` — clean those up too.
+  const onNodesDelete: OnNodesDelete = useCallback((deleted) => {
+    const deletedIds = new Set(deleted.map((n) => n.id));
+    setEdges((eds) => eds.filter((e) => !deletedIds.has(e.source) && !deletedIds.has(e.target)));
+  }, [setEdges]);
+
+  function addNode(type: NodeType) {
+    const config: NodeConfig = type === 'condition' ? defaultConditionConfig() : defaultConfig(type as ActionType);
+    const newNode: Node<CanvasNodeData> = {
+      id: newNodeId(),
+      type,
+      position: nextNodePosition(nodes),
+      data: { nodeType: type, config },
+    };
+    setNodes((nds) => [...nds, newNode]);
+  }
+
+  function handleAutoArrange() {
+    setNodes((nds) => applyDagreLayout(nds, edges));
   }
 
   async function handleSave() {
@@ -79,6 +115,8 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
           nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
+          onNodesDelete={onNodesDelete}
+          onConnect={onConnect}
           onNodeClick={onNodeClick}
           onPaneClick={onPaneClick}
           fitView
@@ -88,23 +126,36 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
           <Background variant={BackgroundVariant.Dots} gap={16} />
           <Controls />
           <MiniMap pannable zoomable className="!bg-white dark:!bg-neutral-900" />
-          {onSave && (
-            <Panel position="top-right">
+          <Panel position="top-left">
+            <NodePalette onAdd={addNode} />
+          </Panel>
+          <Panel position="top-right">
+            <div className="flex items-center gap-2">
               <button
-                onClick={handleSave}
-                disabled={saveState === 'saving'}
-                className={cn(
-                  'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold shadow-sm transition-colors',
-                  saveState === 'saved' ? 'bg-success-500 text-white' : 'bg-primary-600 text-white hover:bg-primary-700',
-                )}
+                onClick={handleAutoArrange}
+                title="Auto-arrange"
+                className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-neutral-600 shadow-sm hover:bg-neutral-50 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800"
               >
-                {saveState === 'saving' ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> :
-                 saveState === 'saved'  ? <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> :
-                                          <Save className="h-3.5 w-3.5" aria-hidden />}
-                {saveState === 'saved' ? 'Saved' : 'Save'}
+                <LayoutGrid className="h-3.5 w-3.5" aria-hidden />
+                Auto-arrange
               </button>
-            </Panel>
-          )}
+              {onSave && (
+                <button
+                  onClick={handleSave}
+                  disabled={saveState === 'saving'}
+                  className={cn(
+                    'flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold shadow-sm transition-colors',
+                    saveState === 'saved' ? 'bg-success-500 text-white' : 'bg-primary-600 text-white hover:bg-primary-700',
+                  )}
+                >
+                  {saveState === 'saving' ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> :
+                   saveState === 'saved'  ? <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> :
+                                            <Save className="h-3.5 w-3.5" aria-hidden />}
+                  {saveState === 'saved' ? 'Saved' : 'Save'}
+                </button>
+              )}
+            </div>
+          </Panel>
         </ReactFlow>
       </ReactFlowProvider>
 
