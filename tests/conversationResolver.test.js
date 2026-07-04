@@ -116,6 +116,19 @@ describe('resolveForInbox()', () => {
     expect(ConversationService.incrementUnread).toHaveBeenCalledWith(CID, 'conv_existing', 1);
   });
 
+  test('returns { conversationId } on the fast (existing convId) path — lets IntentDetectionService chain off it', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({ Item: { convId: 'conv_existing' } }),
+    });
+    const result = await resolver.resolveForInbox(CID, PHONE10, { inboxPK: INBOX_PK });
+    expect(result).toEqual({ conversationId: 'conv_existing' });
+  });
+
+  test('returns { conversationId } on the creation path', async () => {
+    const result = await resolver.resolveForInbox(CID, PHONE10, { inboxPK: INBOX_PK, text: 'hi', timestamp: '2026-06-28T00:00:00.000Z' });
+    expect(result).toEqual({ conversationId: CONV.conversationId });
+  });
+
   test('does NOT call createContact when convId is already present', async () => {
     dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: { convId: 'conv_x' } }) });
     await resolver.resolveForInbox(CID, PHONE10, { inboxPK: INBOX_PK });
@@ -212,6 +225,19 @@ describe('resolveForLead()', () => {
       CID, 'conv_existing', expect.objectContaining({ text: 'msg' }),
     );
     expect(ConversationService.incrementUnread).toHaveBeenCalledWith(CID, 'conv_existing', 1);
+  });
+
+  test('returns { conversationId } on the fast (existing convId) path — lets IntentDetectionService chain off it', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({ Item: { convId: 'conv_existing' } }),
+    });
+    const result = await resolver.resolveForLead(CID, LEAD_PK, PHONE10, {});
+    expect(result).toEqual({ conversationId: 'conv_existing' });
+  });
+
+  test('returns { conversationId } on the creation path', async () => {
+    const result = await resolver.resolveForLead(CID, LEAD_PK, PHONE10, {});
+    expect(result).toEqual({ conversationId: CONV.conversationId });
   });
 
   test('never throws — catches DynamoDB timeout', async () => {

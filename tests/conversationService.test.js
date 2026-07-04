@@ -490,3 +490,31 @@ describe('module exports', () => {
     }));
   });
 });
+
+// ─── classifyIntent ───────────────────────────────────────────────────────────
+
+describe('classifyIntent()', () => {
+  beforeEach(() => {
+    repo.updateClassification.mockResolvedValue(undefined);
+  });
+
+  test('writes intent/confidence via repo.updateClassification, no version lock (repo.updateItem not used)', async () => {
+    await svc.classifyIntent(CID, CVID, { intent: 'kyc_query', confidence: 0.82 });
+    expect(repo.updateClassification).toHaveBeenCalledWith(
+      CID, CVID,
+      expect.objectContaining({ intent: 'kyc_query', confidence: 0.82, classifiedAt: expect.any(String) }),
+    );
+    expect(repo.updateItem).not.toHaveBeenCalled();
+  });
+
+  test('stamps classifiedAt as a real ISO timestamp', async () => {
+    await svc.classifyIntent(CID, CVID, { intent: 'other', confidence: 0.5 });
+    const patch = repo.updateClassification.mock.calls[0][2];
+    expect(new Date(patch.classifiedAt).toISOString()).toBe(patch.classifiedAt);
+  });
+
+  test('returns the classification (intent, confidence, classifiedAt)', async () => {
+    const result = await svc.classifyIntent(CID, CVID, { intent: 'complaint', confidence: 0.91 });
+    expect(result).toEqual(expect.objectContaining({ intent: 'complaint', confidence: 0.91, classifiedAt: expect.any(String) }));
+  });
+});

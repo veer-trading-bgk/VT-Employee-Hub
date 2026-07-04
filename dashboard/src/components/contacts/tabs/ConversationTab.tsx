@@ -10,10 +10,27 @@ import { useAddNote } from '@/hooks/useNoteMutations';
 import { TemplatePicker } from '@/components/whatsapp/TemplatePicker';
 import { MediaPreviewModal } from '@/components/whatsapp/MediaPreviewModal';
 import { ActivityPanel } from '@/components/contacts/ActivityPanel';
+import { Badge } from '@/components/v3/ui/Badge';
 import { META_SIZE_LIMITS } from '@/lib/mediaConstants';
 import { toast } from 'sonner';
 import type { WsMessage } from '@/lib/wsClient';
 import type { ContactMessage, TimelineItem } from '@/lib/contacts/types';
+
+// Human-readable labels for IntentDetectionService's 8 approved categories
+// (src/config/aiConfig.js — 'inbox-intent-detection' useCase). default/primary
+// variants only — Badge's warning/error/success variants have a pre-existing
+// dark-mode bug (missing 800/900 shades in globals.css) fixed separately, not
+// here.
+const INTENT_LABEL: Record<string, string> = {
+  interested:        'Interested',
+  not_interested:    'Not Interested',
+  kyc_query:         'KYC Query',
+  pricing_question:  'Pricing Question',
+  complaint:         'Complaint',
+  support_request:   'Support Request',
+  renewal_inquiry:   'Renewal Inquiry',
+  other:             'Other',
+};
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
 
@@ -772,6 +789,11 @@ function ConversationPane() {
           >
             {chatStatus}
           </span>
+          {contact?.intent && (
+            <Badge variant="primary" title={contact.confidence != null ? `AI confidence: ${Math.round(contact.confidence * 100)}%` : undefined}>
+              {INTENT_LABEL[contact.intent] ?? contact.intent}
+            </Badge>
+          )}
           <span className="flex-1" />
           {chatStatus !== 'resolved' && (
             <button

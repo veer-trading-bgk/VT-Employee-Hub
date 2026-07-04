@@ -267,3 +267,25 @@ describe('updateLastMessage()', () => {
     expect(dynamodb.update.mock.calls[0][0].ConditionExpression).toBeUndefined();
   });
 });
+
+// ─── updateClassification ─────────────────────────────────────────────────────
+
+describe('updateClassification()', () => {
+  const classification = { intent: 'kyc_query', confidence: 0.82, classifiedAt: '2026-07-05T09:00:00.000Z' };
+
+  test('writes intent, confidence, and classifiedAt', async () => {
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    await repo.updateClassification(CID, CVID, classification);
+    const call = dynamodb.update.mock.calls[0][0];
+    expect(call.Key).toEqual({ PK: `CONV#${CID}#${CVID}`, SK: 'CONV#META' });
+    expect(call.ExpressionAttributeValues[':i']).toBe('kyc_query');
+    expect(call.ExpressionAttributeValues[':c']).toBe(0.82);
+    expect(call.ExpressionAttributeValues[':ca']).toBe(classification.classifiedAt);
+  });
+
+  test('has NO ConditionExpression — nothing else concurrently writes these fields, no version lock needed', async () => {
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    await repo.updateClassification(CID, CVID, classification);
+    expect(dynamodb.update.mock.calls[0][0].ConditionExpression).toBeUndefined();
+  });
+});

@@ -7,7 +7,12 @@
  * intact for backward compatibility) and the new V2 CONV# entity layer.
  *
  * All exported functions are fire-and-forget — they never throw. Callers
- * MUST append .catch(() => {}) or call without await.
+ * MUST append .catch(() => {}) or call without await. resolveForLead/
+ * resolveForInbox resolve with { conversationId } on success (or undefined on
+ * any internal failure) so a caller MAY chain further fire-and-forget work off
+ * them via .then() — see whatsapp.js's webhook, which chains intent
+ * classification this way. This is purely additive: the return value was
+ * previously always undefined, so no existing caller's behavior changes.
  *
  * Data model after this commit:
  *   LEAD#${companyId}#${leadId}   METADATA  → convId, contactId fields added
@@ -45,7 +50,7 @@ function table() { return process.env.DYNAMODB_TABLE_METRICS; }
  *   @param {string}  [opts.text]    message preview text
  *   @param {string}  [opts.timestamp] ISO 8601 timestamp
  *   @param {string}  [opts.waName]  WhatsApp display name (from contacts[].profile.name)
- * @returns {Promise<void>}  — never throws
+ * @returns {Promise<{conversationId: string}|undefined>}  — never throws; undefined on failure
  */
 async function resolveForInbox(companyId, phone10, opts = {}) {
   const { inboxPK, text = '', timestamp, waName } = opts;
@@ -61,7 +66,7 @@ async function resolveForInbox(companyId, phone10, opts = {}) {
       // Conversation already exists — keep metadata fresh
       await ConversationService.updateLastMessage(companyId, convId, { text, timestamp });
       await ConversationService.incrementUnread(companyId, convId, 1);
-      return;
+      return { conversationId: convId };
     }
 
     // 2. Find-or-create Contact (ContactService handles phone normalisation and atomic dedup)
@@ -88,6 +93,7 @@ async function resolveForInbox(companyId, phone10, opts = {}) {
     }).promise();
 
     logger.info(`conversationResolver: inbox conv=${conv.conversationId} contact=${contact.contactId} phone=${phone10} company=${companyId}`);
+    return { conversationId: conv.conversationId };
   } catch (err) {
     logger.warn(`conversationResolver.resolveForInbox failed [${companyId}/${phone10}]: ${err.message}`);
   }
@@ -113,7 +119,7 @@ async function resolveForInbox(companyId, phone10, opts = {}) {
  * @param {object} opts
  *   @param {string}  [opts.text]
  *   @param {string}  [opts.timestamp]
- * @returns {Promise<void>}  — never throws
+ * @returns {Promise<{conversationId: string}|undefined>}  — never throws; undefined on failure
  */
 async function resolveForLead(companyId, leadPK, phone10, opts = {}) {
   const { text = '', timestamp } = opts;
@@ -128,7 +134,7 @@ async function resolveForLead(companyId, leadPK, phone10, opts = {}) {
     if (convId) {
       await ConversationService.updateLastMessage(companyId, convId, { text, timestamp });
       await ConversationService.incrementUnread(companyId, convId, 1);
-      return;
+      return { conversationId: convId };
     }
 
     // 2. Find existing Contact by phone (uses ContactPhoneIndex GSI from Commit 3)
@@ -161,6 +167,7 @@ async function resolveForLead(companyId, leadPK, phone10, opts = {}) {
     }).promise();
 
     logger.info(`conversationResolver: lead conv=${conv.conversationId} contact=${contact.contactId} leadPK=${leadPK} company=${companyId}`);
+    return { conversationId: conv.conversationId };
   } catch (err) {
     logger.warn(`conversationResolver.resolveForLead failed [${leadPK}]: ${err.message}`);
   }

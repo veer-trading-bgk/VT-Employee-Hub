@@ -181,6 +181,25 @@ async function getConversation(companyId, conversationId) {
 }
 
 /**
+ * Record an AI intent classification (IntentDetectionService's only write path
+ * into CONV#). No optimistic lock — mirrors incrementUnread/updateLastMessage's
+ * own reasoning: nothing else in the codebase writes intent/confidence/
+ * classifiedAt, so there's no concurrent writer to guard against, and a
+ * fire-and-forget classification shouldn't have to retry on an unrelated
+ * version bump (e.g. an agent reassigning the conversation at the same moment).
+ *
+ * @param {string} companyId
+ * @param {string} conversationId
+ * @param {object} data  { intent, confidence }
+ * @returns {{ intent, confidence, classifiedAt }}
+ */
+async function classifyIntent(companyId, conversationId, { intent, confidence }) {
+  const classifiedAt = new Date().toISOString();
+  await repo.updateClassification(companyId, conversationId, { intent, confidence, classifiedAt });
+  return { intent, confidence, classifiedAt };
+}
+
+/**
  * Assign a conversation to an employee.
  * Publishes CONVERSATION_ASSIGNED event (fans out to both CONV and CONTACT timelines).
  *
@@ -391,6 +410,7 @@ module.exports = {
   VALID_CHANNELS,
   createConversation,
   getConversation,
+  classifyIntent,
   assignConversation,
   resolveConversation,
   reopenConversation,

@@ -209,6 +209,31 @@ async function updateLastMessage(companyId, conversationId, fields) {
   }).promise();
 }
 
+/**
+ * Write an AI intent classification. Best-effort, no version condition — same
+ * reasoning as updateLastMessage/incrementUnread: nothing else in the codebase
+ * concurrently writes intent/confidence/classifiedAt, so there is no conflict
+ * to guard against, and a fire-and-forget classification write shouldn't have
+ * to retry just because an unrelated field (e.g. assignedTo) bumped the version
+ * at the same moment.
+ *
+ * @param {string} companyId
+ * @param {string} conversationId
+ * @param {object} classification  { intent, confidence, classifiedAt }
+ */
+async function updateClassification(companyId, conversationId, classification) {
+  await dynamodb.update({
+    TableName: table(),
+    Key:       { PK: conversationPK(companyId, conversationId), SK: conversationSK() },
+    UpdateExpression:          'SET intent = :i, confidence = :c, classifiedAt = :ca',
+    ExpressionAttributeValues: {
+      ':i':  classification.intent,
+      ':c':  classification.confidence,
+      ':ca': classification.classifiedAt,
+    },
+  }).promise();
+}
+
 module.exports = {
   getById,
   queryByContact,
@@ -217,4 +242,5 @@ module.exports = {
   updateItem,
   incrementUnread,
   updateLastMessage,
+  updateClassification,
 };

@@ -12,6 +12,7 @@ const { ALLOWED_MIME, META_SIZE_LIMITS } = require('../utils/mediaConstants');
 const { notifyCompany } = require('../utils/wsNotify');
 const { resolveForInbox, resolveForLead, syncConvStatus, syncMarkRead } = require('../utils/conversationResolver');
 const ConversationService  = require('../services/ConversationService');
+const IntentDetectionService = require('../services/IntentDetectionService');
 const WASendSvc            = require('../services/WhatsAppSendService');
 const TagService           = require('../services/TagService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
@@ -1549,7 +1550,19 @@ router.post('/webhook', async (req, res) => {
               .catch(() => {});
           }
           // Fire-and-forget: create/update CONV# entity for this WhatsApp thread.
-          resolveForLead(webhookCompanyId, lead.PK, phone10, { text, timestamp }).catch(() => {});
+          // Chained (not a second independent call) so intent classification only
+          // ever runs once conversation resolution has actually completed and we
+          // have a real conversationId — still never awaited, so it can never delay
+          // this response. Plain 'text' only: media/button-reply/flow-response
+          // either have no meaningful free text to classify or already carry
+          // unambiguous structured intent.
+          resolveForLead(webhookCompanyId, lead.PK, phone10, { text, timestamp })
+            .then((conv) => {
+              if (conv?.conversationId && type === 'text') {
+                return IntentDetectionService.classifyIfNeededForLead(webhookCompanyId, conv.conversationId, lead.PK, text);
+              }
+            })
+            .catch(() => {});
           // A tap on a welcome-message reply button — fire its configured
           // follow-up, if any (see fireButtonFollowUp's own internal try/catch).
           if (buttonReply) {
@@ -1623,7 +1636,14 @@ router.post('/webhook', async (req, res) => {
               .catch(() => {});
           }
           // Fire-and-forget: create/update CONV# entity for this unknown-contact thread.
-          resolveForInbox(companyId, phone10, { inboxPK: PK, text, timestamp, waName }).catch(() => {});
+          // Chained the same way as the lead path above — see that comment.
+          resolveForInbox(companyId, phone10, { inboxPK: PK, text, timestamp, waName })
+            .then((conv) => {
+              if (conv?.conversationId && type === 'text') {
+                return IntentDetectionService.classifyIfNeededForInbox(companyId, conv.conversationId, PK, text);
+              }
+            })
+            .catch(() => {});
           // A tap on a welcome-message reply button — fire its configured
           // follow-up, if any. Still possible here: the customer may still be
           // an unknown (INBOX#) contact when they tap, if no lead was created

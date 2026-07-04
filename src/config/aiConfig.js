@@ -1,5 +1,7 @@
 'use strict';
 
+const { z } = require('zod');
+
 /**
  * Use-case registry for AIService.generate() — per ADR-015 Rule 3. Adding a new AI
  * feature is a new entry here plus a caller; it is never a new method on AIService
@@ -91,6 +93,50 @@ Provide 3 actionable bullet points (max 150 words):
 • Team health assessment
 • Key recommendations for manager
 • Specific support needed for at-risk employees`;
+    },
+  },
+
+  // AI Inbox — classifies an inbound WhatsApp message's intent so agents/queues
+  // can triage faster. customerFacing: false — this only labels the conversation
+  // internally, it never drafts or sends anything a customer sees, so it never
+  // engages the approval gate (point 7 of ADR-015 only applies to customerFacing
+  // useCases). Triggered once per conversation (see IntentDetectionService),
+  // never on every message — a cost/noise tradeoff, not a technical limit.
+  'inbox-intent-detection': {
+    model: 'claude-haiku-4-5-20251001',
+    maxTokens: 60,
+    promptVersion: 'v1',
+    outputMode: 'json',
+    schema: z.object({
+      intent: z.enum([
+        'interested', 'not_interested', 'kyc_query', 'pricing_question',
+        'complaint', 'support_request', 'renewal_inquiry', 'other',
+      ]),
+      confidence: z.number().min(0).max(1),
+    }),
+    customerFacing: false,
+    localeAware: false,
+    rateLimit: { limit: 60, windowMs: 60_000 },
+    promptTemplate: (context) => {
+      const { message } = context;
+      return `You are classifying the intent of an inbound WhatsApp message sent by a customer to a stock broking / trading services company.
+
+Classify the message into EXACTLY ONE of these categories:
+- interested: general interest in opening an account or using services
+- not_interested: explicitly declining or opting out
+- kyc_query: questions about the KYC process, documents, or status
+- pricing_question: questions about brokerage, fees, or charges
+- complaint: dissatisfaction, a service issue, or a negative experience
+- support_request: technical/app/platform help needed (not a complaint)
+- renewal_inquiry: AMC or subscription renewal questions
+- other: anything that doesn't clearly fit the above
+
+CUSTOMER MESSAGE:
+"""
+${message}
+"""
+
+Respond with a JSON object: { "intent": "<one of the 8 categories above>", "confidence": <a number between 0 and 1> }`;
     },
   },
 };

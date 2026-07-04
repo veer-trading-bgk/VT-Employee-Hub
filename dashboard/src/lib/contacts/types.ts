@@ -34,6 +34,10 @@ export interface ContactDetail {
   probability?: number | null;
   // Reserved — Phase 2 AI
   healthScore?: number | null;
+  // AI intent detection (mirrored from CONV# — see IntentDetectionService)
+  intent?: string | null;
+  confidence?: number | null;
+  classifiedAt?: string | null;
   // Reserved — Phase 2 Customer Journey
   milestones?: {
     meeting?: { date: string; actor: string; notes?: string };

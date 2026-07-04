@@ -13,12 +13,13 @@ interface AIConfigResponse {
   moduleToggles: Record<string, boolean>;
 }
 
-// Mirrors src/config/aiConfig.js's registry — only the two real useCases that
+// Mirrors src/config/aiConfig.js's registry — only the real useCases that
 // exist today. A future useCase needs a label added here alongside its config
 // entry, the same way NodePalette.tsx's EXTRA_META needs an entry per node type.
 const MODULES: Array<{ useCase: string; label: string; description: string }> = [
   { useCase: 'metrics-insights', label: 'My Metrics Insights', description: 'AI analysis of an employee’s own performance metrics' },
   { useCase: 'team-metrics-insights', label: 'Team Metrics Insights', description: 'AI analysis of team-wide performance, for admins and managers' },
+  { useCase: 'inbox-intent-detection', label: 'Inbox Intent Detection', description: 'Classifies each new WhatsApp conversation’s likely intent (interested, complaint, KYC query, etc.)' },
 ];
 
 /**
