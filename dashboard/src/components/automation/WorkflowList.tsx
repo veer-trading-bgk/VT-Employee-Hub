@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, Search, Trash2, Play, Pause, Zap } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { Plus, Search, Trash2, Play, Pause, Zap, GitBranch, ListOrdered } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/v3/ui/Button';
@@ -15,7 +16,7 @@ import { cn } from '@/lib/cn';
 import { format } from 'date-fns';
 import {
   type AutomationsResponse, type Workflow,
-  WORKFLOW_STATUS_META, getTriggerLabel, getWorkflowStatus,
+  WORKFLOW_STATUS_META, getTriggerLabel, getWorkflowStatus, isGraphWorkflow,
 } from '@/types/automations';
 import { WorkflowCreateDrawer } from './WorkflowCreateDrawer';
 
@@ -23,9 +24,11 @@ export function WorkflowList() {
   const [search,        setSearch]        = useState('');
   const [drawerOpen,    setDrawerOpen]    = useState(false);
   const [editWorkflow,  setEditWorkflow]  = useState<Workflow | null>(null);
+  const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const { user } = useAuth();
   const isAdmin = ['owner', 'admin'].includes(toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]));
   const qc = useQueryClient();
+  const router = useRouter();
 
   const { data, isLoading } = useQuery<AutomationsResponse>({
     queryKey: ['automations'],
@@ -56,8 +59,16 @@ export function WorkflowList() {
     !search || w.name.toLowerCase().includes(search.toLowerCase()),
   );
 
-  function openCreate() { setEditWorkflow(null); setDrawerOpen(true); }
-  function openEdit(w: Workflow) { setEditWorkflow(w); setDrawerOpen(true); }
+  function openCreateSimple() { setCreateMenuOpen(false); setEditWorkflow(null); setDrawerOpen(true); }
+  function openCreateAdvanced() { setCreateMenuOpen(false); router.push('/automation/canvas/new'); }
+
+  // A workflow is either linear (steps[]) or graph-shaped (nodes[]) for its whole
+  // lifetime — route to whichever editor actually understands its shape.
+  function openEdit(w: Workflow) {
+    if (isGraphWorkflow(w)) { router.push(`/automation/canvas/${w.id}`); return; }
+    setEditWorkflow(w);
+    setDrawerOpen(true);
+  }
 
   return (
     <>
@@ -75,9 +86,38 @@ export function WorkflowList() {
             />
           </div>
           {isAdmin && (
-            <Button variant="primary" size="sm" iconLeft={<Plus className="h-4 w-4" />} onClick={openCreate}>
-              Create Workflow
-            </Button>
+            <div className="relative">
+              <Button variant="primary" size="sm" iconLeft={<Plus className="h-4 w-4" />} onClick={() => setCreateMenuOpen((v) => !v)}>
+                Create Workflow
+              </Button>
+              {createMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setCreateMenuOpen(false)} aria-hidden />
+                  <div className="absolute right-0 top-full z-20 mt-1.5 w-64 rounded-xl border border-neutral-200 bg-white p-1.5 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+                    <button
+                      onClick={openCreateSimple}
+                      className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                    >
+                      <ListOrdered className="mt-0.5 h-4 w-4 shrink-0 text-neutral-400" aria-hidden />
+                      <span>
+                        <span className="block text-sm font-medium text-neutral-900 dark:text-white">Simple</span>
+                        <span className="block text-xs text-neutral-400">One trigger, a linear list of steps</span>
+                      </span>
+                    </button>
+                    <button
+                      onClick={openCreateAdvanced}
+                      className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                    >
+                      <GitBranch className="mt-0.5 h-4 w-4 shrink-0 text-primary-500" aria-hidden />
+                      <span>
+                        <span className="block text-sm font-medium text-neutral-900 dark:text-white">Advanced (branching)</span>
+                        <span className="block text-xs text-neutral-400">Visual canvas with if/else conditions</span>
+                      </span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           )}
         </div>
 
@@ -91,7 +131,7 @@ export function WorkflowList() {
             icon={Zap}
             title={search ? 'No workflows match your search' : 'No workflows yet'}
             description={!search ? 'Create a workflow to automate lead follow-ups, stage changes, and WhatsApp messages.' : undefined}
-            action={!search && isAdmin ? { label: 'Create Workflow', onClick: openCreate } : undefined}
+            action={!search && isAdmin ? { label: 'Create Workflow', onClick: openCreateSimple } : undefined}
           />
         ) : (
           <div className="overflow-x-auto rounded-xl border border-neutral-200 dark:border-neutral-800">
@@ -150,7 +190,10 @@ function WorkflowRow({
 }) {
   const status = getWorkflowStatus(w);
   const meta   = WORKFLOW_STATUS_META[status];
-  const stepCount = (w.steps ?? []).filter((s) => s.type !== 'end').length;
+  const isGraph = isGraphWorkflow(w);
+  const stepCount = isGraph
+    ? (w.nodes ?? []).filter((n) => n.type !== 'end').length
+    : (w.steps ?? []).filter((s) => s.type !== 'end').length;
   const canDelete = isAdmin && status !== 'active';
   const canToggle = isAdmin && ['active', 'paused', 'draft'].includes(status);
 
@@ -160,7 +203,17 @@ function WorkflowRow({
       onClick={() => onEdit(w)}
     >
       <td className="px-4 py-3">
-        <p className="max-w-[200px] truncate font-medium text-neutral-900 dark:text-white">{w.name}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="max-w-[200px] truncate font-medium text-neutral-900 dark:text-white">{w.name}</p>
+          {isGraph && (
+            <span
+              title="Branching workflow — opens in the canvas"
+              className="flex shrink-0 items-center gap-1 rounded bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
+            >
+              <GitBranch className="h-2.5 w-2.5" aria-hidden /> Branching
+            </span>
+          )}
+        </div>
         {w.description && (
           <p className="max-w-[200px] truncate text-xs text-neutral-400">{w.description}</p>
         )}

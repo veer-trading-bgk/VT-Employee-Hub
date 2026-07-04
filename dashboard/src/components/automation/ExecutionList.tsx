@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useState } from 'react';
-import { Search, CheckCircle2, XCircle, Clock, Activity, ChevronDown, ChevronRight } from 'lucide-react';
+import { Search, CheckCircle2, XCircle, Clock, Activity, ChevronDown, ChevronRight, GitBranch } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Badge } from '@/components/v3/ui/Badge';
 import { EmptyState } from '@/components/v3/ui/EmptyState';
@@ -10,8 +10,8 @@ import { apiFetch } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { format } from 'date-fns';
 import {
-  type ExecutionsResponse, type Execution, type ExecutionStep,
-  EXECUTION_STATUS_META, ACTION_META,
+  type ExecutionsResponse, type Execution, type ExecutionStep, type ExecutionPathEntry, type ActionType,
+  EXECUTION_STATUS_META, ACTION_META, isGraphExecution,
 } from '@/types/automations';
 
 interface ExecutionListProps {
@@ -99,7 +99,7 @@ export function ExecutionList({ workflowFilter }: ExecutionListProps) {
                   {expanded === e.executionId && (
                     <tr className="bg-neutral-50/50 dark:bg-neutral-900/30">
                       <td colSpan={7} className="px-6 py-3">
-                        <StepTrace steps={e.steps} />
+                        {isGraphExecution(e) ? <PathTrace path={e.path ?? []} /> : <StepTrace steps={e.steps ?? []} />}
                       </td>
                     </tr>
                   )}
@@ -180,6 +180,41 @@ function StepTrace({ steps }: { steps: ExecutionStep[] }) {
             <span className="font-medium text-neutral-700 dark:text-neutral-300">{label}</span>
             {s.error && <span className="text-error-500 ml-1">— {s.error}</span>}
             {s.resumeAt && <span className="text-warning-500 ml-1">— resumes {format(new Date(s.resumeAt), 'd MMM, h:mm a')}</span>}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+// Sibling to StepTrace, reading a graph execution's append-only path[] instead of
+// linear's fixed-size steps[] — see Execution.path (automations.ts) and
+// AutomationEngine.js's _finalizeExecution() on the backend. Reads as a decision
+// log: each condition node's resolved branchKey is shown inline.
+function PathTrace({ path }: { path: ExecutionPathEntry[] }) {
+  return (
+    <ol className="space-y-1.5">
+      {path.map((p, i) => {
+        const label =
+          p.type === 'condition' ? 'Condition' : (ACTION_META[p.type as ActionType]?.label ?? p.type);
+        const icon =
+          p.status === 'completed'     ? <CheckCircle2 className="h-3.5 w-3.5 text-success-500 shrink-0" /> :
+          p.status === 'failed'        ? <XCircle      className="h-3.5 w-3.5 text-error-500 shrink-0" />   :
+          p.status === 'evaluated'     ? <GitBranch    className="h-3.5 w-3.5 text-primary-500 shrink-0" /> :
+          p.status === 'waiting'       ? <Clock        className="h-3.5 w-3.5 text-warning-500 shrink-0" /> :
+          p.status === 'waiting_reply' ? <Clock        className="h-3.5 w-3.5 text-warning-500 shrink-0" /> :
+          p.status === 'timed_out'     ? <Clock        className="h-3.5 w-3.5 text-warning-600 shrink-0" /> :
+                                          <div className="h-3.5 w-3.5 rounded-full border-2 border-neutral-300 shrink-0" />;
+        return (
+          <li key={`${p.nodeId}-${i}`} className="flex items-start gap-2 text-xs">
+            {icon}
+            <span className="font-medium text-neutral-700 dark:text-neutral-300">{label}</span>
+            {p.branchKey && <span className="text-primary-500 ml-1">→ {p.branchKey}</span>}
+            {p.status === 'timed_out' && <span className="text-warning-600 ml-1">(timed out, no reply)</span>}
+            {p.error && <span className="text-error-500 ml-1">— {p.error}</span>}
+            {p.resumeAt && (p.status === 'waiting' || p.status === 'waiting_reply') && (
+              <span className="text-warning-500 ml-1">— resumes {format(new Date(p.resumeAt), 'd MMM, h:mm a')}</span>
+            )}
           </li>
         );
       })}

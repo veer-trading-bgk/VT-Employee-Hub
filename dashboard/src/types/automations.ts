@@ -81,6 +81,58 @@ export interface WorkflowStep {
   config: StepConfig;
 }
 
+// ── Graph shape (branching automation builder, Phase 2) ──────────────────────
+// A workflow is either linear (steps[], above) or graph-shaped (nodes[]/edges[]/
+// entryNodeId, below) for its whole lifetime — never both. See AutomationEngine.js's
+// _startExecution() on the backend for the dispatch logic this mirrors.
+export type NodeType = ActionType | 'condition';
+
+export type ConditionMode = 'field_match' | 'boolean' | 'button_reply';
+
+export interface ConditionBranch {
+  key:       string;   // matches an edge's sourceHandle
+  label?:    string;
+  value?:    string;   // field_match: the comparison value for this branch
+  buttonId?: string;   // button_reply: the WhatsApp button id this branch fires on
+}
+
+export interface ConditionNodeConfig {
+  mode:           ConditionMode;
+  field?:         ConditionField;       // field_match / boolean
+  operator?:      ConditionOperator;    // field_match / boolean
+  value?:         string;               // boolean only — single comparison value
+  branches?:      ConditionBranch[];    // field_match / button_reply
+  fallbackKey?:   string;               // branch to follow when nothing matches / times out
+  timeoutAmount?: number;               // button_reply only
+  timeoutUnit?:   'minutes' | 'hours' | 'days';
+}
+
+export type NodeConfig = StepConfig | ConditionNodeConfig;
+
+export interface NodePosition {
+  x: number;
+  y: number;
+}
+
+export interface GraphNode {
+  id:        string;
+  type:      NodeType;
+  config:    NodeConfig;
+  position?: NodePosition; // absent on a freshly-added node — canvas runs Dagre to place it
+}
+
+export interface GraphEdge {
+  id:           string;
+  source:       string;
+  target:       string;
+  sourceHandle?: string; // which branch of the source node (condition nodes only)
+  label?:       string;
+}
+
+export function isConditionConfig(config: NodeConfig): config is ConditionNodeConfig {
+  return typeof (config as ConditionNodeConfig).mode === 'string';
+}
+
 // ── Workflow ─────────────────────────────────────────────────────────────────
 export type WorkflowStatus = 'active' | 'draft' | 'paused' | 'archived';
 
@@ -91,13 +143,20 @@ export interface Workflow {
   description?:   string | null;
   status:         WorkflowStatus;
   trigger:        WorkflowTrigger | TriggerType; // legacy: trigger was a string
-  steps:          WorkflowStep[];
+  steps?:         WorkflowStep[];
+  nodes?:         GraphNode[];
+  edges?:         GraphEdge[];
+  entryNodeId?:   string;
   runCount:       number;
   lastRunAt?:     string | null;
   createdBy:      string;
   createdByName?: string | null;
   createdAt:      string;
   updatedAt:      string;
+}
+
+export function isGraphWorkflow(workflow: Pick<Workflow, 'nodes'>): boolean {
+  return Array.isArray(workflow.nodes) && workflow.nodes.length > 0;
 }
 
 // ── Executions ───────────────────────────────────────────────────────────────
@@ -115,6 +174,24 @@ export interface ExecutionStep {
   error?:       string;
 }
 
+// ── Graph execution trace (branching automation builder, Phase 2) ────────────
+// A graph execution only ever visits one path per run, so it's recorded as an
+// append-only path[] instead of linear's fixed-size steps[] — see
+// AutomationEngine.js's _finalizeExecution() on the backend.
+export type PathStatus = 'completed' | 'failed' | 'waiting' | 'waiting_reply' | 'evaluated' | 'timed_out';
+
+export interface ExecutionPathEntry {
+  nodeId:       string;
+  type:         NodeType;
+  status:       PathStatus;
+  startedAt?:   string;
+  completedAt?: string;
+  resumeAt?:    string;
+  result?:      Record<string, unknown>;
+  error?:       string;
+  branchKey?:   string | null; // which branch a 'condition' node resolved to
+}
+
 export interface Execution {
   executionId:   string;
   workflowId:    string;
@@ -125,11 +202,16 @@ export interface Execution {
   contactName?:  string | null;
   leadPK?:       string | null;
   triggeredBy:   { type: string; entityId: string };
-  steps:         ExecutionStep[];
+  steps?:        ExecutionStep[];
+  path?:         ExecutionPathEntry[];
   startedAt:     string;
   completedAt?:  string;
   durationMs?:   number;
   error?:        string;
+}
+
+export function isGraphExecution(execution: Pick<Execution, 'path'>): boolean {
+  return Array.isArray(execution.path) && execution.path.length > 0;
 }
 
 // ── API response shapes ───────────────────────────────────────────────────────
