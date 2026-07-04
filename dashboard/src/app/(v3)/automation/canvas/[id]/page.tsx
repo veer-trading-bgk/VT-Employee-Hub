@@ -2,7 +2,7 @@
 
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ChevronLeft, Zap } from 'lucide-react';
+import { ChevronLeft, Zap, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch, ApiClientError } from '@/lib/api';
 import { WorkflowCanvas } from '@/components/automation/canvas/WorkflowCanvas';
@@ -57,7 +57,10 @@ export default function WorkflowCanvasEditPage() {
       {/* Canvas */}
       <div className="min-h-0 flex-1">
         {isLoading ? (
-          <div className="flex h-full items-center justify-center text-sm text-neutral-400">Loading workflow…</div>
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-neutral-400">
+            <Loader2 className="h-5 w-5 animate-spin text-primary-500" aria-hidden />
+            <p>Loading workflow…</p>
+          </div>
         ) : error || !data?.automation ? (
           <div className="flex h-full flex-col items-center justify-center gap-1 text-sm text-error-500">
             {error instanceof ApiClientError && error.status === 404 ? (

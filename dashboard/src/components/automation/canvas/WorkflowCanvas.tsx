@@ -8,13 +8,15 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { Save, Loader2, CheckCircle2, LayoutGrid } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/cn';
 import { nodeTypes } from './nodes';
 import { NodeConfigPanel } from './NodeConfigPanel';
 import { NodePalette } from './NodePalette';
 import {
   toReactFlow, fromReactFlow, applyDagreLayout, needsLayout,
-  newNodeId, newEdgeId, defaultConditionConfig, nextNodePosition, type CanvasNodeData,
+  newNodeId, newEdgeId, defaultConditionConfig, defaultSendButtonsConfig, nextNodePosition,
+  findIncompleteBranches, getUpstreamButtons, type CanvasNodeData,
 } from '@/lib/automationGraph';
 import { defaultConfig } from '../WorkflowBuilder';
 import {
@@ -79,7 +81,10 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
   }, [setEdges]);
 
   function addNode(type: NodeType) {
-    const config: NodeConfig = type === 'condition' ? defaultConditionConfig() : defaultConfig(type as ActionType);
+    const config: NodeConfig =
+      type === 'condition'    ? defaultConditionConfig() :
+      type === 'send_buttons' ? defaultSendButtonsConfig() :
+                                 defaultConfig(type as ActionType);
     const newNode: Node<CanvasNodeData> = {
       id: newNodeId(),
       type,
@@ -95,6 +100,16 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
 
   async function handleSave() {
     if (!onSave) return;
+
+    // Warn, don't block: a condition with a branch that has no outgoing edge saves
+    // fine today and only surfaces as a broken execution the first time a real
+    // contact takes that branch — flag it up front instead.
+    const incomplete = findIncompleteBranches(nodes, edges);
+    if (incomplete.length > 0) {
+      const summary = incomplete.map((w) => `"${w.nodeLabel}": ${w.missingBranchKeys.join(', ')}`).join('; ');
+      toast.warning(`Saved, but some branches have no destination — ${summary}`);
+    }
+
     setSaveState('saving');
     const { nodes: graphNodes, edges: graphEdges, entryNodeId } = fromReactFlow(nodes, edges);
     try {
@@ -162,8 +177,9 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
       {selectedNode && !NON_CONFIGURABLE.has(String(selectedNode.data.nodeType)) && (
         <NodeConfigPanel
           nodeId={selectedNode.id}
-          nodeType={selectedNode.data.nodeType as ActionType | 'condition'}
+          nodeType={selectedNode.data.nodeType as NodeType}
           config={selectedNode.data.config}
+          upstreamButtons={selectedNode.data.nodeType === 'condition' ? getUpstreamButtons(selectedNode.id, nodes, edges) : undefined}
           onChange={updateSelectedConfig}
           onClose={() => setSelectedNodeId(null)}
         />

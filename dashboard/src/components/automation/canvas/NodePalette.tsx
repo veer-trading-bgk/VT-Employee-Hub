@@ -1,14 +1,19 @@
 'use client';
 
-import { Zap, GitBranch } from 'lucide-react';
-import { ACTION_META, type NodeType } from '@/types/automations';
+import { Zap, GitBranch, MousePointerClick } from 'lucide-react';
+import { ACTION_META, type ActionType, type NodeType } from '@/types/automations';
 import { ACTION_ICONS } from '../WorkflowBuilder';
 
 const PALETTE_TYPES: NodeType[] = [
-  'send_template', 'assign_employee', 'change_stage', 'add_tag', 'create_task', 'wait', 'condition', 'end',
+  'send_template', 'send_buttons', 'assign_employee', 'change_stage', 'add_tag', 'create_task', 'wait', 'condition', 'end',
 ];
 
-const CONDITION_META = { label: 'Condition' };
+// Node types outside ActionType (graph-only — see NodeType's own comment) need
+// their own label/icon here, same as 'condition' already does.
+const EXTRA_META: Partial<Record<NodeType, { label: string; icon: typeof GitBranch }>> = {
+  condition:     { label: 'Condition',    icon: GitBranch },
+  send_buttons:  { label: 'Send Buttons', icon: MousePointerClick },
+};
 
 interface NodePaletteProps {
   onAdd: (type: NodeType) => void;
@@ -27,8 +32,9 @@ export function NodePalette({ onAdd }: NodePaletteProps) {
       <p className="px-1.5 pb-1.5 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">Add node</p>
       <div className="space-y-0.5">
         {PALETTE_TYPES.map((type) => {
-          const Icon = type === 'condition' ? GitBranch : (ACTION_ICONS[type] ?? Zap);
-          const label = type === 'condition' ? CONDITION_META.label : (ACTION_META[type]?.label ?? type);
+          const extra = EXTRA_META[type];
+          const Icon = extra?.icon ?? ACTION_ICONS[type as ActionType] ?? Zap;
+          const label = extra?.label ?? ACTION_META[type as ActionType]?.label ?? type;
           return (
             <button
               key={type}

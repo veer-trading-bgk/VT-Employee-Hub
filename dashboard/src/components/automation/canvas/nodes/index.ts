@@ -4,6 +4,7 @@ import { ActionNode } from './ActionNode';
 import { WaitNode } from './WaitNode';
 import { ConditionNode } from './ConditionNode';
 import { EndNode } from './EndNode';
+import { SendButtonsNode } from './SendButtonsNode';
 
 // Every ActionType except 'wait'/'end' shares the generic ActionNode shell.
 export const nodeTypes: NodeTypes = {
@@ -15,5 +16,6 @@ export const nodeTypes: NodeTypes = {
   create_task:     ActionNode,
   wait:            WaitNode,
   condition:       ConditionNode,
+  send_buttons:    SendButtonsNode,
   end:             EndNode,
 };

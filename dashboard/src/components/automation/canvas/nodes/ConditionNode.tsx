@@ -1,15 +1,17 @@
 'use client';
 
-import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { GitBranch } from 'lucide-react';
+import { Handle, Position, useEdges, type NodeProps } from '@xyflow/react';
+import { GitBranch, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { ConditionNodeConfig } from '@/types/automations';
 import { getConditionQuestion, getConditionBranches, type CanvasNode } from '@/lib/automationGraph';
 
-export function ConditionNode({ data, selected }: NodeProps<CanvasNode>) {
+export function ConditionNode({ id, data, selected }: NodeProps<CanvasNode>) {
   const cfg = data.config as ConditionNodeConfig;
   const question = getConditionQuestion(cfg);
   const branches = getConditionBranches(cfg);
+  const edges = useEdges();
+  const connectedHandles = new Set(edges.filter((e) => e.source === id).map((e) => e.sourceHandle));
 
   return (
     <div className={cn(
@@ -29,16 +31,28 @@ export function ConditionNode({ data, selected }: NodeProps<CanvasNode>) {
         </div>
       </div>
 
-      {/* Branch labels — glanceable on the node face; the edges themselves also carry labels */}
+      {/* Branch labels — glanceable on the node face; the edges themselves also carry labels.
+          A branch with no drawn edge gets a warning ring + icon — this is the exact
+          "declared a branch, never connected it" mistake that used to save silently. */}
       <div className="mt-2.5 flex justify-between gap-1 px-1">
-        {branches.map((b) => (
-          <span
-            key={b.key}
-            className="truncate rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400"
-          >
-            {b.label}
-          </span>
-        ))}
+        {branches.map((b) => {
+          const isConnected = connectedHandles.has(b.key);
+          return (
+            <span
+              key={b.key}
+              title={isConnected ? undefined : 'No outgoing edge — this branch leads nowhere'}
+              className={cn(
+                'flex items-center gap-1 truncate rounded px-1.5 py-0.5 text-[10px] font-medium',
+                isConnected
+                  ? 'bg-neutral-100 text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400'
+                  : 'bg-warning-100 text-warning-700 ring-1 ring-warning-400 dark:bg-warning-500/20 dark:text-warning-400',
+              )}
+            >
+              {!isConnected && <AlertTriangle className="h-2.5 w-2.5 shrink-0" aria-hidden />}
+              {b.label}
+            </span>
+          );
+        })}
       </div>
 
       {branches.map((b, i) => (

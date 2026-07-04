@@ -1,3 +1,5 @@
+import type { ReplyButtonValue, CtaButtonValue } from '@/components/shared/ButtonListEditor';
+
 // ── Trigger types ─────────────────────────────────────────────────────────────
 export type TriggerType =
   | 'whatsapp_conversation_started'
@@ -85,7 +87,22 @@ export interface WorkflowStep {
 // A workflow is either linear (steps[], above) or graph-shaped (nodes[]/edges[]/
 // entryNodeId, below) for its whole lifetime — never both. See AutomationEngine.js's
 // _startExecution() on the backend for the dispatch logic this mirrors.
-export type NodeType = ActionType | 'condition';
+// 'send_buttons' is graph-only (paired with a downstream button_reply condition) —
+// deliberately not added to ActionType, which the legacy linear model also uses and
+// has no button_reply condition to pair it with.
+export type NodeType = ActionType | 'condition' | 'send_buttons';
+
+// Reuses the exact config shape CONFIG#WELCOME# / ButtonListEditor.tsx already
+// define for WhatsApp buttons — a canvas "Send Buttons" node sends the identical
+// message shape a welcome-message config does, just mid-workflow instead of on
+// first contact. See ButtonListEditor.tsx's own header comment: it was written
+// expecting exactly this kind of second caller.
+export interface SendButtonsConfig {
+  messageType: 'reply_buttons' | 'cta_buttons';
+  bodyText:    string;
+  buttons?:    ReplyButtonValue[];  // reply_buttons mode, max 3 (Meta limit)
+  ctaButtons?: CtaButtonValue[];    // cta_buttons mode, max 1 (Meta limit)
+}
 
 export type ConditionMode = 'field_match' | 'boolean' | 'button_reply';
 
@@ -107,7 +124,7 @@ export interface ConditionNodeConfig {
   timeoutUnit?:   'minutes' | 'hours' | 'days';
 }
 
-export type NodeConfig = StepConfig | ConditionNodeConfig;
+export type NodeConfig = StepConfig | ConditionNodeConfig | SendButtonsConfig;
 
 export interface NodePosition {
   x: number;

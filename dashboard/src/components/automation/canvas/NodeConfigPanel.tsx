@@ -1,20 +1,30 @@
 'use client';
 
-import { X } from 'lucide-react';
+import { X, GitBranch, MousePointerClick } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import { ACTION_META, isConditionConfig, type ActionType } from '@/types/automations';
-import type { NodeConfig, ConditionNodeConfig, StepConfig } from '@/types/automations';
+import { ACTION_META, isConditionConfig, type ActionType, type NodeType } from '@/types/automations';
+import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, StepConfig } from '@/types/automations';
 import { ActionEditor } from '../ActionEditor';
 import { ConditionEditor } from '../ConditionEditor';
+import { SendButtonsEditor } from '../SendButtonsEditor';
 import { ACTION_ICONS } from '../WorkflowBuilder';
 
 interface NodeConfigPanelProps {
-  nodeId:   string;
-  nodeType: ActionType | 'condition';
-  config:   NodeConfig;
-  onChange: (config: NodeConfig) => void;
-  onClose:  () => void;
+  nodeId:           string;
+  nodeType:         NodeType;
+  config:           NodeConfig;
+  onChange:         (config: NodeConfig) => void;
+  onClose:          () => void;
+  // Buttons from an upstream 'send_buttons' node, if one is connected — lets the
+  // button_reply condition's branch editor offer a dropdown of real button ids
+  // instead of a freeform text field. Undefined/empty when none is found.
+  upstreamButtons?: Array<{ id: string; title: string }>;
 }
+
+const EXTRA_TITLES: Partial<Record<NodeType, { label: string; icon: typeof GitBranch }>> = {
+  condition:    { label: 'Condition',    icon: GitBranch },
+  send_buttons: { label: 'Send Buttons', icon: MousePointerClick },
+};
 
 /**
  * Right-docked config panel — visually borrows Drawer.tsx's header/footer styling
@@ -22,9 +32,10 @@ interface NodeConfigPanelProps {
  * The canvas behind it must stay interactive (pan/zoom/click other nodes) while a
  * node's config is open, which a modal Drawer would block.
  */
-export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose }: NodeConfigPanelProps) {
-  const Icon  = nodeType === 'condition' ? undefined : (ACTION_ICONS[nodeType] ?? undefined);
-  const title = nodeType === 'condition' ? 'Condition' : (ACTION_META[nodeType]?.label ?? nodeType);
+export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose, upstreamButtons }: NodeConfigPanelProps) {
+  const extra = EXTRA_TITLES[nodeType];
+  const Icon  = extra?.icon ?? ACTION_ICONS[nodeType as ActionType] ?? undefined;
+  const title = extra?.label ?? ACTION_META[nodeType as ActionType]?.label ?? nodeType;
 
   return (
     <div
@@ -62,10 +73,16 @@ export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose }:
           <ConditionEditor
             config={isConditionConfig(config) ? config : { mode: 'field_match', branches: [] }}
             onChange={(c: ConditionNodeConfig) => onChange(c)}
+            upstreamButtons={upstreamButtons}
+          />
+        ) : nodeType === 'send_buttons' ? (
+          <SendButtonsEditor
+            config={config as SendButtonsConfig}
+            onChange={(c) => onChange(c)}
           />
         ) : (
           <ActionEditor
-            step={{ id: nodeId, type: nodeType, config: config as StepConfig }}
+            step={{ id: nodeId, type: nodeType as ActionType, config: config as StepConfig }}
             onChange={(c) => onChange(c as NodeConfig)}
           />
         )}

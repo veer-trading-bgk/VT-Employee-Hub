@@ -8,7 +8,7 @@ jest.mock('../src/config/dynamodb', () => ({
   delete: jest.fn(),
 }));
 jest.mock('../src/services/PipelineService');
-jest.mock('../src/services/WhatsAppSendService', () => ({ sendTemplate: jest.fn() }));
+jest.mock('../src/services/WhatsAppSendService', () => ({ sendTemplate: jest.fn(), sendInteractive: jest.fn() }));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
 }));
@@ -179,6 +179,116 @@ describe('AutomationEngine — send_template failures surface Meta\'s real rejec
     const [{ ExpressionAttributeValues }] = finalPatchCall;
     expect(ExpressionAttributeValues[':st']).toBe('completed');
     expect(ExpressionAttributeValues[':steps'][0].status).toBe('completed');
+  });
+});
+
+describe('AutomationEngine — send_buttons action', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  test('reply_buttons mode builds the same interactive shape the welcome-message feature sends', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.buttons1' });
+
+    const result = await engine._runAction(
+      CID,
+      {
+        type: 'send_buttons',
+        config: {
+          messageType: 'reply_buttons',
+          bodyText: 'Hi {{name}}, still interested?',
+          buttons: [{ id: 'BTN_YES', title: 'Yes' }, { id: 'BTN_NO', title: 'No' }],
+        },
+      },
+      { leadPK: LEAD_PK, phone: '9000000000', name: 'Priya' },
+    );
+
+    expect(WASendSvc.sendInteractive).toHaveBeenCalledWith(
+      CID,
+      expect.any(Object),
+      {
+        type: 'button',
+        body: { text: 'Hi Priya, still interested?' },
+        action: { buttons: [
+          { type: 'reply', reply: { id: 'BTN_YES', title: 'Yes' } },
+          { type: 'reply', reply: { id: 'BTN_NO', title: 'No' } },
+        ] },
+      },
+      expect.any(Object),
+    );
+    expect(result).toEqual({ wamid: 'wamid.buttons1' });
+  });
+
+  test('cta_buttons mode builds a cta_url interactive payload from the first configured CTA button', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.cta1' });
+
+    await engine._runAction(
+      CID,
+      {
+        type: 'send_buttons',
+        config: {
+          messageType: 'cta_buttons',
+          bodyText: 'Check this out',
+          ctaButtons: [{ type: 'url', text: 'Open', value: 'https://example.com' }],
+        },
+      },
+      { leadPK: LEAD_PK, phone: '9000000000', name: 'Priya' },
+    );
+
+    expect(WASendSvc.sendInteractive).toHaveBeenCalledWith(
+      CID,
+      expect.any(Object),
+      {
+        type: 'cta_url',
+        body: { text: 'Check this out' },
+        action: { name: 'cta_url', parameters: { display_text: 'Open', url: 'https://example.com' } },
+      },
+      expect.any(Object),
+    );
+  });
+
+  test('falls back to "there" when {{name}} has no real value, matching the welcome-message substitution rule', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.x' });
+
+    await engine._runAction(
+      CID,
+      { type: 'send_buttons', config: { messageType: 'reply_buttons', bodyText: 'Hi {{name}}!', buttons: [{ id: 'b1', title: 'Ok' }] } },
+      { leadPK: LEAD_PK, phone: '9000000000', name: '' },
+    );
+
+    expect(WASendSvc.sendInteractive).toHaveBeenCalledWith(
+      CID, expect.any(Object),
+      expect.objectContaining({ body: { text: 'Hi there!' } }),
+      expect.any(Object),
+    );
+  });
+
+  test('rejects — no phone', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_buttons', config: { messageType: 'reply_buttons', bodyText: 'Hi', buttons: [{ id: 'b1', title: 'Ok' }] } }, {}),
+    ).rejects.toThrow('send_buttons: phone required');
+    expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
+  });
+
+  test('rejects — no bodyText', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_buttons', config: { messageType: 'reply_buttons', bodyText: '', buttons: [{ id: 'b1', title: 'Ok' }] } }, { phone: '9000000000' }),
+    ).rejects.toThrow('send_buttons: bodyText required');
+  });
+
+  test('rejects — reply_buttons mode with zero buttons configured', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_buttons', config: { messageType: 'reply_buttons', bodyText: 'Hi', buttons: [] } }, { phone: '9000000000' }),
+    ).rejects.toThrow('send_buttons: buttons required for reply_buttons mode');
+    expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
+  });
+
+  test('rejects — cta_buttons mode with no CTA button configured', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_buttons', config: { messageType: 'cta_buttons', bodyText: 'Hi', ctaButtons: [] } }, { phone: '9000000000' }),
+    ).rejects.toThrow('send_buttons: ctaButtons required for cta_buttons mode');
+    expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
   });
 });
 

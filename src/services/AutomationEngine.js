@@ -5,6 +5,7 @@ const dynamodb  = require('../config/dynamodb');
 const logger    = require('../config/logger');
 const WASendSvc = require('./WhatsAppSendService');
 const PipelineService = require('./PipelineService');
+const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -398,6 +399,45 @@ class AutomationEngine {
           { content: `[Automation: ${templateName}]` },
         );
         return { wamid: r.wamid ?? r.waMessageId };
+      }
+
+      // Reuses the identical interactive-message construction the welcome-message
+      // feature already sends (src/routes/whatsapp.js's sendWelcomeMessage()) — same
+      // reply_buttons/cta_buttons shapes, same {{name}}/{{phone}} free-text
+      // substitution, just delegated to WASendSvc.sendInteractive() mid-workflow
+      // instead of on first contact.
+      case 'send_buttons': {
+        const { messageType, bodyText, buttons = [], ctaButtons = [] } = step.config ?? {};
+        if (!phone) throw new Error('send_buttons: phone required');
+        if (!bodyText) throw new Error('send_buttons: bodyText required');
+        const target = leadPK
+          ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
+          : { phone };
+        const resolvedText = resolveWelcomeVariables(bodyText, { name, phone });
+
+        let interactive;
+        if (messageType === 'cta_buttons') {
+          const cta = ctaButtons[0];
+          if (!cta) throw new Error('send_buttons: ctaButtons required for cta_buttons mode');
+          interactive = {
+            type: 'cta_url',
+            body: { text: resolvedText },
+            action: { name: 'cta_url', parameters: { display_text: cta.text, url: cta.value } },
+          };
+        } else {
+          if (buttons.length === 0) throw new Error('send_buttons: buttons required for reply_buttons mode');
+          interactive = {
+            type: 'button',
+            body: { text: resolvedText },
+            action: { buttons: buttons.map((b) => ({ type: 'reply', reply: { id: b.id, title: b.title } })) },
+          };
+        }
+
+        const r = await WASendSvc.sendInteractive(
+          companyId, target, interactive,
+          { id: 'system', role: 'admin', name: 'Automation' },
+        );
+        return { wamid: r.wamid };
       }
 
       case 'assign_employee': {

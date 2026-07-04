@@ -1,7 +1,7 @@
 import dagre from '@dagrejs/dagre';
 import type { Node, Edge } from '@xyflow/react';
 import type {
-  GraphNode, GraphEdge, NodeType, NodeConfig, ConditionNodeConfig,
+  GraphNode, GraphEdge, NodeType, NodeConfig, ConditionNodeConfig, SendButtonsConfig,
   SendTemplateConfig, AssignEmployeeConfig, ChangeStageConfig, AddTagConfig, CreateTaskConfig,
 } from '@/types/automations';
 
@@ -92,10 +92,11 @@ export function fromReactFlow(
 // no saved positions, or via an explicit "Auto-arrange" action; never on every edit,
 // so it can't fight a user's manual repositioning.
 const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
-  trigger:   { width: 220, height: 68 },
-  condition: { width: 256, height: 108 },
-  wait:      { width: 192, height: 68 },
-  end:       { width: 160, height: 56 },
+  trigger:       { width: 220, height: 68 },
+  condition:     { width: 256, height: 108 },
+  wait:          { width: 192, height: 68 },
+  end:           { width: 160, height: 56 },
+  send_buttons:  { width: 256, height: 84 },
 };
 const DEFAULT_DIMENSIONS = { width: 240, height: 76 };
 
@@ -169,6 +170,76 @@ export const newEdgeId = () => `edge-${Date.now()}-${Math.random().toString(36).
 
 export function defaultConditionConfig(): ConditionNodeConfig {
   return { mode: 'field_match', field: 'stage', operator: 'equals', branches: [] };
+}
+
+export function defaultSendButtonsConfig(): SendButtonsConfig {
+  return { messageType: 'reply_buttons', bodyText: '', buttons: [] };
+}
+
+// ── Save-time validation: unconnected branches ────────────────────────────────
+// Shallow, referential-integrity-only checking (matches the backend's
+// validateGraphShape()) — this specifically catches the "declared a branch,
+// never drew its edge" mistake, which otherwise saves silently and only shows up
+// the first time a real execution takes that branch and finds nowhere to go.
+export interface IncompleteBranchWarning {
+  nodeId:            string;
+  nodeLabel:         string;
+  missingBranchKeys: string[];
+}
+
+export function findIncompleteBranches(nodes: CanvasNode[], edges: CanvasEdge[]): IncompleteBranchWarning[] {
+  const warnings: IncompleteBranchWarning[] = [];
+  for (const n of nodes) {
+    if (n.data.nodeType !== 'condition') continue;
+    const cfg = n.data.config as ConditionNodeConfig;
+    const branches = getConditionBranches(cfg);
+    if (branches.length === 0) continue;
+    const connectedHandles = new Set(
+      edges.filter((e) => e.source === n.id).map((e) => e.sourceHandle),
+    );
+    const missing = branches.filter((b) => !connectedHandles.has(b.key)).map((b) => b.label || b.key);
+    if (missing.length > 0) {
+      warnings.push({ nodeId: n.id, nodeLabel: getConditionQuestion(cfg), missingBranchKeys: missing });
+    }
+  }
+  return warnings;
+}
+
+// ── Upstream Send Buttons lookup (for button_reply branch selection) ─────────
+// Walks straight-line single-parent edges upward from a condition node, skipping
+// over 'wait' nodes (a fixed-duration pause before listening doesn't change which
+// buttons are available), stopping at the first 'send_buttons' node found, a node
+// with more than one incoming edge (ambiguous — which send actually preceded this
+// tap?), or after a bounded number of hops.
+const MAX_UPSTREAM_HOPS = 5;
+
+export function findUpstreamSendButtonsNode(nodeId: string, nodes: CanvasNode[], edges: CanvasEdge[]): CanvasNode | null {
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  let currentId = nodeId;
+
+  for (let hop = 0; hop < MAX_UPSTREAM_HOPS; hop++) {
+    const incoming = edges.filter((e) => e.target === currentId);
+    if (incoming.length !== 1) return null; // no parent, or ambiguous fan-in
+    const parent = nodeById.get(incoming[0].source);
+    if (!parent) return null;
+    if (parent.data.nodeType === 'send_buttons') return parent;
+    if (parent.data.nodeType !== 'wait') return null; // any other node type breaks the chain
+    currentId = parent.id;
+  }
+  return null;
+}
+
+// Extracts the tappable buttons from an upstream send_buttons node, if one is found
+// AND it's actually in reply_buttons mode. A cta_buttons (URL) node is deliberately
+// excluded: Meta reports no webhook event at all for a CTA tap (see
+// ButtonListEditor.tsx's own comment on this exact platform limitation), so there is
+// nothing a button_reply condition could ever match against it.
+export function getUpstreamButtons(nodeId: string, nodes: CanvasNode[], edges: CanvasEdge[]): Array<{ id: string; title: string }> | undefined {
+  const sendNode = findUpstreamSendButtonsNode(nodeId, nodes, edges);
+  if (!sendNode) return undefined;
+  const cfg = sendNode.data.config as SendButtonsConfig;
+  if (cfg.messageType !== 'reply_buttons') return undefined;
+  return (cfg.buttons ?? []).map((b) => ({ id: b.id, title: b.title }));
 }
 
 // Placement for a freshly-added node with no position yet — below the current
