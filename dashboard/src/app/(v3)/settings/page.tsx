@@ -54,6 +54,7 @@ import { EmployeesSection } from '@/components/v3/team/EmployeesSection';
 import { AISection } from '@/components/v3/settings/AISection';
 import { WabaHealthPanel } from '@/components/settings/WabaHealthPanel';
 import { WhatsAppFlowsPanel } from '@/components/settings/WhatsAppFlowsPanel';
+import { BranchesPanel } from '@/components/settings/BranchesPanel';
 
 // ── Section definitions ───────────────────────────────────────────────────────
 
@@ -848,6 +849,10 @@ function WhatsAppSection() {
 
       {/* ── WhatsApp Flows (connected only) ─────────────────────── */}
       {connected && <WhatsAppFlowsPanel />}
+
+      {/* ── Branches (Item 1c) — shared by the Send Location canvas node and
+          the Inbox composer's own "Send Location" button ─────────────── */}
+      {connected && <BranchesPanel />}
 
       {/* Welcome Message config moved to Automation → Workflows (built-in trigger) */}
 

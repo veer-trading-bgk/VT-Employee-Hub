@@ -492,6 +492,86 @@ class AutomationEngine {
         return { wamid: r.wamid };
       }
 
+      // Plain Message node (Item 1) — freeform text via WASendSvc.sendText().
+      // No 24h-customer-service-window enforcement here: that's a canvas-UI hint
+      // shown at config time (a workflow author can't know in advance exactly
+      // when this node will fire relative to the customer's last inbound
+      // message), the same way ComposerToolbar.tsx only warns rather than
+      // hard-blocks — Meta itself is the actual enforcement point and will
+      // reject the send if the window has genuinely closed.
+      case 'send_message': {
+        const { messageText } = step.config ?? {};
+        if (!phone) throw new Error('send_message: phone required');
+        if (!messageText) throw new Error('send_message: messageText required');
+        const target = leadPK
+          ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
+          : { phone };
+        const resolvedText = resolveWelcomeVariables(messageText, { name, phone });
+        const r = await WASendSvc.sendText(
+          companyId, target, resolvedText,
+          { id: 'system', role: 'admin', name: 'Automation' },
+        );
+        return { wamid: r.wamid ?? r.waMessageId };
+      }
+
+      // Message + List node (Item 1b) — Meta's WhatsApp Interactive List
+      // message: up to 10 rows in a single section (Meta's platform limit;
+      // multi-section lists exist in the spec but add UI complexity this v1
+      // deliberately skips — see ListRowEditor.tsx's own comment).
+      case 'send_list': {
+        const { bodyText, buttonText, rows = [] } = step.config ?? {};
+        if (!phone) throw new Error('send_list: phone required');
+        if (!bodyText) throw new Error('send_list: bodyText required');
+        if (!buttonText) throw new Error('send_list: buttonText required');
+        if (rows.length === 0) throw new Error('send_list: at least one row required');
+        const target = leadPK
+          ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
+          : { phone };
+        const resolvedText = resolveWelcomeVariables(bodyText, { name, phone });
+        const interactive = {
+          type: 'list',
+          body: { text: resolvedText },
+          action: {
+            button: buttonText,
+            sections: [{
+              rows: rows.map((r) => ({
+                id: r.id, title: r.title,
+                ...(r.description && { description: r.description }),
+              })),
+            }],
+          },
+        };
+        const r = await WASendSvc.sendInteractive(
+          companyId, target, interactive,
+          { id: 'system', role: 'admin', name: 'Automation' },
+        );
+        return { wamid: r.wamid };
+      }
+
+      // Send Location node (Item 1c) — dropdown-based config referencing a
+      // saved CONFIG#BRANCH# office record (same branches Settings manages
+      // and the Inbox composer's own "Send Location" button reuses), rather
+      // than free-typed lat/long per workflow.
+      case 'send_location': {
+        const { branchId } = step.config ?? {};
+        if (!phone) throw new Error('send_location: phone required');
+        if (!branchId) throw new Error('send_location: branchId required');
+        const branchRes = await dynamodb.get({
+          TableName: TABLE,
+          Key: { PK: `CONFIG#BRANCH#${companyId}`, SK: `BRANCH#${branchId}` },
+        }).promise();
+        if (!branchRes.Item) throw new Error('send_location: branch not found — it may have been deleted');
+        const target = leadPK
+          ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
+          : { phone };
+        const r = await WASendSvc.sendLocation(
+          companyId, target,
+          { latitude: branchRes.Item.latitude, longitude: branchRes.Item.longitude, name: branchRes.Item.name, address: branchRes.Item.address },
+          { id: 'system', role: 'admin', name: 'Automation' },
+        );
+        return { wamid: r.wamid };
+      }
+
       case 'assign_employee': {
         const { employeeId, employeeName } = step.config ?? {};
         if (!employeeId || !leadPK) throw new Error('assign_employee: employeeId and leadPK required');

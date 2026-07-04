@@ -695,6 +695,27 @@ All follow the same shape: `PK = CONFIG#{NAME}#{companyId}` (or the bare
   `Intl.DateTimeFormat` for IANA-timezone-aware day/time resolution, no new
   date/timezone dependency; `shouldSendOOO()`/`sendOOO()`).
 
+### 2.33 CONFIG#BRANCH# — multi-office branch directory (Item 1c)
+
+- **PK:** `CONFIG#BRANCH#{companyId}`
+- **SK:** `BRANCH#{branchId}`
+- **Fields:** `branchId, companyId, name, address, latitude, longitude, createdAt, updatedAt`
+- **Represents:** A saved office location. One shared list, not duplicated
+  per-feature — read by three call sites: the Send Location canvas node's
+  config dropdown (resolved to real coordinates at execution time by
+  `AutomationEngine._runAction()`'s `send_location` case), the Inbox
+  composer's own "Send Location" button (`POST /api/whatsapp/send-location`,
+  sent as the real authenticated agent, not the `'system'` actor the canvas
+  node uses), and Settings > WhatsApp > Branches (full CRUD).
+- **Owner:** `whatsapp.js` (`GET`/`POST /branches`, `PUT`/`DELETE
+  /branches/:branchId`, admin-only for writes; `GET` open to any
+  authenticated user so the canvas dropdown and Inbox composer can both read it).
+- **Related:** `WhatsAppSendService.sendLocation()` — implements the
+  previously-bare 501 stub, same structure as `sendMedia()` (Meta Graph API
+  location-message call, `MSG#`/`WAMID#`/last-message writes,
+  `ConversationService` sync, and the `_fireDelayedResponseCancel()` hook
+  every other real send method already has).
+
 ---
 
 ## 3. Entity reference — other tables

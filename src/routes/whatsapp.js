@@ -16,7 +16,7 @@ const IntentDetectionService = require('../services/IntentDetectionService');
 const WASendSvc            = require('../services/WhatsAppSendService');
 const TagService           = require('../services/TagService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
-const { welcomeConfigSchema, delayedResponseConfigSchema, workingHoursConfigSchema, oooConfigSchema } = require('../utils/validation');
+const { welcomeConfigSchema, delayedResponseConfigSchema, workingHoursConfigSchema, oooConfigSchema, branchSchema } = require('../utils/validation');
 const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
 
 const router = express.Router();
@@ -2695,6 +2695,41 @@ router.post('/send-template', authMiddleware, rateLimit(20, 60_000), async (req,
   }
 });
 
+// ── POST /api/whatsapp/send-location — Inbox composer "Send Location" (Item 1c) ─
+// Same target-resolution shape as /send-template (leadPK > leadId > phone), but
+// with a saved CONFIG#BRANCH# reference instead of free-typed coordinates —
+// req.user is the real authenticated agent, not the 'system' actor
+// AutomationEngine's send_location action uses.
+router.post('/send-location', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const { leadId, leadPK: leadPK0, phone, branchId } = req.body;
+    const target = leadPK0 ? { leadPK: leadPK0 }
+                 : leadId  ? { leadId }
+                 : phone   ? { phone }
+                 : null;
+    if (!target || !branchId) {
+      return res.status(400).json({ error: 'leadId, leadPK, or phone — and branchId — are required' });
+    }
+
+    const companyId = req.user.companyId;
+    const branchRes = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#BRANCH#${companyId}`, SK: `BRANCH#${branchId}` },
+    }).promise();
+    if (!branchRes.Item) return res.status(404).json({ error: 'Branch not found' });
+
+    await WASendSvc.sendLocation(
+      companyId, target,
+      { latitude: branchRes.Item.latitude, longitude: branchRes.Item.longitude, name: branchRes.Item.name, address: branchRes.Item.address },
+      req.user,
+    );
+    res.json({ success: true });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
 // ── POST /api/whatsapp/broadcast — send template to a lead segment ────────────
 router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
@@ -2961,6 +2996,81 @@ router.put('/ooo-config', authMiddleware, checkRole(['admin']), rateLimit(20, 60
         messageText: cfg.messageText,
         updatedAt: new Date().toISOString(),
       },
+    }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── CONFIG#BRANCH# — multi-office branch directory (Item 1c) ──────────────────
+// Shared by the Send Location canvas node's dropdown and the Inbox composer's
+// own "Send Location" button — one list of saved offices, not duplicated
+// per-feature. Personal-company scoped, no superadmin/cross-company sharing.
+const branchPK = (companyId) => `CONFIG#BRANCH#${companyId}`;
+const branchSK = (branchId)  => `BRANCH#${branchId}`;
+
+// ── GET /api/whatsapp/branches ─────────────────────────────────────────────────
+router.get('/branches', authMiddleware, async (req, res, next) => {
+  try {
+    const result = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: { ':pk': branchPK(req.user.companyId), ':sk': 'BRANCH#' },
+    }).promise();
+    const branches = (result.Items ?? []).sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''));
+    res.json({ success: true, branches });
+  } catch (err) { next(err); }
+});
+
+// ── POST /api/whatsapp/branches ────────────────────────────────────────────────
+router.post('/branches', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const parsed = branchSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+    const cfg = parsed.data;
+    const companyId = req.user.companyId;
+    const branchId = randomUUID();
+    const now = new Date().toISOString();
+
+    const item = {
+      PK: branchPK(companyId), SK: branchSK(branchId),
+      branchId, companyId,
+      name: cfg.name, address: cfg.address, latitude: cfg.latitude, longitude: cfg.longitude,
+      createdAt: now, updatedAt: now,
+    };
+    await dynamodb.put({ TableName: TABLE, Item: item }).promise();
+    res.status(201).json({ success: true, branch: item });
+  } catch (err) { next(err); }
+});
+
+// ── PUT /api/whatsapp/branches/:branchId ───────────────────────────────────────
+router.put('/branches/:branchId', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+    const existing = await dynamodb.get({
+      TableName: TABLE, Key: { PK: branchPK(companyId), SK: branchSK(req.params.branchId) },
+    }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'Branch not found' });
+
+    const parsed = branchSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+    const cfg = parsed.data;
+
+    const item = {
+      ...existing.Item,
+      name: cfg.name, address: cfg.address, latitude: cfg.latitude, longitude: cfg.longitude,
+      updatedAt: new Date().toISOString(),
+    };
+    await dynamodb.put({ TableName: TABLE, Item: item }).promise();
+    res.json({ success: true, branch: item });
+  } catch (err) { next(err); }
+});
+
+// ── DELETE /api/whatsapp/branches/:branchId ─────────────────────────────────────
+router.delete('/branches/:branchId', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    await dynamodb.delete({
+      TableName: TABLE,
+      Key: { PK: branchPK(req.user.companyId), SK: branchSK(req.params.branchId) },
     }).promise();
     res.json({ success: true });
   } catch (err) { next(err); }

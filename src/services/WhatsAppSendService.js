@@ -13,10 +13,10 @@
  *  • WABA config           — per-company credentials, per-company graph API version override
  *                            10-min in-process cache avoids N DDB reads in broadcast loops
  *  • E.164 normalisation   — Indian 10-digit numbers → 91XXXXXXXXXX
- *  • Meta API calls        — text, template, interactive, media (image/video/audio/document)
+ *  • Meta API calls        — text, template, interactive, media (image/video/audio/document), location
  *  • DynamoDB writes       — message record + WAMID reverse-index + last-message update
  *  • ConversationService   — CONV# entity fire-and-forget sync (Phase 2 model)
- *  • Future stubs          — sendCatalog/Payment/Flow/Poll/Location/Contact (all 501)
+ *  • Future stubs          — sendCatalog/Payment/Flow/Poll/Contact (all 501)
  */
 
 const axios               = require('axios');
@@ -615,11 +615,74 @@ class WhatsAppSendService {
   // Each throws 501 until the backend is ready.
   // API surface is stable — callers can be wired up before implementation.
 
+  // ── sendLocation ──────────────────────────────────────────────────────────
+  /**
+   * Send a static location pin (Item 1c — Send Location canvas node + Inbox
+   * composer's own "Send Location" button both call this with a saved
+   * CONFIG#BRANCH# office's coordinates).
+   *
+   * @param {object} location
+   * @param {number}  location.latitude
+   * @param {number}  location.longitude
+   * @param {string}  [location.name]     — shown as the pin's title in WhatsApp
+   * @param {string}  [location.address]  — shown under the name
+   *
+   * @returns {{ wamid, timestamp, pk, msgSK }}
+   */
+  async sendLocation(companyId, target, location, user) {
+    const contact = await this.resolveContact(companyId, target);
+    this._assertSendPermission(user, contact);
+    const cfg = await this._requireConfig(companyId);
+
+    const { latitude, longitude, name, address } = location;
+
+    const apiRes = await axios.post(
+      `${this._graphUrl(cfg)}/${cfg.phoneNumberId}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: this._toE164(contact.phone),
+        type: 'location',
+        location: { latitude, longitude, ...(name && { name }), ...(address && { address }) },
+      },
+      { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } },
+    );
+    const wamid = apiRes.data?.messages?.[0]?.id ?? null;
+    const ts    = new Date().toISOString();
+    const msgSK = `MSG#${ts}#${wamid ?? Date.now()}`;
+    const preview = name ? `[Location: ${name}]` : '[Location]';
+
+    await this._storeMessage(contact.pk, msgSK, {
+      direction: 'outbound', type: 'location', content: preview,
+      location: { latitude, longitude, name: name ?? null, address: address ?? null },
+      sentBy: user.id, sentByName: user.name ?? null,
+      timestamp: ts, waMessageId: wamid, msgStatus: 'sent',
+    });
+
+    await Promise.all([
+      this._storeWamidLookup(wamid, contact.pk, msgSK, companyId),
+      this._updateLastMessage(contact.pk, preview, 'outbound', ts, contact.isLead),
+    ]);
+
+    if (contact.leadItem?.convId) {
+      ConversationService.updateLastMessage(companyId, contact.leadItem.convId, {
+        text: preview, timestamp: ts,
+      }).catch(() => {});
+    }
+
+    this._fireDelayedResponseCancel(companyId, contact, user);
+
+    return { wamid, timestamp: ts, pk: contact.pk, msgSK };
+  }
+
+  // ── Future stubs ──────────────────────────────────────────────────────────
+  // Each throws 501 until the backend is ready.
+  // API surface is stable — callers can be wired up before implementation.
+
   async sendCatalog()  { throw this._err('Catalog messages not yet implemented',      501); }
   async sendPayment()  { throw this._err('Payment messages not yet implemented',      501); }
   async sendFlow()     { throw this._err('Flow messages not yet implemented',         501); }
   async sendPoll()     { throw this._err('Poll messages not yet implemented',         501); }
-  async sendLocation() { throw this._err('Location messages not yet implemented',     501); }
   async sendContact()  { throw this._err('Contact card messages not yet implemented', 501); }
 }
 

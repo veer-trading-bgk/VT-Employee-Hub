@@ -2,6 +2,7 @@ import dagre from '@dagrejs/dagre';
 import type { Node, Edge } from '@xyflow/react';
 import type {
   GraphNode, GraphEdge, NodeType, NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig,
+  SendMessageConfig, SendListConfig, SendLocationConfig,
   SendTemplateConfig, AssignEmployeeConfig, ChangeStageConfig, AddTagConfig, CreateTaskConfig,
 } from '@/types/automations';
 
@@ -98,6 +99,9 @@ const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
   end:           { width: 160, height: 56 },
   send_buttons:  { width: 256, height: 84 },
   send_document: { width: 256, height: 84 },
+  send_message:  { width: 256, height: 84 },
+  send_list:     { width: 256, height: 84 },
+  send_location: { width: 256, height: 84 },
 };
 const DEFAULT_DIMENSIONS = { width: 240, height: 76 };
 
@@ -179,6 +183,18 @@ export function defaultSendButtonsConfig(): SendButtonsConfig {
 
 export function defaultSendDocumentConfig(): SendDocumentConfig {
   return {};
+}
+
+export function defaultSendMessageConfig(): SendMessageConfig {
+  return { messageText: '' };
+}
+
+export function defaultSendListConfig(): SendListConfig {
+  return { bodyText: '', buttonText: '', rows: [] };
+}
+
+export function defaultSendLocationConfig(): SendLocationConfig {
+  return { branchId: '' };
 }
 
 // ── Save-time validation: unconnected branches ────────────────────────────────

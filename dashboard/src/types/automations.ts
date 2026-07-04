@@ -89,7 +89,8 @@ export interface WorkflowStep {
 // _startExecution() on the backend for the dispatch logic this mirrors.
 // 'send_buttons'/'send_document' are graph-only — deliberately not added to
 // ActionType, which the legacy linear model also uses and has no equivalent for.
-export type NodeType = ActionType | 'condition' | 'send_buttons' | 'send_document';
+export type NodeType = ActionType | 'condition' | 'send_buttons' | 'send_document'
+  | 'send_message' | 'send_list' | 'send_location';
 
 // Optional image/video/document shown above the body text — Meta's Interactive
 // Message header field. WhatsAppSendService.sendInteractive() is a raw pass-through
@@ -132,6 +133,41 @@ export interface SendDocumentConfig {
   caption?:  string;
 }
 
+// Plain Message node (Item 1a) — freeform text via WhatsAppSendService.sendText().
+// No messageType branching (unlike SendButtonsConfig) since this node has no
+// buttons/template option at all, just body text with {{name}}/{{phone}}
+// substitution. The 24h-customer-service-window hint shown in
+// SendMessageEditor.tsx is UI-only (ComposerToolbar.tsx shows the same
+// warning) — Meta itself is the actual enforcement point.
+export interface SendMessageConfig {
+  messageText: string;
+}
+
+// Message + List node (Item 1b) — Meta's WhatsApp Interactive List message.
+// Deliberately single-section (max 10 rows total, Meta's own platform limit)
+// — multi-section lists exist in Meta's spec but add UI complexity this v1
+// skips; see ListRowEditor.tsx's own comment.
+export interface ListRow {
+  id:           string;
+  title:        string;
+  description?: string;
+}
+export interface SendListConfig {
+  bodyText:   string;
+  buttonText: string;
+  rows:       ListRow[];
+}
+
+// Send Location node (Item 1c) — dropdown-based config referencing a saved
+// CONFIG#BRANCH# office record (see BranchSelect.tsx) rather than free-typed
+// lat/long per workflow; resolved to real coordinates at execution time by
+// AutomationEngine.js, the same "config-time reference, execution-time
+// resolution" shape SendButtonsHeader/SendDocumentConfig already use for
+// uploaded media.
+export interface SendLocationConfig {
+  branchId: string;
+}
+
 export type ConditionMode = 'field_match' | 'boolean' | 'button_reply';
 
 export interface ConditionBranch {
@@ -152,7 +188,8 @@ export interface ConditionNodeConfig {
   timeoutUnit?:   'minutes' | 'hours' | 'days';
 }
 
-export type NodeConfig = StepConfig | ConditionNodeConfig | SendButtonsConfig | SendDocumentConfig;
+export type NodeConfig = StepConfig | ConditionNodeConfig | SendButtonsConfig | SendDocumentConfig
+  | SendMessageConfig | SendListConfig | SendLocationConfig;
 
 export interface NodePosition {
   x: number;

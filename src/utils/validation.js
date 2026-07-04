@@ -48,6 +48,16 @@ const oooConfigSchema = z.object({
   messageText: z.string().max(1024).optional().default(''),
 }).strict();
 
+// CONFIG#BRANCH# — multi-office branch directory (Item 1c). Used by the Send
+// Location canvas node's dropdown and the Inbox composer's "Send Location"
+// button — one shared list of saved offices, not per-feature config.
+const branchSchema = z.object({
+  name: z.string().min(1, 'Name is required').max(100),
+  address: z.string().max(300).optional().default(''),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+}).strict();
+
 const addMetricSchema = z.object({
   metric_type: z.enum(['kyc', 'demat', 'mf', 'insurance', 'algo', 'coaching', 'pms', 'pro_insight', 'ltpp']),
   value: z.number().min(0, 'Value cannot be negative').max(999999),
@@ -240,6 +250,7 @@ module.exports = {
   delayedResponseConfigSchema,
   workingHoursConfigSchema,
   oooConfigSchema,
+  branchSchema,
   addMetricSchema,
   registerSchema,
   verifyTotpSchema,

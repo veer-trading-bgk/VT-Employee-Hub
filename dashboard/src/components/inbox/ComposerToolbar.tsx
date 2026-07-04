@@ -5,11 +5,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Smile, FileText, Zap, Paperclip, MoreHorizontal, Search, X,
   Image as ImageIcon, Video, Music, File, List, MousePointerClick,
-  ShoppingBag, CreditCard, Loader2, Send as SendIcon, Workflow,
+  ShoppingBag, CreditCard, Loader2, Send as SendIcon, Workflow, MapPin,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
 import { toast } from 'sonner';
+import type { Branch } from '@/components/automation/BranchSelect';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -188,6 +189,7 @@ export function ComposerToolbar({
   const [newShortcut, setNewShortcut] = useState('');
   const [newBody, setNewBody] = useState('');
   const [showFlowPicker, setShowFlowPicker] = useState(false);
+  const [showBranchPicker, setShowBranchPicker] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Close panel on outside click
@@ -212,6 +214,7 @@ export function ComposerToolbar({
     setNewShortcut('');
     setNewBody('');
     setShowFlowPicker(false);
+    setShowBranchPicker(false);
   }
 
   function togglePanel(p: Panel) {
@@ -272,6 +275,17 @@ export function ComposerToolbar({
   });
   const flows = flowsData?.flows ?? [];
 
+  // Same ['wa-branches'] cache key BranchSelect.tsx/BranchesPanel.tsx/
+  // SendLocationNode.tsx already use — a cache hit, not a new fetch, if the
+  // Settings > WhatsApp > Branches panel was already opened this session.
+  const { data: branchesData, isLoading: branchesLoading } = useQuery({
+    queryKey: ['wa-branches'],
+    queryFn: () => apiFetch<{ branches: Branch[] }>('/api/whatsapp/branches'),
+    staleTime: 60_000,
+    enabled: showBranchPicker,
+  });
+  const branches = branchesData?.branches ?? [];
+
   // ── Template send mutation ─────────────────────────────────────────────────
 
   const sendTplMut = useMutation({
@@ -304,6 +318,25 @@ export function ComposerToolbar({
       qc.invalidateQueries({ queryKey: ['wa-inbox'] });
     },
     onError: (e: Error) => toast.error(e.message || 'Failed to send flow'),
+  });
+
+  // "Send Location" (Item 1c) — same target-resolution shape /send-template
+  // already uses (leadPK > leadId > phone), so this works for both CRM leads
+  // and unknown contacts, unlike Send Flow which is lead-scoped only.
+  const sendLocationMut = useMutation({
+    mutationFn: (branchId: string) => {
+      const body: Record<string, unknown> = { branchId };
+      if (conversation.type === 'lead' && conversation.PK) body.leadPK = conversation.PK;
+      else body.phone = conversation.phone;
+      return apiFetch('/api/whatsapp/send-location', { method: 'POST', body: JSON.stringify(body) });
+    },
+    onSuccess: () => {
+      toast.success('Location sent');
+      closePanel();
+      qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+    },
+    onError: (e: Error) => toast.error(e.message || 'Failed to send location'),
   });
 
   const createCannedMut = useMutation({
@@ -632,10 +665,10 @@ export function ComposerToolbar({
       {/* ── More panel ───────────────────────────────────────────────────── */}
       {panel === 'more' && (
         <Panel width="w-64">
-          <PanelHeader title={showFlowPicker ? 'Send WhatsApp Flow' : 'More'} onClose={closePanel}>
-            {showFlowPicker && (
+          <PanelHeader title={showFlowPicker ? 'Send WhatsApp Flow' : showBranchPicker ? 'Send Location' : 'More'} onClose={closePanel}>
+            {(showFlowPicker || showBranchPicker) && (
               <button
-                onClick={() => setShowFlowPicker(false)}
+                onClick={() => { setShowFlowPicker(false); setShowBranchPicker(false); }}
                 className="text-xs text-primary-600 hover:underline dark:text-primary-400"
               >
                 ← Back
@@ -665,6 +698,29 @@ export function ComposerToolbar({
                 </button>
               ))}
             </div>
+          ) : showBranchPicker ? (
+            <div className="max-h-56 overflow-y-auto p-1">
+              {branchesLoading || sendLocationMut.isPending ? (
+                <div className="flex items-center justify-center gap-2 py-6">
+                  <Loader2 className="h-4 w-4 animate-spin text-neutral-400" />
+                  <span className="text-xs text-neutral-400">{sendLocationMut.isPending ? 'Sending…' : 'Loading branches…'}</span>
+                </div>
+              ) : branches.length === 0 ? (
+                <p className="px-2 py-4 text-center text-xs text-neutral-400">
+                  No branches saved yet. Add one in Settings → WhatsApp.
+                </p>
+              ) : branches.map((b) => (
+                <button
+                  key={b.branchId}
+                  onClick={() => sendLocationMut.mutate(b.branchId)}
+                  disabled={sendLocationMut.isPending}
+                  className="w-full rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-50 disabled:opacity-50 dark:hover:bg-neutral-800"
+                >
+                  <span className="text-xs font-semibold text-neutral-900 dark:text-neutral-100">{b.name}</span>
+                  {b.address && <p className="mt-0.5 truncate text-[11px] text-neutral-500">{b.address}</p>}
+                </button>
+              ))}
+            </div>
           ) : (
             <div className="p-1">
               <button
@@ -675,6 +731,13 @@ export function ComposerToolbar({
               >
                 <span className="text-neutral-400 dark:text-neutral-500"><Workflow className="h-4 w-4" /></span>
                 Send Flow
+              </button>
+              <button
+                onClick={() => setShowBranchPicker(true)}
+                className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-50 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                <span className="text-neutral-400 dark:text-neutral-500"><MapPin className="h-4 w-4" /></span>
+                Send Location
               </button>
               {([
                 { label: 'Interactive List', icon: <List              className="h-4 w-4" /> },

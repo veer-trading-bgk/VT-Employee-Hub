@@ -9,7 +9,8 @@ jest.mock('../src/config/dynamodb', () => ({
 }));
 jest.mock('../src/services/PipelineService');
 jest.mock('../src/services/WhatsAppSendService', () => ({
-  sendTemplate: jest.fn(), sendInteractive: jest.fn(), sendMedia: jest.fn(), resolveMediaId: jest.fn(),
+  sendText: jest.fn(), sendTemplate: jest.fn(), sendInteractive: jest.fn(), sendMedia: jest.fn(),
+  sendLocation: jest.fn(), resolveMediaId: jest.fn(),
 }));
 jest.mock('../src/services/DelayedResponseService', () => ({
   resume: jest.fn(),
@@ -419,6 +420,171 @@ describe('AutomationEngine — send_document action', () => {
       engine._runAction(CID, { type: 'send_document', config: {} }, { phone: '9000000000' }),
     ).rejects.toThrow('send_document: a URL or an uploaded file is required');
     expect(WASendSvc.sendMedia).not.toHaveBeenCalled();
+  });
+});
+
+// ── Plain Message node (Item 1a) ────────────────────────────────────────────
+describe('AutomationEngine — send_message action', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  test('sends freeform text via sendText with {{name}}/{{phone}} substitution', async () => {
+    WASendSvc.sendText.mockResolvedValue({ waMessageId: 'wamid.msg1' });
+
+    const result = await engine._runAction(
+      CID,
+      { type: 'send_message', config: { messageText: 'Hi {{name}}, thanks for reaching out on {{phone}}!' } },
+      { leadPK: LEAD_PK, phone: '9000000000', name: 'Priya' },
+    );
+
+    expect(WASendSvc.sendText).toHaveBeenCalledWith(
+      CID,
+      { resolvedContact: { pk: LEAD_PK, phone: '9000000000', isLead: true } },
+      'Hi Priya, thanks for reaching out on 9000000000!',
+      expect.objectContaining({ id: 'system' }),
+    );
+    expect(result).toEqual({ wamid: 'wamid.msg1' });
+  });
+
+  test('uses a plain phone target when there is no leadPK', async () => {
+    WASendSvc.sendText.mockResolvedValue({ waMessageId: 'wamid.msg2' });
+    await engine._runAction(CID, { type: 'send_message', config: { messageText: 'hi' } }, { phone: '9000000000' });
+    expect(WASendSvc.sendText).toHaveBeenCalledWith(CID, { phone: '9000000000' }, 'hi', expect.any(Object));
+  });
+
+  test('rejects — no phone', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_message', config: { messageText: 'hi' } }, {}),
+    ).rejects.toThrow('send_message: phone required');
+  });
+
+  test('rejects — no messageText', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_message', config: {} }, { phone: '9000000000' }),
+    ).rejects.toThrow('send_message: messageText required');
+    expect(WASendSvc.sendText).not.toHaveBeenCalled();
+  });
+});
+
+// ── Message + List node (Item 1b) ───────────────────────────────────────────
+describe('AutomationEngine — send_list action', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  const ROWS = [
+    { id: 'r1', title: 'Demat Account', description: 'Open a new demat account' },
+    { id: 'r2', title: 'Trading Account' },
+  ];
+
+  test('sends a Meta list interactive message with the configured rows', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.list1' });
+
+    const result = await engine._runAction(
+      CID,
+      { type: 'send_list', config: { bodyText: 'Hi {{name}}, what are you interested in?', buttonText: 'View Options', rows: ROWS } },
+      { leadPK: LEAD_PK, phone: '9000000000', name: 'Priya' },
+    );
+
+    expect(WASendSvc.sendInteractive).toHaveBeenCalledWith(
+      CID,
+      { resolvedContact: { pk: LEAD_PK, phone: '9000000000', isLead: true } },
+      {
+        type: 'list',
+        body: { text: 'Hi Priya, what are you interested in?' },
+        action: {
+          button: 'View Options',
+          sections: [{ rows: [
+            { id: 'r1', title: 'Demat Account', description: 'Open a new demat account' },
+            { id: 'r2', title: 'Trading Account' },
+          ] }],
+        },
+      },
+      expect.any(Object),
+    );
+    expect(result).toEqual({ wamid: 'wamid.list1' });
+  });
+
+  test('rejects — no phone', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_list', config: { bodyText: 'hi', buttonText: 'Go', rows: ROWS } }, {}),
+    ).rejects.toThrow('send_list: phone required');
+  });
+
+  test('rejects — no bodyText', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_list', config: { buttonText: 'Go', rows: ROWS } }, { phone: '9000000000' }),
+    ).rejects.toThrow('send_list: bodyText required');
+  });
+
+  test('rejects — no buttonText', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_list', config: { bodyText: 'hi', rows: ROWS } }, { phone: '9000000000' }),
+    ).rejects.toThrow('send_list: buttonText required');
+  });
+
+  test('rejects — no rows', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_list', config: { bodyText: 'hi', buttonText: 'Go', rows: [] } }, { phone: '9000000000' }),
+    ).rejects.toThrow('send_list: at least one row required');
+    expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
+  });
+});
+
+// ── Send Location node (Item 1c) ────────────────────────────────────────────
+describe('AutomationEngine — send_location action', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({
+        Item: { branchId: 'branch1', name: 'HQ Office', address: '1 MG Road', latitude: 12.97, longitude: 77.59 },
+      }),
+    });
+  });
+
+  test('looks up the configured branch and sends its coordinates via sendLocation', async () => {
+    WASendSvc.sendLocation.mockResolvedValue({ wamid: 'wamid.loc1' });
+
+    const result = await engine._runAction(
+      CID,
+      { type: 'send_location', config: { branchId: 'branch1' } },
+      { leadPK: LEAD_PK, phone: '9000000000' },
+    );
+
+    expect(dynamodb.get).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: `CONFIG#BRANCH#${CID}`, SK: 'BRANCH#branch1' },
+    }));
+    expect(WASendSvc.sendLocation).toHaveBeenCalledWith(
+      CID,
+      { resolvedContact: { pk: LEAD_PK, phone: '9000000000', isLead: true } },
+      { latitude: 12.97, longitude: 77.59, name: 'HQ Office', address: '1 MG Road' },
+      expect.any(Object),
+    );
+    expect(result).toEqual({ wamid: 'wamid.loc1' });
+  });
+
+  test('rejects — no phone', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_location', config: { branchId: 'branch1' } }, {}),
+    ).rejects.toThrow('send_location: phone required');
+  });
+
+  test('rejects — no branchId configured', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_location', config: {} }, { phone: '9000000000' }),
+    ).rejects.toThrow('send_location: branchId required');
+  });
+
+  test('rejects — not a silent no-op — when the configured branch no longer exists', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    await expect(
+      engine._runAction(CID, { type: 'send_location', config: { branchId: 'deleted-branch' } }, { phone: '9000000000' }),
+    ).rejects.toThrow('send_location: branch not found');
+    expect(WASendSvc.sendLocation).not.toHaveBeenCalled();
   });
 });
 

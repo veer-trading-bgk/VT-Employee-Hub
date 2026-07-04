@@ -6,6 +6,9 @@ import { ConditionNode } from './ConditionNode';
 import { EndNode } from './EndNode';
 import { SendButtonsNode } from './SendButtonsNode';
 import { SendDocumentNode } from './SendDocumentNode';
+import { SendMessageNode } from './SendMessageNode';
+import { SendListNode } from './SendListNode';
+import { SendLocationNode } from './SendLocationNode';
 
 // Every ActionType except 'wait'/'end' shares the generic ActionNode shell.
 export const nodeTypes: NodeTypes = {
@@ -19,5 +22,8 @@ export const nodeTypes: NodeTypes = {
   condition:       ConditionNode,
   send_buttons:    SendButtonsNode,
   send_document:   SendDocumentNode,
+  send_message:    SendMessageNode,
+  send_list:       SendListNode,
+  send_location:   SendLocationNode,
   end:             EndNode,
 };

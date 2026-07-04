@@ -1,13 +1,16 @@
 'use client';
 
-import { X, GitBranch, MousePointerClick, FileText } from 'lucide-react';
+import { X, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ACTION_META, isConditionConfig, type ActionType, type NodeType } from '@/types/automations';
-import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig, StepConfig } from '@/types/automations';
+import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig, SendMessageConfig, SendListConfig, SendLocationConfig, StepConfig } from '@/types/automations';
 import { ActionEditor } from '../ActionEditor';
 import { ConditionEditor } from '../ConditionEditor';
 import { SendButtonsEditor } from '../SendButtonsEditor';
 import { SendDocumentEditor } from '../SendDocumentEditor';
+import { SendMessageEditor } from '../SendMessageEditor';
+import { SendListEditor } from '../SendListEditor';
+import { SendLocationEditor } from '../SendLocationEditor';
 import { ACTION_ICONS } from '../WorkflowBuilder';
 
 interface NodeConfigPanelProps {
@@ -26,6 +29,9 @@ const EXTRA_TITLES: Partial<Record<NodeType, { label: string; icon: typeof GitBr
   condition:     { label: 'Condition',     icon: GitBranch },
   send_buttons:  { label: 'Send Buttons',  icon: MousePointerClick },
   send_document: { label: 'Send Document', icon: FileText },
+  send_message:  { label: 'Plain Message', icon: MessageSquare },
+  send_list:     { label: 'Message + List', icon: ListChecks },
+  send_location: { label: 'Send Location', icon: MapPin },
 };
 
 /**
@@ -85,6 +91,21 @@ export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose, u
         ) : nodeType === 'send_document' ? (
           <SendDocumentEditor
             config={config as SendDocumentConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'send_message' ? (
+          <SendMessageEditor
+            config={config as SendMessageConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'send_list' ? (
+          <SendListEditor
+            config={config as SendListConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'send_location' ? (
+          <SendLocationEditor
+            config={config as SendLocationConfig}
             onChange={(c) => onChange(c)}
           />
         ) : (

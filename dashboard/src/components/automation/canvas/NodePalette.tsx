@@ -1,11 +1,12 @@
 'use client';
 
-import { Zap, GitBranch, MousePointerClick, FileText } from 'lucide-react';
+import { Zap, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin } from 'lucide-react';
 import { ACTION_META, type ActionType, type NodeType } from '@/types/automations';
 import { ACTION_ICONS } from '../WorkflowBuilder';
 
 const PALETTE_TYPES: NodeType[] = [
-  'send_template', 'send_buttons', 'send_document', 'assign_employee', 'change_stage', 'add_tag', 'create_task', 'wait', 'condition', 'end',
+  'send_template', 'send_message', 'send_buttons', 'send_list', 'send_document', 'send_location',
+  'assign_employee', 'change_stage', 'add_tag', 'create_task', 'wait', 'condition', 'end',
 ];
 
 // Node types outside ActionType (graph-only — see NodeType's own comment) need
@@ -14,6 +15,9 @@ const EXTRA_META: Partial<Record<NodeType, { label: string; icon: typeof GitBran
   condition:     { label: 'Condition',     icon: GitBranch },
   send_buttons:  { label: 'Send Buttons',  icon: MousePointerClick },
   send_document: { label: 'Send Document', icon: FileText },
+  send_message:  { label: 'Plain Message', icon: MessageSquare },
+  send_list:     { label: 'Message + List', icon: ListChecks },
+  send_location: { label: 'Send Location', icon: MapPin },
 };
 
 interface NodePaletteProps {
