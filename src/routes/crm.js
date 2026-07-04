@@ -561,8 +561,12 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
     } catch (e) { logger.warn('Stage history write failed: ' + e.message); }
 
     // Fire automations
+    // NOTE: was 'stage_change' (no 'd') until 2026-07-04 — the UI's trigger picker and
+    // events/catalog.js's STAGE_CHANGED both use 'stage_changed', so any workflow built
+    // through the UI with a "Stage Changed" trigger could never actually fire. Fixed to
+    // match the canonical name used everywhere else.
     const { runAutomations } = require('./automations');
-    runAutomations(companyId, 'stage_change', {
+    runAutomations(companyId, 'stage_changed', {
       leadId: req.params.id, leadPK: PK,
       phone: lead.phone, name: lead.name,
       fromStage: lead.stage, toStage: stage,

@@ -600,6 +600,31 @@ authoritative record of that checklist's state, per the new `CLAUDE.md`'s own §
 
 ---
 
+## Era 9 — Automation "Stage Changed" trigger fix, found during Phase 0 audit for the branching automation builder (2026-07-04)
+
+**Found:** auditing `AutomationEngine.js` ahead of the new graph/branching engine work (see
+`08_MODULES.md`'s `AutomationEngine.js` entry) surfaced that `crm.js`'s stage-transition
+route fired `runAutomations(companyId, 'stage_change', ...)` — no trailing *d* — while every
+other consumer of this event name uses `'stage_changed'`: the frontend's trigger picker
+(`WorkflowBuilder.tsx`'s `TRIGGER_OPTIONS`), `events/catalog.js`'s `STAGE_CHANGED` constant,
+and the events/timeline test suite. `AutomationEngine.fireTrigger()`'s workflow filter does
+exact string equality (`wTrigger === triggerType`), so **any workflow built through the UI
+with a "Stage Changed" trigger could never fire, for any company, since the trigger type was
+added.** Confirmed via `grep` across every `runAutomations(` call site — this was the only one
+using the mismatched string.
+
+**Fixed:** `crm.js`'s stage-transition route now fires `'stage_changed'`, matching the
+canonical name used everywhere else. One-line change, no schema/shape change, no data
+migration needed (no live workflow currently uses a Stage Changed trigger, per direct
+DynamoDB check against `viir_trading`'s two live workflows — both use `whatsapp_conversation_started`/`lead_created`). `tests/events.test.js` (41 tests) and
+`tests/crmValidation.test.js` (6 tests) re-run clean after the change.
+
+**Status:** implemented, validated, and committed as its own small commit, separate from the
+in-progress branching automation builder feature (Phase 0 audit for that feature is what
+surfaced this bug — see the new feature's own tracking once Phase 1 lands).
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or
