@@ -5,7 +5,6 @@ import Link from 'next/link';
 import {
   MessageSquare,
   Clock,
-  TrendingUp,
   Users,
   CheckCircle2,
   Circle,
@@ -72,8 +71,6 @@ interface RecentContact {
 }
 
 interface KpiData {
-  messagesReplied: number;
-  leadsProgressed: number;
   followupsDone: number;
   newContacts: number;
 }
@@ -91,8 +88,6 @@ interface MyWorkData {
 // ── Getting Started Checklist (new employees) ──────────────────────────────────
 
 const CHECKLIST_ITEMS = [
-  { id: 'profile',    label: 'Complete your profile',          href: '/settings/profile'      },
-  { id: 'whatsapp',   label: 'Connect WhatsApp Business',      href: '/settings/whatsapp'     },
   { id: 'contact',    label: 'Add your first contact',         href: '/contacts'             },
   { id: 'followup',   label: 'Schedule a follow-up',           href: '/sales/followups'       },
 ];
@@ -539,11 +534,10 @@ export default function MyWorkPage() {
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   const today = format(new Date(), 'EEEE, d MMMM');
 
-  // Simulated data queries — these will hit real API endpoints
   const { data, isLoading } = useQuery<MyWorkData>({
     queryKey: ['my-work', user?.id],
     queryFn: async () => {
-      return apiFetch<MyWorkData>('/api/v3/my-work');
+      return apiFetch<MyWorkData>('/api/crm/my-work');
     },
     staleTime: 60_000,
     // Return empty defaults so the page renders immediately
@@ -552,7 +546,7 @@ export default function MyWorkPage() {
       overdueFollowups: [],
       todayFollowups: [],
       recentContacts: [],
-      kpis: { messagesReplied: 0, leadsProgressed: 0, followupsDone: 0, newContacts: 0 },
+      kpis: { followupsDone: 0, newContacts: 0 },
       isNewEmployee: false,
       gettingStartedProgress: [],
     },
@@ -645,18 +639,6 @@ export default function MyWorkPage() {
               Today&apos;s activity
             </h2>
             <div className="grid grid-cols-2 gap-3">
-              <KpiCard
-                label="Messages replied"
-                value={data?.kpis?.messagesReplied ?? 0}
-                icon={<MessageSquare className="h-5 w-5" aria-hidden />}
-                href="/communications"
-              />
-              <KpiCard
-                label="Leads progressed"
-                value={data?.kpis?.leadsProgressed ?? 0}
-                icon={<TrendingUp className="h-5 w-5" aria-hidden />}
-                href="/sales"
-              />
               <KpiCard
                 label="Follow-ups done"
                 value={data?.kpis?.followupsDone ?? 0}

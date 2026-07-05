@@ -802,6 +802,123 @@ router.put('/followups/:date/:leadId/done', authMiddleware, async (req, res, nex
   }
 });
 
+// ── GET /api/crm/my-work — "My Work" home dashboard aggregation ────────────────
+// Personal-only for every role, including admins — this endpoint backs the "My
+// Work" page specifically (not a team/company dashboard; those are /analytics
+// and /sales). Reuses scanAllLeads() (leadsByCompany GSI Query) for
+// urgentReplies/recentContacts/newContacts — all three already denormalized
+// onto LEAD# METADATA, no new fields needed — plus one FOLLOWUP# scan (same
+// cost shape as GET /followups above) bucketed into overdue/today/done-today
+// here instead of that route's done-exclusion filter.
+//
+// messagesReplied/leadsProgressed (the original placeholder's other 2 KPIs) are
+// deliberately not implemented — neither has a queryable per-user-per-day path
+// today (MSG#/STAGE# history is per-lead, no GSI on sender+date), and building
+// one means new write-path instrumentation, not just aggregation. Approved as
+// out of scope; home/page.tsx ships with 2 real KPIs instead of 4.
+const NEW_EMPLOYEE_WINDOW_MS = 7 * 24 * 3600 * 1000;
+
+router.get('/my-work', authMiddleware, async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+    const userId = req.user.id;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const allLeads = await scanAllLeads(companyId);
+    const myLeads = allLeads.filter((l) => l.assignedTo === userId);
+
+    const urgentReplies = myLeads
+      .filter((l) => l.lastMessageDirection === 'inbound' && l.chatStatus !== 'resolved' && l.lastInboundAt)
+      .sort((a, b) => new Date(a.lastInboundAt) - new Date(b.lastInboundAt))
+      .slice(0, 20)
+      .map((l) => ({
+        id: l.leadId,
+        contactId: l.leadId,
+        contactName: l.name ?? l.waName ?? l.phone,
+        contactPhone: l.phone,
+        lastMessage: l.lastMessagePreview ?? '',
+        waitingMinutes: Math.max(0, Math.round((Date.now() - new Date(l.lastInboundAt).getTime()) / 60000)),
+      }));
+
+    const recentContacts = myLeads
+      .filter((l) => l.lastMessageAt || l.updatedAt)
+      .slice()
+      .sort((a, b) => new Date(b.lastMessageAt ?? b.updatedAt) - new Date(a.lastMessageAt ?? a.updatedAt))
+      .slice(0, 20)
+      .map((l) => ({
+        id: l.leadId,
+        name: l.name ?? l.waName ?? l.phone,
+        phone: l.phone,
+        stage: l.stage,
+        updatedAt: l.lastMessageAt ?? l.updatedAt,
+      }));
+
+    const newContacts = myLeads.filter((l) => l.createdAt?.slice(0, 10) === today).length;
+    const hasContact = allLeads.some((l) => l.createdBy === userId);
+
+    // Follow-ups — one Scan across this user's own FOLLOWUP# items (any date,
+    // done or not); assignedTo already scopes it to one person, so no separate
+    // date bound is needed to keep the result small.
+    const followupItems = [];
+    let lastKey;
+    do {
+      const result = await dynamodb.scan({
+        TableName: TABLE,
+        FilterExpression: 'begins_with(PK, :prefix) AND assignedTo = :uid',
+        ExpressionAttributeValues: { ':prefix': `FOLLOWUP#${companyId}#`, ':uid': userId },
+        ...(lastKey && { ExclusiveStartKey: lastKey }),
+      }).promise();
+      followupItems.push(...(result.Items ?? []));
+      lastKey = result.LastEvaluatedKey;
+    } while (lastKey);
+
+    const overdueFollowups = followupItems
+      .filter((f) => f.date < today && !f.done)
+      .map((f) => ({
+        id: `${f.date}|${f.leadId}`, contactId: f.leadId,
+        contactName: f.leadName ?? f.leadPhone ?? '', type: 'call', dueAt: f.date,
+      }));
+
+    const todayFollowups = followupItems
+      .filter((f) => f.date === today && !f.done)
+      .map((f) => ({
+        id: `${f.date}|${f.leadId}`, contactId: f.leadId,
+        contactName: f.leadName ?? f.leadPhone ?? '', type: 'call',
+        notes: f.note || undefined, dueAt: f.date,
+      }));
+
+    const followupsDone = followupItems.filter((f) => f.done && f.doneAt?.slice(0, 10) === today).length;
+    const hasFollowup = followupItems.length > 0;
+
+    const empRes = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+      Key: { id: userId },
+      ProjectionExpression: 'createdAt',
+    }).promise();
+    const isNewEmployee = empRes.Item?.createdAt
+      ? (Date.now() - new Date(empRes.Item.createdAt).getTime()) < NEW_EMPLOYEE_WINDOW_MS
+      : false;
+
+    const gettingStartedProgress = [
+      ...(hasContact ? ['contact'] : []),
+      ...(hasFollowup ? ['followup'] : []),
+    ];
+
+    res.json({
+      success: true,
+      urgentReplies,
+      overdueFollowups,
+      todayFollowups,
+      recentContacts,
+      kpis: { followupsDone, newContacts },
+      isNewEmployee,
+      gettingStartedProgress,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── POST /api/crm/import ──────────────────────────────────────────────────────
 router.post('/import', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
