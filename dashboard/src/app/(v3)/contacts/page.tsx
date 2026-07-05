@@ -34,6 +34,8 @@ import { ImportContactsDrawer } from '@/components/contacts/ImportContactsDrawer
 import { type Tag as CatalogTag } from '@/components/tags/TagBadge';
 import { TagSelector } from '@/components/tags/TagSelector';
 import { ContactTags } from '@/components/tags/ContactTags';
+import { EditableName } from '@/components/shared/EditableName';
+import { useContactMutations } from '@/hooks/useContactMutations';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 import { buildContactDeleteRequest } from '@/lib/contactUrls';
@@ -128,23 +130,51 @@ function contactDisplayName(row: Contact): string {
   return row.displayName ?? row.name ?? row.phone ?? '';
 }
 
-function buildColumns(canEditOwner: boolean, onTagsChanged: () => void, pipelineStages: PipelineStage[]): TableColumn<Contact>[] {
+// Own instance of useContactMutations per row — leadId-scoped, same as
+// ContactTags below. Not inlined into the cell() callback: hooks must be
+// called from a real component instance, not a plain per-row function.
+function ContactNameCell({ leadId, value, onSaved }: { leadId: string; value: string; onSaved: () => void }) {
+  const { updateField } = useContactMutations(leadId);
+  return (
+    <EditableName
+      value={value}
+      onSave={(name) => updateField.mutate({ name }, { onSuccess: onSaved })}
+      className="text-left font-medium text-neutral-900 hover:text-primary-600 dark:text-neutral-100"
+      ariaLabel="Edit contact name"
+    />
+  );
+}
+
+function buildColumns(canEditOwner: boolean, onRowChanged: () => void, pipelineStages: PipelineStage[]): TableColumn<Contact>[] {
   return [
     {
       key: 'name',
       header: 'Name',
       sortable: true,
-      cell: (row) => (
-        <Link href={`/contacts/${row.id}`} className="flex items-center gap-2.5 group">
-          <Avatar name={contactDisplayName(row)} size={32} />
-          <div>
-            <p className="font-medium text-neutral-900 group-hover:text-primary-600 dark:text-neutral-100">
-              {contactDisplayName(row)}
-            </p>
-            <p className="text-xs text-neutral-500">{row.phone}</p>
+      cell: (row) => {
+        const leadId = row.leadId ?? (row.type === 'lead' ? row.id : undefined);
+        return (
+          <div className="flex items-center gap-2.5">
+            <Link href={`/contacts/${row.id}`} className="shrink-0">
+              <Avatar name={contactDisplayName(row)} size={32} />
+            </Link>
+            <div className="min-w-0">
+              {leadId ? (
+                <div onClick={(e) => e.stopPropagation()}>
+                  <ContactNameCell leadId={leadId} value={contactDisplayName(row)} onSaved={onRowChanged} />
+                </div>
+              ) : (
+                <Link href={`/contacts/${row.id}`}>
+                  <p className="font-medium text-neutral-900 hover:text-primary-600 dark:text-neutral-100">
+                    {contactDisplayName(row)}
+                  </p>
+                </Link>
+              )}
+              <p className="text-xs text-neutral-500">{row.phone}</p>
+            </div>
           </div>
-        </Link>
-      ),
+        );
+      },
     },
     {
       key: 'stage',
@@ -188,7 +218,7 @@ function buildColumns(canEditOwner: boolean, onTagsChanged: () => void, pipeline
             tagIds={row.tags ?? []}
             leadId={row.leadId ?? (row.type === 'lead' ? row.id : undefined)}
             phone={row.phone}
-            onMutated={onTagsChanged}
+            onMutated={onRowChanged}
           />
         </div>
       ),

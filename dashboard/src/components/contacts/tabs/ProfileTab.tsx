@@ -7,6 +7,7 @@ import type { Tag } from '@/components/tags/TagBadge';
 import type { ContactDetail } from '@/lib/contacts/types';
 import { useContactMutations } from '@/hooks/useContactMutations';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
+import { EditableName } from '@/components/shared/EditableName';
 
 const SOURCE_LABELS: Record<string, string> = {
   whatsapp:    'WhatsApp Inbound',
@@ -93,7 +94,7 @@ export function ProfileTab({ contact, leadId }: ProfileTabProps) {
   const pathname = usePathname();
   const { updateField } = useContactMutations(leadId);
 
-  const [editingField, setEditingField] = useState<'name' | 'email' | null>(null);
+  const [editingField, setEditingField] = useState<'email' | null>(null);
   const [editValue, setEditValue]       = useState('');
 
   const { tags: tagCatalog } = useTagCatalog();
@@ -105,21 +106,17 @@ export function ProfileTab({ contact, leadId }: ProfileTabProps) {
     [contact.tags, tagCatalog]
   );
 
-  function startEdit(field: 'name' | 'email') {
+  function startEdit(field: 'email') {
     setEditingField(field);
-    setEditValue(field === 'name' ? contact.name : (contact.email ?? ''));
+    setEditValue(contact.email ?? '');
   }
 
   function commitEdit() {
     if (!editingField) return;
     const trimmed = editValue.trim();
-    const current = editingField === 'name' ? contact.name : (contact.email ?? '');
+    const current = contact.email ?? '';
     if (trimmed !== current) {
-      if (editingField === 'name' && !trimmed) {
-        // empty name not allowed; discard
-      } else {
-        updateField.mutate({ [editingField]: trimmed });
-      }
+      updateField.mutate({ [editingField]: trimmed });
     }
     setEditingField(null);
   }
@@ -176,28 +173,18 @@ export function ProfileTab({ contact, leadId }: ProfileTabProps) {
       {/* ── Personal Information ─────────────────────────────────── */}
       <Section title="Personal Information">
 
-        {/* Name — inline edit */}
+        {/* Name — inline edit (shared EditableName, same component used in
+            Contact 360's header, the Inbox conversation header, and the
+            Contacts list) */}
         <div className={rowCls}>
           <span className="flex-shrink-0 text-sm text-slate-500 dark:text-slate-400">Full Name</span>
-          {editingField === 'name' ? (
-            <input
-              autoFocus
-              value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
-              onBlur={commitEdit}
-              onKeyDown={handleKeyDown}
-              className={inputCls}
-              aria-label="Edit full name"
-            />
-          ) : (
-            <button
-              onClick={() => startEdit('name')}
-              className="text-right text-sm font-medium text-slate-800 hover:text-indigo-600 dark:text-slate-200 dark:hover:text-indigo-400"
-              title="Click to edit"
-            >
-              {contact.name}
-            </button>
-          )}
+          <EditableName
+            value={contact.name}
+            onSave={(name) => updateField.mutate({ name })}
+            className="text-right text-sm font-medium text-slate-800 hover:text-indigo-600 dark:text-slate-200 dark:hover:text-indigo-400"
+            inputClassName={inputCls}
+            ariaLabel="Edit full name"
+          />
         </div>
 
         {/* Phone — copy only */}

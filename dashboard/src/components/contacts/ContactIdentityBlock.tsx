@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { EditableName } from '@/components/shared/EditableName';
 
 function WhatsAppIcon({ className }: { className?: string }) {
   return (
@@ -32,9 +33,10 @@ interface ContactIdentityBlockProps {
   name: string;
   phone: string;
   email?: string | null;
+  onSaveName: (name: string) => void;
 }
 
-export function ContactIdentityBlock({ name, phone, email }: ContactIdentityBlockProps) {
+export function ContactIdentityBlock({ name, phone, email, onSaveName }: ContactIdentityBlockProps) {
   const [copied, setCopied] = useState(false);
 
   function copyPhone() {
@@ -49,9 +51,13 @@ export function ContactIdentityBlock({ name, phone, email }: ContactIdentityBloc
 
   return (
     <div className="min-w-0">
-      <h1 className="truncate text-lg font-bold text-slate-900 dark:text-white sm:text-xl">
-        {name || phone || 'Unknown Contact'}
-      </h1>
+      <EditableName
+        value={name || phone || 'Unknown Contact'}
+        onSave={onSaveName}
+        className="block truncate text-left text-lg font-bold text-slate-900 dark:text-white sm:text-xl"
+        inputClassName="w-full truncate rounded-md border border-indigo-300 bg-white px-2 py-1 text-lg font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:border-indigo-600 dark:bg-slate-800 dark:text-white sm:text-xl"
+        ariaLabel="Edit contact name"
+      />
 
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
         {/* Phone */}

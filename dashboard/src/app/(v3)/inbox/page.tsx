@@ -32,6 +32,8 @@ import { assignmentKey } from '@/hooks/useOwnerAssign';
 import type { AssignmentRecord } from '@/hooks/useOwnerAssign';
 import { ComposerToolbar } from '@/components/inbox/ComposerToolbar';
 import { useAddNote, useEditNote, useDeleteNote, canModifyNote } from '@/hooks/useNoteMutations';
+import { useContactMutations } from '@/hooks/useContactMutations';
+import { EditableName } from '@/components/shared/EditableName';
 import { formatRelativeTime } from '@/utils/formatters';
 
 // ── V2 API shapes (backend response shapes, never invented) ───────────────────
@@ -901,6 +903,10 @@ function ThreadPane({
 
   const convKey = conversation.leadId ?? conversation.phone;
   const displayName = convDisplayName(conversation);
+  // Called unconditionally (Rules of Hooks) — leadId falls back to '' for
+  // unknown (non-lead) conversations, where the rename affordance below never
+  // renders, so the mutation is never triggered for them.
+  const { updateField } = useContactMutations(conversation.leadId ?? '');
 
   const { data, isLoading } = useQuery<{ messages: WaMessage[] }>({
     queryKey: ['wa-conv', convKey],
@@ -1093,15 +1099,26 @@ function ThreadPane({
     <div className="flex h-full flex-col bg-neutral-50 dark:bg-neutral-900">
       {/* Header */}
       <div className="flex items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
-        <Avatar name={displayName} size={32} />
+        {/* On xl+ (panel always visible) this acts as a label; on smaller screens it opens the panel */}
+        <button
+          type="button"
+          onClick={onOpenSnapshot}
+          className="shrink-0 xl:cursor-default"
+          title="View details"
+        >
+          <Avatar name={displayName} size={32} />
+        </button>
         <div className="min-w-0 flex-1">
-          {/* On xl+ (panel always visible) this acts as a label; on smaller screens it opens the panel */}
-          <button
-            onClick={onOpenSnapshot}
-            className="text-sm font-semibold text-neutral-900 hover:text-primary-600 dark:text-neutral-100 xl:cursor-default xl:hover:text-neutral-900 xl:dark:hover:text-neutral-100"
-          >
-            {displayName}
-          </button>
+          {conversation.type === 'lead' && conversation.leadId ? (
+            <EditableName
+              value={displayName}
+              onSave={(name) => updateField.mutate({ name }, { onSuccess: () => qc.invalidateQueries({ queryKey: ['wa-inbox'] }) })}
+              className="text-sm font-semibold text-neutral-900 hover:text-primary-600 dark:text-neutral-100"
+              ariaLabel="Edit contact name"
+            />
+          ) : (
+            <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">{displayName}</p>
+          )}
           <p className="text-xs text-neutral-500">{conversation.phone}</p>
         </div>
         <div className="flex items-center gap-1">

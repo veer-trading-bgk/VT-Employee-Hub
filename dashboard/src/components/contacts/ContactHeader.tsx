@@ -6,6 +6,7 @@ import { HealthScoreBadge } from './HealthScoreBadge';
 import { CustomerJourneyBar } from './CustomerJourneyBar';
 import { ContactIdentityBlock } from './ContactIdentityBlock';
 import { ContactMetaRow } from './ContactMetaRow';
+import { useContactMutations } from '@/hooks/useContactMutations';
 import type { ContactDetail } from '@/lib/contacts/types';
 
 interface PipelineStage {
@@ -48,6 +49,11 @@ function HeaderSkeleton() {
 }
 
 export function ContactHeader({ contact, isLoading, stages }: ContactHeaderProps) {
+  // Called unconditionally (Rules of Hooks) — leadId falls back to '' until
+  // contact loads; the mutation is never triggered before then since the
+  // early return below prevents EditableName from ever rendering first.
+  const { updateField } = useContactMutations(contact?.leadId ?? '');
+
   if (isLoading || !contact) return <HeaderSkeleton />;
 
   return (
@@ -64,6 +70,7 @@ export function ContactHeader({ contact, isLoading, stages }: ContactHeaderProps
             name={contact.name}
             phone={contact.phone}
             email={contact.email}
+            onSaveName={(name) => updateField.mutate({ name })}
           />
           <div className="mt-2">
             <ContactMetaRow contact={contact} stages={stages} />
