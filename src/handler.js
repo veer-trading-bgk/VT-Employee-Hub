@@ -4,6 +4,7 @@ const serverless = require('serverless-http');
 const { loadSecrets } = require('./config/secrets');
 const app = require('./app');
 const { runDueCampaigns } = require('./services/CampaignScheduler');
+const { runDueLeadScoring } = require('./services/LeadScoringScheduler');
 
 const handler = serverless(app, {
   binary: ['image/*', 'video/*', 'audio/*', 'application/octet-stream', 'application/pdf'],
@@ -15,8 +16,11 @@ exports.handler = async (event, context) => {
 
   // EventBridge scheduled events bypass API Gateway entirely — they don't have the
   // httpMethod/path shape serverless-http expects, so route them separately.
+  // runDueLeadScoring() rides this same 5-minute rule rather than needing a second
+  // one — it self-throttles internally to a ~60-minute cycle via its own cursor,
+  // so most of these ticks are a near-free no-op for it.
   if (event.source === 'aws.events' && event['detail-type'] === 'Scheduled Event') {
-    return runDueCampaigns();
+    return Promise.allSettled([runDueCampaigns(), runDueLeadScoring()]);
   }
 
   return handler(event, context);

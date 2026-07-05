@@ -24,6 +24,7 @@ import { Input } from '@/components/v3/ui/Input';
 import { Table, type TableColumn, type SortDirection } from '@/components/v3/ui/Table';
 import { Checkbox } from '@/components/v3/ui/Checkbox';
 import { TagBadge, type Tag } from '@/components/tags/TagBadge';
+import { PriorityBadge } from '@/components/shared/PriorityBadge';
 import { cn } from '@/lib/cn';
 import { apiFetch, ApiClientError } from '@/lib/api';
 import type { Contact, Stage } from '@/types/v3';
@@ -75,11 +76,13 @@ function getStageLabel(key: string, stages: PipelineStage[]): string {
 }
 
 function exportCSV(contacts: Contact[], stages: PipelineStage[]) {
-  const headers = ['Name', 'Phone', 'Stage', 'Assigned To', 'Last Activity', 'Added'];
+  const headers = ['Name', 'Phone', 'Stage', 'Priority Score', 'Priority Tier', 'Assigned To', 'Last Activity', 'Added'];
   const rows = contacts.map((c) => [
     contactName(c),
     c.phone,
     getStageLabel(c.stage, stages),
+    c.priorityScore != null ? String(c.priorityScore) : '',
+    c.priorityTier ?? '',
     c.assignedToName ?? c.ownerName ?? '',
     relTime(c.lastMessageAt ?? c.createdAt),
     c.createdAt ? format(new Date(c.createdAt), 'dd/MM/yyyy') : '',
@@ -105,12 +108,16 @@ function KPIHeader({ contacts, stages }: { contacts: Contact[]; stages: Pipeline
   const lost        = contacts.filter((c) => c.stage === 'lost').length;
   const winBase     = converted + lost;
   const winRate     = winBase > 0 ? Math.round((converted / winBase) * 100) : 0;
-  const hot         = contacts.filter((c) => c.stage === 'interested' || c.stage === 'kyc_done').length;
+  // priorityTier is LeadScoringScheduler's persisted, company-wide computed value —
+  // replaces the old ad hoc "interested or kyc_done stage" heuristic, which
+  // disagreed with Contact 360's separate derivePriority() heuristic for the
+  // same lead. Single source of truth now, not a second independent guess.
+  const hot         = contacts.filter((c) => c.priorityTier === 'hot').length;
 
   const kpis = [
     { label: 'Total Leads', value: total,         sub: 'in pipeline',         color: 'text-neutral-900 dark:text-neutral-100' },
     { label: 'Active',      value: active,         sub: `${total ? Math.round((active/total)*100) : 0}% of total`, color: 'text-primary-600 dark:text-primary-400' },
-    { label: 'Hot Leads',   value: hot,            sub: 'Interested + KYC',    color: 'text-amber-600 dark:text-amber-400' },
+    { label: 'Hot Leads',   value: hot,            sub: 'Priority score ≥70', color: 'text-amber-600 dark:text-amber-400' },
     { label: 'Converted',   value: converted,      sub: 'Demat Done',          color: 'text-green-600 dark:text-green-400' },
     { label: 'Win Rate',    value: `${winRate}%`,  sub: `${lost} lost`,        color: winRate >= 20 ? 'text-green-600 dark:text-green-400' : 'text-neutral-700 dark:text-neutral-300' },
   ];
@@ -280,6 +287,12 @@ function KanbanCard({
             <p className="text-[11px] text-neutral-500">{contact.phone}</p>
           </div>
         </div>
+
+        {contact.priorityTier && (
+          <div className="mt-2">
+            <PriorityBadge tier={contact.priorityTier} score={contact.priorityScore} />
+          </div>
+        )}
 
         {tags.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1">
@@ -625,6 +638,13 @@ function buildListColumns(tagMap: Map<string, Tag>, stages: PipelineStage[]): Ta
           {getStageLabel(row.stage, stages)}
         </Badge>
       ),
+    },
+    {
+      key: 'priorityScore',
+      header: 'Priority',
+      sortable: true,
+      width: 'w-24',
+      cell: (row) => <PriorityBadge tier={row.priorityTier} score={row.priorityScore} />,
     },
     {
       key: 'tags',
@@ -1079,8 +1099,11 @@ export default function SalesPage() {
   const [view, setView]                       = useState<'kanban' | 'list' | 'team'>('kanban');
   const [showAddLead, setShowAddLead]         = useState(false);
   const [showManagePipeline, setShowManagePipeline] = useState(false);
-  const [sortKey, setSortKey]                 = useState('name');
-  const [sortDir, setSortDir]                 = useState<SortDirection>('asc');
+  // Defaults to the highest-priority lead first — LeadScoringScheduler's whole
+  // point is "who to follow up with first," so that should be the view an
+  // agent lands on, not something they have to click a column header to reach.
+  const [sortKey, setSortKey]                 = useState('priorityScore');
+  const [sortDir, setSortDir]                 = useState<SortDirection>('desc');
   const [filters, setFilters]                 = useState<Filters>(EMPTY_FILTERS);
   const [bulkMode, setBulkMode]               = useState(false);
   const [selectedIds, setSelectedIds]         = useState<Set<string>>(new Set());
@@ -1147,6 +1170,36 @@ export default function SalesPage() {
     });
   }, [contacts, filters]);
 
+  // Applies sortKey/sortDir to the filtered list — previously sortKey/sortDir only
+  // drove the List View's column-header chevron icon, never actually reordering
+  // the rows (Table.tsx has no sort logic of its own; it's purely a controlled
+  // display). A real, pre-existing bug clicking any column header silently did
+  // nothing — fixed here as part of making Priority genuinely sortable, since
+  // "must sort correctly" was the whole point of this feature.
+  const sortedContacts = useMemo(() => {
+    if (!sortDir) return filteredContacts; // Table's 3-state toggle (asc→desc→null) — null means "no sort"
+    const stageOrder = new Map(stages.map((s) => [s.key, s.order]));
+    function compare(a: Contact, b: Contact): number {
+      switch (sortKey) {
+        case 'name':
+          return contactName(a).localeCompare(contactName(b));
+        case 'stage':
+          return (stageOrder.get(a.stage) ?? 0) - (stageOrder.get(b.stage) ?? 0);
+        case 'priorityScore':
+          return (a.priorityScore ?? -1) - (b.priorityScore ?? -1);
+        case 'lastActivity': {
+          const tA = a.lastMessageAt ?? a.createdAt ?? '';
+          const tB = b.lastMessageAt ?? b.createdAt ?? '';
+          return tA.localeCompare(tB);
+        }
+        default:
+          return 0;
+      }
+    }
+    const sorted = [...filteredContacts].sort(compare);
+    return sortDir === 'desc' ? sorted.reverse() : sorted;
+  }, [filteredContacts, sortKey, sortDir, stages]);
+
   function patchFilter(patch: Partial<Filters>) { setFilters((prev) => ({ ...prev, ...patch })); }
 
   const hasActiveFilters = Object.values(filters).some((v) => (Array.isArray(v) ? v.length > 0 : !!v));
@@ -1199,7 +1252,7 @@ export default function SalesPage() {
           <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Sales CRM</h1>
           <p className="text-sm text-neutral-500">
             {isLoading ? 'Loading…'
-              : hasActiveFilters ? `${filteredContacts.length} of ${contacts.length} leads`
+              : hasActiveFilters ? `${sortedContacts.length} of ${contacts.length} leads`
               : `${contacts.length} leads · ${stages.length} stages`}
           </p>
         </div>
@@ -1308,7 +1361,7 @@ export default function SalesPage() {
         ) : (
           <div className="p-4"><SkeletonCard /></div>
         )
-      ) : filteredContacts.length === 0 ? (
+      ) : sortedContacts.length === 0 ? (
         <EmptyState
           icon={LayoutGrid}
           title={hasActiveFilters ? 'No leads match your filters' : 'No leads yet'}
@@ -1320,7 +1373,7 @@ export default function SalesPage() {
         />
       ) : view === 'team' ? (
         <TeamPipelineView
-          contacts={filteredContacts}
+          contacts={sortedContacts}
           employees={employees}
           stages={stages}
           onSelectEmployee={(id) => {
@@ -1330,7 +1383,7 @@ export default function SalesPage() {
         />
       ) : view === 'kanban' ? (
         <KanbanBoard
-          contacts={filteredContacts}
+          contacts={sortedContacts}
           tagMap={tagMap}
           bulkMode={bulkMode}
           selectedIds={selectedIds}
@@ -1341,7 +1394,7 @@ export default function SalesPage() {
         <div className="flex-1 overflow-auto">
           <Table
             columns={listColumns}
-            data={filteredContacts}
+            data={sortedContacts}
             keyExtractor={(row) => row.id}
             sortKey={sortKey}
             sortDir={sortDir}

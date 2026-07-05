@@ -34,6 +34,12 @@ export interface ContactDetail {
   probability?: number | null;
   // Reserved — Phase 2 AI
   healthScore?: number | null;
+  // LeadScoringScheduler — deterministic, recomputed on a ~60min cycle, not
+  // real-time. Replaces CrmTab.tsx's old client-only derivePriority() heuristic.
+  priorityScore?: number | null;
+  priorityTier?: 'hot' | 'warm' | 'cold' | null;
+  priorityScoreBreakdown?: { stage: number; intent: number; recency: number; urgency: number; value: number } | null;
+  priorityScoreUpdatedAt?: string | null;
   // AI intent detection (mirrored from CONV# — see IntentDetectionService)
   intent?: string | null;
   confidence?: number | null;

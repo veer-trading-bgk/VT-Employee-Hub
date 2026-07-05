@@ -11,8 +11,8 @@ import { useTagCatalog } from '@/hooks/useTagCatalog';
 import { TagSelector } from '@/components/tags/TagSelector';
 import { TagBadge } from '@/components/tags/TagBadge';
 import type { Tag } from '@/components/tags/TagBadge';
-import type { ContactDetail } from '@/lib/contacts/types';
 import { FollowUpForm } from '@/components/ui/FollowUpForm';
+import { PriorityBadge } from '@/components/shared/PriorityBadge';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -49,28 +49,6 @@ const PRODUCT_LABELS: Record<string, string> = Object.fromEntries(
 // ── Helper types ──────────────────────────────────────────────────────────────
 
 interface EmployeeRecord { id: string; name: string; role: string; }
-
-// ── Priority derivation ───────────────────────────────────────────────────────
-
-function derivePriority(contact: ContactDetail): 'hot' | 'warm' | 'cold' {
-  if (contact.closureDeadline) {
-    const daysLeft = Math.ceil(
-      (new Date(contact.closureDeadline).getTime() - Date.now()) / 86_400_000
-    );
-    if (daysLeft >= 0 && daysLeft <= 7) return 'hot';
-  }
-  if (!contact.lastInboundAt) return 'cold';
-  const daysSince = (Date.now() - new Date(contact.lastInboundAt).getTime()) / 86_400_000;
-  if (daysSince < 1) return 'hot';
-  if (daysSince < 7) return 'warm';
-  return 'cold';
-}
-
-const PRIORITY_STYLES = {
-  hot:  { label: 'Hot',  cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400', dot: 'bg-red-500' },
-  warm: { label: 'Warm', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400', dot: 'bg-amber-500' },
-  cold: { label: 'Cold', cls: 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400', dot: 'bg-slate-400' },
-} as const;
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
@@ -300,9 +278,6 @@ function CrmPanel() {
     [contact?.tags, tagCatalog]
   );
 
-  const priority = contact ? derivePriority(contact) : 'cold';
-  const priorityStyle = PRIORITY_STYLES[priority];
-
   const activeFu = useMemo(
     () =>
       followups
@@ -407,14 +382,13 @@ function CrmPanel() {
               </div>
             </div>
 
-            {/* Priority (derived, always read-only) */}
+            {/* Priority — LeadScoringScheduler, recomputed on a ~60min cycle, always read-only here */}
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Priority</span>
-              <span className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${priorityStyle.cls}`}>
-                <span className={`h-1.5 w-1.5 rounded-full ${priorityStyle.dot}`} aria-hidden="true" />
-                {priorityStyle.label}
+              <PriorityBadge tier={contact.priorityTier} score={contact.priorityScore} />
+              <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                {contact.priorityScoreUpdatedAt ? `as of ${fmtRelative(contact.priorityScoreUpdatedAt)}` : '(not yet scored)'}
               </span>
-              <span className="text-[10px] text-slate-400 dark:text-slate-500">(derived)</span>
             </div>
 
             {editing ? (

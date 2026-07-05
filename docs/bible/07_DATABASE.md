@@ -100,7 +100,10 @@ Unless otherwise noted, all entities below live in the METRICS table.
   `waName` (whatsapp.js on inbound message with a WA profile name), `chatStatus`
   (`'open'`/`'resolved'`), `lastMessageAt`, `lastMessagePreview`, `lastMessageDirection`,
   `lastInboundAt`, `unreadCount`, `convId` (pointer to CONV# — written by
-  `conversationResolver.js`), `deletedAt`/`deletedBy` (soft delete), `version`.
+  `conversationResolver.js`), `deletedAt`/`deletedBy` (soft delete), `version`,
+  `intent`/`confidence`/`classifiedAt` (IntentDetectionService), `priorityScore`/
+  `priorityTier`/`priorityScoreBreakdown`/`priorityScoreUpdatedAt` (LeadScoringScheduler,
+  §2.35 — a deterministic formula, no LLM call, recomputed on a ~60min cycle).
 - **Sub-items under the same PK** (same partition, different SK — see §2.1.1–2.1.4).
 - **Owning writers:** `CustomerIdentityService.resolveOrCreate()` (the ADR-013
   canonical path — `src/services/CustomerIdentityService.js`); also directly via
@@ -765,6 +768,45 @@ All follow the same shape: `PK = CONFIG#{NAME}#{companyId}` (or the bare
   Customer 360 Conversation tab.
 - No new DynamoDB access pattern — this is a projection-completeness fix
   on an existing route, not a new read path.
+
+### 2.35 CONFIG#LEADSCORING#GLOBAL — lead-scoring sweep cursor
+
+- **PK:** `CONFIG#LEADSCORING#GLOBAL` — **SK:** `CURRENT` (single global row, not per-company)
+- **Fields:** `lastRunAt` (ISO timestamp of the last real sweep)
+- **Represents:** Self-throttle for `LeadScoringScheduler.runDueLeadScoring()`.
+  Deliberately reuses `CampaignScheduler.js`'s existing 5-minute EventBridge rule
+  (`src/handler.js`'s `event.source === 'aws.events'` branch now calls both
+  `runDueCampaigns()` and `runDueLeadScoring()`) rather than a second EventBridge
+  rule — most 5-minute ticks read this cursor, see under an hour has passed, and
+  no-op; roughly one in twelve does a real sweep. No new AWS provisioning.
+- **Owner:** `LeadScoringScheduler.js`
+- **Scoring itself**: `LeadScoringService.computeScore(lead, stages)` — a
+  deterministic weighted formula (stage position, AI-classified `intent`/
+  `confidence`, message recency, `closureDeadline` proximity, `expectedValue`),
+  no `AIService`/LLM call. Deliberately excludes `touchCount` (correlation
+  direction unclear without outcome data), `tags` (no universal cross-company
+  weight), and `probability` (the agent's own manual estimate — reusing it would
+  double-count the agent's opinion as independent evidence). Writes
+  `priorityScore` (0-100), `priorityTier` (`'hot'|'warm'|'cold'`, banded ≥70/40-69/<40
+  — tune once real data has run through it), `priorityScoreBreakdown` (per-factor
+  point contributions, for a "why this score" tooltip), and `priorityScoreUpdatedAt`
+  onto each open lead's `LEAD#/METADATA` record (§2.1). Excludes closed leads
+  (`stage === 'lost'` or `wonAt` set) from scoring entirely.
+- **Replaces two prior ad hoc, disagreeing heuristics**: `CrmTab.tsx`'s client-only
+  `derivePriority()` (Hot/Warm/Cold from `closureDeadline`/`lastInboundAt`, never
+  persisted, Contact 360 only) and `sales/page.tsx`'s "Hot Leads" KPI (a raw
+  `stage === 'interested' || stage === 'kyc_done'` count) — both retired in favor
+  of this single persisted, company-wide field.
+- **Required projection fix, same shape as §2.34**: `contacts.js`'s `normaliseLead()`
+  builds a curated projection, not a raw item spread — `priorityScore`/`priorityTier`
+  were added there explicitly, or Sales CRM's list/Kanban views would silently never
+  see them.
+- **Found but not touched**: `ContactHeader.tsx` already renders a `HealthScoreBadge`
+  (identical 0-100 scale and ≥70/40-69/<40 color bands) in Contact 360's header,
+  gated behind a hardcoded `aiEnabled={false}` and fed `contact.healthScore` — a
+  reserved, never-populated field. Wiring `priorityScore` into it was out of scope
+  for this change (not part of what was proposed/approved) but is a natural
+  fast-follow candidate.
 
 ---
 

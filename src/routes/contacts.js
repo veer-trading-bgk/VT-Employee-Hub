@@ -30,6 +30,12 @@ function normaliseLead(l) {
     assignedToName: l.assignedToName ?? null,
     chatStatus: l.chatStatus ?? null,
     nameSource: l.nameSource ?? null,
+    // LeadScoringScheduler's computed priority — this route builds a curated
+    // field projection, not a raw item spread, so a field mirrored onto LEAD#
+    // still needs adding here explicitly or it's silently dropped from every
+    // Sales CRM list/Kanban view (same gap Item 7 fixed for the inbox intent badge).
+    priorityScore: l.priorityScore ?? null,
+    priorityTier: l.priorityTier ?? null,
   };
 }
 
