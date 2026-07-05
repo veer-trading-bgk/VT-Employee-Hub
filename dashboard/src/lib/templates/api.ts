@@ -5,6 +5,7 @@ import type {
   SyncTemplatesResponse,
   SubmitTemplateResponse,
   TemplateFormValues,
+  AiTemplateDraftResponse,
 } from './types';
 import { formToComponents, getBodyPreview, extractVariableCount, buildVariableLabels } from './validation';
 
@@ -79,6 +80,16 @@ export async function updateTemplate(
 export async function deleteTemplate(id: string): Promise<{ success: boolean; warning?: string }> {
   return apiFetch(`${BASE}/${id}`, {
     method: 'DELETE',
+    retries: 0,
+  });
+}
+
+// ── AI-assisted draft ──────────────────────────────────────────────────────────
+
+export async function generateAiTemplateDraft(description: string, language: string): Promise<AiTemplateDraftResponse> {
+  return apiFetch(`${BASE}/ai-draft`, {
+    method: 'POST',
+    body: JSON.stringify({ description, language }),
     retries: 0,
   });
 }

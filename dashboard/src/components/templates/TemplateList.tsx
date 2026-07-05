@@ -15,10 +15,13 @@ import {
   AlertCircle,
   X,
   Clock,
+  Sparkles,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { cn } from '@/lib/cn';
+import { Drawer } from '@/components/v3/ui/Drawer';
+import { Button } from '@/components/v3/ui/Button';
 import { TemplateStatusBadge } from './TemplateStatusBadge';
 import { TemplateCategoryBadge } from './TemplateCategoryBadge';
 import { TemplateQualityBadge } from './TemplateQualityBadge';
@@ -28,17 +31,19 @@ import {
   deleteTemplate,
   submitTemplate,
   syncTemplates,
+  generateAiTemplateDraft,
   templateKeys,
 } from '@/lib/templates/api';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role } from '@/types/v3';
-import type { WaTemplate, TemplateStatus, TemplateCategory, QualityScore } from '@/lib/templates/types';
+import type { WaTemplate, TemplateStatus, TemplateCategory, QualityScore, AiTemplateDraft } from '@/lib/templates/types';
 import {
   SENDABLE_STATUSES,
   EDITABLE_STATUSES,
   STATUS_FILTER_OPTIONS,
   CATEGORY_FILTER_OPTIONS,
   QUALITY_FILTER_OPTIONS,
+  LANGUAGE_OPTIONS,
 } from '@/lib/templates/constants';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -81,6 +86,10 @@ export function TemplateList({ onSendTemplate }: Props) {
   // Drawer
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<WaTemplate | undefined>();
+
+  // AI draft
+  const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [aiDraft, setAiDraft] = useState<AiTemplateDraft | undefined>();
 
   // Data
   const { data: templates = [], isLoading, isError, refetch } = useQuery({
@@ -177,6 +186,13 @@ export function TemplateList({ onSendTemplate }: Props) {
 
   function handleCreate() {
     setEditingTemplate(undefined);
+    setAiDraft(undefined);
+    setDrawerOpen(true);
+  }
+
+  function handleAiDraftReady(draft: AiTemplateDraft) {
+    setEditingTemplate(undefined);
+    setAiDraft(draft);
     setDrawerOpen(true);
   }
 
@@ -236,6 +252,17 @@ export function TemplateList({ onSendTemplate }: Props) {
             >
               <RefreshCw className={cn('h-3.5 w-3.5', syncMutation.isPending && 'animate-spin')} aria-hidden />
               Sync
+            </button>
+          )}
+
+          {/* AI Draft — admin+ only */}
+          {canManage && (
+            <button
+              type="button"
+              onClick={() => setAiPanelOpen(true)}
+              className="flex h-8 items-center gap-1.5 rounded-lg border border-primary-200 bg-primary-50 px-3 text-sm font-medium text-primary-700 hover:bg-primary-100 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-400 dark:hover:bg-primary-900/40"
+            >
+              <Sparkles className="h-3.5 w-3.5" aria-hidden /> AI Draft
             </button>
           )}
 
@@ -411,10 +438,101 @@ export function TemplateList({ onSendTemplate }: Props) {
       {/* Drawer */}
       <TemplateCreateDrawer
         open={drawerOpen}
-        onClose={() => { setDrawerOpen(false); setEditingTemplate(undefined); }}
+        onClose={() => { setDrawerOpen(false); setEditingTemplate(undefined); setAiDraft(undefined); }}
         editTemplate={editingTemplate}
+        aiDraft={aiDraft}
+      />
+
+      {/* AI draft prompt panel */}
+      <AiDraftPanel
+        open={aiPanelOpen}
+        onClose={() => setAiPanelOpen(false)}
+        onDraftReady={handleAiDraftReady}
       />
     </>
+  );
+}
+
+// ── AI draft prompt panel ────────────────────────────────────────────────────
+
+function AiDraftPanel({
+  open,
+  onClose,
+  onDraftReady,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onDraftReady: (draft: AiTemplateDraft) => void;
+}) {
+  const [description, setDescription] = useState('');
+  const [language, setLanguage] = useState('en');
+
+  const mutation = useMutation({
+    mutationFn: () => generateAiTemplateDraft(description.trim(), language),
+    onSuccess: (data) => {
+      onDraftReady(data.draft);
+      setDescription('');
+      onClose();
+    },
+    onError: (e: Error) => toast.error(e.message || 'Failed to generate draft'),
+  });
+
+  return (
+    <Drawer
+      open={open}
+      onClose={onClose}
+      title="AI Draft Template"
+      description="Describe what you want — AI drafts the body, variables, and category for you to review"
+      width={420}
+      footer={
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={onClose} disabled={mutation.isPending}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            loading={mutation.isPending}
+            disabled={!description.trim()}
+            onClick={() => mutation.mutate()}
+          >
+            <Sparkles className="h-3.5 w-3.5" aria-hidden /> Generate Draft
+          </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-col gap-4">
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-200">
+            Describe what you want
+          </label>
+          <textarea
+            rows={5}
+            autoFocus
+            placeholder="e.g. A renewal reminder for insurance policies expiring soon"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            className="w-full resize-none rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100 dark:placeholder:text-neutral-600"
+          />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-neutral-700 dark:text-neutral-200">
+            Language
+          </label>
+          <select
+            value={language}
+            onChange={(e) => setLanguage(e.target.value)}
+            className="h-9 w-full rounded-lg border border-neutral-200 bg-white px-2 text-sm focus:border-primary-600 focus:outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-white"
+          >
+            {LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+        <p className="rounded-lg border border-neutral-200 bg-neutral-50 p-2.5 text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400">
+          AI drafts follow Meta&rsquo;s known template rules to maximize approval odds. Meta&rsquo;s review process is outside APForce&rsquo;s control and approval is never guaranteed.
+        </p>
+      </div>
+    </Drawer>
   );
 }
 

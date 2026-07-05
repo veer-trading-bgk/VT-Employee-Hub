@@ -13,6 +13,8 @@ const { notifyCompany } = require('../utils/wsNotify');
 const { resolveForInbox, resolveForLead, syncConvStatus, syncMarkRead } = require('../utils/conversationResolver');
 const ConversationService  = require('../services/ConversationService');
 const IntentDetectionService = require('../services/IntentDetectionService');
+const AIService = require('../services/AIService');
+const { sendAIError } = require('./ai');
 const WASendSvc            = require('../services/WhatsAppSendService');
 const TagService           = require('../services/TagService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
@@ -2693,6 +2695,34 @@ router.post('/templates/sync', authMiddleware, checkRole(['admin', 'manager']), 
       logger.error('sync templates from Meta failed', err.response.data);
       return res.status(400).json({ error: err.response.data?.error?.message ?? 'Meta API error' });
     }
+    next(err);
+  }
+});
+
+// ── POST /api/whatsapp/templates/ai-draft — AI-assisted template drafting ────
+// customerFacing: false (aiConfig.js) — this returns a draft for the admin to
+// review/edit/save; nothing here saves, submits to Meta, or sends anything.
+// Same middleware chain and rate-limit cadence as /templates/:id/submit below
+// (a deliberate, infrequent admin action, not per-message traffic).
+router.post('/templates/ai-draft', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const { description, language } = req.body;
+    if (!description?.trim()) {
+      return res.status(400).json({ error: 'description is required' });
+    }
+
+    const result = await AIService.generate({
+      useCase: 'template-creation',
+      companyId: req.user.companyId,
+      context: { description: description.trim(), language: language ?? 'en' },
+      user: req.user,
+    });
+
+    if (!result.ok) return sendAIError(res, result);
+
+    res.json({ success: true, draft: result.data });
+  } catch (err) {
+    logger.error('templates/ai-draft error', err.message);
     next(err);
   }
 });

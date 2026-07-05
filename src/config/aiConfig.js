@@ -139,6 +139,79 @@ ${message}
 Respond with a JSON object: { "intent": "<one of the 8 categories above>", "confidence": <a number between 0 and 1> }`;
     },
   },
+
+  // AI-Assisted Template Creation — drafts a Meta-compliant WhatsApp template
+  // from an admin's plain-language description. customerFacing: false — the
+  // output is a DRAFT an admin reviews/edits, then explicitly saves, then
+  // explicitly submits to Meta for Meta's own independent multi-day review,
+  // then explicitly sends to any real customer later. At least three separate
+  // human/external gates sit between this output and any customer, none of
+  // which this useCase touches — categorically an internal-analyst-output
+  // case (same bucket as metrics-insights), never a customer-facing action.
+  'template-creation': {
+    model: 'claude-haiku-4-5-20251001',
+    maxTokens: 700,
+    promptVersion: 'v1',
+    outputMode: 'json',
+    schema: z.object({
+      name: z.string().min(1).max(512),
+      category: z.enum(['MARKETING', 'UTILITY']),
+      categoryReasoning: z.string().min(1).max(300),
+      bodyText: z.string().min(1).max(1024),
+      bodyVariables: z.array(z.object({
+        example: z.string(),
+        description: z.string(),
+      })).max(25),
+      headerText: z.string().max(60).optional(),
+      footerText: z.string().max(60).optional(),
+      buttons: z.array(z.object({
+        type: z.enum(['QUICK_REPLY', 'URL', 'PHONE_NUMBER']),
+        text: z.string().max(25),
+        url: z.string().optional(),
+        phoneNumber: z.string().optional(),
+      })).max(3).optional(),
+    }),
+    customerFacing: false,
+    localeAware: false, // the target language is explicit context (below), not an
+                         // append-to-the-end instruction — this useCase's whole
+                         // output IS the requested language, not commentary about it
+    rateLimit: { limit: 10, windowMs: 60_000 }, // matches /templates/:id/submit's
+                                                 // cadence — a deliberate admin
+                                                 // action, not per-message traffic
+    promptTemplate: (context) => {
+      const { description, language } = context;
+      return `You are drafting a WhatsApp Business message template for a fintech company (VT Trading), for an admin to review and edit before ever submitting it to Meta for approval.
+
+ADMIN'S REQUEST:
+"""
+${description}
+"""
+
+TARGET LANGUAGE: ${language || 'en'} (write bodyText/headerText/footerText in this language)
+
+You MUST follow these rules exactly — they are APForce's own enforced limits, some stricter than Meta's general limits, because APForce's editor validates against these specific numbers:
+
+CATEGORY — choose exactly one of MARKETING or UTILITY (never AUTHENTICATION: Meta auto-generates OTP template bodies itself, there is nothing for you to draft there):
+- UTILITY requires BOTH: (a) non-promotional, no persuasive or promotional intent, AND (b) tied to a specific user's order/account, or safety-essential. Order confirmations, delivery updates, account alerts, and purely informational reminders are UTILITY.
+- MARKETING is anything with promotional or persuasive intent — including a message that is otherwise a plain reminder but adds an incentive. Concretely: "Your policy #{{2}} expires on {{3}}" is UTILITY; "Your policy expires soon — renew now and get 10% off" is MARKETING, because offering an incentive to secure a renewal is explicitly promotional even though the underlying event is account-specific.
+- Set categoryReasoning to a short, specific explanation of why you picked this category for THIS content — the admin reads this to sanity-check your choice before ever saving, since miscategorization has real cost consequences.
+
+BODY TEXT:
+- Maximum 1024 characters.
+- Variables use ONLY the positional placeholder format {{1}}, {{2}}, {{3}} — never named placeholders like {{first_name}}. Numbers must start at 1 and be sequential with no gaps or repeats.
+- Provide one entry in bodyVariables per placeholder, in order, each with a realistic example value and a short description of what it represents.
+- The body must contain real static text, not consist entirely of variables.
+- Never use excessive punctuation, ALL CAPS runs, or spam-like phrasing.
+
+HEADER (optional): plain text only, maximum 60 characters, at most one variable. Do not propose an image/video/document header — you cannot supply real media.
+
+FOOTER (optional): maximum 60 characters, no variables allowed in the footer.
+
+BUTTONS (optional, at most 3 total): each of type QUICK_REPLY, URL, or PHONE_NUMBER, button text maximum 25 characters. Never mix QUICK_REPLY with URL/PHONE_NUMBER buttons in the same template — Meta rejects that combination. Only include a URL button with a real url, or a PHONE_NUMBER button with a real phoneNumber, if the admin's request explicitly gave you that value — you do not know this company's actual website or phone number, so never invent either one; prefer QUICK_REPLY or omit buttons entirely rather than fabricate a URL or phone number.
+
+Respond with ONLY a single JSON object matching this shape: { "name": string, "category": "MARKETING"|"UTILITY", "categoryReasoning": string, "bodyText": string, "bodyVariables": [{ "example": string, "description": string }], "headerText"?: string, "footerText"?: string, "buttons"?: [{ "type": "QUICK_REPLY"|"URL"|"PHONE_NUMBER", "text": string, "url"?: string, "phoneNumber"?: string }] }`;
+    },
+  },
 };
 
 // ── Cost/usage pricing ────────────────────────────────────────────────────────

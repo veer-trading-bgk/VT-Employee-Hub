@@ -8,6 +8,8 @@ import {
   ChevronDown,
   ChevronUp,
   Info,
+  Sparkles,
+  X,
 } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
@@ -19,7 +21,7 @@ import { cn } from '@/lib/cn';
 import { WhatsAppPreview } from './WhatsAppPreview';
 import { validateTemplate } from '@/lib/templates/validation';
 import { createTemplate, updateTemplate, templateKeys } from '@/lib/templates/api';
-import type { TemplateFormValues, WaTemplate, TemplateCategory, ButtonType, OtpType } from '@/lib/templates/types';
+import type { TemplateFormValues, WaTemplate, TemplateCategory, ButtonType, OtpType, AiTemplateDraft } from '@/lib/templates/types';
 import {
   CATEGORY_OPTIONS,
   LANGUAGE_OPTIONS,
@@ -81,17 +83,46 @@ function toTemplateName(displayName: string): string {
     .slice(0, 60);
 }
 
+// Maps an AI draft (POST /api/whatsapp/templates/ai-draft) onto the same
+// TemplateFormValues shape a human-typed form produces — the draft is never a
+// separate code path from here on; it goes through the exact same
+// validateTemplate()/formToComponents()/Save Draft/Submit flow as anything
+// else in this drawer. categoryReasoning is deliberately NOT part of
+// TemplateFormValues — it's a UI-only aid for the admin, never persisted.
+function applyAiDraft(draft: AiTemplateDraft): TemplateFormValues {
+  return {
+    ...defaultForm(),
+    name: draft.name,
+    templateName: toTemplateName(draft.name),
+    category: draft.category,
+    bodyText: draft.bodyText,
+    bodyVariables: draft.bodyVariables,
+    headerType: draft.headerText ? 'TEXT' : 'NONE',
+    headerText: draft.headerText ?? '',
+    footerEnabled: Boolean(draft.footerText),
+    footerText: draft.footerText ?? '',
+    buttonsEnabled: Boolean(draft.buttons?.length),
+    buttons: (draft.buttons ?? []).map((b) => ({
+      ...defaultButton(b.type),
+      text: b.text,
+      url: b.url ?? '',
+      phoneNumber: b.phoneNumber ?? '',
+    })),
+  };
+}
+
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 interface Props {
   open: boolean;
   onClose: () => void;
   editTemplate?: WaTemplate;
+  aiDraft?: AiTemplateDraft;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function TemplateCreateDrawer({ open, onClose, editTemplate }: Props) {
+export function TemplateCreateDrawer({ open, onClose, editTemplate, aiDraft }: Props) {
   const qc = useQueryClient();
   const isEdit = Boolean(editTemplate);
 
@@ -99,6 +130,8 @@ export function TemplateCreateDrawer({ open, onClose, editTemplate }: Props) {
   const [previewVisible, setPreviewVisible] = useState(false);
   const [nameManuallyEdited, setNameManuallyEdited] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [aiReasoning, setAiReasoning] = useState<string | null>(null);
+  const [aiBannerDismissed, setAiBannerDismissed] = useState(false);
 
   // Load editTemplate into form
   useEffect(() => {
@@ -150,12 +183,19 @@ export function TemplateCreateDrawer({ open, onClose, editTemplate }: Props) {
         codeExpirationMinutes: footerComp?.code_expiration_minutes ?? 10,
       });
       setNameManuallyEdited(true);
+      setAiReasoning(null);
+    } else if (aiDraft) {
+      setForm(applyAiDraft(aiDraft));
+      setNameManuallyEdited(false);
+      setAiReasoning(aiDraft.categoryReasoning);
+      setAiBannerDismissed(false);
     } else {
       setForm(defaultForm());
       setNameManuallyEdited(false);
+      setAiReasoning(null);
     }
     setSubmitted(false);
-  }, [open, editTemplate]);
+  }, [open, editTemplate, aiDraft]);
 
   // Re-sync body variables count when body text changes
   useEffect(() => {
@@ -289,6 +329,36 @@ export function TemplateCreateDrawer({ open, onClose, editTemplate }: Props) {
         {/* ── Form column ───────────────────────────────────────────────── */}
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
           <div className="flex flex-col gap-5 p-4">
+
+            {/* AI draft reasoning banner — dismissible, never re-shown once dismissed
+                for this draft. The honesty-constraint line is fixed text, not
+                AI-generated, so it can never be dropped or reworded by a model. */}
+            {aiReasoning && !aiBannerDismissed && (
+              <div className="rounded-lg border border-primary-200 bg-primary-50 p-3 dark:border-primary-900/40 dark:bg-primary-900/10">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-start gap-2">
+                    <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary-600 dark:text-primary-400" aria-hidden />
+                    <div>
+                      <p className="text-sm font-semibold text-primary-700 dark:text-primary-300">
+                        Why {form.category === 'MARKETING' ? 'Marketing' : 'Utility'}?
+                      </p>
+                      <p className="mt-0.5 text-xs text-primary-700/90 dark:text-primary-300/90">{aiReasoning}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setAiBannerDismissed(true)}
+                    aria-label="Dismiss"
+                    className="shrink-0 text-primary-400 hover:text-primary-600 dark:hover:text-primary-300"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden />
+                  </button>
+                </div>
+                <p className="mt-2 text-[11px] text-primary-600/80 dark:text-primary-400/70">
+                  AI drafts follow Meta&rsquo;s known template rules to maximize approval odds. Meta&rsquo;s review process is outside APForce&rsquo;s control and approval is never guaranteed.
+                </p>
+              </div>
+            )}
 
             {/* Validation summary */}
             {showErrors && validation.errors.length > 0 && (

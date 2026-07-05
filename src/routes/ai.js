@@ -156,3 +156,7 @@ router.get('/wallet', authMiddleware, checkRole(['admin', 'manager']), async (re
 });
 
 module.exports = router;
+// Exported so other route files that also call AIService.generate() (e.g.
+// whatsapp.js's template-creation route) translate its typed { ok: false,
+// reason, detail } result the same way, without a second copy of this switch.
+module.exports.sendAIError = sendAIError;

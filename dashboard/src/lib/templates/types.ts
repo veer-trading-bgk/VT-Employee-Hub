@@ -211,6 +211,35 @@ export interface ValidationResult {
   warnings: ValidationIssue[];
 }
 
+// ── AI-Assisted Template Creation ───────────────────────────────────────────────
+// Shape returned by POST /api/whatsapp/templates/ai-draft — mirrors the
+// 'template-creation' useCase's zod schema in src/config/aiConfig.js.
+// Deliberately MARKETING | UTILITY only — never AUTHENTICATION (Meta
+// auto-generates that body; there's nothing for the AI to draft).
+
+export interface AiTemplateDraftButton {
+  type: 'QUICK_REPLY' | 'URL' | 'PHONE_NUMBER';
+  text: string;
+  url?: string;
+  phoneNumber?: string;
+}
+
+export interface AiTemplateDraft {
+  name: string;
+  category: 'MARKETING' | 'UTILITY';
+  categoryReasoning: string;
+  bodyText: string;
+  bodyVariables: Array<{ example: string; description: string }>;
+  headerText?: string;
+  footerText?: string;
+  buttons?: AiTemplateDraftButton[];
+}
+
+export interface AiTemplateDraftResponse {
+  success: boolean;
+  draft: AiTemplateDraft;
+}
+
 // ── Filter / list state ────────────────────────────────────────────────────────
 
 export interface TemplateFilters {

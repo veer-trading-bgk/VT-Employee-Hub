@@ -20,6 +20,7 @@ const MODULES: Array<{ useCase: string; label: string; description: string }> = 
   { useCase: 'metrics-insights', label: 'My Metrics Insights', description: 'AI analysis of an employee’s own performance metrics' },
   { useCase: 'team-metrics-insights', label: 'Team Metrics Insights', description: 'AI analysis of team-wide performance, for admins and managers' },
   { useCase: 'inbox-intent-detection', label: 'Inbox Intent Detection', description: 'Classifies each new WhatsApp conversation’s likely intent (interested, complaint, KYC query, etc.)' },
+  { useCase: 'template-creation', label: 'AI-Assisted Template Creation', description: 'Drafts a Meta-compliant WhatsApp template from a plain-language description, for an admin to review before submitting' },
 ];
 
 /**
