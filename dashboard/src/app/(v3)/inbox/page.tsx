@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import {
   MessageSquare, Search, Send, MoreHorizontal, Phone,
-  CheckCheck, Check, Clock, AlertCircle, Plus, X, ChevronLeft,
+  CheckCheck, Check, Clock, AlertCircle, X, ChevronLeft,
   FileText, Download, ZoomIn,
   Loader2, ChevronDown, Lock, AlertTriangle,
 } from 'lucide-react';
@@ -465,13 +465,10 @@ function ConversationList({
     <div className="flex h-full flex-col border-r border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-950">
       {/* Header */}
       <div className="border-b border-neutral-200 px-3 py-3 dark:border-neutral-800">
-        <div className="flex items-center justify-between mb-2">
+        <div className="mb-2">
           <h1 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
             Inbox
           </h1>
-          <Button size="sm" variant="ghost" iconLeft={<Plus className="h-4 w-4" />} aria-label="New conversation">
-            New
-          </Button>
         </div>
         <div className="relative">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-400" aria-hidden />
