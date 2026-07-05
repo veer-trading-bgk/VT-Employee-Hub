@@ -652,19 +652,26 @@ All follow the same shape: `PK = CONFIG#{NAME}#{companyId}` (or the bare
   `POST /api/approvals/:id/resolve` only flips `status` and records
   `resolvedBy`/`resolvedAt`/`resolutionNote`. It never calls
   `WhatsAppSendService`, and nothing else in the codebase reacts to an approval
-  reaching `status: 'approved'`. This is intentional, not a bug: no
-  `customerFacing: true` AI use case exists yet, so `output`'s shape is
-  undefined — a future template-suggestion feature's approved output would need
-  a different `WhatsAppSendService` call than a future freeform-chat-draft
-  feature's. Building a generic "on-approve, dispatch by useCase" seam now would
-  mean guessing at schemas for features that don't exist. The correct owner for
-  "approved → send" is whichever future `customerFacing` feature actually
-  produces that output, wired in that feature's own commit.
-- **Note:** not yet populated by any real useCase — both of today's real AI
-  features (`metrics-insights`, `team-metrics-insights`) are internal analyst
-  reports (`customerFacing: false`), which never engage this gate. The queue
-  and its UI are fully built and tested ahead of that first real use case, so
-  the "invisible dead end" this section used to describe cannot recur.
+  reaching `status: 'approved'`. This is intentional, not a bug — and, as of the
+  2026-07-05 full system audit, confirmed still true even now that a real
+  `customerFacing: true` useCase exists (`inbox-template-suggestion`, "AI
+  Template Suggestions in Chat"): that feature's own commit deliberately did
+  **not** wire "approved → send" either (see `whatsapp.js`'s `POST
+  /inbox/suggest-reply` comment) — a low-confidence pick that gets held for
+  Approval simply never becomes a suggestion the agent sees; it is logged for
+  oversight only. Since routing/resolution is useCase-agnostic, this same gap
+  applies to any future `customerFacing: true` useCase that force-routes to
+  Approval, not just this one. The correct owner for "approved → send" remains
+  whichever future feature (AI Chat with Customers, etc.) actually needs a live
+  approved-suggestion pipeline, wired in that feature's own commit.
+- **Note:** now populated by a real useCase. `inbox-template-suggestion`
+  force-routes to this queue whenever its self-rated confidence falls below
+  `confidenceThreshold` (0.75) or `risk: 'high'` fires, per ADR-015 Rule 6.
+  `metrics-insights`/`team-metrics-insights`/`inbox-intent-detection`/
+  `template-creation` remain `customerFacing: false` and never engage this
+  gate. The queue and its UI were built and tested ahead of that first real use
+  case, so the "invisible dead end" this section used to describe never
+  actually occurred in production.
 
 ### 2.30 WALLET — generic prepaid balance ("points")
 

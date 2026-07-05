@@ -121,7 +121,7 @@ const result = await AIService.generate({ useCase, companyId, context, user });
 
 ---
 
-## Migration Status — DONE (2026-07-04)
+## Migration Status — original two endpoints DONE (2026-07-04); table extended as new useCases shipped (2026-07-05)
 
 `ai.js`'s two endpoints now call `AIService.generate()` instead of fetching Anthropic directly. Both preserve their exact pre-migration response shape (`{ insights, generatedAt, model }` / `{ insights, generatedAt }`) — `dashboard/src/components/ai/InsightsPanel.tsx` required zero changes.
 
@@ -129,9 +129,12 @@ const result = await AIService.generate({ useCase, companyId, context, user });
 |---|---|---|---|
 | 1 | `ai.js` `POST /insights` | Direct `fetch()` to Anthropic; hardcoded model/prompt; no `companyId` scoping in the call | **Migrated** — `AIService.generate({ useCase: 'metrics-insights', companyId, context: { metrics, period, userRole }, user })` |
 | 2 | `ai.js` `POST /team-insights` | Same | **Migrated** — `AIService.generate({ useCase: 'team-metrics-insights', companyId, ... })` |
-| 3 | AI Inbox (not yet built) | N/A — greenfield | Must call `AIService` from the first commit; no direct provider call ever written |
-| 4 | Campaign Intelligence (not yet built) | N/A — greenfield | Same |
-| 5 | AI Automation (not yet built) | N/A — greenfield | Same |
+| 3 | AI Inbox — intent classification | N/A — greenfield | **Shipped 2026-07-05** — `inbox-intent-detection`, `IntentDetectionService.js` calling `AIService.generate()`; `customerFacing: false` |
+| 4 | AI Inbox — template suggestions | N/A — greenfield | **Shipped 2026-07-05** — `inbox-template-suggestion`, `whatsapp.js` `POST /inbox/suggest-reply`; first real `customerFacing: true` useCase (Rule 6) |
+| 5 | AI-Assisted Template Creation | N/A — greenfield | **Shipped 2026-07-05** — `template-creation`, `whatsapp.js` `POST /templates/ai-draft`; `customerFacing: false`, admin-only draft an admin reviews before submitting to Meta |
+| 6 | Campaign Intelligence (not yet built) | N/A — greenfield | Must call `AIService` from the first commit; no direct provider call ever written |
+| 7 | AI Automation (not yet built) | N/A — greenfield | Same |
+| 8 | AI Chat with Customers (not yet built) | N/A — greenfield | Requirements pre-defined in `docs/adr/ADR-016-ai-chat-design-requirements.md`; blocked on a Knowledge Center prerequisite that does not exist yet |
 
 Route handlers still own request validation, RBAC (`checkRole`), and input-hygiene (role coercion, performer-list sanitisation) exactly as Rule 3's constraint requires — only the LLM call itself moved into `AIService`.
 
@@ -163,7 +166,7 @@ if (result.ok && !result.approvalRequired) {
 
 ## Rule 6 — Human-in-the-loop approval routing
 
-Per `docs/bible/ROADMAP.md`'s guiding principle "AI as an assistant, not a replacement," any `useCase` whose output is itself a customer-facing action (`customerFacing: true` in `aiConfig.js`) is gated by an approval rule: `autonomous: false` (the default) always requires human sign-off; `autonomous: true` still gets force-routed to approval when the model's self-rated confidence is below the useCase's `confidenceThreshold` or `risk: 'high'` — confidence/risk override autonomy, never the reverse. Routing (`src/services/ApprovalService.js`) accounts for the assigned employee being on leave: assignee → their `teamLeadId` if the assignee is on approved leave today → any active admin if the team lead is also unavailable → an unassigned entry in the admin queue if literally nobody is available (never silently dropped). `useCase`s that are not `customerFacing` (both of today's real use cases — internal analyst reports the requesting user reads directly) never engage this gate at all.
+Per `docs/bible/ROADMAP.md`'s guiding principle "AI as an assistant, not a replacement," any `useCase` whose output is itself a customer-facing action (`customerFacing: true` in `aiConfig.js`) is gated by an approval rule: `autonomous: false` (the default) always requires human sign-off; `autonomous: true` still gets force-routed to approval when the model's self-rated confidence is below the useCase's `confidenceThreshold` or `risk: 'high'` — confidence/risk override autonomy, never the reverse. Routing (`src/services/ApprovalService.js`) accounts for the assigned employee being on leave: assignee → their `teamLeadId` if the assignee is on approved leave today → any active admin if the team lead is also unavailable → an unassigned entry in the admin queue if literally nobody is available (never silently dropped). `useCase`s that are not `customerFacing` — `metrics-insights`, `team-metrics-insights` (internal analyst reports the requesting user reads directly), `inbox-intent-detection` (labels the conversation internally), and `template-creation` (a draft the admin reviews before ever submitting to Meta) — never engage this gate at all. `inbox-template-suggestion` is the only `customerFacing: true` useCase today (see the 2026-07-05 addendum below).
 
 **2026-07-05 — route and frontend added (`src/routes/approvals.js`, `dashboard/src/app/(v3)/approvals/page.tsx`).** Before this date, `ApprovalService.routeApproval()`/`resolveApproval()` had zero route and zero frontend — a routed approval would have sat in DynamoDB with no way for a human to ever see, approve, or reject it, and the customer would simply never get a reply with no admin ever knowing why. See `docs/bible/07_DATABASE.md` §2.29 for the full route/frontend/authorization design. **Deliberate scope boundary:** resolving an approval only flips its `status` and records who decided and when — it does not release or send the approved output anywhere. No `customerFacing` use case exists yet to define what "send this" means for its own output shape, so that wiring is left to whichever future feature (AI Template Suggestions, AI Chat with Customers, etc.) actually produces `customerFacing` output, built in that feature's own commit rather than guessed at here.
 

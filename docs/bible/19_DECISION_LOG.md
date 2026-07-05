@@ -682,11 +682,124 @@ writeup.
 
 ---
 
-## Era 11 — Dashboard AI Insights: additive widgets, /api/v3/my-work gap deliberately not fixed (2026-07-05)
+## Era 11 — ADR-015: AIService.js, the single governed AI entry point (2026-07-05)
+
+`e53c2cf` ("feat(ai): build AIService.js as the single governed entry point (ADR-015)").
+Migrates `ai.js`'s two pre-existing direct-fetch-to-Anthropic endpoints
+(`metrics-insights`, `team-metrics-insights`) onto a single
+`AIService.generate({ useCase, companyId, context, user })` entry point, backed by a new
+`src/config/aiConfig.js` useCase registry (model/prompt template/rate limit per useCase),
+mandatory `companyId` scoping, PII redaction (`src/utils/aiRedaction.js` — field denylist
+plus an unconditional PAN/Aadhaar regex scrub), and the `CONFIG#AI#{companyId}` two-level
+master/module toggle (Rule 7, checked fresh on every call, no caching). Written
+proactively, before AI Inbox, Campaign Intelligence, or AI Automation existed — same
+reasoning ADR-012/013 used for WhatsApp sending and customer identity.
+**Status:** shipped, foundational — every AI feature shipped this session builds on this
+boundary; `AIService.js` has zero `require()` dependency on `WhatsAppSendService` (Rule 5),
+enforced by a repo-grep-style test, not just prose.
+**Reference:** `docs/adr/ADR-015-ai-service-boundary.md`; commit `e53c2cf` (2026-07-05).
+
+## Era 12 — AI Intent Detection: first real feature on AIService.js (2026-07-05)
+
+`024dfe0` ("feat(ai): add AI intent detection — first real feature on AIService.js"). The
+`inbox-intent-detection` useCase classifies a WhatsApp conversation's likely intent (8
+categories — interested, complaint, kyc_query, pricing_question, etc.) once per
+conversation, fire-and-forget, mirrored onto `LEAD#METADATA`/`INBOX#CONTACT` as
+`intent`/`confidence`/`classifiedAt`. `customerFacing: false` — never engages Rule 6's
+approval gate. Surfaced as a badge on the Inbox conversation list (`6da689d`, "Item 7")
+and on Contact 360's Conversation tab.
+**Status:** shipped, live.
+**Reference:** `src/services/IntentDetectionService.js`; commit `024dfe0` (2026-07-05).
+
+## Era 13 — Approval queue: routes + frontend for ApprovalService's pre-existing routing logic (2026-07-05)
+
+`1ee7aa4` ("feat(ai): add Approval queue routes + frontend (ApprovalService's missing
+UI)"). `ApprovalService.js`'s `routeApproval()`/`resolveApproval()` (leave-aware routing:
+assignee → their `teamLeadId` if on leave → any active admin → an unassigned queue entry,
+never silently dropped) had zero route and zero frontend before this — a routed approval
+sat in DynamoDB, invisible to any human. Adds `src/routes/approvals.js` +
+`dashboard/src/app/(v3)/approvals/page.tsx` + a live pending-count badge in
+`V3Sidebar.tsx`. **Deliberate scope boundary, re-confirmed still true in the 2026-07-05
+full system audit:** resolving an approval only flips its status and records who/when —
+it does not send anything, for this or any future `customerFacing: true` useCase (see
+`docs/bible/07_DATABASE.md` §2.29).
+**Status:** shipped, live.
+**Reference:** `docs/bible/07_DATABASE.md` §2.29; commit `1ee7aa4` (2026-07-05).
+
+## Era 14 — AI-Assisted Template Creation (2026-07-05)
+
+`1df4172` ("feat(ai): add AI-Assisted Template Creation"). The `template-creation`
+useCase: an admin describes a template in plain language, AI drafts a Meta-compliant
+WhatsApp template (name/category/body/buttons) for the admin to review, edit, and submit
+— it never saves, submits to Meta, or sends anything itself. `customerFacing: false`.
+Self-caught during implementation, not by the user: the schema initially allowed a
+`PHONE_NUMBER` button type with no `phoneNumber` field for the model to actually supply,
+the same fabrication risk already guarded against for URLs — fixed before shipping.
+**Status:** shipped, live.
+**Reference:** `src/routes/whatsapp.js` `POST /templates/ai-draft`; commit `1df4172`
+(2026-07-05).
+
+## Era 15 — AI-Powered Lead Scoring: deterministic, no LLM call (2026-07-05)
+
+`f90514f` ("feat(crm): add AI-Powered Lead Scoring — deterministic, no LLM call"). A
+weighted deterministic formula (`LeadScoringService.js` — stage + intent + recency +
+urgency + value) scores every open lead into `priorityScore`/`priorityTier` (hot ≥70,
+warm ≥40), recomputed on a self-throttling ~60-minute cycle riding the existing 5-minute
+`CampaignScheduler` EventBridge rule rather than provisioning new AWS infrastructure
+(`LeadScoringScheduler.js`). **Deliberately not an `AIService` useCase** — recurring
+per-lead-per-cycle scoring is the wrong shape for a per-item LLM call, since cost/latency
+would scale unbounded with leads × cycles, unlike every genuine `AIService` useCase which
+is bounded by one real, human-triggered event. Retires `CrmTab.tsx`'s ad hoc
+`derivePriority()` heuristic in favor of this single persisted source of truth, and fixes
+a real, previously-dormant List View sort bug found along the way (the sort-column chevron
+updated but nothing ever actually reordered the list).
+**Status:** shipped, live.
+**Reference:** `src/services/LeadScoringService.js`, `LeadScoringScheduler.js`; commit
+`f90514f` (2026-07-05).
+
+## Era 16 — AI Template Suggestions in Chat: first real customerFacing:true useCase (2026-07-05)
+
+`a7bf409` ("feat(ai): add AI Template Suggestions in Chat — first real customerFacing:true
+useCase"). The `inbox-template-suggestion` useCase: an agent clicks "Suggest a reply" in
+the Inbox composer; AI picks from the live APPROVED template registry only (never authors
+free text) and pre-fills its variables; the agent reviews and sends themselves.
+`customerFacing: true`, `autonomous: true` — the agent's own review-then-send click already
+is the human-in-the-loop this rule exists to guarantee; the model's own self-rated
+`confidence` (`confidenceThreshold: 0.75`) is the real per-call safety net, force-routing a
+low-confidence pick to the Approval queue instead (which, per Era 13's scope boundary, does
+not then send anything — the composer simply shows no suggestion for that click). First
+real use of `AIService`'s `conversationHistory` parameter by any useCase.
+**Status:** shipped, live.
+**Reference:** `docs/adr/ADR-015-ai-service-boundary.md` Rule 6 addendum; commit `a7bf409`
+(2026-07-05).
+
+## Era 17 — ADR-016: AI Chat with Customers, pre-implementation requirements (drafted 2026-07-05, committed 2026-07-05)
+
+Written during the same 2026-07-05 full AI audit that produced Eras 11-16, as a proactive,
+not-yet-authorized requirements doc for a future full multi-turn AI conversation feature —
+the same reasoning ADR-015 itself used for features that didn't exist yet. Three binding
+requirements once picked up: (1) default `autonomous: true` with Rule 6 as the only safety
+net — no second approval mechanism; (2) a superadmin-only per-conversation exchange cap
+(default 7), zero company-facing visibility, a deliberately different governance shape from
+`CONFIG#AI#`'s company-facing toggles; (3) intent-first routing — check
+`inbox-intent-detection`'s existing classification and answer via an existing template
+before ever starting a full AI conversation. **Hard blocker, explicitly not cleared by this
+ADR:** no Knowledge Center (FAQ store, document repository, or vector store) exists
+anywhere in the codebase; do not start this feature until that's resolved.
+**Status:** requirements accepted and binding whenever the feature is picked up; the
+feature itself has not been started. Drafted same-day but left uncommitted until the
+2026-07-05 full system audit found it still untracked — committed as-is, then had one
+stale claim (`conversationHistory` "not yet used by any real useCase") corrected once
+Era 16 made it inaccurate.
+**Reference:** `docs/adr/ADR-016-ai-chat-design-requirements.md`.
+
+---
+
+## Era 18 — Dashboard AI Insights: additive widgets, /api/v3/my-work gap deliberately not fixed (2026-07-05)
 
 **What:** `/home` (title "My Work") gained a new "AI insights" section with two widgets:
 a Lead Priority Distribution (hot/warm/cold share of pipeline, via `priorityTier` —
-Era-9-adjacent `LeadScoringScheduler` output) and an Approvals Pending count/link. Both
+Era 15's `LeadScoringScheduler` output) and an Approvals Pending count/link. Both
 read their own small, targeted queries (`/api/contacts?pageSize=500`, reusing
 `sales-contacts` as the query key to share cache with `sales/page.tsx`; and
 `/api/approvals?status=pending`, reusing `approvals-badge-count` to share cache with
@@ -790,7 +903,7 @@ already fully enforced just because an ADR exists.
 
 6. **`/home`'s primary data source, `GET /api/v3/my-work`, does not exist.** First found
    and partially patched (crash only) in `508f992` (2026-07-02); re-confirmed still
-   missing during the 2026-07-05 Dashboard Audit (Era 11). Every widget fed by this query
+   missing during the 2026-07-05 Dashboard Audit (Era 18). Every widget fed by this query
    — Urgent Replies, Overdue Follow-ups, Today's Follow-ups, Recent Contacts, all 4 KPI
    cards — has always rendered on empty/zero `placeholderData` in production, with no
    visible error to the user. The 2026-07-05 AI Insights work deliberately did not fix
@@ -805,3 +918,59 @@ already fully enforced just because an ADR exists.
    framing against git history. Treat the V3 UI overhaul's *technical* shape (design
    tokens, component library, `(v3)` route group) as verified fact, and any
    "business operating system" branding language as unverified framing.
+
+8. ~~**`AISection.tsx`'s `MODULES` array was missing `inbox-template-suggestion`.**~~
+   **Resolved 2026-07-05.** Found during the full system audit: the hand-maintained
+   array (`dashboard/src/components/v3/settings/AISection.tsx`) listed only 4 of the 5
+   live useCases, leaving admins with no per-feature toggle for
+   `inbox-template-suggestion` — only the master AI kill switch, which disables every
+   AI feature at once. Fixed same-day by adding the missing entry. This class of gap
+   (a hand-maintained registry mirror silently falling behind `aiConfig.js`) has no
+   structural guard against recurring the next time a useCase ships — worth a lint rule
+   or generated list if a 6th useCase is ever added.
+
+9. **The Approval queue's "approve → send" gap is a standing, deliberate architectural
+   gap, not a bug awaiting a fix.** Confirmed twice now — once when the queue itself
+   was built (Era 13), once again when the first real `customerFacing: true` useCase
+   shipped and still didn't close it (Era 16), and re-verified a third time in the
+   2026-07-05 full system audit with no change. `POST /api/approvals/:id/resolve` only
+   flips status; nothing in the codebase reacts to `status: 'approved'`. This applies
+   to any future `customerFacing: true` useCase that force-routes to Approval, not just
+   `inbox-template-suggestion` — there is no per-useCase send-dispatch mechanism at all
+   today. Whoever builds the next `customerFacing` feature needing a live
+   approved-suggestion pipeline (ADR-016's "AI Chat with Customers" is the most likely
+   candidate) owns closing this, in that feature's own commit.
+
+10. **`wonAt` is permanently null — no code anywhere sets it to a real value.** One of
+    `crm.js`'s own documented "reserved future-ready fields" (`07_DATABASE.md` §2.1),
+    confirmed via a repo-wide grep in the 2026-07-05 full system audit: every write
+    site either initializes it to `null` or preserves an existing (always-null) value.
+    Concrete consequence: `LeadScoringService.js`'s `isClosedLead()` checks
+    `lead.stage === 'lost' || Boolean(lead.wonAt)` — the second half of that OR is dead
+    code in practice today, since `wonAt` never holds a truthy value. Only
+    stage-based lost-detection actually fires. Not a regression from tonight's Lead
+    Scoring work — the field was already unpopulated before that feature was built;
+    Lead Scoring's formula just inherited the gap.
+
+11. **`HealthScoreBadge` remains dormant, hardcoded `aiEnabled={false}` at both call
+    sites** (`dashboard/src/components/contacts/ContactHeader.tsx`), fed a
+    `contact.healthScore` field nothing ever populates. Documented as a fast-follow
+    candidate when found during the Lead Scoring work (2026-07-03) and re-confirmed
+    unchanged in the 2026-07-05 full system audit. A near-identical hot/warm/cold
+    0-100 concept to `LeadScoringScheduler`'s `priorityTier`/`priorityScore` already
+    exists and is live (`PriorityBadge.tsx`) — whether `HealthScoreBadge` should be
+    wired to that same data or represents a genuinely separate metric is an open
+    product question, not yet decided.
+
+12. **135 pre-existing ESLint problems (57 errors, 78 warnings) across ~20 dashboard
+    files, confirmed via `git blame` to predate the 2026-07-05 session entirely** (the
+    flagged lines trace to `2026-06-30`/`2026-07-01` commits — the V3 rollout and its
+    immediate aftermath). Found via a full, non-incremental `eslint` run across
+    `dashboard/src/` during the full system audit — `next build` does not catch these
+    (this Next 16/Turbopack setup does not run ESLint as part of `next build` at all;
+    confirmed by direct inspection of a fresh build's log). Mostly the newer
+    `react-hooks/set-state-in-effect` / `react-hooks/purity` / `react-hooks/refs` /
+    `react-hooks/static-components` rules bundled with the current `eslint-config-next`
+    version — none introduced by anything shipped this session; every file this
+    session's features touched is clean. Tracked as known debt, not new breakage — a
+    literal `npm run lint` would surface all 135 today.
