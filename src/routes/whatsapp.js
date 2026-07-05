@@ -17,6 +17,7 @@ const AIService = require('../services/AIService');
 const { sendAIError } = require('./ai');
 const WASendSvc            = require('../services/WhatsAppSendService');
 const TagService           = require('../services/TagService');
+const ContactService       = require('../services/ContactService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
 const { welcomeConfigSchema, delayedResponseConfigSchema, workingHoursConfigSchema, oooConfigSchema, branchSchema } = require('../utils/validation');
 const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
@@ -2764,6 +2765,149 @@ router.post('/send-template', authMiddleware, rateLimit(20, 60_000), async (req,
   } catch (err) {
     logger.error('send-template error', err?.response?.data ?? err.message);
     if (err.status) return res.status(err.status).json({ error: err.message });
+    next(err);
+  }
+});
+
+// Converts a raw MSG# item into text for AIService's conversationHistory —
+// non-text message types get a bracketed summary rather than raw/empty content.
+function _messageSummary(m) {
+  if (!m.type || m.type === 'text') return m.content ?? '';
+  if (m.type === 'template') return `[Template sent: ${m.content || m.templateId || ''}]`.trim();
+  if (m.type === 'interactive') return `[Interactive message: ${m.content ?? ''}]`.trim();
+  return `[${m.type}]`;
+}
+
+// ── POST /api/whatsapp/inbox/suggest-reply — AI Template Suggestions in Chat ──
+// customerFacing: true, autonomous: true (aiConfig.js) — the agent viewing this
+// conversation clicked "Suggest a reply" themselves; they review and explicitly
+// send. A low-confidence pick force-routes to Approval instead (ADR-015 Rule 6)
+// and simply isn't returned here as a suggestion — no send-from-Approval
+// pipeline exists in v1 (deliberate boundary, see docs/bible/07_DATABASE.md).
+// Same leadPK > leadId > phone target-resolution shape as /send-template above,
+// reusing WhatsAppSendService.resolveContact() rather than a second lookup.
+router.post('/inbox/suggest-reply', authMiddleware, rateLimit(30, 60_000), async (req, res, next) => {
+  try {
+    const { leadId, leadPK: leadPK0, phone } = req.body;
+    const target = leadPK0 ? { leadPK: leadPK0 }
+                 : leadId  ? { leadId }
+                 : phone   ? { phone }
+                 : null;
+    if (!target) {
+      return res.status(400).json({ error: 'leadId, leadPK, or phone is required' });
+    }
+
+    const companyId = req.user.companyId;
+    const contact = await WASendSvc.resolveContact(companyId, target);
+
+    // Same RBAC rule WhatsAppSendService's own _assertSendPermission enforces
+    // for actually sending — telecaller/agent/intern may only act on leads
+    // assigned to them. Inlined rather than reaching into that private method.
+    const RESTRICTED_ROLES = new Set(['telecaller', 'agent', 'intern']);
+    if (RESTRICTED_ROLES.has(req.user.role) && contact.isLead && contact.leadItem?.assignedTo !== req.user.id) {
+      return res.status(403).json({ error: 'Not your lead' });
+    }
+
+    // Intent/confidence — already mirrored onto LEAD#/INBOX# by
+    // IntentDetectionService; reused as a soft signal in the prompt, never
+    // reclassified here.
+    let priorIntent = null;
+    let priorIntentConfidence = null;
+    if (contact.isLead) {
+      priorIntent = contact.leadItem?.intent ?? null;
+      priorIntentConfidence = contact.leadItem?.confidence ?? null;
+    } else {
+      const inboxRes = await dynamodb.get({ TableName: TABLE, Key: { PK: contact.pk, SK: 'CONTACT' } }).promise();
+      priorIntent = inboxRes.Item?.intent ?? null;
+      priorIntentConfidence = inboxRes.Item?.confidence ?? null;
+    }
+
+    // preferredLanguage lives on the separate, Phase-2 unified CONTACT# entity
+    // — only fetch it when this lead is actually linked to one (contactId is
+    // null for most leads today, per crm.js's own comment on background
+    // linkage), rather than forcing a lookup that will usually miss.
+    let preferredLanguage = null;
+    if (contact.leadItem?.contactId) {
+      const contactProfile = await ContactService.getContact(companyId, contact.leadItem.contactId).catch(() => null);
+      preferredLanguage = contactProfile?.preferredLanguage ?? null;
+    }
+
+    // Recent messages — same MSG# query shape crm.js's GET /leads/:id already
+    // uses, reversed to chronological order for AIService's conversationHistory.
+    const msgRes = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :pfx)',
+      ExpressionAttributeValues: { ':pk': contact.pk, ':pfx': 'MSG#' },
+      ScanIndexForward: false,
+      Limit: 10,
+    }).promise();
+    const recentMessages = (msgRes.Items ?? []).slice().reverse();
+    const conversationHistory = recentMessages.map((m) => ({
+      role: m.direction === 'inbound' ? 'user' : 'assistant',
+      content: _messageSummary(m),
+    }));
+    const latestInbound = [...recentMessages].reverse().find((m) => m.direction === 'inbound');
+    const latestMessage = latestInbound ? _messageSummary(latestInbound) : '';
+
+    // Approved templates only — same filter ComposerToolbar's own Templates panel applies.
+    const tmplRes = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: { ':pk': `CONFIG#TMPL#${companyId}`, ':sk': 'TMPL#' },
+    }).promise();
+    const approvedTemplates = (tmplRes.Items ?? []).filter((t) => t.status === 'APPROVED');
+    if (approvedTemplates.length === 0) {
+      return res.json({ success: true, hasSuggestion: false, reason: 'no_approved_templates' });
+    }
+
+    const result = await AIService.generate({
+      useCase: 'inbox-template-suggestion',
+      companyId,
+      context: {
+        latestMessage,
+        priorIntent,
+        priorIntentConfidence,
+        preferredLanguage,
+        templates: approvedTemplates.map((t) => ({
+          id: t.id, name: t.name, category: t.category, language: t.language,
+          bodyPreview: t.bodyPreview, variables: t.variables ?? [],
+        })),
+      },
+      conversationHistory,
+      user: req.user,
+      assigneeId: req.user.id,
+    });
+
+    if (!result.ok) return sendAIError(res, result);
+
+    // Held for Approval (low confidence or high risk) — no send-from-Approval
+    // pipeline in v1; the composer simply shows no suggestion for this click.
+    if (result.approvalRequired) {
+      return res.json({ success: true, hasSuggestion: false, reason: 'pending_approval' });
+    }
+
+    if (!result.data.hasSuggestion) {
+      return res.json({ success: true, hasSuggestion: false, reason: 'no_good_fit' });
+    }
+
+    // Validate the model's pick against the real registry — never trust a
+    // templateId or variable count that wasn't actually offered to it.
+    const chosen = approvedTemplates.find((t) => t.id === result.data.templateId);
+    if (!chosen || (result.data.variableValues ?? []).length !== (chosen.variables ?? []).length) {
+      return res.json({ success: true, hasSuggestion: false, reason: 'invalid_model_output' });
+    }
+
+    res.json({
+      success: true,
+      hasSuggestion: true,
+      template: { id: chosen.id, name: chosen.name, bodyPreview: chosen.bodyPreview, variables: chosen.variables ?? [] },
+      variableValues: result.data.variableValues,
+      reasoning: result.data.reasoning,
+      confidence: result.data.confidence,
+    });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    logger.error('inbox/suggest-reply error', err.message);
     next(err);
   }
 });

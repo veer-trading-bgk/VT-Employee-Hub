@@ -212,6 +212,77 @@ BUTTONS (optional, at most 3 total): each of type QUICK_REPLY, URL, or PHONE_NUM
 Respond with ONLY a single JSON object matching this shape: { "name": string, "category": "MARKETING"|"UTILITY", "categoryReasoning": string, "bodyText": string, "bodyVariables": [{ "example": string, "description": string }], "headerText"?: string, "footerText"?: string, "buttons"?: [{ "type": "QUICK_REPLY"|"URL"|"PHONE_NUMBER", "text": string, "url"?: string, "phoneNumber"?: string }] }`;
     },
   },
+
+  // AI Template Suggestions in Chat — an agent viewing a conversation clicks
+  // "Suggest a reply"; the AI picks the best-fitting APPROVED template from the
+  // existing registry (never authors free text — v1 is deliberately template-
+  // only) and fills its variables. customerFacing: true — unlike
+  // template-creation, there is only ONE checkpoint between this output and the
+  // customer: the agent's own send click. autonomous: true because that click
+  // IS the human-in-the-loop the approval gate exists to provide; confidence
+  // (self-rated by the model, required below) is the real per-call safety net —
+  // a low-confidence pick still force-routes to Approval (ADR-015 Rule 6) and
+  // simply isn't returned to the composer as a suggestion. No send-from-Approval
+  // pipeline exists — a held suggestion is logged for oversight only, it never
+  // auto-sends, and the agent sees no suggestion for that click (same as if the
+  // feature didn't fire at all).
+  'inbox-template-suggestion': {
+    model: 'claude-haiku-4-5-20251001',
+    maxTokens: 500,
+    promptVersion: 'v1',
+    outputMode: 'json',
+    schema: z.object({
+      hasSuggestion: z.boolean(),
+      templateId: z.string().optional(),
+      variableValues: z.array(z.string()).optional(),
+      reasoning: z.string().min(1).max(300),
+      confidence: z.number().min(0).max(1),
+    }).refine(
+      (data) => !data.hasSuggestion || typeof data.templateId === 'string',
+      { message: 'templateId is required when hasSuggestion is true' },
+    ),
+    customerFacing: true,
+    approval: { risk: 'medium', autonomous: true, confidenceThreshold: 0.75 },
+    localeAware: false, // output is a structured pick, not generated prose —
+                         // preferredLanguage is passed as an explicit soft
+                         // ranking preference in context instead (below)
+    rateLimit: { limit: 30, windowMs: 60_000 }, // between template-creation's 10
+                                                 // (single admin, rare) and
+                                                 // inbox-intent-detection's 60
+                                                 // (automatic, every conversation)
+                                                 // — multiple agents can click
+                                                 // this concurrently, but it's
+                                                 // still a deliberate per-click
+                                                 // action, not per-message traffic
+    promptTemplate: (context) => {
+      const { latestMessage, priorIntent, priorIntentConfidence, preferredLanguage, templates } = context;
+      const templateList = (templates ?? []).map((t, i) =>
+        `${i + 1}. id="${t.id}" name="${t.name}" category=${t.category} language=${t.language}\n   body: ${t.bodyPreview}\n   variables (in order): ${t.variables?.length ? t.variables.join(', ') : 'none'}`
+      ).join('\n\n');
+
+      return `You are an assistant helping a customer support agent at a fintech company (VT Trading) reply to a WhatsApp conversation. An agent explicitly asked for a suggested reply while looking at this conversation — they will review whatever you suggest and decide themselves whether to send it, edit it, or ignore it.
+
+You may ONLY suggest one of the pre-approved templates listed below — never write new customer-facing text yourself. If none of them genuinely fit well, say so honestly rather than forcing a weak pick.
+
+${priorIntent ? `This conversation was earlier classified as intent="${priorIntent}" (confidence ${priorIntentConfidence ?? 'unknown'}) — this may or may not still reflect what the customer is asking right now. Treat it as one signal among several, not as fact.` : 'No prior intent classification is available for this conversation.'}
+
+${preferredLanguage ? `This contact's preferred language is "${preferredLanguage}" — if multiple templates fit equally well, prefer one in this language.` : ''}
+
+CUSTOMER'S MOST RECENT MESSAGE:
+"""
+${latestMessage || '(no recent inbound message)'}
+"""
+
+AVAILABLE APPROVED TEMPLATES:
+${templateList || '(no approved templates exist for this company)'}
+
+Pick the single best-fitting template for replying to this customer right now, and provide a realistic value for each of its variables in order, based on the actual conversation — never a placeholder like "value 1". If nothing fits well, set hasSuggestion to false and omit templateId/variableValues.
+
+Set confidence to how genuinely sure you are this specific template is a good reply to send as-is — this determines whether the agent sees your suggestion directly or it's held back for a second review, so do not inflate it.
+
+Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"?: string, "variableValues"?: string[], "reasoning": string, "confidence": number }`;
+    },
+  },
 };
 
 // ── Cost/usage pricing ────────────────────────────────────────────────────────

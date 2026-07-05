@@ -157,3 +157,97 @@ describe('aiConfig — template-creation useCase', () => {
     expect(cfg.localeAware).toBe(false);
   });
 });
+
+describe('aiConfig — inbox-template-suggestion useCase', () => {
+  const cfg = AI_CONFIG['inbox-template-suggestion'];
+
+  const VALID_SUGGESTION = {
+    hasSuggestion: true,
+    templateId: 'tmpl_1',
+    variableValues: ['Ravi', 'POL-9821'],
+    reasoning: 'Customer is asking about a pending KYC document — this template matches directly.',
+    confidence: 0.9,
+  };
+
+  const NO_SUGGESTION = {
+    hasSuggestion: false,
+    reasoning: 'None of the available templates address a general complaint like this.',
+    confidence: 0.9,
+  };
+
+  test('is registered with json output mode', () => {
+    expect(cfg).toBeDefined();
+    expect(cfg.outputMode).toBe('json');
+  });
+
+  test('customerFacing: true — unlike template-creation, only one checkpoint (the agent\'s send click) sits between this output and the customer', () => {
+    expect(cfg.customerFacing).toBe(true);
+  });
+
+  test('autonomous: true with a confidence threshold — the agent reviewing the chip is the human-in-the-loop, confidence is the real per-call safety net', () => {
+    expect(cfg.approval).toEqual({ risk: 'medium', autonomous: true, confidenceThreshold: 0.75 });
+  });
+
+  test('schema accepts a valid suggestion with a templateId and matching variableValues', () => {
+    expect(cfg.schema.safeParse(VALID_SUGGESTION).success).toBe(true);
+  });
+
+  test('schema accepts hasSuggestion: false with no templateId/variableValues', () => {
+    expect(cfg.schema.safeParse(NO_SUGGESTION).success).toBe(true);
+  });
+
+  test('schema rejects hasSuggestion: true with no templateId (the .refine() cross-field check)', () => {
+    const { templateId, ...withoutTemplateId } = VALID_SUGGESTION;
+    expect(cfg.schema.safeParse(withoutTemplateId).success).toBe(false);
+  });
+
+  test('schema rejects a confidence outside 0-1', () => {
+    expect(cfg.schema.safeParse({ ...VALID_SUGGESTION, confidence: 1.5 }).success).toBe(false);
+    expect(cfg.schema.safeParse({ ...VALID_SUGGESTION, confidence: -0.1 }).success).toBe(false);
+  });
+
+  test('schema rejects a missing reasoning', () => {
+    const { reasoning, ...withoutReasoning } = VALID_SUGGESTION;
+    expect(cfg.schema.safeParse(withoutReasoning).success).toBe(false);
+  });
+
+  test('promptTemplate embeds the latest message, available templates, and instructs template-only, never free text', () => {
+    const prompt = cfg.promptTemplate({
+      latestMessage: 'Can you tell me about the renewal process?',
+      priorIntent: null,
+      priorIntentConfidence: null,
+      preferredLanguage: null,
+      templates: [
+        { id: 'tmpl_1', name: 'KYC Reminder', category: 'UTILITY', language: 'en', bodyPreview: 'Your KYC is pending', variables: ['name'] },
+      ],
+    });
+    expect(prompt).toContain('Can you tell me about the renewal process?');
+    expect(prompt).toContain('id="tmpl_1"');
+    expect(prompt).toContain('KYC Reminder');
+    expect(prompt).toMatch(/never write new customer-facing text/i);
+  });
+
+  test('promptTemplate surfaces prior intent as a soft signal, explicitly caveated as possibly stale', () => {
+    const prompt = cfg.promptTemplate({
+      latestMessage: 'test', templates: [],
+      priorIntent: 'kyc_query', priorIntentConfidence: 0.8, preferredLanguage: null,
+    });
+    expect(prompt).toContain('intent="kyc_query"');
+    expect(prompt).toMatch(/may or may not still reflect/i);
+  });
+
+  test('promptTemplate mentions preferredLanguage only when it is set', () => {
+    const withLang = cfg.promptTemplate({ latestMessage: 'x', templates: [], priorIntent: null, priorIntentConfidence: null, preferredLanguage: 'hi' });
+    const withoutLang = cfg.promptTemplate({ latestMessage: 'x', templates: [], priorIntent: null, priorIntentConfidence: null, preferredLanguage: null });
+    expect(withLang).toContain('preferred language is "hi"');
+    expect(withoutLang).not.toContain('preferred language is');
+  });
+
+  test('has a rate limit between template-creation\'s single-admin cadence and inbox-intent-detection\'s automatic cadence', () => {
+    expect(cfg.rateLimit).toEqual({ limit: 30, windowMs: 60_000 });
+  });
+
+  test('localeAware is false — output is a structured template pick, not generated prose', () => {
+    expect(cfg.localeAware).toBe(false);
+  });
+});
