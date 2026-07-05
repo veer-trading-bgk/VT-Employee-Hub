@@ -3,10 +3,13 @@
 import { useState } from 'react';
 import {
   MessageCircle, UserPlus, GitMerge, Tag, CheckSquare, Timer, Square,
-  Zap, ChevronDown, Plus, Trash2, ChevronUp, Edit2, X, Hash,
+  Zap, ChevronDown, Plus, Trash2, ChevronUp, Edit2, X, Hash, Webhook, Copy, RefreshCw,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/cn';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
+import { useAuth } from '@/context/AuthContext';
+import { API_URL } from '@/lib/api';
 import {
   type WorkflowTrigger, type WorkflowStep, type ActionType,
   type TriggerType, type KeywordMatchMode, type KeywordTriggerConfig,
@@ -30,6 +33,7 @@ export const ACTION_ICONS: Record<string, React.ElementType> = {
   tag_added:                    Tag,
   campaign_completed:           Zap,
   keyword_message:              Hash,
+  inbound_webhook:              Webhook,
 };
 
 const newId = () => `step-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -40,10 +44,13 @@ interface WorkflowBuilderProps {
   steps:           WorkflowStep[];
   onTriggerChange: (t: WorkflowTrigger) => void;
   onStepsChange:   (s: WorkflowStep[]) => void;
+  // Undefined for a not-yet-saved workflow — inbound_webhook's URL needs a real
+  // workflow id, so its config UI shows a "save first" placeholder until then.
+  workflowId?:     string;
 }
 
 // ── Main builder ─────────────────────────────────────────────────────────────
-export function WorkflowBuilder({ trigger, steps, onTriggerChange, onStepsChange }: WorkflowBuilderProps) {
+export function WorkflowBuilder({ trigger, steps, onTriggerChange, onStepsChange, workflowId }: WorkflowBuilderProps) {
   const [editingTrigger,  setEditingTrigger]  = useState(false);
   const [editingStepId,   setEditingStepId]   = useState<string | null>(null);
   const [addingStep,      setAddingStep]       = useState(false);
@@ -102,7 +109,7 @@ export function WorkflowBuilder({ trigger, steps, onTriggerChange, onStepsChange
         isMovable={false}
       >
         {editingTrigger && (
-          <TriggerEditor trigger={trigger} onChange={onTriggerChange} />
+          <TriggerEditor trigger={trigger} onChange={onTriggerChange} workflowId={workflowId} />
         )}
       </StepCard>
 
@@ -311,9 +318,9 @@ function Connector() {
 // Exported so the branching canvas's TriggerConfigPanel can reuse this exact
 // same editor (and dropdown) rather than building a second one — the canvas's
 // TriggerNode has no config UI of its own, this is the only trigger editor.
-export function TriggerEditor({ trigger, onChange }: { trigger: WorkflowTrigger; onChange: (t: WorkflowTrigger) => void }) {
+export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: WorkflowTrigger; onChange: (t: WorkflowTrigger) => void; workflowId?: string }) {
   const TRIGGER_OPTIONS: TriggerType[] = [
-    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added', 'keyword_message',
+    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added', 'keyword_message', 'inbound_webhook',
   ];
 
   function addCondition() {
@@ -354,6 +361,10 @@ export function TriggerEditor({ trigger, onChange }: { trigger: WorkflowTrigger;
           config={trigger.config ?? { matchMode: 'contains', keywords: [''], caseSensitive: false }}
           onChange={(config) => onChange({ ...trigger, config })}
         />
+      )}
+
+      {trigger.type === 'inbound_webhook' && (
+        <WebhookConfigFields trigger={trigger} onChange={onChange} workflowId={workflowId} />
       )}
 
       {/* Conditions */}
@@ -498,6 +509,69 @@ function KeywordConfigFields({ config, onChange }: { config: KeywordTriggerConfi
 
       <p className="text-[11px] text-neutral-400">
         Also matches when a customer taps a button or list option with matching text.
+      </p>
+    </div>
+  );
+}
+
+// ── Inbound webhook trigger config — read-only URL (companyId/workflowId are
+// baked into the path itself; the token is the actual bearer credential, see
+// automations.js's handleInboundWebhook). The URL only exists once the workflow
+// has been saved at least once with this trigger type — workflowId is undefined
+// for a brand-new, not-yet-saved workflow, and webhookToken is undefined until
+// the server has generated and returned one.
+function WebhookConfigFields({ trigger, onChange, workflowId }: {
+  trigger:     WorkflowTrigger;
+  onChange:    (t: WorkflowTrigger) => void;
+  workflowId?: string;
+}) {
+  const { user } = useAuth();
+  const webhookUrl = workflowId && trigger.webhookToken
+    ? `${API_URL}/api/automations/webhook/${user?.companyId}/${workflowId}/${trigger.webhookToken}`
+    : null;
+
+  function copyUrl() {
+    if (!webhookUrl) return;
+    navigator.clipboard.writeText(webhookUrl)
+      .then(() => toast.success('Webhook URL copied'))
+      .catch(() => toast.error('Could not copy — copy it manually'));
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+      <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400">Webhook URL</label>
+      {webhookUrl ? (
+        <>
+          <div className="flex items-center gap-2">
+            <input readOnly value={webhookUrl} className={cn(inputCls, 'flex-1 truncate font-mono text-[11px]')} />
+            <button
+              type="button"
+              onClick={copyUrl}
+              className="shrink-0 rounded-lg border border-neutral-200 p-1.5 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800"
+              aria-label="Copy webhook URL"
+            >
+              <Copy className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => onChange({ ...trigger, regenerateToken: true })}
+            disabled={trigger.regenerateToken}
+            className="flex items-center gap-1.5 text-xs font-medium text-primary-600 hover:text-primary-700 disabled:opacity-50 dark:text-primary-400"
+          >
+            <RefreshCw className="h-3.5 w-3.5" /> {trigger.regenerateToken ? 'Will regenerate on save' : 'Regenerate URL'}
+          </button>
+          {trigger.regenerateToken && (
+            <p className="text-[11px] text-warning-600 dark:text-warning-400">
+              Save to apply. The current URL above keeps working until then; afterward, anything still posting to it will get a 404.
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="text-[11px] text-neutral-400">Save this workflow to generate its webhook URL.</p>
+      )}
+      <p className="text-[11px] text-neutral-400">
+        POST JSON {'{ phone, name?, email? }'} to this URL to run this workflow for that contact.
       </p>
     </div>
   );

@@ -3,7 +3,7 @@
 import { Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { ConditionBranch } from '@/types/automations';
-import { inputCls, selectCls } from './ActionEditor';
+import { inputCls } from './ActionEditor';
 
 // Same interaction pattern as ButtonListEditor.tsx's ReplyButtonList (add/remove row
 // list, capped count) — not the same component, since a condition branch's shape
@@ -13,16 +13,13 @@ import { inputCls, selectCls } from './ActionEditor';
 const newBranchKey = () => `branch-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
 interface BranchListEditorProps {
-  mode:             'field_match' | 'button_reply';
-  value:            ConditionBranch[];
-  onChange:         (v: ConditionBranch[]) => void;
-  maxBranches?:     number; // button_reply: 3 (Meta's reply-button cap); field_match: uncapped
-  // When set (an upstream 'send_buttons' node was found), button_reply branches pick
-  // from these real buttons via dropdown instead of a freeform, error-prone text id.
-  upstreamButtons?: Array<{ id: string; title: string }>;
+  mode:         'field_match' | 'button_reply';
+  value:        ConditionBranch[];
+  onChange:     (v: ConditionBranch[]) => void;
+  maxBranches?: number; // button_reply: 3 (Meta's reply-button cap); field_match: uncapped
 }
 
-export function BranchListEditor({ mode, value, onChange, maxBranches, upstreamButtons }: BranchListEditorProps) {
+export function BranchListEditor({ mode, value, onChange, maxBranches }: BranchListEditorProps) {
   function addBranch() {
     if (maxBranches && value.length >= maxBranches) return;
     onChange([...value, { key: newBranchKey(), label: '', ...(mode === 'field_match' ? { value: '' } : { buttonId: '' }) }]);
@@ -35,52 +32,32 @@ export function BranchListEditor({ mode, value, onChange, maxBranches, upstreamB
   }
 
   const atCap = maxBranches != null && value.length >= maxBranches;
-  const hasUpstreamButtons = mode === 'button_reply' && !!upstreamButtons?.length;
 
   return (
     <div className="space-y-2">
       {value.map((branch, idx) => (
         <div key={branch.key} className="flex items-center gap-2 rounded-lg border border-neutral-200 bg-white p-2 dark:border-neutral-700 dark:bg-neutral-900">
-          {hasUpstreamButtons ? (
-            // Picking from the upstream node's real buttons sets label + buttonId
-            // together — retyping a duplicate label from a dropdown pick is just a
-            // second place for the two to drift out of sync.
-            <select
-              value={branch.buttonId ?? ''}
-              onChange={(e) => {
-                const picked = upstreamButtons!.find((b) => b.id === e.target.value);
-                updateBranch(idx, { buttonId: picked?.id ?? '', label: picked?.title ?? '' });
-              }}
-              className={cn(selectCls, 'flex-1')}
-            >
-              <option value="">Select a button…</option>
-              {upstreamButtons!.map((b) => <option key={b.id} value={b.id}>{b.title}</option>)}
-            </select>
+          <input
+            value={branch.label ?? ''}
+            onChange={(e) => updateBranch(idx, { label: e.target.value })}
+            placeholder={mode === 'button_reply' ? 'Button text' : 'Branch label'}
+            maxLength={mode === 'button_reply' ? 20 : undefined}
+            className={cn(inputCls, 'w-36 shrink-0')}
+          />
+          {mode === 'field_match' ? (
+            <input
+              value={branch.value ?? ''}
+              onChange={(e) => updateBranch(idx, { value: e.target.value })}
+              placeholder="Comparison value (e.g. won)"
+              className={cn(inputCls, 'flex-1')}
+            />
           ) : (
-            <>
-              <input
-                value={branch.label ?? ''}
-                onChange={(e) => updateBranch(idx, { label: e.target.value })}
-                placeholder={mode === 'button_reply' ? 'Button text' : 'Branch label'}
-                maxLength={mode === 'button_reply' ? 20 : undefined}
-                className={cn(inputCls, 'w-36 shrink-0')}
-              />
-              {mode === 'field_match' ? (
-                <input
-                  value={branch.value ?? ''}
-                  onChange={(e) => updateBranch(idx, { value: e.target.value })}
-                  placeholder="Comparison value (e.g. won)"
-                  className={cn(inputCls, 'flex-1')}
-                />
-              ) : (
-                <input
-                  value={branch.buttonId ?? ''}
-                  onChange={(e) => updateBranch(idx, { buttonId: e.target.value })}
-                  placeholder="Button id (must match the id sent earlier in this workflow)"
-                  className={cn(inputCls, 'flex-1')}
-                />
-              )}
-            </>
+            <input
+              value={branch.buttonId ?? ''}
+              onChange={(e) => updateBranch(idx, { buttonId: e.target.value })}
+              placeholder="Button id (must match the id sent earlier in this workflow)"
+              className={cn(inputCls, 'flex-1')}
+            />
           )}
           <button
             type="button"

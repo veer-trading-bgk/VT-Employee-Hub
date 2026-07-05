@@ -13,6 +13,11 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 // this bounds it so AUTO_WAIT# items can't accumulate indefinitely for an abandoned chat.
 const UNBOUNDED_REPLY_WAIT_MS = 30 * 86_400_000; // 30 days
 
+// Reserved sourceHandle id for a send_buttons/send_list node's "no reply" branch —
+// distinct from any real button/row id (those come from user-typed titles via
+// ButtonListEditor/ListRowEditor, never from this constant's namespace).
+const TIMEOUT_HANDLE_ID = '__timeout__';
+
 // ── AutomationEngine ─────────────────────────────────────────────────────────
 // Orchestrates workflows: fires triggers, evaluates conditions, runs actions.
 // ADR-012: all WA sends delegated to WhatsAppSendService.
@@ -67,6 +72,16 @@ class AutomationEngine {
     } catch (e) {
       logger.warn(`AutomationEngine.fireTrigger(${triggerType}): ${e.message}`);
     }
+  }
+
+  // ── Direct dispatch for one specific, already-resolved workflow ───────────
+  // Unlike fireTrigger() (scans every workflow matching a trigger type and evaluates
+  // each one's conditions), a caller here already knows exactly which workflow to run
+  // — e.g. the inbound webhook route, which resolves the workflow from its URL, not
+  // from a trigger-type scan. Public precisely so routes never reach into
+  // _startExecution directly.
+  async runWorkflowDirect(companyId, workflow, context) {
+    return this._startExecution(companyId, workflow, context, 'inbound_webhook');
   }
 
   // ── Create + run a new execution ────────────────────────────────────────
@@ -243,6 +258,52 @@ class AutomationEngine {
         continue;
       }
 
+      // A send_buttons/send_list node becomes a pause point ONLY when the workflow
+      // author actually wired an edge from one of its own per-option handles (or the
+      // reserved timeout handle) — purely opt-in, so every workflow predating this
+      // feature (a single edge with sourceHandle: null) falls straight through to the
+      // generic Action node branch below, completely unaffected.
+      if (node.type === 'send_buttons' || node.type === 'send_list') {
+        const optionIds = this._replyOptionIds(node);
+        const usesReplyHandles = optionIds.length > 0 && edges.some((e) =>
+          e.source === nodeId && (optionIds.includes(e.sourceHandle) || e.sourceHandle === TIMEOUT_HANDLE_ID),
+        );
+
+        if (usesReplyHandles) {
+          let result;
+          try {
+            result = await this._runAction(companyId, node, context);
+            path.push({ nodeId, type: node.type, status: 'sent', completedAt: ts(), result });
+            if (context.leadId) {
+              this._tlWrite(companyId, context, workflow.name, node.type, result).catch(() => {});
+            }
+          } catch (e) {
+            // Send failed — nothing went out, so there's nothing to wait for a reply to.
+            // Falls through via the node's default (sourceHandle-less) edge, if any —
+            // same as an unconnected Condition branch ending execution here.
+            const detail = e.response?.data?.error?.message ?? e.message;
+            path.push({ nodeId, type: node.type, status: 'failed', completedAt: ts(), error: detail });
+            logger.warn(`AutomationEngine: node "${node.type}" failed in "${workflow.name}": ${detail}`);
+            const edge = edges.find((e) => e.source === nodeId && e.sourceHandle == null);
+            nodeId = edge?.target ?? null;
+            continue;
+          }
+
+          const { replyTimeoutAmount, replyTimeoutUnit } = node.config ?? {};
+          const resumeAt = replyTimeoutAmount
+            ? new Date(Date.now() + this._parseWait({ amount: replyTimeoutAmount, unit: replyTimeoutUnit })).toISOString()
+            : new Date(Date.now() + UNBOUNDED_REPLY_WAIT_MS).toISOString();
+          await this._storeWait(companyId, {
+            executionId: execItem.executionId, workflowId: workflow.id, execSK: execItem.SK,
+            graph: true, nodeId, resumeAt, context,
+            awaitReply: { phone: context.phone ?? null, expectedButtonIds: optionIds },
+          });
+          path.push({ nodeId, type: node.type, status: 'waiting_reply', resumeAt });
+          await this._patchExecPath(companyId, execItem.SK, path, 'paused');
+          return;
+        }
+      }
+
       // Action node — send_template / assign_employee / change_stage / add_tag / create_task.
       try {
         const result = await this._runAction(companyId, node, context);
@@ -261,6 +322,21 @@ class AutomationEngine {
     }
 
     await this._finalizeExecution(companyId, workflow, execItem, 'path', path);
+  }
+
+  // Buttons/rows a send_buttons/send_list node's own per-option canvas handles can
+  // branch on. cta_buttons mode is excluded: Meta never sends a webhook event for a
+  // CTA (URL) button tap, so there's nothing to ever branch on for that mode.
+  _replyOptionIds(node) {
+    if (node.type === 'send_buttons') {
+      const cfg = node.config ?? {};
+      if (cfg.messageType === 'cta_buttons') return [];
+      return (cfg.buttons ?? []).map((b) => b.id).filter(Boolean);
+    }
+    if (node.type === 'send_list') {
+      return (node.config?.rows ?? []).map((r) => r.id).filter(Boolean);
+    }
+    return [];
   }
 
   // ── Resume after wait ────────────────────────────────────────────────────
@@ -282,10 +358,13 @@ class AutomationEngine {
 
     if (graph) {
       const node = (wfRes.Item.nodes ?? []).find((n) => n.id === nodeId);
-      const isReplyWait = node?.type === 'condition' && node.config?.mode === 'button_reply';
-      const resumeSignal = isReplyWait
+      const isConditionReplyWait = node?.type === 'condition' && node.config?.mode === 'button_reply';
+      const isSendReplyWait = node?.type === 'send_buttons' || node?.type === 'send_list';
+      const resumeSignal = isConditionReplyWait
         ? { status: resolvedBranch ? 'evaluated' : 'timed_out', branchKey: resolvedBranch ?? node.config.fallbackKey ?? null }
-        : { status: 'completed' }; // plain 'wait' node — single outgoing edge, no branch
+        : isSendReplyWait
+          ? { status: resolvedBranch ? 'replied' : 'timed_out', branchKey: resolvedBranch ?? TIMEOUT_HANDLE_ID }
+          : { status: 'completed' }; // plain 'wait' node — single outgoing edge, no branch
       return this._runGraph(companyId, wfRes.Item, execRes.Item, context, nodeId, resumeSignal);
     }
 
@@ -377,11 +456,18 @@ class AutomationEngine {
           continue;
         }
 
-        const wfRes  = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#AUTO#${companyId}`, SK: `AUTO#${item.workflowId}` } }).promise();
-        const node   = (wfRes.Item?.nodes ?? []).find((n) => n.id === item.nodeId);
-        const branch = (node?.config?.branches ?? []).find((b) => b.buttonId === buttonId);
+        const wfRes = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#AUTO#${companyId}`, SK: `AUTO#${item.workflowId}` } }).promise();
+        const node  = (wfRes.Item?.nodes ?? []).find((n) => n.id === item.nodeId);
 
-        await this.resumeExecution(companyId, item, branch?.key ?? null).catch((e) =>
+        // Condition (button_reply mode) maps a tapped buttonId to its own branch key
+        // via branches[]. send_buttons/send_list use the tapped id directly as the
+        // handle id — no indirection needed, since the button/row's own id IS the
+        // canvas handle id (see _replyOptionIds()).
+        const resolvedBranch = node?.type === 'condition'
+          ? ((node.config?.branches ?? []).find((b) => b.buttonId === buttonId)?.key ?? null)
+          : buttonId;
+
+        await this.resumeExecution(companyId, item, resolvedBranch).catch((e) =>
           logger.warn(`AutomationEngine: resume-on-reply failed for ${item.executionId}: ${e.message}`),
         );
       }

@@ -90,6 +90,8 @@ app.use('/api/contacts', contactsRoutes);
 app.use('/api/tags', tagsRoutes);
 // EventBridge scheduler bypass — secret checked here before JWT guard runs
 app.post('/api/automations/_tick', automationsRoutes.processTick);
+// Inbound webhook trigger — public, no auth; the URL's own token is the credential
+app.post('/api/automations/webhook/:companyId/:workflowId/:token', automationsRoutes.inboundWebhook);
 app.use('/api/automations', authMiddleware, subscriptionMiddleware, automationsRoutes);
 app.use('/api/campaigns',  authMiddleware, subscriptionMiddleware, campaignsRoutes);
 app.use('/api/forms', formsRoutes);

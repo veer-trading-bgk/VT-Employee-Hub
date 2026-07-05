@@ -2,7 +2,7 @@
 
 import { ButtonListEditor } from '@/components/shared/ButtonListEditor';
 import type { SendButtonsConfig, SendButtonsHeader } from '@/types/automations';
-import { Field, inputCls, selectCls } from './ActionEditor';
+import { Field, inputCls, selectCls, AmountUnitFields } from './ActionEditor';
 import { MediaSourceField } from './MediaSourceField';
 
 const HEADER_ACCEPT: Record<Exclude<SendButtonsHeader['type'], undefined>, string> = {
@@ -49,11 +49,23 @@ export function SendButtonsEditor({ config, onChange }: {
       </Field>
 
       {config.messageType === 'reply_buttons' ? (
-        <ButtonListEditor
-          mode="reply"
-          value={config.buttons ?? []}
-          onChange={(v) => set('buttons', v)}
-        />
+        <>
+          <ButtonListEditor
+            mode="reply"
+            value={config.buttons ?? []}
+            onChange={(v) => set('buttons', v)}
+          />
+          <Field
+            label="Reply timeout (optional)"
+            hint="Connect this node's own button handles on the canvas to branch on which button is tapped. If no reply arrives in time, the 'No reply' handle fires instead. Leave unset for an effectively unbounded wait."
+          >
+            <AmountUnitFields
+              amount={config.replyTimeoutAmount ?? 2}
+              unit={config.replyTimeoutUnit ?? 'hours'}
+              onChange={(amount, unit) => onChange({ ...config, replyTimeoutAmount: amount, replyTimeoutUnit: unit })}
+            />
+          </Field>
+        </>
       ) : (
         <ButtonListEditor
           mode="cta"

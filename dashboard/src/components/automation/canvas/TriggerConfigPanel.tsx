@@ -6,9 +6,10 @@ import { TriggerEditor } from '../WorkflowBuilder';
 import type { WorkflowTrigger } from '@/types/automations';
 
 interface TriggerConfigPanelProps {
-  trigger:  WorkflowTrigger;
-  onChange: (t: WorkflowTrigger) => void;
-  onClose:  () => void;
+  trigger:     WorkflowTrigger;
+  onChange:    (t: WorkflowTrigger) => void;
+  onClose:     () => void;
+  workflowId?: string;
 }
 
 /**
@@ -19,7 +20,7 @@ interface TriggerConfigPanelProps {
  * unmodified — the same dropdown + config UI the linear builder uses, so
  * there's exactly one place that knows how to edit a trigger, not two.
  */
-export function TriggerConfigPanel({ trigger, onChange, onClose }: TriggerConfigPanelProps) {
+export function TriggerConfigPanel({ trigger, onChange, onClose, workflowId }: TriggerConfigPanelProps) {
   return (
     <div
       className={cn(
@@ -45,7 +46,7 @@ export function TriggerConfigPanel({ trigger, onChange, onClose }: TriggerConfig
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4">
-        <TriggerEditor trigger={trigger} onChange={onChange} />
+        <TriggerEditor trigger={trigger} onChange={onChange} workflowId={workflowId} />
       </div>
     </div>
   );

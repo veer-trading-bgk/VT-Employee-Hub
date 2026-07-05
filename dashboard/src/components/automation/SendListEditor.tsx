@@ -1,7 +1,7 @@
 'use client';
 
 import type { SendListConfig } from '@/types/automations';
-import { Field, inputCls } from './ActionEditor';
+import { Field, inputCls, AmountUnitFields } from './ActionEditor';
 import { ListRowEditor } from './ListRowEditor';
 
 /**
@@ -36,6 +36,17 @@ export function SendListEditor({ config, onChange }: {
 
       <Field label="Options">
         <ListRowEditor value={config.rows ?? []} onChange={(rows) => onChange({ ...config, rows })} />
+      </Field>
+
+      <Field
+        label="Reply timeout (optional)"
+        hint="Connect this node's own row handles on the canvas to branch on which option is picked. If no reply arrives in time, the 'No reply' handle fires instead. Leave unset for an effectively unbounded wait."
+      >
+        <AmountUnitFields
+          amount={config.replyTimeoutAmount ?? 2}
+          unit={config.replyTimeoutUnit ?? 'hours'}
+          onChange={(amount, unit) => onChange({ ...config, replyTimeoutAmount: amount, replyTimeoutUnit: unit })}
+        />
       </Field>
     </div>
   );

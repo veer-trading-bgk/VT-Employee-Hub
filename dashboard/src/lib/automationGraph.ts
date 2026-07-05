@@ -227,40 +227,17 @@ export function findIncompleteBranches(nodes: CanvasNode[], edges: CanvasEdge[])
 }
 
 // ── Upstream Send Buttons lookup (for button_reply branch selection) ─────────
-// Walks straight-line single-parent edges upward from a condition node, skipping
-// over 'wait' nodes (a fixed-duration pause before listening doesn't change which
-// buttons are available), stopping at the first 'send_buttons' node found, a node
-// with more than one incoming edge (ambiguous — which send actually preceded this
-// tap?), or after a bounded number of hops.
-const MAX_UPSTREAM_HOPS = 5;
-
-export function findUpstreamSendButtonsNode(nodeId: string, nodes: CanvasNode[], edges: CanvasEdge[]): CanvasNode | null {
-  const nodeById = new Map(nodes.map((n) => [n.id, n]));
-  let currentId = nodeId;
-
-  for (let hop = 0; hop < MAX_UPSTREAM_HOPS; hop++) {
-    const incoming = edges.filter((e) => e.target === currentId);
-    if (incoming.length !== 1) return null; // no parent, or ambiguous fan-in
-    const parent = nodeById.get(incoming[0].source);
-    if (!parent) return null;
-    if (parent.data.nodeType === 'send_buttons') return parent;
-    if (parent.data.nodeType !== 'wait') return null; // any other node type breaks the chain
-    currentId = parent.id;
+// The reply-capable options a send_buttons/send_list node exposes as its own
+// per-option canvas handles — cta_buttons mode has none (Meta reports no webhook
+// event for a CTA/URL tap, see ButtonListEditor.tsx's own comment on this platform
+// limitation), so there is nothing such a node could ever branch on.
+export function getReplyOptions(nodeType: 'send_buttons' | 'send_list', config: SendButtonsConfig | SendListConfig): Array<{ key: string; label: string }> {
+  if (nodeType === 'send_buttons') {
+    const cfg = config as SendButtonsConfig;
+    if (cfg.messageType === 'cta_buttons') return [];
+    return (cfg.buttons ?? []).map((b) => ({ key: b.id, label: b.title }));
   }
-  return null;
-}
-
-// Extracts the tappable buttons from an upstream send_buttons node, if one is found
-// AND it's actually in reply_buttons mode. A cta_buttons (URL) node is deliberately
-// excluded: Meta reports no webhook event at all for a CTA tap (see
-// ButtonListEditor.tsx's own comment on this exact platform limitation), so there is
-// nothing a button_reply condition could ever match against it.
-export function getUpstreamButtons(nodeId: string, nodes: CanvasNode[], edges: CanvasEdge[]): Array<{ id: string; title: string }> | undefined {
-  const sendNode = findUpstreamSendButtonsNode(nodeId, nodes, edges);
-  if (!sendNode) return undefined;
-  const cfg = sendNode.data.config as SendButtonsConfig;
-  if (cfg.messageType !== 'reply_buttons') return undefined;
-  return (cfg.buttons ?? []).map((b) => ({ id: b.id, title: b.title }));
+  return ((config as SendListConfig).rows ?? []).map((r) => ({ key: r.id, label: r.title }));
 }
 
 // Placement for a freshly-added node with no position yet — below the current

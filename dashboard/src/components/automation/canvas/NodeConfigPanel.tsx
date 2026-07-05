@@ -19,10 +19,6 @@ interface NodeConfigPanelProps {
   config:           NodeConfig;
   onChange:         (config: NodeConfig) => void;
   onClose:          () => void;
-  // Buttons from an upstream 'send_buttons' node, if one is connected — lets the
-  // button_reply condition's branch editor offer a dropdown of real button ids
-  // instead of a freeform text field. Undefined/empty when none is found.
-  upstreamButtons?: Array<{ id: string; title: string }>;
 }
 
 const EXTRA_TITLES: Partial<Record<NodeType, { label: string; icon: typeof GitBranch }>> = {
@@ -40,7 +36,7 @@ const EXTRA_TITLES: Partial<Record<NodeType, { label: string; icon: typeof GitBr
  * The canvas behind it must stay interactive (pan/zoom/click other nodes) while a
  * node's config is open, which a modal Drawer would block.
  */
-export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose, upstreamButtons }: NodeConfigPanelProps) {
+export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose }: NodeConfigPanelProps) {
   const extra = EXTRA_TITLES[nodeType];
   const Icon  = extra?.icon ?? ACTION_ICONS[nodeType as ActionType] ?? undefined;
   const title = extra?.label ?? ACTION_META[nodeType as ActionType]?.label ?? nodeType;
@@ -81,7 +77,6 @@ export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose, u
           <ConditionEditor
             config={isConditionConfig(config) ? config : { mode: 'field_match', branches: [] }}
             onChange={(c: ConditionNodeConfig) => onChange(c)}
-            upstreamButtons={upstreamButtons}
           />
         ) : nodeType === 'send_buttons' ? (
           <SendButtonsEditor

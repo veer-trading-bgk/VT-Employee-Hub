@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto   = require('crypto');
 const express  = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { authMiddleware, checkRole } = require('../middleware/auth');
@@ -7,6 +8,8 @@ const { rateLimit } = require('../middleware/rateLimiter');
 const dynamodb = require('../config/dynamodb');
 const logger   = require('../config/logger');
 const AutomationEngine = require('../services/AutomationEngine');
+const CIS      = require('../services/CustomerIdentityService');
+const { leadPK } = require('../core/entityKeys');
 
 const router = express.Router();
 const TABLE  = process.env.DYNAMODB_TABLE_METRICS;
@@ -15,7 +18,7 @@ const autoPK = (companyId) => `CONFIG#AUTO#${companyId}`;
 const autoSK = (id)        => `AUTO#${id}`;
 const execPK = (companyId) => `AUTO_EXEC#${companyId}`;
 
-// ── Exported trigger function (called by crm.js, whatsapp.js, campaigns.js) ─
+// ── Exported trigger function (called by crm.js, whatsapp.js, campaigns.js, forms.js) ─
 async function runAutomations(companyId, triggerType, context) {
   return AutomationEngine.fireTrigger(companyId, triggerType, context);
 }
@@ -48,15 +51,30 @@ function sanitizeKeywordTriggerConfig(config) {
   };
 }
 
+// ── inbound_webhook trigger — capability-URL token ──────────────────────────
+// The token itself is the bearer credential (not a shared HMAC secret like Meta's
+// webhook signature scheme) — crypto.randomBytes keeps it in the same random-token
+// family as core/id.js's ulid(), compared later via crypto.timingSafeEqual.
+function generateWebhookToken() {
+  return crypto.randomBytes(24).toString('hex');
+}
+
 // Builds the trigger object exactly as persisted — {type, conditions} for every
 // existing trigger type, unchanged; keyword_message additionally carries a
-// sanitized config. Returns { error } instead of throwing so callers can
-// respond with a 400 the same way every other validation failure in this file does.
-function buildTriggerForStorage(trigger) {
+// sanitized config. inbound_webhook carries a server-generated token, preserved
+// across unrelated edits (existingTrigger) unless the caller explicitly asks to
+// regenerate it. Returns { error } instead of throwing so callers can respond
+// with a 400 the same way every other validation failure in this file does.
+function buildTriggerForStorage(trigger, existingTrigger) {
   if (trigger.type === 'keyword_message') {
     const err = validateKeywordTriggerConfig(trigger.config);
     if (err) return { error: err };
     return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [], config: sanitizeKeywordTriggerConfig(trigger.config) } };
+  }
+  if (trigger.type === 'inbound_webhook') {
+    const canKeepExisting = existingTrigger?.type === 'inbound_webhook' && existingTrigger.webhookToken && !trigger.regenerateToken;
+    const webhookToken = canKeepExisting ? existingTrigger.webhookToken : generateWebhookToken();
+    return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [], webhookToken } };
   }
   return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [] } };
 }
@@ -310,7 +328,7 @@ router.put('/:id', authMiddleware, checkRole(['admin']), async (req, res, next) 
     if (description !== undefined) { sets.push('description = :d');                           expVals[':d']     = description?.trim() ?? null; }
     if (trigger     !== undefined) {
       if (!trigger?.type) return res.status(400).json({ error: 'trigger.type is required' });
-      const triggerResult = buildTriggerForStorage(trigger);
+      const triggerResult = buildTriggerForStorage(trigger, existing.Item.trigger);
       if (triggerResult.error) return res.status(400).json({ error: triggerResult.error });
       sets.push('#t = :t'); expNames['#t'] = 'trigger'; expVals[':t'] = triggerResult.trigger;
     }
@@ -402,6 +420,80 @@ async function processTick(req, res, next) {
   } catch (e) { next(e); }
 }
 
+// ── Inbound webhook trigger (mounted in app.js BEFORE auth middleware) ──────
+// Public, no auth — the token itself is the bearer credential (capability-URL
+// scheme; see buildTriggerForStorage's inbound_webhook comment). Unlike every
+// other trigger, the caller already names the exact workflow via the URL, so
+// this dispatches directly via AutomationEngine.runWorkflowDirect() rather
+// than fireTrigger()'s "scan every workflow of this trigger type" path.
+//
+// Duplicate submissions are NOT rejected (unlike forms.js's public-form-submit
+// route, which 409s a repeat phone number to stop an accidental double-click):
+// an external system re-notifying about the same contact (e.g. "cart
+// abandoned" firing again) is normal for this trigger, not user error, so the
+// workflow runs every time a valid event arrives — same "no auto-suppression"
+// philosophy keyword_message triggers already use.
+const MAX_WEBHOOK_PAYLOAD_BYTES = 100_000; // a real lead-capture payload is a few hundred bytes
+
+async function handleInboundWebhook(req, res, next) {
+  try {
+    const contentLength = Number(req.headers['content-length'] ?? 0);
+    if (contentLength > MAX_WEBHOOK_PAYLOAD_BYTES) {
+      return res.status(413).json({ error: 'Payload too large' });
+    }
+
+    const { companyId, workflowId, token } = req.params;
+    const wfRes = await dynamodb.get({
+      TableName: TABLE, Key: { PK: autoPK(companyId), SK: autoSK(workflowId) },
+    }).promise();
+    const workflow = wfRes.Item;
+    if (!workflow || workflow.trigger?.type !== 'inbound_webhook') {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const expected = Buffer.from(workflow.trigger.webhookToken ?? '');
+    const actual   = Buffer.from(String(token ?? ''));
+    const tokenMatches = expected.length > 0 && expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+    if (!tokenMatches) return res.status(404).json({ error: 'Not found' }); // 404, not 401 — don't confirm a workflow exists to a guesser
+
+    const isActive = workflow.status === 'active' || (workflow.status == null && workflow.enabled === true);
+    if (!isActive) return res.status(404).json({ error: 'Not found' });
+
+    const { phone, name, email } = req.body ?? {};
+    if (!phone) return res.status(400).json({ error: 'phone is required' });
+    const cleanPhone = String(phone).replace(/\D/g, '');
+    if (cleanPhone.length < 7) return res.status(400).json({ error: 'Invalid phone number' });
+
+    // ADR-013: identity resolution goes through CIS, same as every other lead-creating
+    // entry point. No actorId — an unauthenticated webhook has no user, so CIS's
+    // fallback-to-actor auto-assign step correctly never fires here either.
+    const result = await CIS.resolveOrCreate(companyId, {
+      phone: cleanPhone,
+      name:  String(name ?? cleanPhone).trim(),
+      email: email ? String(email).trim() : null,
+      source: 'inbound_webhook',
+      notes: '',
+    }, { createdBy: 'inbound_webhook' });
+
+    // result.lead is only populated on a fresh create (CIS's own contract) — an
+    // enriched or idempotent-replayed hit returns leadId only. One direct-key read
+    // by leadPK covers both cases uniformly, same live-read discipline
+    // _resolveConditionField() already uses for a condition node's stage/tag checks.
+    const leadKey = { PK: leadPK(companyId, result.leadId), SK: 'METADATA' };
+    const lead = result.lead ?? (await dynamodb.get({ TableName: TABLE, Key: leadKey }).promise()).Item;
+
+    await AutomationEngine.runWorkflowDirect(companyId, workflow, {
+      leadId: result.leadId, leadPK: leadKey.PK, phone: cleanPhone, name: lead?.name ?? cleanPhone,
+      source: 'inbound_webhook', stage: lead?.stage, tags: lead?.tags, assignedTo: lead?.assignedTo,
+    });
+
+    res.status(200).json({ success: true });
+  } catch (err) { next(err); }
+}
+
 module.exports = router;
 module.exports.runAutomations = runAutomations;
 module.exports.processTick    = processTick;
+// Composed as an array (rate-limit + handler) so app.js can mount it in one line
+// without importing rateLimiter separately, same public-route pattern processTick uses.
+module.exports.inboundWebhook = [rateLimit(30, 60_000), handleInboundWebhook];

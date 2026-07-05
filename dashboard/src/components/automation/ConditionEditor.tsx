@@ -33,10 +33,9 @@ const MODE_META: Record<ConditionMode, { label: string; description: string }> =
  * Config editor for the graph canvas's `condition` node type — the one genuinely
  * new node kind added in Phase 1 (every other node type reuses ActionEditor).
  */
-export function ConditionEditor({ config, onChange, upstreamButtons }: {
-  config:           ConditionNodeConfig;
-  onChange:         (c: ConditionNodeConfig) => void;
-  upstreamButtons?: Array<{ id: string; title: string }>;
+export function ConditionEditor({ config, onChange }: {
+  config:   ConditionNodeConfig;
+  onChange: (c: ConditionNodeConfig) => void;
 }) {
   const set = <K extends keyof ConditionNodeConfig>(key: K, val: ConditionNodeConfig[K]) =>
     onChange({ ...config, [key]: val });
@@ -101,16 +100,13 @@ export function ConditionEditor({ config, onChange, upstreamButtons }: {
         <>
           <Field
             label="Buttons"
-            hint={upstreamButtons?.length
-              ? 'Picked from the Send Buttons node connected upstream.'
-              : 'No Send Buttons node found directly upstream — type the button id manually (must match what an earlier step actually sends).'}
+            hint="Type the button id manually — must match what an earlier step actually sends."
           >
             <BranchListEditor
               mode="button_reply"
               value={branches}
               onChange={(v) => set('branches', v)}
               maxBranches={3}
-              upstreamButtons={upstreamButtons}
             />
           </Field>
           <Field label="Timeout (optional)" hint="If no reply arrives in time, the fallback branch below fires instead.">

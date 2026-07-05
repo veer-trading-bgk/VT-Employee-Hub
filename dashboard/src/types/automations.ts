@@ -7,7 +7,8 @@ export type TriggerType =
   | 'stage_changed'
   | 'stage_change'       // legacy alias from crm.js
   | 'tag_added'
-  | 'keyword_message';
+  | 'keyword_message'
+  | 'inbound_webhook';
 
 export type ActionType =
   | 'send_template'
@@ -48,6 +49,12 @@ export interface WorkflowTrigger {
   type:       TriggerType;
   conditions: WorkflowCondition[];
   config?:    KeywordTriggerConfig; // only meaningful for keyword_message today
+  // inbound_webhook only — server-generated capability-URL token (read-only,
+  // present once the workflow has been saved at least once with this trigger type).
+  webhookToken?:     string;
+  // Client sets this to request a fresh token on the next save; the server never
+  // persists this flag itself, it only consumes it (see automations.js buildTriggerForStorage).
+  regenerateToken?:  boolean;
 }
 
 // ── Step config variants ──────────────────────────────────────────────────────
@@ -132,6 +139,11 @@ export interface SendButtonsConfig {
   buttons?:    ReplyButtonValue[];  // reply_buttons mode, max 3 (Meta limit)
   ctaButtons?: CtaButtonValue[];    // cta_buttons mode, max 1 (Meta limit)
   header?:     SendButtonsHeader;
+  // Only meaningful in reply_buttons mode — a cta_buttons (URL) tap never generates
+  // a webhook event to reply to, so this node can't ever pause on one. Flat fields,
+  // not a nested object, matching ConditionNodeConfig's timeoutAmount/timeoutUnit.
+  replyTimeoutAmount?: number;
+  replyTimeoutUnit?:   'minutes' | 'hours' | 'days';
 }
 
 // A document (or other media) sent with an optional caption, in one message —
@@ -171,6 +183,10 @@ export interface SendListConfig {
   bodyText:   string;
   buttonText: string;
   rows:       ListRow[];
+  // Every list row is reply-capable (unlike SendButtonsConfig's cta_buttons mode),
+  // so no mode gate is needed here.
+  replyTimeoutAmount?: number;
+  replyTimeoutUnit?:   'minutes' | 'hours' | 'days';
 }
 
 // Send Location node (Item 1c) — dropdown-based config referencing a saved
@@ -334,6 +350,7 @@ export const TRIGGER_META: Record<string, { label: string; description: string }
   stage_change:                  { label: 'Stage Changed',       description: 'A lead moves to a new pipeline stage'  },
   tag_added:                     { label: 'Tag Added',           description: 'A tag is added to a lead'              },
   keyword_message:               { label: 'Keyword / Button Tap', description: 'Customer types a matching phrase or taps a matching button' },
+  inbound_webhook:               { label: 'Inbound Webhook',      description: 'An external system posts to this workflow\'s own URL'      },
 };
 
 export const ACTION_META: Record<ActionType, { label: string; description: string }> = {

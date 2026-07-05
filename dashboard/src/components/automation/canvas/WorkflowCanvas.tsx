@@ -18,7 +18,7 @@ import {
   toReactFlow, fromReactFlow, applyDagreLayout, needsLayout,
   newNodeId, newEdgeId, defaultConditionConfig, defaultSendButtonsConfig, defaultSendDocumentConfig,
   defaultSendMessageConfig, defaultSendListConfig, defaultSendLocationConfig, nextNodePosition,
-  findIncompleteBranches, getUpstreamButtons, TRIGGER_NODE_ID, type CanvasNodeData,
+  findIncompleteBranches, TRIGGER_NODE_ID, type CanvasNodeData,
 } from '@/lib/automationGraph';
 import { defaultConfig } from '../WorkflowBuilder';
 import {
@@ -203,13 +203,13 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
           trigger={trigger}
           onChange={handleTriggerChange}
           onClose={() => setSelectedNodeId(null)}
+          workflowId={workflow.id}
         />
       ) : selectedNode && !NON_CONFIGURABLE.has(String(selectedNode.data.nodeType)) && (
         <NodeConfigPanel
           nodeId={selectedNode.id}
           nodeType={selectedNode.data.nodeType as NodeType}
           config={selectedNode.data.config}
-          upstreamButtons={selectedNode.data.nodeType === 'condition' ? getUpstreamButtons(selectedNode.id, nodes, edges) : undefined}
           onChange={updateSelectedConfig}
           onClose={() => setSelectedNodeId(null)}
         />

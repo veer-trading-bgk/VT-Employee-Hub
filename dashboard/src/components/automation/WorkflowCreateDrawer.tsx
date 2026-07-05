@@ -158,6 +158,7 @@ export function WorkflowCreateDrawer({ open, onClose, workflow }: WorkflowCreate
               steps={steps}
               onTriggerChange={(t) => set('trigger', t)}
               onStepsChange={(s) => set('steps', s)}
+              workflowId={workflow?.id}
             />
           </div>
         </div>

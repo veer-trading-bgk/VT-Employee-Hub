@@ -818,6 +818,232 @@ describe('AutomationEngine — graph engine (nodes[]/edges[])', () => {
   });
 });
 
+// ─── Per-button/row handles on send_buttons/send_list nodes ─────────────────
+// Opt-in pause point: these node types only ever paused via a separate
+// condition(button_reply) node before this feature. Now they can pause
+// themselves directly, but ONLY when the workflow author actually wired an
+// edge from one of the node's own button/row handles (or the reserved
+// timeout handle) — every workflow with just the old single default edge
+// (sourceHandle: null/undefined) must behave completely unchanged.
+describe('AutomationEngine — send_buttons/send_list opt-in reply handles', () => {
+  const resolved = (value) => ({ promise: () => Promise.resolve(value) });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    dynamodb.update.mockReturnValue(resolved({}));
+    dynamodb.put.mockReturnValue(resolved({}));
+  });
+
+  function makeExecItem(overrides = {}) {
+    return {
+      PK: `AUTO_EXEC#${CID}`,
+      SK: `EXEC#2026-01-01T00:00:00.000Z#exec-sb`,
+      executionId: 'exec-sb',
+      startedAt: new Date().toISOString(),
+      path: [],
+      ...overrides,
+    };
+  }
+
+  function finalPatch() {
+    const call = dynamodb.update.mock.calls.find((c) => c[0].Key?.SK?.startsWith('EXEC#'));
+    return call ? call[0].ExpressionAttributeValues : undefined;
+  }
+
+  test('BACKWARD COMPAT: a send_buttons node with only the old default edge (no sourceHandle) completes immediately, no pause', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.sb1' });
+    const workflow = {
+      id: 'wf-sb-1', name: 'Legacy send_buttons workflow', entryNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'send_buttons', config: { messageType: 'reply_buttons', bodyText: 'Hi', buttons: [{ id: 'BTN_YES', title: 'Yes' }, { id: 'BTN_NO', title: 'No' }] } },
+        { id: 'n2', type: 'end', config: {} },
+      ],
+      edges: [{ id: 'e1', source: 'n1', target: 'n2' }], // no sourceHandle — the only shape that existed before this feature
+    };
+    const execItem = makeExecItem();
+    const context  = { leadPK: LEAD_PK, phone: '9000000000' };
+
+    await engine._runGraph(CID, workflow, execItem, context, 'n1');
+
+    expect(dynamodb.put).not.toHaveBeenCalled(); // no AUTO_WAIT# item — never paused
+    const vals = finalPatch();
+    expect(vals[':st']).toBe('completed');
+    expect(vals[':path'].map((p) => p.nodeId)).toEqual(['n1', 'n2']);
+    expect(vals[':path'][0].status).toBe('completed');
+  });
+
+  test('a send_buttons node with an edge on one of its own button handles pauses and stores its own button ids + the reserved timeout id', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.sb2' });
+    const workflow = {
+      id: 'wf-sb-2', name: 'Branching send_buttons workflow', entryNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'send_buttons', config: { messageType: 'reply_buttons', bodyText: 'Hi', buttons: [{ id: 'BTN_YES', title: 'Yes' }, { id: 'BTN_NO', title: 'No' }], replyTimeoutAmount: 1, replyTimeoutUnit: 'hours' } },
+        { id: 'n2', type: 'add_tag', config: { tag: 'interested' } },
+        { id: 'n3', type: 'end', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'n1', target: 'n2', sourceHandle: 'BTN_YES' },
+        { id: 'e2', source: 'n1', target: 'n3', sourceHandle: '__timeout__' },
+      ],
+    };
+    const execItem = makeExecItem();
+    const context  = { leadPK: LEAD_PK, phone: '9000000000' };
+
+    await engine._runGraph(CID, workflow, execItem, context, 'n1');
+
+    expect(WASendSvc.sendInteractive).toHaveBeenCalled(); // the send itself still happens
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({
+        graph: true, nodeId: 'n1',
+        awaitReply: { phone: '9000000000', expectedButtonIds: ['BTN_YES', 'BTN_NO'] },
+      }),
+    }));
+    const vals = finalPatch();
+    expect(vals[':st']).toBe('paused');
+    // Two entries for the same node: the send completing, then the pause itself.
+    expect(vals[':path'][0]).toMatchObject({ nodeId: 'n1', status: 'sent' });
+    expect(vals[':path'][1]).toMatchObject({ nodeId: 'n1', status: 'waiting_reply' });
+  });
+
+  test('a send_list node with an edge on one of its own row handles pauses the same way', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.sl1' });
+    const workflow = {
+      id: 'wf-sl-1', name: 'Branching send_list workflow', entryNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'send_list', config: { bodyText: 'Pick one', buttonText: 'View', rows: [{ id: 'r1', title: 'Demat' }, { id: 'r2', title: 'Trading' }] } },
+        { id: 'n2', type: 'end', config: {} },
+      ],
+      edges: [{ id: 'e1', source: 'n1', target: 'n2', sourceHandle: 'r1' }],
+    };
+    const execItem = makeExecItem();
+    const context  = { leadPK: LEAD_PK, phone: '9000000000' };
+
+    await engine._runGraph(CID, workflow, execItem, context, 'n1');
+
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({
+        graph: true, nodeId: 'n1',
+        awaitReply: { phone: '9000000000', expectedButtonIds: ['r1', 'r2'] },
+      }),
+    }));
+    const vals = finalPatch();
+    expect(vals[':st']).toBe('paused');
+  });
+
+  test('cta_buttons mode never becomes a pause point, even with a stray sourceHandle edge — there is no webhook event to ever wait for', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.cta1' });
+    const workflow = {
+      id: 'wf-cta-1', name: 'CTA workflow', entryNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'send_buttons', config: { messageType: 'cta_buttons', bodyText: 'Hi', ctaButtons: [{ type: 'url', text: 'Open', value: 'https://x.com' }] } },
+        { id: 'n2', type: 'end', config: {} },
+      ],
+      edges: [{ id: 'e1', source: 'n1', target: 'n2', sourceHandle: 'some-stray-handle' }],
+    };
+    const execItem = makeExecItem();
+    const context  = { leadPK: LEAD_PK, phone: '9000000000' };
+
+    await engine._runGraph(CID, workflow, execItem, context, 'n1');
+
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    const vals = finalPatch();
+    expect(vals[':st']).toBe('completed');
+  });
+
+  test('a send failure on an opted-in node does not create a wait — falls through via the default (no-handle) edge if present', async () => {
+    WASendSvc.sendInteractive.mockRejectedValue(new Error('Meta rejected the send'));
+    const workflow = {
+      id: 'wf-sb-3', name: 'Failing send_buttons workflow', entryNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'send_buttons', config: { messageType: 'reply_buttons', bodyText: 'Hi', buttons: [{ id: 'BTN_YES', title: 'Yes' }] } },
+        { id: 'n2', type: 'end', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'n1', target: 'n2', sourceHandle: 'BTN_YES' },
+      ],
+    };
+    const execItem = makeExecItem();
+    const context  = { leadPK: LEAD_PK, phone: '9000000000' };
+
+    await engine._runGraph(CID, workflow, execItem, context, 'n1');
+
+    expect(dynamodb.put).not.toHaveBeenCalled(); // never reaches the wait — the send itself failed
+    const vals = finalPatch();
+    expect(vals[':path'][0]).toMatchObject({ nodeId: 'n1', status: 'failed' });
+    // No default edge exists in this workflow, so execution simply ends after the failure.
+    expect(vals[':path'].map((p) => p.nodeId)).toEqual(['n1']);
+  });
+
+  test('resumeOnButtonReply resolves the tapped button id directly as the branch key for a send_buttons node — no branches[] indirection', async () => {
+    const workflow = {
+      id: 'wf-sb-4', name: 'Resume workflow', status: 'active', entryNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'send_buttons', config: { messageType: 'reply_buttons', bodyText: 'Hi', buttons: [{ id: 'BTN_YES', title: 'Yes' }, { id: 'BTN_NO', title: 'No' }] } },
+        { id: 'n2', type: 'add_tag', config: { tag: 'interested' } },
+        { id: 'n3', type: 'end', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'n1', target: 'n2', sourceHandle: 'BTN_YES' },
+        { id: 'e2', source: 'n1', target: 'n3', sourceHandle: '__timeout__' },
+      ],
+    };
+    const context  = { leadPK: LEAD_PK, phone: '9000000000' };
+    const execItem = makeExecItem({ path: [{ nodeId: 'n1', type: 'send_buttons', status: 'waiting_reply' }] });
+    const waitItem = {
+      PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-02-01T00:00:00.000Z#exec-sb',
+      executionId: 'exec-sb', workflowId: workflow.id, execSK: execItem.SK,
+      graph: true, nodeId: 'n1', context,
+      awaitReply: { phone: '9000000000', expectedButtonIds: ['BTN_YES', 'BTN_NO'] },
+    };
+
+    dynamodb.query.mockReturnValue(resolved({ Items: [waitItem] }));
+    dynamodb.delete.mockReturnValue(resolved({}));
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK.startsWith('CONFIG#AUTO#')) return resolved({ Item: workflow });
+      if (params.Key.PK.startsWith('AUTO_EXEC#'))   return resolved({ Item: execItem });
+      return resolved({});
+    });
+
+    await engine.resumeOnButtonReply(CID, '9000000000', 'BTN_YES');
+
+    const vals = finalPatch();
+    expect(vals[':path'].map((p) => p.nodeId)).toEqual(['n1', 'n2']);
+    expect(vals[':path'][0]).toMatchObject({ status: 'replied', branchKey: 'BTN_YES' });
+  });
+
+  test('resumeExecution follows the reserved timeout handle when no reply arrives in time', async () => {
+    const workflow = {
+      id: 'wf-sb-5', name: 'Timeout workflow', status: 'active', entryNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'send_buttons', config: { messageType: 'reply_buttons', bodyText: 'Hi', buttons: [{ id: 'BTN_YES', title: 'Yes' }] } },
+        { id: 'n2', type: 'add_tag', config: { tag: 'interested' } },
+        { id: 'n3', type: 'end', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'n1', target: 'n2', sourceHandle: 'BTN_YES' },
+        { id: 'e2', source: 'n1', target: 'n3', sourceHandle: '__timeout__' },
+      ],
+    };
+    const execItem = makeExecItem({ path: [{ nodeId: 'n1', type: 'send_buttons', status: 'waiting_reply' }] });
+    const context  = { leadPK: LEAD_PK, phone: '9000000000' };
+
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK.startsWith('CONFIG#AUTO#')) return resolved({ Item: workflow });
+      if (params.Key.PK.startsWith('AUTO_EXEC#'))   return resolved({ Item: execItem });
+      return resolved({});
+    });
+
+    // Called exactly as processDueWaits() calls it — no resolvedBranch arg.
+    const waitRecord = { workflowId: workflow.id, execSK: execItem.SK, context, graph: true, nodeId: 'n1' };
+    await engine.resumeExecution(CID, waitRecord);
+
+    const vals = finalPatch();
+    expect(vals[':path'].map((p) => p.nodeId)).toEqual(['n1', 'n3']);
+    expect(vals[':path'][0]).toMatchObject({ status: 'timed_out', branchKey: '__timeout__' });
+  });
+});
+
 // ─── processDueWaits — delayed_response dispatch (Item 3) ────────────────────
 // Same AUTO_WAIT# partition, same claim loop as every workflow wait — a
 // waitType: 'delayed_response' item dispatches to DelayedResponseService
@@ -1020,6 +1246,28 @@ describe('AutomationEngine — fireTrigger("keyword_message")', () => {
 
     await engine.fireTrigger(CID, 'lead_created', { messageText: 'demat' });
     expect(startSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ─── runWorkflowDirect() — dispatch for one already-resolved workflow ────────
+// Used by the inbound webhook route (Part B): unlike fireTrigger(), the caller
+// already knows exactly which workflow to run (resolved from the webhook URL,
+// not a trigger-type scan), so this skips straight to _startExecution().
+describe('AutomationEngine — runWorkflowDirect()', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  test('delegates to _startExecution with triggerType "inbound_webhook"', async () => {
+    const startSpy = jest.spyOn(engine, '_startExecution').mockResolvedValue(undefined);
+    const workflow = { id: 'wf-hook-1', name: 'Webhook workflow', steps: [{ id: 's1', type: 'end', config: {} }] };
+    const context  = { leadId: 'lead_1', phone: '9000000000' };
+
+    await engine.runWorkflowDirect(CID, workflow, context);
+
+    expect(startSpy).toHaveBeenCalledWith(CID, workflow, context, 'inbound_webhook');
+    startSpy.mockRestore();
   });
 });
 
