@@ -1,13 +1,14 @@
 'use client';
 
 import { memo, useState, useMemo } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import { useCustomer360 } from '@/contexts/Customer360Context';
 import type { PipelineStage } from '@/contexts/Customer360Context';
 import { useContactMutations } from '@/hooks/useContactMutations';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
+import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { TagSelector } from '@/components/tags/TagSelector';
 import { TagBadge } from '@/components/tags/TagBadge';
 import type { Tag } from '@/components/tags/TagBadge';
@@ -45,10 +46,6 @@ const SOURCE_LABELS: Record<string, string> = Object.fromEntries(
 const PRODUCT_LABELS: Record<string, string> = Object.fromEntries(
   PRODUCT_OPTIONS.map((o) => [o.value, o.label])
 );
-
-// ── Helper types ──────────────────────────────────────────────────────────────
-
-interface EmployeeRecord { id: string; name: string; role: string; }
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
@@ -176,17 +173,10 @@ function CrmPanel() {
   const qc = useQueryClient();
 
   // ── Queries (served from cache in most cases) ─────────────────────────
-  const { data: empData } = useQuery({
-    queryKey: ['admin-employees'],
-    queryFn: () =>
-      apiFetch<{ success: boolean; data: EmployeeRecord[] }>('/api/admin/employees').catch(
-        () => ({ success: true, data: [] as EmployeeRecord[] })
-      ),
-    staleTime: 10 * 60_000,
-  });
-  const employees: EmployeeRecord[] = (empData?.data ?? []).filter((e) =>
-    ['telecaller', 'agent', 'intern', 'team_lead', 'manager'].includes(e.role)
-  );
+  // Canonical employees list (shared cache key with OwnerSelect/ContactTags
+  // elsewhere) — includes admin/superadmin, unlike this tab's own former
+  // hardcoded role filter, which silently excluded them.
+  const { employees } = useEmployeesList();
 
   const { tags: tagCatalog } = useTagCatalog();
 

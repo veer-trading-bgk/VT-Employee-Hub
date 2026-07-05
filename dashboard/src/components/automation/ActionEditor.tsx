@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { usePipelineStages } from '@/hooks/usePipelineStages';
+import { useEmployeesList } from '@/hooks/useEmployeesList';
 import type { WorkflowStep } from '@/types/automations';
 
 // ── Shared styles — also used by WorkflowBuilder.tsx's TriggerEditor ─────────
@@ -25,12 +26,11 @@ export function ActionEditor({ step, onChange }: { step: WorkflowStep; onChange:
     staleTime: 5 * 60_000,
     enabled:  step.type === 'send_template',
   });
-  const { data: employeesData } = useQuery<{ employees: Array<{ id: string; name: string }> }>({
-    queryKey: ['employees'],
-    queryFn:  () => apiFetch('/api/admin/employees'),
-    staleTime: 5 * 60_000,
-    enabled:  step.type === 'assign_employee',
-  });
+  // Canonical employees list — the old inline query here read `.employees`
+  // off a response shaped `{ success, data: [...] }`, so it was always empty
+  // regardless of role; this also silently excluded admin/superadmin like
+  // every other duplicate employee-fetch this hook replaces.
+  const { employees } = useEmployeesList({ enabled: step.type === 'assign_employee' });
   const { data: tagsData } = useQuery<{ tags: string[] }>({
     queryKey: ['tag-catalog'],
     queryFn:  () => apiFetch('/api/tags'),
@@ -75,7 +75,6 @@ export function ActionEditor({ step, onChange }: { step: WorkflowStep; onChange:
     }
 
     case 'assign_employee': {
-      const employees = employeesData?.employees ?? [];
       return (
         <Field label="Employee">
           <select

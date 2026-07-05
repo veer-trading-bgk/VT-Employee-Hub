@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
@@ -11,8 +11,7 @@ import { Input } from '@/components/v3/ui/Input';
 import { apiFetch } from '@/lib/api';
 import { toast } from 'sonner';
 import { usePipelineStages } from '@/hooks/usePipelineStages';
-
-interface EmployeeRecord { id: string; name: string; role: string; }
+import { useEmployeesList } from '@/hooks/useEmployeesList';
 
 const SEL_CLS =
   'h-9 w-full rounded-lg border border-neutral-200 bg-white px-3 text-sm text-neutral-700 ' +
@@ -55,18 +54,10 @@ export function NewContactDrawer({ open, onClose }: NewContactDrawerProps) {
 
   const { stages: pipelineStages } = usePipelineStages();
 
-  const { data: empData } = useQuery({
-    queryKey: ['admin-employees'],
-    queryFn: () =>
-      apiFetch<{ success: boolean; data: EmployeeRecord[] }>('/api/admin/employees').catch(
-        () => ({ success: true, data: [] as EmployeeRecord[] }),
-      ),
-    staleTime: 10 * 60_000,
-    enabled: open,
-  });
-  const employees = (empData?.data ?? []).filter((e) =>
-    ['telecaller', 'agent', 'intern', 'team_lead', 'manager'].includes(e.role),
-  );
+  // Canonical employees list (shared cache key with OwnerSelect/ContactTags
+  // elsewhere) — includes admin/superadmin, unlike this drawer's own former
+  // hardcoded role filter, which silently excluded them.
+  const { employees } = useEmployeesList({ enabled: open });
 
   const mutation = useMutation({
     mutationFn: () =>
