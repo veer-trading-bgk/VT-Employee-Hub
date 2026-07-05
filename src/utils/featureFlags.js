@@ -25,13 +25,11 @@ function table() { return process.env.DYNAMODB_TABLE_METRICS; }
 
 const DEFAULTS = Object.freeze({
   contact_hub:          false,  // Phase 2 — Contact 360 / unified timeline view
-  ai_classification:    false,  // Phase 3 — AI intent & sentiment classification
   workflow_builder:     false,  // Phase 2 — Visual no-code workflow editor
   multi_pipeline:       false,  // Phase 2 — Multiple CRM pipelines per company
   broadcast_campaigns:  false,  // Phase 2 — WhatsApp broadcast campaign flows
   conversation_v2_ui:   false,  // Phase 2 — V2 conversation pane (CONV# entity)
   lead_timeline:        false,  // Phase 2 — Lead activity timeline sidebar
-  bot_handoff:          false,  // Phase 3 — AI/bot handoff state machine UI
 });
 
 const _cache = new Map(); // companyId → { flags, expiresAt }

@@ -89,7 +89,7 @@ A real feature-flag mechanism exists: `src/utils/featureFlags.js`, covered by `t
 - **Storage:** DynamoDB, not env vars. Two item shapes in the metrics table (`process.env.DYNAMODB_TABLE_METRICS`):
   - Global: `PK=CONFIG#FLAGS#global`, `SK=FLAGS`
   - Per-company override: `PK=CONFIG#FLAGS#${companyId}`, `SK=FLAGS`
-- **Precedence:** company override > global > hardcoded `DEFAULTS`. All 8 current flags default to `false` (`contact_hub`, `ai_classification`, `workflow_builder`, `multi_pipeline`, `broadcast_campaigns`, `conversation_v2_ui`, `lead_timeline`, `bot_handoff`) — every flag currently defined ships dark by default.
+- **Precedence:** company override > global > hardcoded `DEFAULTS`. All 6 current flags default to `false` (`contact_hub`, `workflow_builder`, `multi_pipeline`, `broadcast_campaigns`, `conversation_v2_ui`, `lead_timeline`) — every flag currently defined ships dark by default. (`ai_classification`/`bot_handoff` were removed as dead code — zero call sites anywhere in the codebase.)
 - **Per-company targeting:** yes — a flag can be turned on for one `companyId` (tenant) without affecting others, via the company-level DDB item. This is the multi-tenant SaaS's mechanism for gradual/beta rollout to specific customers.
 - **Caching:** 60-second in-process cache per `companyId` (`CACHE_TTL_MS = 60_000`), so toggling a flag in DynamoDB takes up to 60s to take effect per warm Lambda instance — not instant, but no redeploy required.
 - **Failure mode:** if the DynamoDB read errors (throttling, missing table, etc.), `getFlags()` catches and logs a warning, then returns `{ ...DEFAULTS }`. Flags fail closed — an outage disables new features rather than crashing the request.

@@ -45,9 +45,9 @@ describe('DEFAULTS', () => {
 
   test('DEFAULTS contains the expected flag names', () => {
     const expected = [
-      'contact_hub', 'ai_classification', 'workflow_builder',
+      'contact_hub', 'workflow_builder',
       'multi_pipeline', 'broadcast_campaigns', 'conversation_v2_ui',
-      'lead_timeline', 'bot_handoff',
+      'lead_timeline',
     ];
     for (const name of expected) {
       expect(featureFlags.DEFAULTS).toHaveProperty(name);
@@ -82,9 +82,9 @@ describe('getFlags()', () => {
   });
 
   test('multiple flags merge correctly — only overridden keys change', async () => {
-    mockGet({ ai_classification: true }, { workflow_builder: true });
+    mockGet({ lead_timeline: true }, { workflow_builder: true });
     const flags = await featureFlags.getFlags(CID);
-    expect(flags.ai_classification).toBe(true);   // from global
+    expect(flags.lead_timeline).toBe(true);        // from global
     expect(flags.workflow_builder).toBe(true);     // from company
     expect(flags.contact_hub).toBe(false);         // still default
   });
@@ -136,8 +136,8 @@ describe('isEnabled()', () => {
   });
 
   test('returns true when flag is enabled in DDB', async () => {
-    mockGet({ ai_classification: true }, null);
-    const result = await featureFlags.isEnabled(CID, 'ai_classification');
+    mockGet({ conversation_v2_ui: true }, null);
+    const result = await featureFlags.isEnabled(CID, 'conversation_v2_ui');
     expect(result).toBe(true);
   });
 

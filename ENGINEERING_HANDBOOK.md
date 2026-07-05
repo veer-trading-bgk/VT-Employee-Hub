@@ -572,8 +572,6 @@ Flag takes effect within 60 seconds (cache TTL).
 | `multi_pipeline` | false | Phase 2 |
 | `broadcast_campaigns` | false | Phase 2 |
 | `conversation_v2_ui` | false | Phase 2 |
-| `ai_classification` | false | Phase 3 |
-| `bot_handoff` | false | Phase 3 |
 
 ---
 
