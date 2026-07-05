@@ -930,6 +930,21 @@ describe('AutomationEngine — fireTrigger("keyword_message")', () => {
     expect(startSpy).not.toHaveBeenCalled();
   });
 
+  test('fires again for a repeat matching message from the same contact — no auto-suppression (Decision 4)', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [keywordWorkflow({ matchMode: 'contains', keywords: ['demat'] })] }));
+    const ctx = { leadPK: LEAD_PK, phone: '9876543210', messageText: 'open a demat account' };
+
+    await engine.fireTrigger(CID, 'keyword_message', ctx);
+    await engine.fireTrigger(CID, 'keyword_message', ctx); // same contact, identical message, sent again
+    await engine.fireTrigger(CID, 'keyword_message', ctx);
+
+    // Every matching event starts a new execution — fireTrigger()/​_startExecution()
+    // hold no per-contact "already fired" memory for this or any other trigger type.
+    // lead_created etc. only look one-shot because their underlying event can only
+    // happen once per lead, not because of any suppression code.
+    expect(startSpy).toHaveBeenCalledTimes(3);
+  });
+
   test('any_of mode fires when ANY keyword in the list matches (OR logic)', async () => {
     dynamodb.query.mockReturnValue(resolved({
       Items: [keywordWorkflow({ matchMode: 'any_of', keywords: ['demat', 'ipo', 'mutual fund'] })],
