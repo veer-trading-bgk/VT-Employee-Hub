@@ -175,3 +175,94 @@ describe('ApprovalService.resolveApproval', () => {
     expect(dynamodb.query).not.toHaveBeenCalled();
   });
 });
+
+describe('ApprovalService.listApprovals', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('queries by status prefix (a real Query, not a Scan) when status is given', async () => {
+    dynamodb.query.mockReturnValueOnce(leaveQueryResult([
+      { approvalId: 'a1', assignedTo: 'emp_1', status: 'pending', createdAt: '2026-07-05T10:00:00.000Z' },
+    ]));
+
+    await ApprovalService.listApprovals(CID, { status: 'pending' });
+
+    expect(dynamodb.query).toHaveBeenCalledWith(expect.objectContaining({
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: { ':pk': `APPROVAL#${CID}`, ':sk': 'pending#' },
+    }));
+  });
+
+  test('queries the whole partition (no status prefix) when status is omitted', async () => {
+    dynamodb.query.mockReturnValueOnce(leaveQueryResult([]));
+
+    await ApprovalService.listApprovals(CID, {});
+
+    expect(dynamodb.query).toHaveBeenCalledWith(expect.objectContaining({
+      KeyConditionExpression: 'PK = :pk',
+      ExpressionAttributeValues: { ':pk': `APPROVAL#${CID}` },
+    }));
+  });
+
+  test('ignores an unrecognised status value and queries the whole partition', async () => {
+    dynamodb.query.mockReturnValueOnce(leaveQueryResult([]));
+
+    await ApprovalService.listApprovals(CID, { status: 'bogus' });
+
+    expect(dynamodb.query).toHaveBeenCalledWith(expect.objectContaining({
+      KeyConditionExpression: 'PK = :pk',
+    }));
+  });
+
+  test('filters to one person\'s queue when assignedTo is given', async () => {
+    dynamodb.query.mockReturnValueOnce(leaveQueryResult([
+      { approvalId: 'a1', assignedTo: 'emp_1', status: 'pending', createdAt: '2026-07-05T10:00:00.000Z' },
+      { approvalId: 'a2', assignedTo: 'emp_2', status: 'pending', createdAt: '2026-07-05T11:00:00.000Z' },
+      { approvalId: 'a3', assignedTo: null,    status: 'pending', createdAt: '2026-07-05T12:00:00.000Z' },
+    ]));
+
+    const result = await ApprovalService.listApprovals(CID, { status: 'pending', assignedTo: 'emp_1' });
+
+    expect(result.map((a) => a.approvalId)).toEqual(['a1']);
+  });
+
+  test('returns everyone\'s approvals, including unassigned, when assignedTo is omitted', async () => {
+    dynamodb.query.mockReturnValueOnce(leaveQueryResult([
+      { approvalId: 'a1', assignedTo: 'emp_1', status: 'pending', createdAt: '2026-07-05T10:00:00.000Z' },
+      { approvalId: 'a2', assignedTo: null,    status: 'pending', createdAt: '2026-07-05T11:00:00.000Z' },
+    ]));
+
+    const result = await ApprovalService.listApprovals(CID, { status: 'pending' });
+
+    expect(result.map((a) => a.approvalId)).toEqual(['a2', 'a1']); // newest first
+  });
+
+  test('sorts newest first', async () => {
+    dynamodb.query.mockReturnValueOnce(leaveQueryResult([
+      { approvalId: 'old', createdAt: '2026-07-01T00:00:00.000Z' },
+      { approvalId: 'new', createdAt: '2026-07-05T00:00:00.000Z' },
+    ]));
+
+    const result = await ApprovalService.listApprovals(CID, {});
+    expect(result.map((a) => a.approvalId)).toEqual(['new', 'old']);
+  });
+});
+
+describe('ApprovalService.getApproval', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('finds an approval by id regardless of its current status', async () => {
+    dynamodb.query.mockReturnValueOnce(leaveQueryResult([
+      { approvalId: 'a1', status: 'approved', createdAt: '2026-07-05T10:00:00.000Z' },
+    ]));
+
+    const result = await ApprovalService.getApproval(CID, 'a1');
+    expect(result).toMatchObject({ approvalId: 'a1', status: 'approved' });
+  });
+
+  test('returns null when no approval matches the id', async () => {
+    dynamodb.query.mockReturnValueOnce(leaveQueryResult([]));
+
+    const result = await ApprovalService.getApproval(CID, 'no_such_id');
+    expect(result).toBeNull();
+  });
+});

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState, Suspense } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   Home,
   MessageSquare,
@@ -25,8 +26,10 @@ import {
   Target,
   ScrollText,
   Send,
+  ClipboardCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { apiFetch } from '@/lib/api';
 import { Avatar } from '@/components/v3/ui/Avatar';
 import { Badge } from '@/components/v3/ui/Badge';
 import { useAuth } from '@/context/AuthContext';
@@ -52,6 +55,7 @@ interface NavGroup {
 const FLAT_ITEMS: NavItem[] = [
   { href: '/home',           label: 'My Work',       icon: <Home className="h-5 w-5" />,          roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/inbox',          label: 'Inbox',          icon: <MessageSquare className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
+  { href: '/approvals',      label: 'Approvals',      icon: <ClipboardCheck className="h-5 w-5" />, roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/contacts',       label: 'Contacts',       icon: <Users className="h-5 w-5" />,         roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
   { href: '/sales',          label: 'Sales CRM',      icon: <TrendingUp className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager', 'sales'] },
   { href: '/campaigns',      label: 'Campaigns',      icon: <Send className="h-5 w-5" />,          roles: ['owner', 'admin', 'manager'] },
@@ -101,6 +105,20 @@ function V3SidebarInner({
 
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
 
+  // Approvals badge count — the discoverability fix for ApprovalService.js's
+  // human-in-the-loop queue, which previously had no route or frontend at all.
+  // Reuses the personal-queue list's length rather than a dedicated count
+  // endpoint (approval volume is human-decision-rate, not high enough to
+  // justify one). Enabled for every role: ApprovalService's routing can target
+  // any employee, not just admins/managers.
+  const { data: approvalsBadgeData } = useQuery({
+    queryKey: ['approvals-badge-count'],
+    queryFn: () => apiFetch<{ success: boolean; approvals: unknown[] }>('/api/approvals?status=pending'),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+  const pendingApprovalsCount = approvalsBadgeData?.approvals.length ?? 0;
+
   function isActiveItem(item: NavItem): boolean {
     return pathname === item.href || pathname.startsWith(item.href + '/');
   }
@@ -109,10 +127,11 @@ function V3SidebarInner({
     return item.href;
   }
 
-  function renderNavItem(item: NavItem) {
+  function renderNavItem(item: NavItem, badgeOverride?: number) {
     if (!item.roles.includes(v3Role)) return null;
     const active = isActiveItem(item);
     const href = itemHref(item);
+    const badge = badgeOverride ?? item.badge;
 
     return (
       <Link
@@ -131,9 +150,9 @@ function V3SidebarInner({
       >
         <span className={cn('shrink-0', active ? 'text-primary-600 dark:text-primary-400' : '')}>{item.icon}</span>
         {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
-        {!collapsed && item.badge != null && item.badge > 0 && (
+        {!collapsed && badge != null && badge > 0 && (
           <Badge variant="primary" className="ml-auto text-[10px] h-5 min-w-[20px] justify-center">
-            {item.badge > 99 ? '99+' : item.badge}
+            {badge > 99 ? '99+' : badge}
           </Badge>
         )}
       </Link>
@@ -171,7 +190,7 @@ function V3SidebarInner({
       <nav className="scrollbar-thin flex-1 overflow-y-auto px-2 py-3 space-y-0.5" aria-label="Main navigation">
 
         {/* Top flat items */}
-        {FLAT_ITEMS.map((item) => renderNavItem(item))}
+        {FLAT_ITEMS.map((item) => renderNavItem(item, item.href === '/approvals' ? pendingApprovalsCount : undefined))}
 
         {/* Team group */}
         {showTeam && (

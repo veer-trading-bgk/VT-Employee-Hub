@@ -9,6 +9,7 @@ const EMP_TABLE      = process.env.DYNAMODB_TABLE_EMPLOYEES;
 
 const APPROVAL_PK = (companyId) => `APPROVAL#${companyId}`;
 const VALID_STATUSES = new Set(['approved', 'rejected']);
+const VALID_LIST_STATUSES = new Set(['pending', 'approved', 'rejected']);
 
 /**
  * Genuinely new logic — confirmed via audit that no leave-aware routing pattern
@@ -124,4 +125,37 @@ async function resolveApproval(companyId, approvalId, { status, resolvedBy, reso
   return updated;
 }
 
-module.exports = { resolveRoutingTarget, routeApproval, resolveApproval };
+/**
+ * Lists a company's approvals, newest first. `status` restricts to one SK-prefix
+ * range (a real Query, not a Scan — APPROVAL_PK is already company-wide, unlike
+ * LEAVE#'s per-user PK) when it's one of the three real statuses; omitted, returns
+ * every status the company has ever had — an approval queue is human-decision
+ * volume, not a hot path, so no pagination concern yet. `assignedTo` further
+ * filters in memory to one person's queue: there's no GSI on assignedTo and the
+ * per-company item count doesn't warrant one.
+ */
+async function listApprovals(companyId, { assignedTo, status } = {}) {
+  const hasStatusFilter = VALID_LIST_STATUSES.has(status);
+  const items = await queryAll({
+    TableName: METRICS_TABLE,
+    KeyConditionExpression: hasStatusFilter ? 'PK = :pk AND begins_with(SK, :sk)' : 'PK = :pk',
+    ExpressionAttributeValues: hasStatusFilter
+      ? { ':pk': APPROVAL_PK(companyId), ':sk': `${status}#` }
+      : { ':pk': APPROVAL_PK(companyId) },
+  });
+  const filtered = assignedTo ? items.filter((a) => a.assignedTo === assignedTo) : items;
+  return filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+/**
+ * Finds one approval by id regardless of its current status (pending, already
+ * approved, or already rejected) — the resolve route needs this to tell "not
+ * found" (404) apart from "found, but already resolved" (409), and to check who
+ * is authorized to act on it before calling resolveApproval().
+ */
+async function getApproval(companyId, approvalId) {
+  const items = await listApprovals(companyId);
+  return items.find((a) => a.approvalId === approvalId) ?? null;
+}
+
+module.exports = { resolveRoutingTarget, routeApproval, resolveApproval, listApprovals, getApproval };

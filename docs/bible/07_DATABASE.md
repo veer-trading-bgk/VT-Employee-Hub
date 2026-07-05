@@ -630,9 +630,38 @@ All follow the same shape: `PK = CONFIG#{NAME}#{companyId}` (or the bare
   leave-aware routing existed anywhere in this codebase (`autoAssign.js`'s own
   fallback is capacity/overflow load-balancing only, not leave-aware).
 - **Owner:** `ApprovalService.js`
+- **Routes:** `src/routes/approvals.js` — `GET /api/approvals` (caller's own
+  queue, `assignedTo === self`, any authenticated role since routing can target
+  any employee), `GET /api/approvals/admin` (admin/manager only, full company
+  visibility including `assignedTo: null`/unassigned), `POST /api/approvals/:id/
+  resolve` (approve/reject; authorized for the specific assignee OR any admin/
+  manager/superadmin as an escalation valve — deliberately not admin-only, which
+  would defeat the routing design of putting this in front of whoever is
+  closest to the case). Both `?status=` filters are optional and unfiltered
+  when omitted, same convention as `GET /api/attendance/leave/admin`.
+- **Frontend:** `dashboard/src/app/(v3)/approvals/page.tsx` (nav item + live
+  pending-count badge in `V3Sidebar.tsx`, chosen over the notification panel
+  because `V3NotificationPanel.tsx` has zero producers today — wiring it up
+  would have been a second, unscoped project). Before this, `ApprovalService.js`
+  had zero route and zero frontend: a routed approval sat in DynamoDB with no
+  way for a human to ever see, approve, or reject it.
+- **Deliberate scope boundary — resolving does NOT send anything:**
+  `POST /api/approvals/:id/resolve` only flips `status` and records
+  `resolvedBy`/`resolvedAt`/`resolutionNote`. It never calls
+  `WhatsAppSendService`, and nothing else in the codebase reacts to an approval
+  reaching `status: 'approved'`. This is intentional, not a bug: no
+  `customerFacing: true` AI use case exists yet, so `output`'s shape is
+  undefined — a future template-suggestion feature's approved output would need
+  a different `WhatsAppSendService` call than a future freeform-chat-draft
+  feature's. Building a generic "on-approve, dispatch by useCase" seam now would
+  mean guessing at schemas for features that don't exist. The correct owner for
+  "approved → send" is whichever future `customerFacing` feature actually
+  produces that output, wired in that feature's own commit.
 - **Note:** not yet populated by any real useCase — both of today's real AI
   features (`metrics-insights`, `team-metrics-insights`) are internal analyst
-  reports (`customerFacing: false`), which never engage this gate.
+  reports (`customerFacing: false`), which never engage this gate. The queue
+  and its UI are fully built and tested ahead of that first real use case, so
+  the "invisible dead end" this section used to describe cannot recur.
 
 ### 2.30 WALLET — generic prepaid balance ("points")
 
