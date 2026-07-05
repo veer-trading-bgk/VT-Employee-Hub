@@ -883,3 +883,143 @@ describe('AutomationEngine — processDueWaits() delayed_response dispatch', () 
     expect(resumed).toBe(0);
   });
 });
+
+// ─── fireTrigger("keyword_message") — typed-text / button-tap / list-tap trigger ──
+// Unlike every other trigger type, trigger.type alone isn't enough to know whether
+// a keyword_message workflow should fire — its own trigger.config (mode + keyword
+// list) decides that per-event. trigger.conditions[] is unaffected and still stacks
+// as an optional AND-filter on top, exactly as it does for every other trigger.
+describe('AutomationEngine — fireTrigger("keyword_message")', () => {
+  const resolved = (value) => ({ promise: () => Promise.resolve(value) });
+
+  function keywordWorkflow(config, conditions = []) {
+    return {
+      id: 'wf-kw', name: 'Keyword workflow', status: 'active',
+      trigger: { type: 'keyword_message', conditions, config },
+      steps: [{ id: 'end-default', type: 'end', config: {} }],
+    };
+  }
+
+  let startSpy;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    startSpy = jest.spyOn(engine, '_startExecution').mockResolvedValue(undefined);
+  });
+  afterEach(() => startSpy.mockRestore());
+
+  test('exact mode fires only on an exact (trimmed) match', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [keywordWorkflow({ matchMode: 'exact', keywords: ['yes'] })] }));
+
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'yes' });
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    startSpy.mockClear();
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'yes please' });
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  test('contains mode fires when the keyword appears anywhere in the message', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [keywordWorkflow({ matchMode: 'contains', keywords: ['demat'] })] }));
+
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'I want to open a demat account' });
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    startSpy.mockClear();
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'tell me about mutual funds' });
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  test('any_of mode fires when ANY keyword in the list matches (OR logic)', async () => {
+    dynamodb.query.mockReturnValue(resolved({
+      Items: [keywordWorkflow({ matchMode: 'any_of', keywords: ['demat', 'ipo', 'mutual fund'] })],
+    }));
+
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'any updates on IPO listings?' });
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    startSpy.mockClear();
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'what are your office hours' });
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  test('button/list tap titles match the same way typed text does (caller passes the tapped title as messageText)', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [keywordWorkflow({ matchMode: 'contains', keywords: ['demat'] })] }));
+
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'Open Demat Account' });
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('case-insensitive by default', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [keywordWorkflow({ matchMode: 'contains', keywords: ['demat'] })] }));
+
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'DEMAT account please' });
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('caseSensitive: true requires exact case', async () => {
+    dynamodb.query.mockReturnValue(resolved({
+      Items: [keywordWorkflow({ matchMode: 'contains', keywords: ['Demat'], caseSensitive: true })],
+    }));
+
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'open a demat account' });
+    expect(startSpy).not.toHaveBeenCalled();
+
+    startSpy.mockClear();
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'open a Demat account' });
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('fails closed on a missing config rather than matching everything', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [keywordWorkflow(undefined)] }));
+
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'anything at all' });
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  test('fails closed on an empty keywords list', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [keywordWorkflow({ matchMode: 'contains', keywords: [] })] }));
+
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'anything at all' });
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  test('stacks with a generic trigger condition (AND) on top of the keyword match', async () => {
+    dynamodb.query.mockReturnValue(resolved({
+      Items: [keywordWorkflow(
+        { matchMode: 'contains', keywords: ['demat'] },
+        [{ field: 'stage', operator: 'equals', value: 'new' }],
+      )],
+    }));
+
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'demat please', stage: 'won' });
+    expect(startSpy).not.toHaveBeenCalled(); // keyword matches, but the stacked stage condition fails
+
+    startSpy.mockClear();
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'demat please', stage: 'new' });
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('a keyword_message workflow never fires for an unrelated trigger type', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [keywordWorkflow({ matchMode: 'contains', keywords: ['demat'] })] }));
+
+    await engine.fireTrigger(CID, 'lead_created', { messageText: 'demat' });
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('AutomationEngine — _matchesKeywordConfig() unit cases', () => {
+  test('false for non-string messageText or a missing config', () => {
+    expect(engine._matchesKeywordConfig(null, 'hi')).toBe(false);
+    expect(engine._matchesKeywordConfig({ matchMode: 'contains', keywords: ['hi'] }, undefined)).toBe(false);
+  });
+
+  test('ignores blank/whitespace-only entries in the keyword list', () => {
+    const config = { matchMode: 'any_of', keywords: ['', '   ', 'demat'] };
+    expect(engine._matchesKeywordConfig(config, 'open a demat account')).toBe(true);
+  });
+
+  test('trims surrounding whitespace on both sides before comparing', () => {
+    expect(engine._matchesKeywordConfig({ matchMode: 'exact', keywords: ['yes'] }, '  yes  ')).toBe(true);
+  });
+});

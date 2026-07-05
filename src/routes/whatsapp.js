@@ -1105,8 +1105,7 @@ function writeMediaIndex(companyId, contactKey, item) {
 
 // Meta delivers a completed WhatsApp Flow answer as an inbound message with
 // type: 'interactive', interactive.type: 'nfm_reply' — a distinct shape from
-// a plain text reply, and from button_reply/list_reply (list_reply is still
-// not handled here — no feature sends list messages yet).
+// a plain text reply, and from button_reply/list_reply (see isListReply below).
 function isFlowResponse(msg) {
   return msg.type === 'interactive' && msg.interactive?.type === 'nfm_reply';
 }
@@ -1147,6 +1146,21 @@ function isButtonReply(msg) {
 function parseButtonReply(msg) {
   const br = msg.interactive.button_reply;
   return { id: br?.id ?? null, title: br?.title || '[Button reply]' };
+}
+
+// A tap on a Message+List row (the send_list automation node's Interactive List
+// message) arrives as type: 'interactive', interactive.type: 'list_reply' — a
+// separate shape from button_reply above, with an extra optional `description`
+// field. Previously unhandled entirely: silently dropped by the type guard
+// below (not stored, no WS push) since no feature sent list messages before
+// tonight's Message+List node existed.
+function isListReply(msg) {
+  return msg.type === 'interactive' && msg.interactive?.type === 'list_reply';
+}
+
+function parseListReply(msg) {
+  const lr = msg.interactive.list_reply;
+  return { id: lr?.id ?? null, title: lr?.title || '[List selection]', description: lr?.description ?? null };
 }
 
 // Sends the configured welcome message on first contact — exactly one of
@@ -1390,7 +1404,7 @@ router.post('/webhook', async (req, res) => {
     // media-download chain.  The 2 s ping detects new messages in ≤2 s instead
     // of the previous 15–20 s that storeInboundMedia was adding to the delay.
     const INBOUND_MSG_TYPES = ['text', 'image', 'document', 'audio', 'video', 'sticker'];
-    if (webhookCompanyId && messages.some((m) => INBOUND_MSG_TYPES.includes(m.type) || isFlowResponse(m) || isButtonReply(m))) {
+    if (webhookCompanyId && messages.some((m) => INBOUND_MSG_TYPES.includes(m.type) || isFlowResponse(m) || isButtonReply(m) || isListReply(m))) {
       await dynamodb.update({
         TableName: TABLE,
         Key: { PK: `ACTIVITY#${webhookCompanyId}`, SK: 'WA' },
@@ -1404,7 +1418,8 @@ router.post('/webhook', async (req, res) => {
       const MEDIA_TYPES = ['image', 'document', 'audio', 'video', 'sticker'];
       const flowResp = isFlowResponse(msg) ? parseFlowResponse(msg) : null;
       const buttonReply = isButtonReply(msg) ? parseButtonReply(msg) : null;
-      if (type !== 'text' && !MEDIA_TYPES.includes(type) && !flowResp && !buttonReply) continue;
+      const listReply = isListReply(msg) ? parseListReply(msg) : null;
+      if (type !== 'text' && !MEDIA_TYPES.includes(type) && !flowResp && !buttonReply && !listReply) continue;
 
       const timestamp = new Date(Number(ts) * 1000).toISOString();
       const phone10 = to10Digit(fromPhone);
@@ -1421,6 +1436,8 @@ router.post('/webhook', async (req, res) => {
         text = flowResp.summary;
       } else if (buttonReply) {
         text = buttonReply.title;
+      } else if (listReply) {
+        text = listReply.title;
       } else {
         const m = msg[type] ?? {};
         mediaId = m.id ?? null;
@@ -1453,11 +1470,12 @@ router.post('/webhook', async (req, res) => {
       // so media download does not block the WS push.
       const msgItem = {
         direction: 'inbound', content: text,
-        type: flowResp ? 'flow_response' : buttonReply ? 'button_reply' : type,
+        type: flowResp ? 'flow_response' : buttonReply ? 'button_reply' : listReply ? 'list_reply' : type,
         timestamp, waMessageId, messageId: waMessageId,
         ...(mediaId && { mediaId, mimeType, filename }),
         ...(flowResp && { flowName: flowResp.flowName, flowFields: flowResp.fields }),
         ...(buttonReply && { buttonId: buttonReply.id }),
+        ...(listReply && { listReplyId: listReply.id, ...(listReply.description && { listReplyDescription: listReply.description }) }),
       };
 
       if (lead) {
@@ -1592,6 +1610,18 @@ router.post('/webhook', async (req, res) => {
               .resumeOnButtonReply(webhookCompanyId, phone10, buttonReply.id)
               .catch((e) => logger.warn('automation button-reply resume failed: ' + e.message));
           }
+          // Keyword / button-tap trigger — fires on EVERY inbound text message or
+          // button/list tap (unlike whatsapp_conversation_started below, which only
+          // fires once ever). fireTrigger() itself no-ops cheaply when no active
+          // workflow uses this trigger type. `text` already holds the right string
+          // for all three cases: the typed body, or the tapped button/row title.
+          if (text && (type === 'text' || buttonReply || listReply)) {
+            require('../services/AutomationEngine').fireTrigger(webhookCompanyId, 'keyword_message', {
+              leadId: lead.leadId, leadPK: lead.PK, phone: phone10, name: lead.name,
+              stage: lead.stage, tags: lead.tags ?? [], assignedTo: lead.assignedTo,
+              source: 'whatsapp', messageText: text,
+            }).catch((e) => logger.warn('keyword trigger fire failed: ' + e.message));
+          }
         }
       } else {
         const companyId = webhookCompanyId; // already resolved above
@@ -1678,6 +1708,15 @@ router.post('/webhook', async (req, res) => {
             require('../services/AutomationEngine')
               .resumeOnButtonReply(companyId, phone10, buttonReply.id)
               .catch((e) => logger.warn('automation button-reply resume failed: ' + e.message));
+          }
+          // Keyword / button-tap trigger — see the identical lead-path block above
+          // for the full comment; same trigger, same matching rules, unknown-contact
+          // context shape (no leadId/leadPK) instead.
+          if (text && (type === 'text' || buttonReply || listReply)) {
+            require('../services/AutomationEngine').fireTrigger(companyId, 'keyword_message', {
+              phone: phone10, name: waName ?? null, source: 'whatsapp', tags: [],
+              messageText: text,
+            }).catch((e) => logger.warn('keyword trigger fire failed: ' + e.message));
           }
         }
 
@@ -3320,6 +3359,8 @@ module.exports.isFlowResponse = isFlowResponse;
 module.exports.parseFlowResponse = parseFlowResponse;
 module.exports.isButtonReply = isButtonReply;
 module.exports.parseButtonReply = parseButtonReply;
+module.exports.isListReply = isListReply;
+module.exports.parseListReply = parseListReply;
 module.exports.sendWelcomeMessage = sendWelcomeMessage;
 module.exports.fireButtonFollowUp = fireButtonFollowUp;
 module.exports.sendRegisteredFlow = sendRegisteredFlow;

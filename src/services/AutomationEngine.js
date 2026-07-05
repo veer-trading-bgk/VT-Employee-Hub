@@ -43,7 +43,13 @@ class AutomationEngine {
         const isActive = w.status === 'active' || (w.status == null && w.enabled === true);
         if (!isActive) return false;
         const wTrigger = typeof w.trigger === 'object' ? w.trigger.type : w.trigger;
-        return wTrigger === triggerType;
+        if (wTrigger !== triggerType) return false;
+        // keyword_message's own config (which keyword(s)/mode) decides whether THIS
+        // workflow's trigger actually matches this specific event — unlike every other
+        // trigger type, where trigger.type alone is enough and trigger.conditions[]
+        // (still evaluated below, unaffected) is only ever an optional extra filter.
+        if (triggerType === 'keyword_message' && !this._matchesKeywordConfig(w.trigger?.config, context.messageText)) return false;
+        return true;
       });
 
       if (workflows.length === 0) return;
@@ -667,6 +673,26 @@ class AutomationEngine {
       case 'not_exists':   return actual === undefined  || actual === null  || actual === '';
       default:             return false; // unknown operator → condition fails safely
     }
+  }
+
+  // ── Keyword trigger matcher (keyword_message trigger's own config) ───────
+  // 'contains' and 'any_of' are the same operation — substring-match against a
+  // list of keywords, just 1 entry vs. N — so they share this one code path
+  // rather than duplicating it. Fails closed (false) on any missing/malformed
+  // config, same philosophy as _matchesOperator()'s "unknown operator → false".
+  _matchesKeywordConfig(config, messageText) {
+    if (!config || typeof messageText !== 'string') return false;
+    const keywords = Array.isArray(config.keywords)
+      ? config.keywords.filter((k) => typeof k === 'string' && k.trim())
+      : [];
+    if (keywords.length === 0) return false;
+
+    const norm = (s) => (config.caseSensitive ? s.trim() : s.trim().toLowerCase());
+    const target = norm(messageText);
+    if (!target) return false;
+
+    if (config.matchMode === 'exact') return keywords.some((k) => norm(k) === target);
+    return keywords.some((k) => target.includes(norm(k))); // 'contains' and 'any_of'
   }
 
   // ── Graph condition-node evaluator (mid-workflow — live re-fetch when possible) ──

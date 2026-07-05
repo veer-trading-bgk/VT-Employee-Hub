@@ -20,6 +20,47 @@ async function runAutomations(companyId, triggerType, context) {
   return AutomationEngine.fireTrigger(companyId, triggerType, context);
 }
 
+// ── Validation for the keyword_message trigger's own config ─────────────────
+// Unlike every other trigger type, trigger.type alone doesn't define a
+// keyword_message trigger — its config (which keyword(s), which mode) does, so
+// an empty/malformed config here is a broken workflow, not an empty optional
+// filter. Sanitize strips blank keyword rows (an in-progress "any_of" list
+// commonly has one) so only real values are ever persisted.
+const VALID_KEYWORD_MATCH_MODES = new Set(['exact', 'contains', 'any_of']);
+const MAX_KEYWORDS = 20;
+const MAX_KEYWORD_LENGTH = 200;
+
+function validateKeywordTriggerConfig(config) {
+  if (!config || typeof config !== 'object') return 'trigger.config is required for a keyword_message trigger';
+  if (!VALID_KEYWORD_MATCH_MODES.has(config.matchMode)) return 'trigger.config.matchMode must be exact, contains, or any_of';
+  const keywords = Array.isArray(config.keywords) ? config.keywords.filter((k) => typeof k === 'string' && k.trim()) : [];
+  if (keywords.length === 0) return 'trigger.config.keywords must contain at least one non-empty keyword';
+  if (keywords.length > MAX_KEYWORDS) return `trigger.config.keywords cannot exceed ${MAX_KEYWORDS} entries`;
+  if (keywords.some((k) => k.trim().length > MAX_KEYWORD_LENGTH)) return `each keyword must be ${MAX_KEYWORD_LENGTH} characters or fewer`;
+  return null;
+}
+
+function sanitizeKeywordTriggerConfig(config) {
+  return {
+    matchMode:     config.matchMode,
+    keywords:      config.keywords.filter((k) => typeof k === 'string' && k.trim()).map((k) => k.trim()),
+    caseSensitive: config.caseSensitive === true,
+  };
+}
+
+// Builds the trigger object exactly as persisted — {type, conditions} for every
+// existing trigger type, unchanged; keyword_message additionally carries a
+// sanitized config. Returns { error } instead of throwing so callers can
+// respond with a 400 the same way every other validation failure in this file does.
+function buildTriggerForStorage(trigger) {
+  if (trigger.type === 'keyword_message') {
+    const err = validateKeywordTriggerConfig(trigger.config);
+    if (err) return { error: err };
+    return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [], config: sanitizeKeywordTriggerConfig(trigger.config) } };
+  }
+  return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [] } };
+}
+
 // ── Minimal shape validation for graph workflows (nodes/edges/entryNodeId) ──
 // Deliberately shallow — checks referential integrity only (every id exists, every
 // edge points at a real node), not deeper graph properties like cycles or
@@ -139,6 +180,9 @@ router.post('/', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), as
     if (!name?.trim())  return res.status(400).json({ error: 'name is required' });
     if (!trigger?.type) return res.status(400).json({ error: 'trigger.type is required' });
 
+    const triggerResult = buildTriggerForStorage(trigger);
+    if (triggerResult.error) return res.status(400).json({ error: triggerResult.error });
+
     // A workflow is either graph-shaped (nodes/edges) or linear-shaped (steps) —
     // never both. Presence of a non-empty nodes[] selects the graph shape.
     const isGraph = Array.isArray(nodes) && nodes.length > 0;
@@ -160,7 +204,7 @@ router.post('/', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), as
       name:          name.trim(),
       description:   description?.trim() ?? null,
       status:        safeStatus,
-      trigger:       { type: trigger.type, conditions: trigger.conditions ?? [] },
+      trigger:       triggerResult.trigger,
       ...(isGraph ? { nodes, edges: edges ?? [], entryNodeId } : { steps }),
       runCount:      0,
       lastRunAt:     null,
@@ -264,7 +308,12 @@ router.put('/:id', authMiddleware, checkRole(['admin']), async (req, res, next) 
       sets.push('#n = :n'); expNames['#n'] = 'name'; expVals[':n'] = trimmed;
     }
     if (description !== undefined) { sets.push('description = :d');                           expVals[':d']     = description?.trim() ?? null; }
-    if (trigger     !== undefined) { sets.push('#t = :t');       expNames['#t']  = 'trigger'; expVals[':t']     = { type: trigger.type, conditions: trigger.conditions ?? [] }; }
+    if (trigger     !== undefined) {
+      if (!trigger?.type) return res.status(400).json({ error: 'trigger.type is required' });
+      const triggerResult = buildTriggerForStorage(trigger);
+      if (triggerResult.error) return res.status(400).json({ error: triggerResult.error });
+      sets.push('#t = :t'); expNames['#t'] = 'trigger'; expVals[':t'] = triggerResult.trigger;
+    }
     if (steps       !== undefined) { sets.push('steps = :steps');                             expVals[':steps'] = steps; }
     if (nodes       !== undefined) {
       const graphErr = validateGraphShape(nodes, edges, entryNodeId);

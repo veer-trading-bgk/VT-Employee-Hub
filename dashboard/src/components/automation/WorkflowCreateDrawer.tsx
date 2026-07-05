@@ -8,8 +8,9 @@ import { Button } from '@/components/v3/ui/Button';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
 import { WorkflowBuilder } from './WorkflowBuilder';
-import type {
-  Workflow, WorkflowTrigger, WorkflowStep, WorkflowStatus,
+import {
+  normalizeTrigger,
+  type Workflow, type WorkflowTrigger, type WorkflowStep, type WorkflowStatus,
 } from '@/types/automations';
 
 const END_STEP: WorkflowStep = { id: 'end-default', type: 'end', config: {} };
@@ -25,13 +26,10 @@ interface FormState {
 
 function initForm(workflow: Workflow | null | undefined): FormState {
   if (!workflow) return { name: '', description: '', trigger: EMPTY_TRIGGER, steps: [END_STEP], saved: false };
-  const t = typeof workflow.trigger === 'object'
-    ? workflow.trigger
-    : { type: workflow.trigger as WorkflowTrigger['type'], conditions: [] };
   return {
     name:        workflow.name,
     description: workflow.description ?? '',
-    trigger:     t,
+    trigger:     normalizeTrigger(workflow.trigger),
     steps:       workflow.steps?.length ? workflow.steps : [END_STEP],
     saved:       false,
   };

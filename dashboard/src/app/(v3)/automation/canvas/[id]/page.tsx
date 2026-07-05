@@ -6,7 +6,7 @@ import { ChevronLeft, Zap, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch, ApiClientError } from '@/lib/api';
 import { WorkflowCanvas } from '@/components/automation/canvas/WorkflowCanvas';
-import type { AutomationResponse, GraphNode, GraphEdge } from '@/types/automations';
+import type { AutomationResponse, GraphNode, GraphEdge, WorkflowTrigger } from '@/types/automations';
 
 // Full-bleed canvas route — the one deliberate exception to UI_GUIDELINES.md's
 // "use drawers for create/edit" rule (see that file's Drawers & Modals section).
@@ -22,7 +22,7 @@ export default function WorkflowCanvasEditPage() {
   });
 
   const saveMutation = useMutation({
-    mutationFn: (body: { nodes: GraphNode[]; edges: GraphEdge[]; entryNodeId: string | undefined }) =>
+    mutationFn: (body: { nodes: GraphNode[]; edges: GraphEdge[]; entryNodeId: string | undefined; trigger: WorkflowTrigger }) =>
       apiFetch(`/api/automations/${params.id}`, { method: 'PUT', body: JSON.stringify(body) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['automation', params.id] });
@@ -81,7 +81,7 @@ export default function WorkflowCanvasEditPage() {
           <WorkflowCanvas
             key={data.automation.updatedAt}
             workflow={data.automation}
-            onSave={async (nodes, edges, entryNodeId) => { await saveMutation.mutateAsync({ nodes, edges, entryNodeId }); }}
+            onSave={async (nodes, edges, entryNodeId, trigger) => { await saveMutation.mutateAsync({ nodes, edges, entryNodeId, trigger }); }}
           />
         )}
       </div>

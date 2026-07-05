@@ -13,25 +13,30 @@ import { cn } from '@/lib/cn';
 import { nodeTypes } from './nodes';
 import { NodeConfigPanel } from './NodeConfigPanel';
 import { NodePalette } from './NodePalette';
+import { TriggerConfigPanel } from './TriggerConfigPanel';
 import {
   toReactFlow, fromReactFlow, applyDagreLayout, needsLayout,
   newNodeId, newEdgeId, defaultConditionConfig, defaultSendButtonsConfig, defaultSendDocumentConfig,
   defaultSendMessageConfig, defaultSendListConfig, defaultSendLocationConfig, nextNodePosition,
-  findIncompleteBranches, getUpstreamButtons, type CanvasNodeData,
+  findIncompleteBranches, getUpstreamButtons, TRIGGER_NODE_ID, type CanvasNodeData,
 } from '@/lib/automationGraph';
 import { defaultConfig } from '../WorkflowBuilder';
 import {
-  getTriggerLabel, type Workflow, type GraphNode, type GraphEdge, type NodeConfig, type ActionType, type NodeType,
+  getTriggerLabel, normalizeTrigger, TRIGGER_META,
+  type Workflow, type WorkflowTrigger, type GraphNode, type GraphEdge, type NodeConfig, type ActionType, type NodeType,
 } from '@/types/automations';
 
 interface WorkflowCanvasProps {
   workflow: Workflow;
   // Omitted entirely (e.g. the checkpoint's blank /canvas/new scaffold) → no Save
   // button renders at all, rather than a Save button that silently does nothing.
-  onSave?: (nodes: GraphNode[], edges: GraphEdge[], entryNodeId: string | undefined) => Promise<void>;
+  onSave?: (nodes: GraphNode[], edges: GraphEdge[], entryNodeId: string | undefined, trigger: WorkflowTrigger) => Promise<void>;
 }
 
-const NON_CONFIGURABLE = new Set(['trigger', 'end']);
+// 'end' has nothing to configure. The trigger IS configurable (see TriggerNode
+// click handling below) but through TriggerConfigPanel, not NodeConfigPanel —
+// it isn't a graph node, so it's excluded from this set and handled separately.
+const NON_CONFIGURABLE = new Set(['end']);
 
 export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
   const { initialNodes, initialEdges } = useMemo(() => {
@@ -51,6 +56,11 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
+  // The trigger isn't a graph node (see automationGraph.ts's TRIGGER_NODE_ID
+  // comment) — it lives on workflow.trigger, so it gets its own bit of local
+  // state here rather than living inside `nodes`, same source of truth
+  // normalizeTrigger() gives the linear drawer.
+  const [trigger, setTrigger] = useState<WorkflowTrigger>(() => normalizeTrigger(workflow.trigger));
 
   const onNodeClick: NodeMouseHandler = useCallback((_event, node) => {
     if (NON_CONFIGURABLE.has(String(node.data?.nodeType))) return;
@@ -64,6 +74,15 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
   function updateSelectedConfig(config: NodeConfig) {
     if (!selectedNodeId) return;
     setNodes((nds) => nds.map((n) => (n.id === selectedNodeId ? { ...n, data: { ...n.data, config } } : n)));
+  }
+
+  // Keeps the visual TriggerNode's label in sync with an in-progress edit —
+  // otherwise the canvas would keep showing the old trigger type until the
+  // next full reload.
+  function handleTriggerChange(next: WorkflowTrigger) {
+    setTrigger(next);
+    const label = TRIGGER_META[next.type]?.label ?? next.type;
+    setNodes((nds) => nds.map((n) => (n.id === TRIGGER_NODE_ID ? { ...n, data: { ...n.data, label } } : n)));
   }
 
   // Drawing an edge by dragging from a node's Handle to another node — React
@@ -118,7 +137,7 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
     setSaveState('saving');
     const { nodes: graphNodes, edges: graphEdges, entryNodeId } = fromReactFlow(nodes, edges);
     try {
-      await onSave(graphNodes, graphEdges, entryNodeId);
+      await onSave(graphNodes, graphEdges, entryNodeId, trigger);
       setSaveState('saved');
       setTimeout(() => setSaveState('idle'), 1500);
     } catch {
@@ -179,7 +198,13 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
         </ReactFlow>
       </ReactFlowProvider>
 
-      {selectedNode && !NON_CONFIGURABLE.has(String(selectedNode.data.nodeType)) && (
+      {selectedNodeId === TRIGGER_NODE_ID ? (
+        <TriggerConfigPanel
+          trigger={trigger}
+          onChange={handleTriggerChange}
+          onClose={() => setSelectedNodeId(null)}
+        />
+      ) : selectedNode && !NON_CONFIGURABLE.has(String(selectedNode.data.nodeType)) && (
         <NodeConfigPanel
           nodeId={selectedNode.id}
           nodeType={selectedNode.data.nodeType as NodeType}

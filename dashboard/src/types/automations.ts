@@ -6,7 +6,8 @@ export type TriggerType =
   | 'lead_created'
   | 'stage_changed'
   | 'stage_change'       // legacy alias from crm.js
-  | 'tag_added';
+  | 'tag_added'
+  | 'keyword_message';
 
 export type ActionType =
   | 'send_template'
@@ -30,9 +31,23 @@ export interface WorkflowCondition {
   value?:   string;
 }
 
+// keyword_message trigger's own config — unlike every other trigger type,
+// trigger.type alone doesn't define what fires this one; matchMode/keywords
+// does. Kept as its own field rather than folded into WorkflowCondition[]
+// (which stays a purely optional, AND-only post-fire filter for every trigger
+// type, this one included — see AutomationEngine.js's fireTrigger()).
+export type KeywordMatchMode = 'exact' | 'contains' | 'any_of';
+
+export interface KeywordTriggerConfig {
+  matchMode:      KeywordMatchMode;
+  keywords:       string[];   // 1 entry for exact/contains, N for any_of
+  caseSensitive?: boolean;    // default false
+}
+
 export interface WorkflowTrigger {
   type:       TriggerType;
   conditions: WorkflowCondition[];
+  config?:    KeywordTriggerConfig; // only meaningful for keyword_message today
 }
 
 // ── Step config variants ──────────────────────────────────────────────────────
@@ -318,6 +333,7 @@ export const TRIGGER_META: Record<string, { label: string; description: string }
   stage_changed:                 { label: 'Stage Changed',       description: 'A lead moves to a new pipeline stage'  },
   stage_change:                  { label: 'Stage Changed',       description: 'A lead moves to a new pipeline stage'  },
   tag_added:                     { label: 'Tag Added',           description: 'A tag is added to a lead'              },
+  keyword_message:               { label: 'Keyword / Button Tap', description: 'Customer types a matching phrase or taps a matching button' },
 };
 
 export const ACTION_META: Record<ActionType, { label: string; description: string }> = {
@@ -346,6 +362,13 @@ export const EXECUTION_STATUS_META: Record<ExecutionStatus, { label: string; var
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+// Legacy workflows stored trigger as a bare string; current ones as the full
+// {type, conditions, config?} object. Shared by the linear drawer and the
+// branching canvas so both normalize a loaded workflow's trigger identically.
+export function normalizeTrigger(trigger: Workflow['trigger']): WorkflowTrigger {
+  return typeof trigger === 'object' ? trigger : { type: trigger, conditions: [] };
+}
+
 export function getTriggerLabel(workflow: Workflow): string {
   const t = typeof workflow.trigger === 'object' ? workflow.trigger.type : workflow.trigger;
   return TRIGGER_META[t as string]?.label ?? String(t);

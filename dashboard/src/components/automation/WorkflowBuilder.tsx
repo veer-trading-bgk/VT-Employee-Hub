@@ -3,13 +3,14 @@
 import { useState } from 'react';
 import {
   MessageCircle, UserPlus, GitMerge, Tag, CheckSquare, Timer, Square,
-  Zap, ChevronDown, Plus, Trash2, ChevronUp, Edit2, X,
+  Zap, ChevronDown, Plus, Trash2, ChevronUp, Edit2, X, Hash,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 import {
   type WorkflowTrigger, type WorkflowStep, type ActionType,
-  type TriggerType, TRIGGER_META, ACTION_META, PHASE1_ACTIONS,
+  type TriggerType, type KeywordMatchMode, type KeywordTriggerConfig,
+  TRIGGER_META, ACTION_META, PHASE1_ACTIONS,
 } from '@/types/automations';
 import { ActionEditor, inputCls, selectCls } from './ActionEditor';
 
@@ -28,6 +29,7 @@ export const ACTION_ICONS: Record<string, React.ElementType> = {
   stage_change:                 GitMerge,
   tag_added:                    Tag,
   campaign_completed:           Zap,
+  keyword_message:              Hash,
 };
 
 const newId = () => `step-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -306,9 +308,12 @@ function Connector() {
 }
 
 // ── Trigger editor ────────────────────────────────────────────────────────────
-function TriggerEditor({ trigger, onChange }: { trigger: WorkflowTrigger; onChange: (t: WorkflowTrigger) => void }) {
+// Exported so the branching canvas's TriggerConfigPanel can reuse this exact
+// same editor (and dropdown) rather than building a second one — the canvas's
+// TriggerNode has no config UI of its own, this is the only trigger editor.
+export function TriggerEditor({ trigger, onChange }: { trigger: WorkflowTrigger; onChange: (t: WorkflowTrigger) => void }) {
   const TRIGGER_OPTIONS: TriggerType[] = [
-    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added',
+    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added', 'keyword_message',
   ];
 
   function addCondition() {
@@ -343,6 +348,13 @@ function TriggerEditor({ trigger, onChange }: { trigger: WorkflowTrigger; onChan
           <p className="mt-1 text-[11px] text-neutral-400">{TRIGGER_META[trigger.type].description}</p>
         )}
       </div>
+
+      {trigger.type === 'keyword_message' && (
+        <KeywordConfigFields
+          config={trigger.config ?? { matchMode: 'contains', keywords: [''], caseSensitive: false }}
+          onChange={(config) => onChange({ ...trigger, config })}
+        />
+      )}
 
       {/* Conditions */}
       {trigger.conditions.length > 0 && (
@@ -396,6 +408,97 @@ function TriggerEditor({ trigger, onChange }: { trigger: WorkflowTrigger; onChan
       >
         <Plus className="h-3.5 w-3.5" /> Add condition
       </button>
+    </div>
+  );
+}
+
+// ── Keyword trigger config — exact/contains use a single phrase input,
+// any_of uses a repeatable keyword list (same add/remove-row pattern as the
+// conditions list above, for visual/interaction consistency). Also matches a
+// button or list-row tap whose title matches the same rules — no separate
+// toggle for that, it's always on for this trigger type.
+function KeywordConfigFields({ config, onChange }: { config: KeywordTriggerConfig; onChange: (c: KeywordTriggerConfig) => void }) {
+  const keywords = config.keywords.length > 0 ? config.keywords : [''];
+
+  function setMode(matchMode: KeywordMatchMode) {
+    // exact/contains use only the first slot; any_of keeps the full list.
+    onChange({ ...config, matchMode, keywords: matchMode === 'any_of' ? keywords : [keywords[0] ?? ''] });
+  }
+
+  function updateKeyword(i: number, value: string) {
+    onChange({ ...config, keywords: keywords.map((k, idx) => (idx === i ? value : k)) });
+  }
+
+  function addKeyword() {
+    onChange({ ...config, keywords: [...keywords, ''] });
+  }
+
+  function removeKeyword(i: number) {
+    const next = keywords.filter((_, idx) => idx !== i);
+    onChange({ ...config, keywords: next.length > 0 ? next : [''] });
+  }
+
+  return (
+    <div className="space-y-3 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+      <div>
+        <label className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-400">Match mode</label>
+        <select value={config.matchMode} onChange={(e) => setMode(e.target.value as KeywordMatchMode)} className={selectCls}>
+          <option value="exact">Exact match</option>
+          <option value="contains">Contains</option>
+          <option value="any_of">Any of these keywords</option>
+        </select>
+      </div>
+
+      {config.matchMode === 'any_of' ? (
+        <div className="space-y-1.5">
+          <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400">Keywords (any one matches)</label>
+          {keywords.map((kw, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input
+                value={kw}
+                onChange={(e) => updateKeyword(i, e.target.value)}
+                placeholder="e.g. demat"
+                className={cn(inputCls, 'flex-1')}
+              />
+              <button onClick={() => removeKeyword(i)} className="shrink-0 rounded p-1 text-neutral-400 hover:text-error-500">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          <button
+            onClick={addKeyword}
+            className="flex items-center gap-1.5 text-xs font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400"
+          >
+            <Plus className="h-3.5 w-3.5" /> Add keyword
+          </button>
+        </div>
+      ) : (
+        <div>
+          <label className="mb-1 block text-xs font-medium text-neutral-600 dark:text-neutral-400">
+            {config.matchMode === 'exact' ? 'Exact phrase' : 'Phrase'}
+          </label>
+          <input
+            value={keywords[0] ?? ''}
+            onChange={(e) => onChange({ ...config, keywords: [e.target.value] })}
+            placeholder={config.matchMode === 'exact' ? 'e.g. yes' : 'e.g. demat'}
+            className={inputCls}
+          />
+        </div>
+      )}
+
+      <label className="flex items-center gap-2 text-xs font-medium text-neutral-600 dark:text-neutral-400">
+        <input
+          type="checkbox"
+          checked={config.caseSensitive ?? false}
+          onChange={(e) => onChange({ ...config, caseSensitive: e.target.checked })}
+          className="rounded border-neutral-300"
+        />
+        Case-sensitive
+      </label>
+
+      <p className="text-[11px] text-neutral-400">
+        Also matches when a customer taps a button or list option with matching text.
+      </p>
     </div>
   );
 }

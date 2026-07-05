@@ -9,7 +9,7 @@
  */
 
 jest.mock('../src/config/dynamodb', () => ({
-  get: jest.fn(), put: jest.fn(),
+  get: jest.fn(), put: jest.fn(), update: jest.fn(), query: jest.fn(),
 }));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
@@ -133,5 +133,156 @@ describe('POST /api/automations/:id/duplicate', () => {
     await handler({ params: { id: 'orig4' }, body: { name: 'My Template' }, user: USER }, mockRes(), jest.fn());
 
     expect(dynamodb.put.mock.calls[0][0].Item.name).toBe('My Template');
+  });
+});
+
+// ─── POST / and PUT /:id — trigger.config persistence + validation ───────────
+// Regression coverage for an audit finding: both routes used to build the
+// stored trigger as a hardcoded { type, conditions } object, which would have
+// silently dropped a trigger.config the frontend sent (no error, just gone).
+describe('POST /api/automations — trigger.config (keyword_message)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  function body(trigger, overrides = {}) {
+    return {
+      name: 'Keyword workflow',
+      trigger,
+      steps: [{ id: 'end-default', type: 'end', config: {} }],
+      ...overrides,
+    };
+  }
+
+  test('rejects keyword_message with no config at all', async () => {
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({ body: body({ type: 'keyword_message', conditions: [] }), user: USER }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('rejects keyword_message with an empty keywords array', async () => {
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({
+      body: body({ type: 'keyword_message', conditions: [], config: { matchMode: 'contains', keywords: [] } }),
+      user: USER,
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('rejects keyword_message with keywords that are only whitespace', async () => {
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({
+      body: body({ type: 'keyword_message', conditions: [], config: { matchMode: 'contains', keywords: ['   ', ''] } }),
+      user: USER,
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('rejects an unknown matchMode', async () => {
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({
+      body: body({ type: 'keyword_message', conditions: [], config: { matchMode: 'starts_with', keywords: ['hi'] } }),
+      user: USER,
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('accepts a valid config and persists it, trimmed and blank entries removed', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({
+      body: body({
+        type: 'keyword_message', conditions: [],
+        config: { matchMode: 'any_of', keywords: [' demat ', '', 'ipo  '], caseSensitive: true },
+      }),
+      user: USER,
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const saved = dynamodb.put.mock.calls[0][0].Item;
+    expect(saved.trigger).toEqual({
+      type: 'keyword_message', conditions: [],
+      config: { matchMode: 'any_of', keywords: ['demat', 'ipo'], caseSensitive: true },
+    });
+  });
+
+  test('non-keyword trigger types are unaffected — no config key is added', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({ body: body({ type: 'lead_created', conditions: [] }), user: USER }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const saved = dynamodb.put.mock.calls[0][0].Item;
+    expect(saved.trigger).toEqual({ type: 'lead_created', conditions: [] });
+    expect(saved.trigger.config).toBeUndefined();
+  });
+});
+
+describe('PUT /api/automations/:id — trigger.config (keyword_message)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: { id: 'wf1', companyId: CID, trigger: { type: 'lead_created', conditions: [] } } }) });
+  });
+
+  test('rejects an update to an invalid keyword_message config, and does not write', async () => {
+    const handler = getRouteHandler(automationsRouter, '/:id', 'put');
+    const res = mockRes();
+    await handler({
+      params: { id: 'wf1' },
+      body: { trigger: { type: 'keyword_message', conditions: [], config: { matchMode: 'contains', keywords: [] } } },
+      user: USER,
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.update).not.toHaveBeenCalled();
+  });
+
+  test('persists a valid keyword_message config update', async () => {
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(automationsRouter, '/:id', 'put');
+    const res = mockRes();
+    await handler({
+      params: { id: 'wf1' },
+      body: { trigger: { type: 'keyword_message', conditions: [], config: { matchMode: 'exact', keywords: ['yes'] } } },
+      user: USER,
+    }, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith({ success: true });
+    const call = dynamodb.update.mock.calls[0][0];
+    expect(call.ExpressionAttributeValues[':t']).toEqual({
+      type: 'keyword_message', conditions: [],
+      config: { matchMode: 'exact', keywords: ['yes'], caseSensitive: false },
+    });
+  });
+
+  test('switching a workflow back to a non-keyword trigger drops any stale config', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: {
+      id: 'wf1', companyId: CID,
+      trigger: { type: 'keyword_message', conditions: [], config: { matchMode: 'exact', keywords: ['yes'] } },
+    } }) });
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(automationsRouter, '/:id', 'put');
+    const res = mockRes();
+    await handler({
+      params: { id: 'wf1' },
+      body: { trigger: { type: 'lead_created', conditions: [] } },
+      user: USER,
+    }, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith({ success: true });
+    const call = dynamodb.update.mock.calls[0][0];
+    expect(call.ExpressionAttributeValues[':t']).toEqual({ type: 'lead_created', conditions: [] });
   });
 });
