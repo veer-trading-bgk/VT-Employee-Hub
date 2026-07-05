@@ -16,6 +16,14 @@ export interface ProgressRow {
 
 interface ProgressBarChartProps {
   data: ProgressRow[];
+  /**
+   * StatusBadge and the percentage color both assume `progress` is a
+   * goal-vs-target metric (Excellent/On Track/Needs Attention). For a plain
+   * category distribution (e.g. a hot/warm/cold share of total), that framing
+   * is misleading, so callers showing a distribution rather than a goal
+   * should pass `false`. Defaults to `true` to preserve existing callers.
+   */
+  showStatusBadge?: boolean;
 }
 
 function fmtVal(unit: MetricUnit, v: number): string {
@@ -50,7 +58,7 @@ function StatusBadge({ progress }: { progress: number }) {
   );
 }
 
-export function ProgressBarChart({ data }: ProgressBarChartProps) {
+export function ProgressBarChart({ data, showStatusBadge = true }: ProgressBarChartProps) {
   if (data.length === 0) {
     return <p className="py-8 text-center text-sm text-slate-400">No metrics configured.</p>;
   }
@@ -73,7 +81,8 @@ export function ProgressBarChart({ data }: ProgressBarChartProps) {
               </span>
               <span
                 className={`text-xs font-bold tabular-nums ${
-                  row.progress >= 100 ? 'text-emerald-600 dark:text-emerald-400'
+                  !showStatusBadge ? 'text-slate-700 dark:text-slate-300'
+                  : row.progress >= 100 ? 'text-emerald-600 dark:text-emerald-400'
                   : row.progress >= 70 ? 'text-amber-600 dark:text-amber-400'
                   : row.progress >  0  ? 'text-rose-600 dark:text-rose-400'
                   : 'text-slate-400 dark:text-slate-500'
@@ -96,9 +105,11 @@ export function ProgressBarChart({ data }: ProgressBarChartProps) {
             />
           </div>
 
-          <div className="mt-1.5">
-            <StatusBadge progress={row.progress} />
-          </div>
+          {showStatusBadge && (
+            <div className="mt-1.5">
+              <StatusBadge progress={row.progress} />
+            </div>
+          )}
         </div>
       ))}
     </div>

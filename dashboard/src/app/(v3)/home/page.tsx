@@ -15,6 +15,7 @@ import {
   Flame,
   Target,
   Phone,
+  ClipboardCheck,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/v3/ui/Card';
@@ -23,10 +24,11 @@ import { Avatar } from '@/components/v3/ui/Avatar';
 import { Button } from '@/components/v3/ui/Button';
 import { SkeletonCard, SkeletonRow, SkeletonTable } from '@/components/v3/ui/Skeleton';
 import { EmptyState } from '@/components/v3/ui/EmptyState';
+import { ProgressBarChart, type ProgressRow } from '@/components/charts/ProgressBarChart';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role } from '@/types/v3';
+import { toV3Role, type Contact } from '@/types/v3';
 import { usePipelineStages } from '@/hooks/usePipelineStages';
 import { format, isToday, isTomorrow, isPast } from 'date-fns';
 
@@ -397,6 +399,112 @@ function RecentContactsSection({ items, loading }: { items: RecentContact[]; loa
   );
 }
 
+// ── AI Insights: Lead Priority Distribution ───────────────────────────────────
+// Surfaces LeadScoringScheduler's persisted priorityTier (recomputed on a
+// ~60min cycle) as a hot/warm/cold share of the pipeline — same field CrmTab
+// and sales/page.tsx already render per-contact via PriorityBadge, just
+// aggregated here for the first time.
+
+const PRIORITY_META: Record<'hot' | 'warm' | 'cold', { label: string; icon: string; color: string }> = {
+  hot:  { label: 'Hot leads',  icon: '🔥', color: '#DC2626' },
+  warm: { label: 'Warm leads', icon: '🌤️', color: '#D97706' },
+  cold: { label: 'Cold leads', icon: '❄️', color: '#94A3B8' },
+};
+
+function LeadPriorityWidget({ contacts, loading }: { contacts: Contact[]; loading: boolean }) {
+  const total = contacts.length;
+  const rows: ProgressRow[] = (['hot', 'warm', 'cold'] as const).map((tier) => {
+    const value = contacts.filter((c) => c.priorityTier === tier).length;
+    return {
+      label: PRIORITY_META[tier].label,
+      icon: PRIORITY_META[tier].icon,
+      value,
+      target: total,
+      progress: total > 0 ? Math.round((value / total) * 100) : 0,
+      color: PRIORITY_META[tier].color,
+      unit: 'count',
+    };
+  });
+
+  return (
+    <Card noPadding>
+      <div className="border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Flame className="h-4 w-4 text-error-600" aria-hidden />
+            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+              Lead priority
+            </h2>
+          </div>
+          <Link href="/sales" className="text-xs font-medium text-primary-600 hover:text-primary-700">
+            View pipeline
+          </Link>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="p-4">{[0, 1, 2].map((i) => <SkeletonRow key={i} />)}</div>
+      ) : total === 0 ? (
+        <EmptyState
+          icon={Users}
+          title="No scored leads yet"
+          description="Priority scores are recomputed on a ~60 minute cycle"
+          className="py-8"
+        />
+      ) : (
+        <div className="p-4">
+          <ProgressBarChart data={rows} showStatusBadge={false} />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ── AI Insights: Approvals Pending ────────────────────────────────────────────
+// Same /api/approvals?status=pending query V3Sidebar.tsx already runs for its
+// nav badge — reusing the identical query key shares the cache rather than
+// firing a second request for the same count.
+
+function ApprovalsPendingWidget({ count, loading }: { count: number; loading: boolean }) {
+  return (
+    <Card noPadding>
+      <div className="border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ClipboardCheck className="h-4 w-4 text-primary-600" aria-hidden />
+            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+              Approvals pending
+            </h2>
+          </div>
+          <Link href="/approvals" className="text-xs font-medium text-primary-600 hover:text-primary-700">
+            Review
+          </Link>
+        </div>
+      </div>
+
+      <div className="p-4">
+        {loading ? (
+          <SkeletonRow />
+        ) : count === 0 ? (
+          <EmptyState
+            icon={ClipboardCheck}
+            title="Nothing waiting"
+            description="No AI-drafted actions need review right now"
+            className="py-4"
+          />
+        ) : (
+          <Link href="/approvals" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
+            <span className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">{count}</span>
+            <span className="text-sm text-neutral-500">
+              {count === 1 ? 'item needs' : 'items need'} your review
+            </span>
+          </Link>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 // ── Section 5: KPIs ───────────────────────────────────────────────────────────
 
 interface KpiCardProps {
@@ -452,6 +560,31 @@ export default function MyWorkPage() {
 
   const isNew = data?.isNewEmployee ?? false;
 
+  // AI Insights — each widget owns its own small query rather than the
+  // (non-existent) /api/v3/my-work blob above; see docs/bible/19_DECISION_LOG.md
+  // Era 11 for why this is additive, not a /api/v3/my-work fix.
+  const { data: priorityContacts, isLoading: priorityLoading } = useQuery<Contact[]>({
+    // Shared cache key with sales/page.tsx's identical /api/contacts?pageSize=500
+    // fetch — same data, avoids a duplicate round trip when navigating between
+    // /home and /sales within the staleTime window.
+    queryKey: ['sales-contacts'],
+    queryFn: async () => {
+      const res = await apiFetch<{ contacts: Contact[] }>('/api/contacts?pageSize=500');
+      return res.contacts ?? [];
+    },
+    staleTime: 30_000,
+  });
+
+  const { data: approvalsData, isLoading: approvalsLoading } = useQuery({
+    // Shared cache key with V3Sidebar.tsx's nav badge query — same endpoint,
+    // already mounted app-wide, so this just subscribes rather than refetching.
+    queryKey: ['approvals-badge-count'],
+    queryFn: () => apiFetch<{ success: boolean; approvals: unknown[] }>('/api/approvals?status=pending'),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+  const pendingApprovalsCount = approvalsData?.approvals.length ?? 0;
+
   return (
     <div className="min-h-full">
       {/* Page header */}
@@ -472,6 +605,18 @@ export default function MyWorkPage() {
             <GettingStartedChecklist completed={data?.gettingStartedProgress ?? []} />
           </div>
         )}
+
+        {/* AI Insights — additive section, independent of the placeholder-fed
+            widgets below; visible to all roles per 2026-07-05 review. */}
+        <div className="mb-5">
+          <h2 className="mb-3 text-sm font-semibold text-neutral-700 dark:text-neutral-300">
+            AI insights
+          </h2>
+          <div className="grid gap-5 md:grid-cols-2">
+            <LeadPriorityWidget contacts={priorityContacts ?? []} loading={priorityLoading} />
+            <ApprovalsPendingWidget count={pendingApprovalsCount} loading={approvalsLoading} />
+          </div>
+        </div>
 
         <div className="grid gap-5 lg:grid-cols-3">
           {/* Left column — action items (2/3 width on desktop) */}

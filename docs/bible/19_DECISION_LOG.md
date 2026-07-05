@@ -682,6 +682,53 @@ writeup.
 
 ---
 
+## Era 11 — Dashboard AI Insights: additive widgets, /api/v3/my-work gap deliberately not fixed (2026-07-05)
+
+**What:** `/home` (title "My Work") gained a new "AI insights" section with two widgets:
+a Lead Priority Distribution (hot/warm/cold share of pipeline, via `priorityTier` —
+Era-9-adjacent `LeadScoringScheduler` output) and an Approvals Pending count/link. Both
+read their own small, targeted queries (`/api/contacts?pageSize=500`, reusing
+`sales-contacts` as the query key to share cache with `sales/page.tsx`; and
+`/api/approvals?status=pending`, reusing `approvals-badge-count` to share cache with
+`V3Sidebar.tsx`'s nav badge). Zero new backend routes.
+
+**Decision: additive, not a `/home` redesign.** A full dashboard audit (this same session)
+found `/home`'s four pre-existing widgets (Urgent Replies, Overdue Follow-ups, Today's
+Follow-ups, Recent Contacts, and the 4 KPI cards) all read from a single
+`GET /api/v3/my-work` query that **has no backend implementation** — confirmed via `grep`
+and the full `app.js` route-mount list (no `/api/v3` prefix registered anywhere). Every
+one of those widgets has always rendered on the query's `placeholderData` fallback (all
+zeros/empty arrays) in production. This was already found and partially addressed once
+before (`508f992`, "fix(dashboard): home-page KPI crash and canvas error-message
+clarity" — fixed a crash from `data?.kpis.X` missing an optional-chain on `.kpis`, but
+explicitly left the missing endpoint itself as a separate gap, per that commit's own
+message).
+**Why additive, not fixed here:** the user's explicit instruction was to surface new
+AI-insight widgets, not to repair the pre-existing `/api/v3/my-work` gap — two genuinely
+separable problems (new read-only aggregations vs. an entire page's primary data source
+missing). Bundling them would have silently expanded scope beyond what was asked and
+requires its own design pass (what should `/api/v3/my-work` actually aggregate, and from
+which existing services). **The gap is still open** — see Open Question #7 below.
+
+**Implementation note — `ProgressBarChart` extended, not forked.** The existing
+`ProgressBarChart`/`ProgressRow` chart component (previously written but never actually
+rendered on any page — confirmed via a repo-wide grep, both it and `MonthlyTeamProgress`
+were dead code before this) bakes in a goal-vs-target `StatusBadge`
+(Excellent/On Track/Needs Attention/Not Started) and a matching percentage-text color,
+both driven purely by the `progress` number. That framing fits a sales-target metric but
+is misleading for a plain category distribution (e.g. "40% cold leads" is not inherently
+"Needs Attention"). Rather than fork a parallel component, `ProgressBarChart` gained one
+new optional prop, `showStatusBadge` (default `true`, preserving all existing/future
+goal-progress callers), and the new distribution widget passes `showStatusBadge={false}`.
+Caught and fixed during implementation, not by the user.
+
+**Status:** implemented and validated (TypeScript, ESLint, dashboard build all passing);
+committed locally, not yet pushed as of this entry.
+**Reference:** this session's Dashboard Audit + AI Insights implementation;
+`dashboard/src/app/(v3)/home/page.tsx`, `dashboard/src/components/charts/ProgressBarChart.tsx`.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or
@@ -741,7 +788,17 @@ already fully enforced just because an ADR exists.
    Contact Hub merge commit was found in this repo's history as of `50771ba` — this
    remains an open, explicitly-deferred decision.
 
-6. **No formal ADR governs the V3 "business operating system" navigation framing.**
+6. **`/home`'s primary data source, `GET /api/v3/my-work`, does not exist.** First found
+   and partially patched (crash only) in `508f992` (2026-07-02); re-confirmed still
+   missing during the 2026-07-05 Dashboard Audit (Era 11). Every widget fed by this query
+   — Urgent Replies, Overdue Follow-ups, Today's Follow-ups, Recent Contacts, all 4 KPI
+   cards — has always rendered on empty/zero `placeholderData` in production, with no
+   visible error to the user. The 2026-07-05 AI Insights work deliberately did not fix
+   this — it shipped as a separate, additive section with its own independent queries
+   instead. **Not fixed. No design work has started on what `/api/v3/my-work` should
+   actually aggregate.**
+
+7. **No formal ADR governs the V3 "business operating system" navigation framing.**
    User-facing project memory (outside this repo's tracked files) describes the V3
    rollout (`efe9c7c`, Era 4) using that phrase, but no commit message, ADR, or
    CLAUDE.md text in the repository itself uses it — it is not possible to verify this
