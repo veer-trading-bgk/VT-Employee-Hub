@@ -55,6 +55,34 @@ Do not start this feature until at least (1) is resolved.
 
 ---
 
+## 2026-07-06 addendum — reconciled against what actually shipped
+
+The Conversational Sales Agent ("Era 22") shipped the day after this ADR was
+accepted, ahead of its own stated prerequisite (no Knowledge Center existed),
+and diverges from Requirements 1–3 as written:
+
+- **Req 1** — ships with a bespoke regex guardrail + keyword-escalation
+  mechanism, not `ApprovalService`/confidence-threshold routing.
+- **Req 2** — `MAX_TURNS` is a hardcoded module constant (`10`, not this
+  ADR's default of `7`), not superadmin-controlled, not per-company
+  overridable. **Reaffirmed today, not superseded**: when this becomes
+  configurable, it stays superadmin-only with zero company-facing
+  visibility, per this ADR — Phase 2A's AI Administration module (company-
+  admin-facing) explicitly does **not** carry "Maximum AI Reply Count" or
+  "Human Handoff Turn" as a result. If a control UI is ever built for it, it
+  belongs in the existing superadmin-only Platform module
+  (`src/routes/platform.js`, `dashboard/src/app/(v3)/platform/`), per this
+  ADR's own §Req 2 text — not yet built, not committed to by this addendum.
+- **Req 3** — no intent-first routing exists; the agent always goes straight
+  to full generation.
+- **Prerequisite** — Phase 2A (AI Administration & Knowledge Center
+  Foundation) is the retroactive fix for this — see
+  `docs/bible/19_DECISION_LOG.md`'s Phase 2A entry.
+
+This ADR's requirements remain binding for any future rework of the
+Conversational Sales Agent's approval/routing/cap model — they were not
+weakened by the fact that the shipped version diverges from them today.
+
 ## Related
 
 - ADR-015 — AI Service Boundary (this ADR builds on Rule 6's approval gate and Rule 7's two-level control; it does not modify either)
