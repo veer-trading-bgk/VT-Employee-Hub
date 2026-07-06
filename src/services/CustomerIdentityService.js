@@ -398,11 +398,16 @@ async function _createCustomer(companyId, phoneNorm, data, context, idemKey, int
   const stages       = await _getPipelineStages(companyId);
   const defaultStage = data.stage ?? stages[0]?.key ?? 'new_lead';
 
-  // Auto-assign if no explicit assignee provided by caller
+  // Auto-assign if no explicit assignee provided by caller. skipAutoAssign
+  // (2026-07-06, Era 22) lets a caller defer assignment entirely — added for
+  // ConversationalAgentService, which needs a fresh WhatsApp lead to stay
+  // genuinely unassigned so the AI conversation gets first crack, with a real
+  // human only assigned later at handoff (still via this same autoAssign
+  // config/pickNextEmployee, just invoked by the caller instead of here).
   let assignedTo      = data.assignedTo    ?? null;
   let assignedName    = data.assignedToName ?? null;
   let wasAutoAssigned = false;
-  if (!assignedTo) {
+  if (!assignedTo && !data.skipAutoAssign) {
     try {
       const cfg = await getAutoAssignConfig(companyId);
       if (cfg?.enabled) {
@@ -580,6 +585,11 @@ async function _createCustomer(companyId, phoneNorm, data, context, idemKey, int
  *   stage            {string}   for new customers only; ignored on enrichment
  *   assignedTo       {string}   for new customers only; ignored on enrichment
  *   assignedToName   {string}   for new customers only; ignored on enrichment
+ *   skipAutoAssign   {boolean}  new customers only; when true, leaves assignedTo
+ *                               null even if the company's auto-assign config is
+ *                               enabled — for a caller that deliberately defers
+ *                               assignment (e.g. ConversationalAgentService).
+ *                               No effect if assignedTo is also explicitly set.
  *   formId           {string}   stored on interaction metadata
  *   idempotencyKey   {string}   caller-provided key; use webhook event IDs here
  *   metadata         {object}   arbitrary KV merged into interaction metadata

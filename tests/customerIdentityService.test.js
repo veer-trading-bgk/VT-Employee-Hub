@@ -150,3 +150,59 @@ describe('CustomerIdentityService.resolveOrCreate — phone-lock race recovery',
     expect(result.leadId).toBe('cached-lead-id');
   });
 });
+
+// 2026-07-06 (Era 22 same-day fix): skipAutoAssign lets a caller defer
+// assignment entirely, even when the company's own auto-assign config is
+// enabled — added for ConversationalAgentService, which needs a fresh
+// WhatsApp lead to stay genuinely unassigned so the AI conversation gets
+// first opportunity, with a human assigned later at handoff instead.
+describe('CustomerIdentityService.resolveOrCreate — skipAutoAssign', () => {
+  const { getAutoAssignConfig, pickNextEmployee } = require('../src/utils/autoAssign');
+  beforeEach(() => jest.clearAllMocks());
+
+  test('skipAutoAssign: true leaves assignedTo null even when the company auto-assign config is enabled', async () => {
+    getAutoAssignConfig.mockResolvedValue({ enabled: true, capacity: 5, overflow: 'assign' });
+    pickNextEmployee.mockResolvedValue({ id: 'emp_5', name: 'Would-be Assignee' });
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [] }) });
+    dynamodb.transactWrite.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    const result = await CIS.resolveOrCreate(
+      'acme', { phone: '9333333333', name: 'Bot Customer', source: 'whatsapp', skipAutoAssign: true },
+      { createdBy: 'webhook' },
+    );
+
+    expect(result.lead.assignedTo).toBeNull();
+    expect(result.lead.autoAssigned).toBe(false);
+    expect(pickNextEmployee).not.toHaveBeenCalled();
+  });
+
+  test('without skipAutoAssign, the exact same company config DOES assign — confirms the flag is what changed, not the config', async () => {
+    getAutoAssignConfig.mockResolvedValue({ enabled: true, capacity: 5, overflow: 'assign' });
+    pickNextEmployee.mockResolvedValue({ id: 'emp_5', name: 'Real Assignee' });
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [] }) });
+    dynamodb.transactWrite.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    const result = await CIS.resolveOrCreate(
+      'acme', { phone: '9444444444', name: 'CRM Customer', source: 'crm' },
+      { createdBy: 'emp_1' },
+    );
+
+    expect(result.lead.assignedTo).toBe('emp_5');
+    expect(result.lead.autoAssigned).toBe(true);
+  });
+
+  test('skipAutoAssign has no effect if an explicit assignedTo is also given — that still wins', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [] }) });
+    dynamodb.transactWrite.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    const result = await CIS.resolveOrCreate(
+      'acme', { phone: '9555555555', name: 'Explicit Customer', source: 'crm', assignedTo: 'emp_9', assignedToName: 'Explicit', skipAutoAssign: true },
+      { createdBy: 'emp_1' },
+    );
+
+    expect(result.lead.assignedTo).toBe('emp_9');
+  });
+});

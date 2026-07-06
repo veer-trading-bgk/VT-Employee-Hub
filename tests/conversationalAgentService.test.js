@@ -298,10 +298,27 @@ describe('ConversationalAgentService', () => {
     expect(CustomerIdentityService.resolveOrCreate).not.toHaveBeenCalled();
   });
 
-  test('maybeStart does not engage when the newly-created lead already has an assignee (auto-assign fired) — not genuinely unassigned', async () => {
+  test('maybeStart always passes skipAutoAssign: true to CIS — the company auto-assign config can never claim this lead before the bot gets it', async () => {
+    await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hi', timestamp: 't1', waMessageId: 'wam1' });
+    expect(CustomerIdentityService.resolveOrCreate).toHaveBeenCalledWith(
+      CID, expect.objectContaining({ skipAutoAssign: true }), expect.anything(),
+    );
+  });
+
+  test('maybeStart does not engage when CIS resolves to a pre-existing, already-human-assigned lead (a real returning/claimed customer)', async () => {
+    // Fixed 2026-07-06: skipAutoAssign now prevents the company's own
+    // auto-assign config from claiming a genuinely FRESH lead at creation, so
+    // this scenario is no longer "auto-assign fired" — it's specifically an
+    // "enriched" hit: CIS found this phone already belongs to a pre-existing
+    // lead (possibly one the webhook's own simpler GSI lookup missed) that a
+    // human already has. Still correctly not bot-eligible.
     CustomerIdentityService.resolveOrCreate.mockResolvedValue({
-      existed: false, leadId: 'lead_1', action: 'created',
-      lead: { ...lead, assignedTo: 'emp_5', assignedToName: 'Existing Agent' },
+      existed: true, leadId: 'lead_1', action: 'enriched',
+    });
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === `CONFIG#CONVAGENT#${CID}`) return resolved({ Item: { enabled: true } });
+      if (params.Key.PK === LEAD_PK) return resolved({ Item: { ...lead, assignedTo: 'emp_5', assignedToName: 'Existing Agent' } });
+      return resolved({});
     });
     const started = await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hi', timestamp: 't1', waMessageId: 'wam1' });
     expect(started).toBe(false);

@@ -1277,6 +1277,46 @@ infrastructure than Era 21, per explicit instruction.
 `tests/conversationalAgentService.test.js`, `tests/conversationService.test.js`,
 `tests/leadScoringService.test.js`.
 
+### Same-day follow-up: first live test found a real assignment-priority bug
+
+**What happened:** first real test against `viir_trading` — the bot never
+engaged, and `CONFIG#AUTOASSIGN` (already enabled for that company, capacity
+2) claimed the new lead immediately (`assignedTo: sanju`, `autoAssigned: false`
+— confirmed via direct DynamoDB read, not assumed). Two distinct causes found:
+1. `CONFIG#CONVAGENT` had never actually been enabled (the PUT call hadn't
+   been made yet) — the bot correctly never engaged at all.
+2. Even once enabled, it would have **still** never engaged for this company:
+   `maybeStart()` called `CIS.resolveOrCreate()` without an explicit
+   assignment override, so CIS's own internal auto-assign (since the
+   company's config is enabled) claimed the lead at creation, and the
+   `!lead.assignedTo` eligibility check then correctly (by the *original*
+   design) declined to engage — a real design gap, not a bug in the check
+   itself: auto-assign was racing the bot and winning every time a company
+   already had it enabled.
+
+**Fix:** added `skipAutoAssign` to `CustomerIdentityService.resolveOrCreate()`
+— when true, CIS's own internal auto-assign attempt (and its actor-fallback)
+never fires, leaving `assignedTo: null` regardless of the company's own
+config. `maybeStart()` now always passes `skipAutoAssign: true`. Assignment is
+unchanged in every other respect — still the same `pickNextEmployee()`/config,
+just invoked later, by `_handoff()`, instead of racing CIS for it. Net effect:
+the AI conversation agent now always gets first opportunity on a fresh
+WhatsApp contact, and a human is assigned only once the conversation actually
+qualifies, escalates, or hits the turn cap — the priority order requested.
+Every other `CIS.resolveOrCreate()` caller (CRM UI, CSV import, Meta Lead Ads,
+forms.js, campaigns.js) is unaffected — the flag defaults falsy/undefined,
+so their behavior is byte-for-byte unchanged; verified with a dedicated test
+confirming the non-flag path still auto-assigns exactly as before.
+
+**Status:** implemented, tested (4 new tests: `skipAutoAssign` prevents
+assignment even with auto-assign enabled; the same config still assigns
+without the flag; an explicit `assignedTo` still wins over the flag;
+`maybeStart()` always passes the flag; the "pre-existing enriched lead" case
+still correctly declines), full suite green (1022/1022, 59 suites).
+**Reference:** `src/services/CustomerIdentityService.js` (`resolveOrCreate()`),
+`src/services/ConversationalAgentService.js` (`maybeStart()`);
+`tests/customerIdentityService.test.js`, `tests/conversationalAgentService.test.js`.
+
 ---
 
 ## Open architectural questions / not yet decided

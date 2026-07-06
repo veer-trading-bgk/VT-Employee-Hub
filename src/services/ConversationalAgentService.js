@@ -29,6 +29,16 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
  * should not go live for any company just because the code deployed; same
  * "opt-in, defaults false" precedent as CONFIG#AUTOASSIGN.
  *
+ * Assignment priority (fixed 2026-07-06, same-day follow-up after first live
+ * test): a fresh WhatsApp contact's lead is ALWAYS created with
+ * skipAutoAssign: true (see maybeStart()) — a company's own CONFIG#AUTOASSIGN
+ * never claims it at creation time, regardless of whether that config is
+ * enabled. Auto-assign still runs, deferred to _handoff() instead, so the AI
+ * always gets first opportunity on every new conversation; a human is only
+ * assigned once the conversation actually qualifies, escalates, or hits the
+ * turn cap. Originally this raced CIS's own internal auto-assign and lost
+ * whenever a company had it enabled — confirmed via a real live test.
+ *
  * Escalation is deterministic keyword matching on the customer's own message,
  * checked first, on every turn, independent of the model's own judgment — by
  * explicit design (not the model's call), and not optional: WhatsApp's own
@@ -295,14 +305,23 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
 /**
  * Called only from the webhook's unknown-contact (INBOX#) branch, on a
  * genuinely first-ever message (isFirstContact), never on any subsequent one.
- * Creates the real CRM lead via CIS right away (ADR-013 — the only path) —
- * deliberately WITHOUT context.actorId, so CIS's own auto-assign-fallback
- * (which only fires when actorId is present and auto-assign itself found no
- * candidate) never claims this lead on our behalf; if the company's own
- * auto-assign config is enabled and DOES pick someone, that's a genuine human
- * claim and the bot correctly does not engage (see the assignedTo check
- * below) — "new/unassigned" is evaluated against the real post-creation
- * state, not assumed.
+ * Creates the real CRM lead via CIS right away (ADR-013 — the only path).
+ *
+ * 2026-07-06 update: passes skipAutoAssign: true, so a company's own
+ * CONFIG#AUTOASSIGN (enabled or not) can never claim this lead at creation
+ * time — the AI conversation agent always gets first opportunity on a fresh
+ * WhatsApp contact. Auto-assign still runs, just deferred to _handoff()
+ * (same pickNextEmployee()/config, only invoked later instead of by CIS
+ * itself) — "assign only after qualification, escalation, or the turn cap"
+ * is now the actual priority order, not something that could lose a race to
+ * CIS's own internal auto-assign. context.actorId is still deliberately
+ * omitted too, so CIS's actor-fallback (a second, independent assignment
+ * path) also never fires here.
+ *
+ * The `!lead.assignedTo` check below now mainly guards a different case: an
+ * "enriched" hit (CIS found this phone already belongs to a pre-existing,
+ * already-human-assigned lead the webhook's own simpler GSI lookup missed) —
+ * a real returning/claimed customer, correctly still not bot-eligible.
  *
  * @returns {Promise<boolean>} true if the bot engaged (sent the first reply)
  */
@@ -315,6 +334,7 @@ async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessa
       phone: phone10,
       name: waName || undefined,
       source: 'whatsapp',
+      skipAutoAssign: true,
       idempotencyKey: `convagent:${companyId}:${phone10}:${waMessageId}`,
     }, { createdBy: 'webhook' });
 
@@ -323,7 +343,7 @@ async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessa
       const r = await dynamodb.get({ TableName: TABLE, Key: { PK: `LEAD#${companyId}#${result.leadId}`, SK: 'METADATA' } }).promise();
       lead = r.Item;
     }
-    if (!lead || lead.assignedTo) return false; // already claimed by a human — not eligible
+    if (!lead || lead.assignedTo) return false; // pre-existing, already-claimed lead — not eligible
 
     const conv = await resolveForLead(companyId, lead.PK, phone10, { text, timestamp });
     if (!conv?.conversationId) return false;
