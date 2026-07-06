@@ -997,6 +997,104 @@ and the still-open `fireTrigger('keyword_message', …)` call site),
 
 ---
 
+## Era 20 — Fixed the un-awaited fireTrigger()/resumeOnButtonReply() gap in the WhatsApp webhook (2026-07-06)
+
+**What:** the second bug found during Era 19's cleanup pass — `whatsapp.js`'s
+webhook handler called `AutomationEngine.resumeOnButtonReply()` (×2, lead +
+inbox path), `fireTrigger('keyword_message', …)` (×2), and
+`runAutomations('whatsapp_conversation_started', …)` (×1) all fire-and-forget,
+before its own `res.sendStatus(200)`. Measured in production: 6.3s-49.4s delays
+(mean ~22s) before a workflow's entry message went out, and 2 executions that
+never completed at all — the Lambda execution context suspended right after the
+webhook's own response resolved, exactly the hazard the handler's *own* code
+comment two screens above already documented for a different reason.
+
+**A deeper finding changed the fix's shape:** `fireTrigger()`'s own per-workflow
+dispatch loop was *itself* fire-and-forget (`this._startExecution(...).catch(...)`,
+never awaited) — so merely adding `await` at the `whatsapp.js` call site would
+have fixed nothing; the outer promise resolved right after the initial DynamoDB
+query, before any workflow actually ran. `resumeOnButtonReply()`, by contrast,
+already awaited its own per-item `resumeExecution()` calls correctly — it only
+needed the fix at the call site.
+
+**Audited every other fire-and-forget call in this same handler before touching
+anything** — `notifyCompany()` (WS push), `storeInboundMedia()` (S3 archive,
+explicitly idempotent), the `resolveForLead`/`resolveForInbox` → intent
+classification chain, `DelayedResponseService.scheduleIfEnabled()`, and two
+denormalized-cache field patches. All five are genuinely safe to leave
+fire-and-forget — losing/delaying any of them means a cache field is stale or a
+realtime push didn't fire, never that a customer-facing automated action
+silently doesn't happen. Only the three automation-dispatch calls above carry
+that risk.
+
+**Considered and rejected an SQS-based dispatch** instead of awaiting —
+checked first, per instruction: no SQS queues exist in the account, no queue
+SDK usage anywhere in `src/`, only the existing 5-minute EventBridge tick. Building
+one would mean new infrastructure (queue, consumer, IAM, DLQ monitoring) for a
+correctness bug, not a throughput problem, and would introduce a real new
+ordering risk (a customer's button-tap and keyword-message events arriving out
+of order on a standard SQS queue could resume the wrong branch) without a FIFO
++ per-phone-group design this session didn't have room to build safely. Given
+zero real customers yet and CRM-scale traffic, premature relative to the actual
+problem.
+
+**Fix:**
+1. `AutomationEngine.fireTrigger()` now `await Promise.allSettled(starts)` over
+   its per-workflow `_startExecution()` calls (each still individually
+   `.catch()`-guarded, so one workflow's failure still never blocks another) —
+   benefits every caller (`crm.js`, `forms.js`, `campaigns.js`), not just this
+   webhook.
+2. All 5 at-risk call sites in `whatsapp.js` are now `await`ed before
+   `res.sendStatus(200)`.
+3. Each is wrapped in a bounded timeout race, `withTimeout()` — **checked
+   Meta's own docs first** (Graph API Webhooks + WhatsApp Cloud API
+   webhook-setup pages) for a documented response-time SLA to plan the timeout
+   against: neither publishes one, both only describe the multi-day
+   retry-on-failure schedule. The real, verifiable constraint is our own infra:
+   confirmed via `aws lambda get-function-configuration` and `aws apigatewayv2
+   get-integrations` that both the Lambda's configured `Timeout` and API
+   Gateway's HTTP API integration `TimeoutInMillis` are exactly 30000ms — the
+   binding ceiling regardless of what Meta itself would tolerate. Chose 5000ms
+   per call: a wide margin over a single Graph API round-trip, leaving ~20s of
+   headroom even if more than one at-risk call applies to the same message. On
+   timeout, `withTimeout()` resolves (not rejects) — the webhook proceeds,
+   falling back to the pre-fix behavior for just that one slow call rather than
+   blocking every message behind it. (First version of this helper leaked its
+   `setTimeout` when the real promise won the race — caught by a Jest
+   "worker failed to exit gracefully" warning during testing, fixed with
+   `clearTimeout` in a `.finally()` plus `.unref()`.)
+4. `crm.js`'s 3 `runAutomations()` call sites (`lead_created`, `tag_added`,
+   `stage_changed`) are **deliberately left fire-and-forget** — same underlying
+   risk, but a different blast radius (an authenticated HTTP route, not the
+   public webhook) and out of scope for this pass. Flagged for a separate future
+   decision, not silently fixed or silently ignored.
+
+**Verification — real evidence, not just passing tests, given this function's
+blast radius:**
+- Unit-level ordering proof (`tests/whatsappListReply.test.js`): a deferred
+  promise stands in for `fireTrigger()`; after draining every other
+  already-resolved awaited step via a macrotask yield (`setImmediate`, not just
+  a few microtask ticks — several other real awaits precede this call), asserts
+  `res.sendStatus` has **not** fired while the deferred promise is still
+  pending, then resolves it and asserts the response fires only after. **Proved
+  this test actually catches the regression** (not just passes coincidentally)
+  by temporarily `git stash`-ing the `whatsapp.js` fix alone and re-running it:
+  failed against the pre-fix code exactly as expected (`res.sendStatus` had
+  already been called), passed once the stash was restored.
+- [Live staging/prod verification results — appended after deploy, see below.]
+
+**Status:** implemented, full suite green (1032/1032). No separate staging
+Lambda exists for this backend (confirmed via `aws lambda list-functions`) — the
+live CloudWatch verification could only happen against the real production
+function, so it was sequenced as: push → deploy → immediate live test → report
+real numbers, rather than gating the push on evidence that structurally
+couldn't exist yet. Live results appended once available.
+**Reference:** `src/services/AutomationEngine.js` (`fireTrigger()`),
+`src/routes/whatsapp.js` (`withTimeout()`, the 5 call sites),
+`tests/whatsappListReply.test.js`.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or

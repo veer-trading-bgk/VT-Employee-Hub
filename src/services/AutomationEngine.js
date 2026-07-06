@@ -59,16 +59,29 @@ class AutomationEngine {
 
       if (workflows.length === 0) return;
 
+      // Each workflow starts independently (a rejected one never affects another —
+      // the per-workflow .catch() below already swallows its own error before this
+      // Promise.allSettled ever sees it) but the caller now genuinely waits for all
+      // of them, instead of firing and forgetting. An un-awaited _startExecution()
+      // chain could freeze mid-flight when the Lambda execution context suspends
+      // right after the caller's own HTTP response resolves — silently delaying (or,
+      // if the environment is never reused again, permanently losing) the entry
+      // action. See docs/bible/19_DECISION_LOG.md Era 20 for the incident this fixes
+      // (measured 6.3s-49.4s real production delays, and 2 executions that never
+      // completed at all, all traced to this exact gap).
+      const starts = [];
       for (const wf of workflows) {
         const conditions = Array.isArray(wf.trigger?.conditions)
           ? wf.trigger.conditions
           : (wf.conditions ?? []);
         if (!this._evalConditions(conditions, context)) continue;
-        // Fire-and-forget per workflow so one failure doesn't block others
-        this._startExecution(companyId, wf, context, triggerType).catch((e) =>
-          logger.warn(`AutomationEngine: "${wf.name}" start failed: ${e.message}`),
+        starts.push(
+          this._startExecution(companyId, wf, context, triggerType).catch((e) =>
+            logger.warn(`AutomationEngine: "${wf.name}" start failed: ${e.message}`),
+          ),
         );
       }
+      await Promise.allSettled(starts);
     } catch (e) {
       logger.warn(`AutomationEngine.fireTrigger(${triggerType}): ${e.message}`);
     }

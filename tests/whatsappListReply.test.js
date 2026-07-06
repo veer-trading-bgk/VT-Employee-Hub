@@ -189,4 +189,35 @@ describe('POST /api/whatsapp/webhook — known-lead branch: list_reply / text / 
 
     expect(AutomationEngine.fireTrigger).not.toHaveBeenCalledWith(CID, 'keyword_message', expect.anything());
   });
+
+  // Proves the ordering fix from the 2026-07-06 incident (19_DECISION_LOG.md Era 20):
+  // fireTrigger('keyword_message') used to be fire-and-forget, so res.sendStatus(200)
+  // could resolve before it ran at all — a real customer's automated reply was
+  // measured 6.3s-49.4s late in production, sometimes never arriving. A deferred
+  // promise proves ordering directly: res.sendStatus must NOT fire while
+  // fireTrigger()'s own promise is still pending, only after it settles.
+  test('res.sendStatus(200) waits for fireTrigger(keyword_message) to settle, not just to be called', async () => {
+    let resolveFireTrigger;
+    AutomationEngine.fireTrigger.mockReturnValue(new Promise((resolve) => { resolveFireTrigger = resolve; }));
+
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    const req = { body: webhookBody({ type: 'text', text: { body: 'Hi' } }) };
+    const res = mockRes();
+
+    const handlerPromise = handler(req, res, jest.fn());
+
+    // Yield to the macrotask queue (not just a few microtask ticks) so every
+    // OTHER already-resolved awaited call earlier in the handler (config
+    // lookups, GSI query, dedupPut, notifyCompany, ...) has fully drained
+    // regardless of how many steps precede fireTrigger() — the only thing
+    // left blocking progress should be the deliberately-pending deferred
+    // promise, so the response must not have been sent yet.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(res.sendStatus).not.toHaveBeenCalled();
+
+    resolveFireTrigger();
+    await handlerPromise;
+
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
 });

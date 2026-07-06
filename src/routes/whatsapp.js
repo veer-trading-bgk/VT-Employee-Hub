@@ -1249,6 +1249,31 @@ async function fireButtonFollowUp(companyId, target, buttonId, systemUser) {
   }
 }
 
+// Bounds an awaited automation dispatch inside the webhook handler so one slow
+// user-configured action can never push this invocation toward the hard ceiling
+// both Lambda's own configured Timeout and API Gateway's HTTP API integration
+// TimeoutInMillis share (30000ms, confirmed 2026-07-06 via `aws lambda
+// get-function-configuration` / `aws apigatewayv2 get-integrations`) — neither
+// Meta's Graph API Webhooks docs nor the WhatsApp Cloud API webhook-setup docs
+// publish a response-time SLA to plan against instead, so our own infra ceiling
+// is the binding constraint. 5s is a wide margin over a single Graph API
+// round-trip while leaving ~20s of headroom even if more than one at-risk call
+// applies to the same inbound message. On timeout this resolves (not rejects)
+// so the webhook proceeds — falling back to the pre-fix behavior for just that
+// one slow call, rather than blocking every message behind it.
+const AUTOMATION_DISPATCH_TIMEOUT_MS = 5000;
+function withTimeout(promise, label) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      logger.warn(`webhook: ${label} exceeded ${AUTOMATION_DISPATCH_TIMEOUT_MS}ms budget — continuing without waiting further`);
+      resolve();
+    }, AUTOMATION_DISPATCH_TIMEOUT_MS);
+    timer.unref?.(); // never keep the process alive on this timer alone (Lambda or test runner)
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 // ── POST /api/whatsapp/webhook — inbound messages + delivery/read statuses ────
 router.post('/webhook', async (req, res) => {
   if (!verifyMetaWebhookSignature(req)) {
@@ -1618,21 +1643,32 @@ router.post('/webhook', async (req, res) => {
             // Independent of welcome-message follow-ups: resume any paused automation
             // graph execution whose button_reply condition node is waiting on this exact
             // tap (branching automation builder, Phase 1 — see AutomationEngine.js).
-            require('../services/AutomationEngine')
-              .resumeOnButtonReply(webhookCompanyId, phone10, buttonReply.id)
-              .catch((e) => logger.warn('automation button-reply resume failed: ' + e.message));
+            // Awaited (bounded) since 2026-07-06 — see 19_DECISION_LOG.md Era 20: an
+            // un-awaited resume can freeze mid-flight when the Lambda execution context
+            // suspends right after this response resolves.
+            await withTimeout(
+              require('../services/AutomationEngine')
+                .resumeOnButtonReply(webhookCompanyId, phone10, buttonReply.id)
+                .catch((e) => logger.warn('automation button-reply resume failed: ' + e.message)),
+              'resumeOnButtonReply',
+            );
           }
           // Keyword / button-tap trigger — fires on EVERY inbound text message or
           // button/list tap (unlike whatsapp_conversation_started below, which only
           // fires once ever). fireTrigger() itself no-ops cheaply when no active
           // workflow uses this trigger type. `text` already holds the right string
           // for all three cases: the typed body, or the tapped button/row title.
+          // Awaited (bounded) since 2026-07-06 — see the resumeOnButtonReply comment
+          // above; same freeze risk, same fix.
           if (text && (type === 'text' || buttonReply || listReply)) {
-            require('../services/AutomationEngine').fireTrigger(webhookCompanyId, 'keyword_message', {
-              leadId: lead.leadId, leadPK: lead.PK, phone: phone10, name: lead.name,
-              stage: lead.stage, tags: lead.tags ?? [], assignedTo: lead.assignedTo,
-              source: 'whatsapp', messageText: text,
-            }).catch((e) => logger.warn('keyword trigger fire failed: ' + e.message));
+            await withTimeout(
+              require('../services/AutomationEngine').fireTrigger(webhookCompanyId, 'keyword_message', {
+                leadId: lead.leadId, leadPK: lead.PK, phone: phone10, name: lead.name,
+                stage: lead.stage, tags: lead.tags ?? [], assignedTo: lead.assignedTo,
+                source: 'whatsapp', messageText: text,
+              }).catch((e) => logger.warn('keyword trigger fire failed: ' + e.message)),
+              'fireTrigger(keyword_message)',
+            );
           }
         }
       } else {
@@ -1717,18 +1753,26 @@ router.post('/webhook', async (req, res) => {
             // Independent of welcome-message follow-ups: resume any paused automation
             // graph execution whose button_reply condition node is waiting on this exact
             // tap (branching automation builder, Phase 1 — see AutomationEngine.js).
-            require('../services/AutomationEngine')
-              .resumeOnButtonReply(companyId, phone10, buttonReply.id)
-              .catch((e) => logger.warn('automation button-reply resume failed: ' + e.message));
+            // Awaited (bounded) since 2026-07-06 — see 19_DECISION_LOG.md Era 20.
+            await withTimeout(
+              require('../services/AutomationEngine')
+                .resumeOnButtonReply(companyId, phone10, buttonReply.id)
+                .catch((e) => logger.warn('automation button-reply resume failed: ' + e.message)),
+              'resumeOnButtonReply',
+            );
           }
           // Keyword / button-tap trigger — see the identical lead-path block above
           // for the full comment; same trigger, same matching rules, unknown-contact
-          // context shape (no leadId/leadPK) instead.
+          // context shape (no leadId/leadPK) instead. Awaited (bounded) since
+          // 2026-07-06 — same freeze risk, same fix.
           if (text && (type === 'text' || buttonReply || listReply)) {
-            require('../services/AutomationEngine').fireTrigger(companyId, 'keyword_message', {
-              phone: phone10, name: waName ?? null, source: 'whatsapp', tags: [],
-              messageText: text,
-            }).catch((e) => logger.warn('keyword trigger fire failed: ' + e.message));
+            await withTimeout(
+              require('../services/AutomationEngine').fireTrigger(companyId, 'keyword_message', {
+                phone: phone10, name: waName ?? null, source: 'whatsapp', tags: [],
+                messageText: text,
+              }).catch((e) => logger.warn('keyword trigger fire failed: ' + e.message)),
+              'fireTrigger(keyword_message)',
+            );
           }
         }
 
@@ -1763,11 +1807,17 @@ router.post('/webhook', async (req, res) => {
           } catch (e) { logger.warn('Welcome message failed: ' + e.message); }
         }
         if (isNewMsg && isFirstContact) {
-          // Fire automation trigger for brand-new WhatsApp contact
+          // Fire automation trigger for brand-new WhatsApp contact. Awaited
+          // (bounded) since 2026-07-06 — same freeze risk/fix as
+          // resumeOnButtonReply()/fireTrigger() above; runAutomations() is a
+          // thin wrapper around the same AutomationEngine.fireTrigger().
           const { runAutomations } = require('./automations');
-          runAutomations(companyId, 'whatsapp_conversation_started', {
-            phone: phone10, name: waName ?? null, source: 'whatsapp', tags: [],
-          }).catch((e2) => logger.warn('automation error: ' + e2.message));
+          await withTimeout(
+            runAutomations(companyId, 'whatsapp_conversation_started', {
+              phone: phone10, name: waName ?? null, source: 'whatsapp', tags: [],
+            }).catch((e2) => logger.warn('automation error: ' + e2.message)),
+            'runAutomations(whatsapp_conversation_started)',
+          );
         }
       }
     }
