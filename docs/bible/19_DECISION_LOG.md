@@ -842,6 +842,73 @@ committed locally, not yet pushed as of this entry.
 
 ---
 
+## Era 19 — Production incident: every graph-workflow resume/finalize silently failing since launch (2026-07-06)
+
+**What happened:** the first real customer interaction with Era 10's Part A
+pause/resume feature (`c460a42`, per-button `send_buttons`/`send_list` canvas
+handles) surfaced that button-tap resumes on workflow `32b47481-…` never
+visibly did anything — reported as "30-120s delay, sometimes doesn't fire."
+Investigated with real evidence (CloudWatch logs + direct `AUTO_EXEC#`/`AUTO_WAIT#`
+reads via the AWS CLI), not guessed.
+
+**Root cause 1 (the actual bug): `_finalizeExecution()` used the raw, unaliased
+attribute name `path`** in its `UpdateExpression` — `path` is a reserved DynamoDB
+keyword. Every graph execution that ever reached its end state (including
+immediately after a successful button-tap resume) threw
+`ValidationException: Invalid UpdateExpression: Attribute name is a reserved
+keyword; reserved keyword: path`, caught by the caller's try/catch and reduced
+to a `logger.warn`, so nothing visibly happened. **Not a timing/delay bug** —
+confirmed instant (~100-200ms) and 100% reproducible: 17/17 real resume attempts
+for this workflow failed identically across the full test window
+(2026-07-05 16:27 → 2026-07-06 02:01); a table-wide scan found this is the
+**first real graph execution to ever attempt to finalize** since the graph
+engine shipped (Era 10, 2026-07-01) — the only prior `path`-bearing item with
+`status: completed` was seeded demo data (`exec-checkpoint-demo`), not a real
+execution. `_runSteps`'s linear-workflow equivalent (`fieldName: 'steps'`) was
+never affected — `steps` isn't a reserved word.
+**Fix:** `fieldName` is now always passed through an `ExpressionAttributeNames`
+alias (`#f`), the same way `#st` already aliases `status` — never interpolated
+raw into the `UpdateExpression`.
+**Side effect discovered, not fixed automatically:** the `AUTO_WAIT#` distributed
+claim (conditional-delete) always succeeded *before* the crash, so all 17 stuck
+executions have no wait record left to resume from even after this fix — they
+need a one-time data remediation, tracked separately (see the corresponding
+conversation; executions were marked `status: 'failed'`, `failReason:
+'stuck_pre_fix_2026-07-06'`, not silently resumed).
+
+**Root cause 2 (independent, latent gap): `processDueWaits()`'s own code
+comment said "Wire to AWS EventBridge Scheduled Rule for production" since
+Era 10 (2026-07-01) — but it never actually was.** `handler.js`'s EventBridge
+Scheduled-Event branch only ever called `runDueCampaigns()`/`runDueLeadScoring()`;
+confirmed via `aws events list-rules`/`list-targets-by-rule` that no rule
+anywhere calls `POST /api/automations/_tick`. This meant **no paused workflow's
+timeout branch, and no `DelayedResponseService` timer, has ever fired on its
+own in production** — the only path that could ever resume a paused execution
+was the event-driven webhook resume (`resumeOnButtonReply()`), with zero
+fallback if it ever missed. Not what caused this specific incident (the
+`path` bug fired instantly, before any timeout could matter), but a real gap
+regardless.
+**Fix:** added `AutomationEngine.processAllDueWaits()` — a table-wide `Scan`
+across every company's `AUTO_WAIT#` partition (same accepted interim tradeoff
+as ADR-014's `CampaignScheduler` Scan; no GSI yet at today's scale), sharing
+the existing claim/dispatch loop (extracted into `_claimAndResume()`) with the
+single-company `processDueWaits(companyId)` Query path, which stays as-is for
+the JWT-admin manual-trigger route. Wired into `handler.js`'s existing 5-minute
+EventBridge tick alongside the other two schedulers (`Promise.allSettled`, so
+one failing sweep never blocks the others) — zero new AWS provisioning, same
+pattern `LeadScoringScheduler.js` already established for riding this rule.
+
+**Status:** both fixes implemented, tested (new regression test reproduces the
+exact reserved-keyword crash via a mock that enforces DynamoDB's real
+validation — the existing mock always resolved regardless of expression
+validity, which is why 1029 passing tests never caught this), full suite green
+(1031/1031), committed and pushed directly given live production impact.
+**Reference:** `src/services/AutomationEngine.js` (`_finalizeExecution()`,
+`processAllDueWaits()`, `_claimAndResume()`), `src/handler.js`;
+`tests/automationEngine.test.js`, `tests/handlerEventBridge.test.js`.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or

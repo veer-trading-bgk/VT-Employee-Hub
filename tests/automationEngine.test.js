@@ -5,6 +5,7 @@ jest.mock('../src/config/dynamodb', () => ({
   get:    jest.fn(),
   put:    jest.fn(),
   query:  jest.fn(),
+  scan:   jest.fn(),
   delete: jest.fn(),
 }));
 jest.mock('../src/services/PipelineService');
@@ -816,6 +817,46 @@ describe('AutomationEngine — graph engine (nodes[]/edges[])', () => {
     expect(vals[':st']).toBe('completed'); // one action ran and succeeded; the dangling edge just stops traversal
     expect(vals[':path'].map((p) => p.nodeId)).toEqual(['n1']);
   });
+
+  // Reproduces a real production incident (2026-07-06): every graph execution's
+  // _finalizeExecution() call used the raw attribute name `path` — DynamoDB's own
+  // reserved keyword — instead of aliasing it via ExpressionAttributeNames the same
+  // way #st already aliases `status`. The mock below enforces DynamoDB's actual
+  // reserved-word validation (mock dynamodb.update() otherwise always resolves
+  // regardless of expression validity, which is why 1029 passing tests never
+  // caught this before a real customer's button tap drove an execution through
+  // to finalize in production).
+  test('_finalizeExecution() aliases the reserved keyword "path" so a graph execution can actually finalize', async () => {
+    dynamodb.update.mockImplementation((params) => {
+      const usesRawPath = /(^|,)\s*path\s*=/.test(params.UpdateExpression ?? '');
+      const pathIsAliased = Object.values(params.ExpressionAttributeNames ?? {}).includes('path');
+      if (usesRawPath && !pathIsAliased) {
+        const err = new Error('Invalid UpdateExpression: Attribute name is a reserved keyword; reserved keyword: path');
+        err.code = 'ValidationException';
+        return { promise: () => Promise.reject(err) };
+      }
+      return { promise: () => Promise.resolve({}) };
+    });
+
+    const workflow = {
+      id: 'wf-path-bug', name: 'Path bug workflow', entryNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'add_tag', config: { tag: 'x' } },
+        { id: 'n2', type: 'end', config: {} },
+      ],
+      edges: [{ id: 'e1', source: 'n1', target: 'n2' }],
+    };
+    const execItem = makeExecItem();
+    const context  = { leadPK: LEAD_PK };
+
+    await expect(engine._runGraph(CID, workflow, execItem, context, 'n1')).resolves.toBeUndefined();
+
+    const finalCall = dynamodb.update.mock.calls.find(
+      (c) => c[0].Key?.SK === execItem.SK && c[0].ExpressionAttributeValues?.[':st'] === 'completed',
+    );
+    expect(finalCall).toBeDefined();
+    expect(Object.values(finalCall[0].ExpressionAttributeNames ?? {})).toContain('path');
+  });
 });
 
 // ─── Per-button/row handles on send_buttons/send_list nodes ─────────────────
@@ -1057,7 +1098,7 @@ describe('AutomationEngine — processDueWaits() delayed_response dispatch', () 
   });
 
   test('dispatches a claimed delayed_response item to DelayedResponseService.resume(), not resumeExecution', async () => {
-    const item = { PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-01-01T00:00:00.000Z#x', waitType: 'delayed_response', delayedResponse: { phone: '9876543210', messageText: 'hi' } };
+    const item = { PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-01-01T00:00:00.000Z#x', companyId: CID, waitType: 'delayed_response', delayedResponse: { phone: '9876543210', messageText: 'hi' } };
     dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [item] }) });
     DelayedResponseService.resume.mockResolvedValue(undefined);
     const resumeExecSpy = jest.spyOn(engine, 'resumeExecution');
@@ -1071,7 +1112,7 @@ describe('AutomationEngine — processDueWaits() delayed_response dispatch', () 
   });
 
   test('a workflow wait item (no waitType) still dispatches to resumeExecution exactly as before', async () => {
-    const item = { PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-01-01T00:00:00.000Z#y', workflowId: 'wf1', execSK: 'exec1', steps: [], context: {}, nextStepIndex: 0 };
+    const item = { PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-01-01T00:00:00.000Z#y', companyId: CID, workflowId: 'wf1', execSK: 'exec1', steps: [], context: {}, nextStepIndex: 0 };
     dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [item] }) });
     const resumeExecSpy = jest.spyOn(engine, 'resumeExecution').mockResolvedValue(undefined);
 
@@ -1107,6 +1148,37 @@ describe('AutomationEngine — processDueWaits() delayed_response dispatch', () 
 
     expect(DelayedResponseService.resume).not.toHaveBeenCalled();
     expect(resumed).toBe(0);
+  });
+});
+
+// ─── processAllDueWaits — table-wide sweep for the EventBridge tick ──────────
+// Fixes a real production gap: processDueWaits(companyId) above was never wired
+// to any schedule — no paused workflow's timeout branch, and no delayed_response
+// timer, ever fired on its own. This is the Scan-based, all-companies variant
+// handler.js's EventBridge branch now actually calls every 5 minutes.
+describe('AutomationEngine — processAllDueWaits() table-wide sweep', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    dynamodb.delete.mockReturnValue({ promise: () => Promise.resolve({}) });
+  });
+
+  test('scans across AUTO_WAIT# for every company and dispatches each claimed item using its own companyId', async () => {
+    const itemA = { PK: 'AUTO_WAIT#comp_a', SK: 'WAIT#x', companyId: 'comp_a', workflowId: 'wf1', execSK: 'exec1', context: {} };
+    const itemB = { PK: 'AUTO_WAIT#comp_b', SK: 'WAIT#y', companyId: 'comp_b', waitType: 'delayed_response', delayedResponse: { phone: '1', messageText: 'hi' } };
+    dynamodb.scan.mockReturnValue({ promise: () => Promise.resolve({ Items: [itemA, itemB] }) });
+    const resumeExecSpy = jest.spyOn(engine, 'resumeExecution').mockResolvedValue(undefined);
+    DelayedResponseService.resume.mockResolvedValue(undefined);
+
+    const resumed = await engine.processAllDueWaits();
+
+    expect(dynamodb.scan).toHaveBeenCalledWith(expect.objectContaining({
+      FilterExpression: expect.stringContaining('begins_with(PK, :pfx)'),
+      ExpressionAttributeValues: expect.objectContaining({ ':pfx': 'AUTO_WAIT#' }),
+    }));
+    expect(resumeExecSpy).toHaveBeenCalledWith('comp_a', itemA);
+    expect(DelayedResponseService.resume).toHaveBeenCalledWith('comp_b', itemB);
+    expect(resumed).toBe(2);
+    resumeExecSpy.mockRestore();
   });
 });
 

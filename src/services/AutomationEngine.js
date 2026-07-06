@@ -372,7 +372,9 @@ class AutomationEngine {
   }
 
   // ── Process due waits (called by POST /api/automations/_tick) ────────────
-  // Wire to AWS EventBridge Scheduled Rule for production.
+  // Single-company Query path — kept for the JWT-admin manual-trigger/testing route.
+  // processAllDueWaits() below is the table-wide sweep actually wired to the
+  // EventBridge schedule.
   async processDueWaits(companyId) {
     const now = new Date().toISOString();
     const { Items = [] } = await dynamodb.query({
@@ -385,9 +387,32 @@ class AutomationEngine {
       },
       Limit: 50,
     }).promise();
+    return this._claimAndResume(Items);
+  }
 
+  // ── Process due waits across EVERY company (called by the 5-minute EventBridge tick) ──
+  // Table-wide Scan across every company's AUTO_WAIT# partition — same accepted interim
+  // tradeoff as ADR-014's CampaignScheduler Scan (no GSI yet at today's scale: "a handful
+  // of paused executions per company", per resumeOnButtonReply()'s own comment). Fixes a
+  // real production gap: processDueWaits() above was never actually wired to any schedule
+  // (this file's own comment said "Wire to AWS EventBridge Scheduled Rule for production"
+  // since 2026-07-01, but handler.js's Scheduled Event branch only ever called
+  // runDueCampaigns()/runDueLeadScoring()) — so no paused workflow's timeout branch, and
+  // no delayed_response timer, ever fired on its own before this.
+  async processAllDueWaits() {
+    const now = new Date().toISOString();
+    const { Items = [] } = await dynamodb.scan({
+      TableName: TABLE,
+      FilterExpression: 'begins_with(PK, :pfx) AND resumeAt <= :now',
+      ExpressionAttributeValues: { ':pfx': 'AUTO_WAIT#', ':now': now },
+    }).promise();
+    return this._claimAndResume(Items);
+  }
+
+  // ── Shared claim+dispatch loop for both processDueWaits() and processAllDueWaits() ──
+  async _claimAndResume(items) {
     let resumed = 0;
-    for (const item of Items) {
+    for (const item of items) {
       // Conditional delete acts as a distributed claim — only ONE concurrent Lambda invocation
       // can claim each WAIT# item, preventing double-resume under concurrent /_tick calls.
       try {
@@ -409,9 +434,9 @@ class AutomationEngine {
         // have no waitType field, so they fall through to resumeExecution()
         // exactly as before — this dispatch is purely additive.
         if (item.waitType === 'delayed_response') {
-          await require('./DelayedResponseService').resume(companyId, item);
+          await require('./DelayedResponseService').resume(item.companyId, item);
         } else {
-          await this.resumeExecution(companyId, item);
+          await this.resumeExecution(item.companyId, item);
         }
         resumed++;
       } catch (e) {
@@ -874,11 +899,15 @@ class AutomationEngine {
                       :                               'partial_failure';
     const valKey = `:${fieldName}`; // ':steps' or ':path'
 
+    // 'path' is a reserved DynamoDB keyword — fieldName must always go through an
+    // ExpressionAttributeNames alias (#f), the same way #st already aliases 'status',
+    // never interpolated raw into the UpdateExpression. 'steps' isn't reserved, but
+    // aliasing both the same way keeps this one code path correct for either caller.
     await dynamodb.update({
       TableName: TABLE,
       Key:       { PK: `AUTO_EXEC#${companyId}`, SK: execItem.SK },
-      UpdateExpression: `SET #st = :st, ${fieldName} = ${valKey}, completedAt = :ca, durationMs = :dm`,
-      ExpressionAttributeNames:  { '#st': 'status' },
+      UpdateExpression: `SET #st = :st, #f = ${valKey}, completedAt = :ca, durationMs = :dm`,
+      ExpressionAttributeNames:  { '#st': 'status', '#f': fieldName },
       ExpressionAttributeValues: { ':st': finalStatus, [valKey]: results, ':ca': completedAt, ':dm': durationMs },
     }).promise();
 

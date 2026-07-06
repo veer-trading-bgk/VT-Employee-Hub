@@ -5,6 +5,7 @@ const { loadSecrets } = require('./config/secrets');
 const app = require('./app');
 const { runDueCampaigns } = require('./services/CampaignScheduler');
 const { runDueLeadScoring } = require('./services/LeadScoringScheduler');
+const AutomationEngine = require('./services/AutomationEngine');
 
 const handler = serverless(app, {
   binary: ['image/*', 'video/*', 'audio/*', 'application/octet-stream', 'application/pdf'],
@@ -19,8 +20,13 @@ exports.handler = async (event, context) => {
   // runDueLeadScoring() rides this same 5-minute rule rather than needing a second
   // one — it self-throttles internally to a ~60-minute cycle via its own cursor,
   // so most of these ticks are a near-free no-op for it.
+  // AutomationEngine.processAllDueWaits() rides the same rule for the same reason —
+  // it was documented ("Wire to AWS EventBridge Scheduled Rule for production") but
+  // never actually connected, leaving every paused workflow's timeout branch (and
+  // DelayedResponseService's timer) with no fallback if the event-driven resume
+  // path ever misses. See docs/bible/19_DECISION_LOG.md for the incident this fixed.
   if (event.source === 'aws.events' && event['detail-type'] === 'Scheduled Event') {
-    return Promise.allSettled([runDueCampaigns(), runDueLeadScoring()]);
+    return Promise.allSettled([runDueCampaigns(), runDueLeadScoring(), AutomationEngine.processAllDueWaits()]);
   }
 
   return handler(event, context);
