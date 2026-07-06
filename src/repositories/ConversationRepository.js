@@ -234,6 +234,31 @@ async function updateClassification(companyId, conversationId, classification) {
   }).promise();
 }
 
+/**
+ * Write bot-conversation state — isBotActive/handoffState/aiTurnCount. Same
+ * no-version-check pattern as incrementUnread/updateLastMessage/
+ * updateClassification: this is driven exclusively by the inbound webhook
+ * processing one message at a time (already serialized per invocation, gated
+ * on isNewMsg), so there is no concurrent writer to race against, and a
+ * per-message state update shouldn't have to retry just because an unrelated
+ * field (e.g. an agent manually reassigning the conversation) bumped the
+ * version at the same moment.
+ *
+ * @param {string} companyId
+ * @param {string} conversationId
+ * @param {object} fields  any of { isBotActive, handoffState, aiTurnCount }
+ */
+async function updateBotState(companyId, conversationId, fields) {
+  const { expr, names, values } = buildUpdateExpression(fields);
+  await dynamodb.update({
+    TableName:                 table(),
+    Key:                       { PK: conversationPK(companyId, conversationId), SK: conversationSK() },
+    UpdateExpression:          expr,
+    ExpressionAttributeNames:  names,
+    ExpressionAttributeValues: values,
+  }).promise();
+}
+
 module.exports = {
   getById,
   queryByContact,
@@ -243,4 +268,5 @@ module.exports = {
   incrementUnread,
   updateLastMessage,
   updateClassification,
+  updateBotState,
 };

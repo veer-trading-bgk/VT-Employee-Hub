@@ -22,6 +22,7 @@ const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignat
 const { welcomeConfigSchema, delayedResponseConfigSchema, workingHoursConfigSchema, oooConfigSchema, branchSchema } = require('../utils/validation');
 const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
 const { logAudit } = require('../utils/audit');
+const ConversationalAgentService = require('../services/ConversationalAgentService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -1626,17 +1627,35 @@ router.post('/webhook', async (req, res) => {
           require('../services/DelayedResponseService')
             .scheduleIfEnabled(webhookCompanyId, { phone: phone10, leadPK: lead.PK, name: lead.name })
             .catch(() => {});
+          // Autonomous AI conversation (2026-07-06, Era 22) — continues an
+          // already-bot-active conversation (no-ops for every other lead: a
+          // human-handled one, or one never started, or already handed off).
+          // Checked BEFORE OOO/keyword_message so a conversation the AI is
+          // actively carrying doesn't also get a second, unrelated automated
+          // reply stacked on top of the same inbound message. Awaited — same
+          // Era 20 discipline as everything else in this handler.
+          let botHandled = false;
+          if (type === 'text') {
+            botHandled = await ConversationalAgentService.continueTurn(webhookCompanyId, {
+              leadPK: lead.PK, lead, phone10, text, timestamp,
+            });
+          }
           // Out of Office (Item 2) — a known lead never gets a Welcome message
           // (that's first-contact only, see the INBOX# branch below), so there
           // is no precedence conflict to resolve on this path: OOO just fires
-          // on its own terms whenever the business is closed. Awaited + try/
-          // catch, matching the existing Welcome-message block's own style.
-          try {
-            const WorkingHoursService = require('../services/WorkingHoursService');
-            if (await WorkingHoursService.shouldSendOOO(webhookCompanyId, { leadPK: lead.PK })) {
-              await WorkingHoursService.sendOOO(webhookCompanyId, { leadPK: lead.PK, phone: phone10, name: lead.name });
-            }
-          } catch (e) { logger.warn('OOO message failed: ' + e.message); }
+          // on its own terms whenever the business is closed, UNLESS the AI
+          // conversation agent already handled this message — the AI operates
+          // 24/7 and doesn't need an office-hours message stacked on top of its
+          // own reply. Awaited + try/catch, matching the existing
+          // Welcome-message block's own style.
+          if (!botHandled) {
+            try {
+              const WorkingHoursService = require('../services/WorkingHoursService');
+              if (await WorkingHoursService.shouldSendOOO(webhookCompanyId, { leadPK: lead.PK })) {
+                await WorkingHoursService.sendOOO(webhookCompanyId, { leadPK: lead.PK, phone: phone10, name: lead.name });
+              }
+            } catch (e) { logger.warn('OOO message failed: ' + e.message); }
+          }
           // A tap on a welcome-message reply button — fire its configured
           // follow-up, if any (see fireButtonFollowUp's own internal try/catch).
           if (buttonReply) {
@@ -1659,9 +1678,11 @@ router.post('/webhook', async (req, res) => {
           // fires once ever). fireTrigger() itself no-ops cheaply when no active
           // workflow uses this trigger type. `text` already holds the right string
           // for all three cases: the typed body, or the tapped button/row title.
-          // Awaited (bounded) since 2026-07-06 — see the resumeOnButtonReply comment
-          // above; same freeze risk, same fix.
-          if (text && (type === 'text' || buttonReply || listReply)) {
+          // Skipped when the AI conversation agent already handled this message —
+          // same reasoning as the OOO gate just above. Awaited (bounded) since
+          // 2026-07-06 — see the resumeOnButtonReply comment above; same freeze
+          // risk, same fix.
+          if (!botHandled && text && (type === 'text' || buttonReply || listReply)) {
             await withTimeout(
               require('../services/AutomationEngine').fireTrigger(webhookCompanyId, 'keyword_message', {
                 leadId: lead.leadId, leadPK: lead.PK, phone: phone10, name: lead.name,
@@ -1681,6 +1702,7 @@ router.post('/webhook', async (req, res) => {
         const isFirstContact = !existingContact.Item;
 
         let isNewMsg = false;
+        let botEngaged = false;
         try {
           isNewMsg = await dedupPut(dynamodb, TABLE, { PK, SK: `MSG#${timestamp}#${waMessageId}`, ...msgItem });
           if (!isNewMsg) logger.warn(`Duplicate webhook ignored: ${waMessageId}`);
@@ -1745,11 +1767,25 @@ router.post('/webhook', async (req, res) => {
           require('../services/DelayedResponseService')
             .scheduleIfEnabled(companyId, { phone: phone10, inboxPK: PK, name: waName })
             .catch(() => {});
+          // Autonomous AI conversation (2026-07-06, Era 22) — the ONLY entry
+          // point that starts one, and only on a genuinely first-ever message.
+          // Internally resolves-or-creates a real CRM lead (CIS, ADR-013) and
+          // only actually engages if that lead comes back unassigned — see
+          // ConversationalAgentService.maybeStart()'s own doc comment for why
+          // "new/unassigned" is checked against the real post-creation state,
+          // not assumed. Checked BEFORE OOO/Welcome/keyword_message/
+          // whatsapp_conversation_started so none of them stack a second,
+          // unrelated automated reply on top of the AI's own first turn.
+          if (isFirstContact && type === 'text') {
+            botEngaged = await ConversationalAgentService.maybeStart(companyId, {
+              phone10, waName, text, timestamp, waMessageId,
+            });
+          }
           // A tap on a welcome-message reply button — fire its configured
           // follow-up, if any. Still possible here: the customer may still be
           // an unknown (INBOX#) contact when they tap, if no lead was created
           // between the welcome send and the reply.
-          if (buttonReply) {
+          if (!botEngaged && buttonReply) {
             await fireButtonFollowUp(companyId, { phone: phone10 }, buttonReply.id, { id: 'system', role: 'admin', name: 'System' });
             // Independent of welcome-message follow-ups: resume any paused automation
             // graph execution whose button_reply condition node is waiting on this exact
@@ -1764,9 +1800,11 @@ router.post('/webhook', async (req, res) => {
           }
           // Keyword / button-tap trigger — see the identical lead-path block above
           // for the full comment; same trigger, same matching rules, unknown-contact
-          // context shape (no leadId/leadPK) instead. Awaited (bounded) since
-          // 2026-07-06 — same freeze risk, same fix.
-          if (text && (type === 'text' || buttonReply || listReply)) {
+          // context shape (no leadId/leadPK) instead. Skipped when the AI
+          // conversation agent already handled this message — same reasoning as
+          // the OOO/Welcome gates below. Awaited (bounded) since 2026-07-06 —
+          // same freeze risk, same fix.
+          if (!botEngaged && text && (type === 'text' || buttonReply || listReply)) {
             await withTimeout(
               require('../services/AutomationEngine').fireTrigger(companyId, 'keyword_message', {
                 phone: phone10, name: waName ?? null, source: 'whatsapp', tags: [],
@@ -1782,9 +1820,11 @@ router.post('/webhook', async (req, res) => {
         // Welcome is skipped entirely for this message, even on a contact's
         // very first message — see WorkingHoursService.js's own doc comment
         // for the full reasoning. The two can never both fire for the same
-        // inbound message.
+        // inbound message. Also skipped entirely when the AI conversation
+        // agent already handled this message (2026-07-06) — the AI operates
+        // 24/7 and doesn't need an office-hours message stacked on its own reply.
         let oooSent = false;
-        if (isNewMsg) {
+        if (isNewMsg && !botEngaged) {
           try {
             const WorkingHoursService = require('../services/WorkingHoursService');
             if (await WorkingHoursService.shouldSendOOO(companyId, { inboxPK: PK })) {
@@ -1798,7 +1838,9 @@ router.post('/webhook', async (req, res) => {
         // messages, and only when OOO didn't already respond to this one) —
         // the automation trigger below is a separate concern (a new contact
         // arrived) and fires regardless of which auto-reply, if any, fired.
-        if (isNewMsg && isFirstContact && !oooSent) {
+        // Also skipped when the AI conversation agent already engaged — its
+        // own first reply already serves as the greeting.
+        if (isNewMsg && isFirstContact && !oooSent && !botEngaged) {
           try {
             const wc = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#WELCOME#${companyId}`, SK: 'CURRENT' } }).promise();
             if (wc.Item?.enabled) {
@@ -1807,7 +1849,7 @@ router.post('/webhook', async (req, res) => {
             }
           } catch (e) { logger.warn('Welcome message failed: ' + e.message); }
         }
-        if (isNewMsg && isFirstContact) {
+        if (isNewMsg && isFirstContact && !botEngaged) {
           // Fire automation trigger for brand-new WhatsApp contact. Awaited
           // (bounded) since 2026-07-06 — same freeze risk/fix as
           // resumeOnButtonReply()/fireTrigger() above; runAutomations() is a
@@ -3196,6 +3238,44 @@ router.put('/welcome-config', authMiddleware, checkRole(['admin']), rateLimit(20
         updatedAt: new Date().toISOString(),
       },
     }).promise();
+    res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── GET/PUT /api/whatsapp/conversation-agent-config ───────────────────────────
+// The autonomous AI conversation agent's opt-in gate (2026-07-06, Era 22).
+// Deliberately defaults to { enabled: false } and lives as its own dedicated
+// config, separate from the generic AIService master/module toggle (which
+// defaults every registered useCase to enabled) — see
+// ConversationalAgentService.js's own header comment for why. Same
+// GET-defaults-to-disabled / PUT-boolean-required shape as
+// admin.js's CONFIG#AUTOASSIGN route, the closest existing precedent for an
+// opt-in-only automated behavior.
+router.get('/conversation-agent-config', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const result = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#CONVAGENT#${req.user.companyId}`, SK: 'CURRENT' },
+    }).promise();
+    res.json({ success: true, config: result.Item ?? { enabled: false } });
+  } catch (err) { next(err); }
+});
+
+router.put('/conversation-agent-config', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled (boolean) required' });
+    }
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: `CONFIG#CONVAGENT#${req.user.companyId}`, SK: 'CURRENT',
+        companyId: req.user.companyId, enabled,
+        updatedBy: req.user.id, updatedAt: new Date().toISOString(),
+      },
+    }).promise();
+    await logAudit(req.user.id, 'conversation_agent_config_update', `enabled:${enabled}`, 'success', req.ip, {}, req.user.companyId);
     res.json({ success: true });
   } catch (err) { next(err); }
 });

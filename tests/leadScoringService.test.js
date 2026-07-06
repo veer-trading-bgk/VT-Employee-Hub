@@ -139,6 +139,41 @@ describe('LeadScoringService.computeScore — value contribution', () => {
   });
 });
 
+// 2026-07-06 (Era 22) — extends the existing rubric for
+// ConversationalAgentService's conversation-derived signals, rather than a
+// second/parallel lead-quality score.
+describe('LeadScoringService.computeScore — productInterest contribution (Era 22)', () => {
+  test('a flat 10 points once any product interest is stated, regardless of count', () => {
+    expect(computeScore({ productInterest: ['mutual funds'] }, STAGES).priorityScoreBreakdown.productInterest).toBe(10);
+    expect(computeScore({ productInterest: ['mutual funds', 'insurance', 'demat'] }, STAGES).priorityScoreBreakdown.productInterest).toBe(10);
+  });
+
+  test('no product interest stated is neutral (0), from any source — manual entry, CSV import, or AI conversation', () => {
+    expect(computeScore({ productInterest: [] }, STAGES).priorityScoreBreakdown.productInterest).toBe(0);
+    expect(computeScore({}, STAGES).priorityScoreBreakdown.productInterest).toBe(0);
+  });
+});
+
+describe('LeadScoringService.computeScore — engagement contribution (Era 22)', () => {
+  test('7+ AI conversation turns scores the max', () => {
+    expect(computeScore({ aiConversationTurns: 7 }, STAGES).priorityScoreBreakdown.engagement).toBe(10);
+    expect(computeScore({ aiConversationTurns: 10 }, STAGES).priorityScoreBreakdown.engagement).toBe(10);
+  });
+
+  test('4-6 turns scores a partial bonus', () => {
+    expect(computeScore({ aiConversationTurns: 4 }, STAGES).priorityScoreBreakdown.engagement).toBe(5);
+  });
+
+  test('under 4 turns scores nothing', () => {
+    expect(computeScore({ aiConversationTurns: 1 }, STAGES).priorityScoreBreakdown.engagement).toBe(0);
+  });
+
+  test('no AI conversation ever run is neutral (0), never a zero-engagement penalty', () => {
+    expect(computeScore({}, STAGES).priorityScoreBreakdown.engagement).toBe(0);
+    expect(computeScore({ aiConversationTurns: null }, STAGES).priorityScoreBreakdown.engagement).toBe(0);
+  });
+});
+
 describe('LeadScoringService.computeScore — overall score, tier, and clamping', () => {
   test('clamps to 0 when negative contributions outweigh positive ones', () => {
     const { priorityScore } = computeScore({ stage: 'new_lead', intent: 'not_interested', confidence: 1 }, STAGES);

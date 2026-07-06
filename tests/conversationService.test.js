@@ -518,3 +518,51 @@ describe('classifyIntent()', () => {
     expect(result).toEqual(expect.objectContaining({ intent: 'complaint', confidence: 0.91, classifiedAt: expect.any(String) }));
   });
 });
+
+// ─── Bot handoff state machine (2026-07-06, Era 22) ───────────────────────────
+// isBotActive/handoffState/aiTurnCount were reserved-but-inert since Phase 2
+// scaffolding — these are the first real read/write paths for them anywhere
+// in the codebase, via ConversationRepository's new updateBotState().
+
+describe('startBotHandling()', () => {
+  beforeEach(() => {
+    repo.updateBotState = jest.fn().mockResolvedValue(undefined);
+  });
+
+  test('sets isBotActive: true, handoffState: ai, aiTurnCount: 0', async () => {
+    await svc.startBotHandling(CID, CVID);
+    expect(repo.updateBotState).toHaveBeenCalledWith(CID, CVID, {
+      isBotActive: true, handoffState: 'ai', aiTurnCount: 0,
+    });
+  });
+
+  test('throws not_found for a nonexistent conversation, same as every other mutator', async () => {
+    repo.getById.mockResolvedValue(null);
+    await expect(svc.startBotHandling(CID, 'does-not-exist')).rejects.toThrow('not_found');
+    expect(repo.updateBotState).not.toHaveBeenCalled();
+  });
+});
+
+describe('incrementAiTurn()', () => {
+  beforeEach(() => {
+    repo.updateBotState = jest.fn().mockResolvedValue(undefined);
+  });
+
+  test('writes currentTurnCount + 1', async () => {
+    await svc.incrementAiTurn(CID, CVID, 3);
+    expect(repo.updateBotState).toHaveBeenCalledWith(CID, CVID, { aiTurnCount: 4 });
+  });
+});
+
+describe('handoffToHuman()', () => {
+  beforeEach(() => {
+    repo.updateBotState = jest.fn().mockResolvedValue(undefined);
+  });
+
+  test('sets isBotActive: false, handoffState: pending_human', async () => {
+    await svc.handoffToHuman(CID, CVID);
+    expect(repo.updateBotState).toHaveBeenCalledWith(CID, CVID, {
+      isBotActive: false, handoffState: 'pending_human',
+    });
+  });
+});

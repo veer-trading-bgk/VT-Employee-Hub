@@ -1175,6 +1175,110 @@ ESLint errors in every file touched).
 
 ---
 
+## Era 22 — Autonomous, AI-initiated multi-turn customer conversation (2026-07-06)
+
+**What:** a new capability, categorically bigger than Era 21 — Era 21 was a
+human clicking a button and the AI picking one of a fixed pre-approved
+template; this is the AI **initiating and carrying** a genuinely freeform,
+multi-turn (up to 10) WhatsApp sales conversation with a brand-new customer,
+with zero human action at any point, ending in automatic lead scoring, employee
+assignment, and CRM handoff. Confirmed by direct audit before building:
+nothing on the inbound webhook triggered any AI useCase before this.
+
+**Audited for reuse before building anything** (full findings in the
+conversation this shipped from): `CustomerIdentityService.resolveOrCreate()`
+is still the sole lead-creation path (ADR-013 intact); `LeadScoringService`
+already existed and was extended, not duplicated; `autoAssign.js`'s
+`pickNextEmployee()` already existed as a capacity-aware weighted balancer,
+previously wired only at lead-creation time; `ConversationService.js` already
+had `handoffState`/`isBotActive`/`aiTurnCount`-shaped scaffolding
+("Reserved for Phase 2 AI handoff state machine") sitting completely inert
+since it was written — this is the first real caller. Two genuine gaps found
+and built new: conversation summarization (zero prior art anywhere), and a
+freeform/generative customer-facing AI useCase (the existing one is
+template-pick-only by explicit design).
+
+**A platform requirement checked directly, not assumed:** WhatsApp's own
+Business Messaging Policy states automation is permitted "but must also have
+available prompt, clear, and direct escalation paths." This is why escalation
+detection is **deterministic keyword matching on the customer's raw message,
+checked first, on every turn, independent of the model's own judgment** — not
+a nice-to-have, a platform condition for using automation at all.
+
+**Compliance guardrail, two layers, explicitly imperfect and said so:**
+1. A hard-rule system prompt (extends Era 21's — no guaranteed returns, no
+   "guaranteed," no buy/sell/hold directive on any specific security, no
+   specific IPO application advice, MF/insurance categories and suitability
+   framing permitted, fund-performance promises not) — a soft control, stated
+   plainly as one, since an LLM doesn't reliably hold to a prompt instruction
+   under adversarial/edge-case input.
+2. A second, independent, **deterministic post-generation filter**
+   (`violatesGuardrail()`) that inspects the model's actual reply text before
+   it ever reaches the customer — if it matches a guarantee/buy-sell/IPO-advice
+   pattern, the raw reply is discarded and replaced with a fixed, safe handoff
+   message, and the conversation is force-escalated. Best-effort by design —
+   regex cannot understand semantics, so this catches the most literal
+   violations, not every possible phrasing (widened once already during
+   testing: "you should **definitely** apply" didn't match a literal-phrase
+   regex, `.{0,20}` gaps do).
+
+**Design decisions made explicit, not silently baked in:**
+- "New/unassigned" is checked against the **real post-creation lead state**,
+  not assumed — `maybeStart()` calls CIS without `context.actorId`, so a
+  company's own auto-assign (if enabled) can still claim the lead immediately;
+  if it does, the bot correctly does not engage. Not eligible ≠ bug.
+- Extracted budget/timeline signals are written onto the **existing**
+  `expectedValue`/`closureDeadline` lead fields — `LeadScoringService`'s
+  `_valuePoints()`/`_urgencyPoints()` pick them up with zero formula change.
+  Only `productInterest` (already existed, unscored) and a genuinely new
+  `aiConversationTurns` engagement signal needed new scoring sub-functions.
+- Reconciled a real pre-existing bug found during this audit: `autoAssign.js`'s
+  own `CLOSED_STAGES = ['converted','churned']` silently disagreed with
+  `LeadScoringService.isClosedLead()`'s `stage==='lost'||wonAt` — two
+  definitions of the same concept that never matched. `autoAssign.js` now
+  imports and uses `isClosedLead()` — one canonical definition.
+- OOO, Welcome, and `keyword_message` automation are all skipped for a message
+  the AI conversation agent already handled — the AI runs 24/7 (no
+  office-hours gating needed) and a second, unrelated automated reply
+  stacking on top of its own turn would be a confusing double-response. A
+  real precedence decision over existing features, made deliberately, not
+  accidentally.
+- **Opt-in, defaults OFF** — `CONFIG#CONVAGENT#{companyId}`, checked before
+  anything else in `ConversationalAgentService`, deliberately independent of
+  the generic `AIService` module toggle (which defaults every registered
+  useCase to *enabled* the instant it's deployed). A capability this
+  consequential should not go live for any company just because the code
+  shipped — same precedent as `CONFIG#AUTOASSIGN`. No frontend toggle exists
+  yet for this one; it's API-only (`GET/PUT /api/whatsapp/conversation-agent-config`)
+  for this first rollout — flagged as a known gap, not silently omitted.
+- `model: claude-sonnet-5` for the per-turn useCase, not `claude-haiku-4-5`
+  like every other useCase in this registry — a deliberate departure,
+  justified by this useCase carrying the highest compliance-reliability
+  stakes in the codebase.
+
+**Status:** implemented, tested (26 new tests: full 10-turn flow reaching
+handoff exactly at the cap and not before; escalation keyword at turn 4
+interrupting immediately without waiting for the cap or ever calling the
+model; two guardrail-trip cases — a return guarantee and specific IPO
+advice — confirmed rejected and replaced, never sent verbatim; early handoff
+on `qualified: true`; handoff writing a non-empty structured summary + a
+timeline record; assignment firing via `pickNextEmployee()` only when the
+company's auto-assign is enabled; several eligibility/gating edge cases;
+`LeadScoringService`'s two new sub-functions; `ConversationService`'s three
+new state-machine methods), full backend suite green (1018/1018, 59 suites,
+up from the 992 baseline), dashboard build green (30/30 routes, 0 new ESLint
+issues). **Not pushed** — held for review given this is materially higher-risk
+infrastructure than Era 21, per explicit instruction.
+**Reference:** `src/services/ConversationalAgentService.js` (new),
+`src/config/aiConfig.js` (`conversational-sales-agent`,
+`conversation-handoff-summary`), `src/services/ConversationService.js`,
+`src/repositories/ConversationRepository.js`, `src/services/LeadScoringService.js`,
+`src/utils/autoAssign.js`, `src/routes/whatsapp.js`;
+`tests/conversationalAgentService.test.js`, `tests/conversationService.test.js`,
+`tests/leadScoringService.test.js`.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or

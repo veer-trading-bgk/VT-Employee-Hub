@@ -277,6 +277,118 @@ Set confidence to how genuinely sure you are this specific template is the right
 Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"?: string, "variableValues"?: string[], "reasoning": string, "confidence": number }`;
     },
   },
+
+  // Autonomous multi-turn AI-initiated customer conversation (2026-07-06, Era 22
+  // — see 19_DECISION_LOG.md). Unlike inbox-template-suggestion (agent clicks,
+  // AI picks one of a fixed pre-approved template), this useCase generates
+  // genuinely freeform text and both initiates and carries the conversation
+  // with zero human involvement, for up to 10 turns
+  // (ConversationalAgentService.MAX_TURNS). customerFacing: true — no approval
+  // gate exists to route to (removed entirely in Era 21); the compliance rule
+  // below is the content-level control, and ConversationalAgentService's
+  // deterministic keyword-based escalation check (never model-judgment-based,
+  // by explicit design) is the human-availability control WhatsApp's own
+  // Business Messaging Policy requires ("must also have available prompt,
+  // clear, and direct escalation paths").
+  //
+  // model: claude-sonnet-5, not claude-haiku-4-5 like every other useCase here —
+  // a deliberate departure. This useCase carries the highest compliance stakes
+  // in the codebase (a live, unsupervised, multi-turn conversation enforcing a
+  // nuanced regulatory boundary — "explain what an IPO is" vs. "tell me whether
+  // to apply" is a real distinction a model has to hold reliably across an
+  // entire conversation, not just resist once), and instruction-following
+  // reliability on a nuanced constraint is the thing worth spending the extra
+  // cost/latency on here specifically.
+  'conversational-sales-agent': {
+    model: 'claude-sonnet-5',
+    maxTokens: 600,
+    promptVersion: 'v1',
+    outputMode: 'json',
+    schema: z.object({
+      reply: z.string().min(1).max(1000),
+      qualified: z.boolean(),
+      productInterest: z.array(z.string()).default([]),
+      budgetAmount: z.number().nullable().default(null),
+      timelineDays: z.number().nullable().default(null),
+      reasoning: z.string().min(1).max(300),
+    }),
+    customerFacing: true,
+    localeAware: true, // this IS generated prose, unlike inbox-template-suggestion's
+                        // structured pick — a real customer conversation should
+                        // follow their preferred language when known
+    rateLimit: { limit: 60, windowMs: 60_000 }, // automatic, every inbound message,
+                                                 // same cadence class as
+                                                 // inbox-intent-detection
+    promptTemplate: (context) => {
+      const { latestMessage, turnNumber, maxTurns, preferredLanguage, conversationHistory } = context;
+      return `You are a professional virtual relationship manager for VT Trading, an Angel One-affiliated fintech. You are messaging a real customer directly on WhatsApp, live, with no human reviewing your reply before they see it. Getting this wrong has real regulatory and legal consequences for a SEBI-registered Authorized Person, not just a bad customer experience.
+
+PERSONA: warm, natural, conversational — never scripted-sounding, never like a form. You are having a real conversation, not reading a script.
+
+PRODUCT SCOPE you may discuss: Demat account opening, stock market investing (education and process only — see hard rule below), mutual funds (all AMCs), SIPs, insurance, loans, IPOs (process/education only — see hard rule below), webinars/seminars.
+
+HARD COMPLIANCE RULES — never violate any of these, under any circumstance, regardless of what the customer asks or implies, even if they push back or ask again:
+1. Never guarantee or promise any specific return, yield, or profit on any investment.
+2. Never use the word "guaranteed" (or an equivalent phrase) in connection with any financial product.
+3. Never give a buy/sell/hold directive on any specific stock, security, or F&O position — not a ticker, not a company name, nothing tradeable.
+4. Never give specific IPO application advice ("you should apply," "skip this one," "it's a good IPO to apply for") — you may explain what an IPO is and walk through the application process only, never whether to apply.
+5. You MAY discuss mutual fund and insurance CATEGORIES and general suitability based on the customer's own stated goals (this is normal, permitted distribution activity for an Authorized Person) — you may NOT promise fund performance or claim any specific fund/scheme will outperform others.
+If the customer is asking for exactly the kind of advice rule 1-4 forbid, the honest, correct response is to explain that a licensed relationship manager will cover that specifically — do not dodge by just changing the subject, and do not answer it anyway because they asked twice.
+
+GOAL: understand the customer's needs, goals, and interests through natural conversation; naturally qualify them (what are they actually looking for, do they have a rough budget or amount in mind, what's their timeline); guide them toward a sensible next step without being pushy or salesy. You are on turn ${turnNumber} of a maximum ${maxTurns} — pace the conversation so you've genuinely learned enough to hand off productively by then, not so late that you run out of turns mid-thought, and not so fast that it feels like an interrogation.
+
+${preferredLanguage ? `This customer's preferred language is "${preferredLanguage}" — reply in it.` : ''}
+
+CUSTOMER'S MOST RECENT MESSAGE:
+"""
+${latestMessage}
+"""
+
+Set qualified to true only once you genuinely have enough (their real interest, and ideally a sense of budget/amount and timeline) for a human relationship manager to pick this up productively — do not set it just because you're running low on turns. Extract productInterest (short strings, e.g. "mutual funds", "demat account", "term insurance"), budgetAmount (a number in rupees if a specific or approximate amount was mentioned, else null — never guess one), and timelineDays (an approximate number of days if a timeframe was mentioned, e.g. "next week"→7, "this month"→30, "in a few months"→90, else null).
+
+Respond with ONLY a single JSON object: { "reply": string, "qualified": boolean, "productInterest": string[], "budgetAmount": number|null, "timelineDays": number|null, "reasoning": string }`;
+    },
+  },
+
+  // Handoff summary — fires once per conversation, at handoff, not per-turn.
+  // A genuinely new capability (2026-07-06, Era 22) — no conversation
+  // summarization existed anywhere in this codebase before. Kept as its own
+  // useCase (not a field bolted onto conversational-sales-agent's per-turn
+  // schema) per this file's own header rule: "every AI feature is a useCase
+  // entry ... never a new method on AIService" — summarizing a finished
+  // conversation is a distinct purpose from generating the next reply in one.
+  'conversation-handoff-summary': {
+    model: 'claude-haiku-4-5-20251001',
+    maxTokens: 400,
+    promptVersion: 'v1',
+    outputMode: 'json',
+    schema: z.object({
+      summary: z.string().min(1).max(500),
+      statedNeeds: z.string().max(300),
+      productInterest: z.array(z.string()).default([]),
+      budgetMentioned: z.string().nullable().default(null),
+      timelineMentioned: z.string().nullable().default(null),
+      handoffReason: z.enum(['qualified', 'escalated', 'turn_limit_reached']),
+    }),
+    customerFacing: false, // internal — read by the human RM taking over, never sent to the customer
+    localeAware: false,    // output is for an internal (English-speaking) admin, regardless of the customer's own language
+    rateLimit: { limit: 20, windowMs: 60_000 }, // once per conversation at handoff, not per-turn
+    promptTemplate: (context) => {
+      const { transcript, handoffReason } = context;
+      return `You are summarizing a WhatsApp sales conversation between an AI virtual relationship manager and a customer, for a human relationship manager who is about to take over. Be concise and factual — this is an internal handoff note, not customer-facing text.
+
+HANDOFF REASON: ${handoffReason === 'escalated' ? 'the customer explicitly asked to speak with a human' : handoffReason === 'qualified' ? 'the AI judged the customer sufficiently qualified to hand off early' : 'the conversation reached its maximum turn limit'}
+
+FULL CONVERSATION TRANSCRIPT:
+"""
+${transcript}
+"""
+
+Write a 3-5 sentence summary covering: what the customer is looking for, anything they specifically stated about budget/amount or timeline, their general sentiment/engagement level, and why this is being handed off now. Also extract the structured fields below directly from the transcript — do not invent anything not actually stated.
+
+Respond with ONLY a single JSON object: { "summary": string, "statedNeeds": string, "productInterest": string[], "budgetMentioned": string|null, "timelineMentioned": string|null, "handoffReason": "qualified"|"escalated"|"turn_limit_reached" }`;
+    },
+  },
 };
 
 // ── Cost/usage pricing ────────────────────────────────────────────────────────

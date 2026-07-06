@@ -22,6 +22,8 @@ const MODULES: Array<{ useCase: string; label: string; description: string }> = 
   { useCase: 'inbox-intent-detection', label: 'Inbox Intent Detection', description: 'Classifies each new WhatsApp conversation’s likely intent (interested, complaint, KYC query, etc.)' },
   { useCase: 'template-creation', label: 'AI-Assisted Template Creation', description: 'Drafts a Meta-compliant WhatsApp template from a plain-language description, for an admin to review before submitting' },
   { useCase: 'inbox-template-suggestion', label: 'AI Auto-Reply in Chat', description: 'When an agent clicks "Send AI reply," the AI picks an approved template and sends it to the customer immediately — there is no review step before it reaches them. Enabling this means unreviewed AI-generated messages will go out under this company’s WhatsApp identity.' },
+  { useCase: 'conversational-sales-agent', label: 'AI Conversation Agent (multi-turn)', description: 'A separate, higher-stakes capability from AI Auto-Reply above: this toggle only enables the underlying AI feature — a second, dedicated opt-in (enabled: false by default, not yet exposed in this UI — set via PUT /api/whatsapp/conversation-agent-config) must also be turned on before it does anything. When both are on, the AI initiates and carries a freeform, unsupervised WhatsApp conversation with brand-new customers for up to 10 turns, before any human is involved, ending in an automatic handoff.' },
+  { useCase: 'conversation-handoff-summary', label: 'AI Conversation Handoff Summary', description: 'Internal only — generates the 3-5 sentence summary an admin sees when a multi-turn AI conversation (above) hands off to them. Never sent to the customer.' },
 ];
 
 /**

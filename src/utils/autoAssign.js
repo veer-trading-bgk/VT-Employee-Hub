@@ -1,8 +1,8 @@
 const dynamodb = require('../config/dynamodb');
+const { isClosedLead } = require('../services/LeadScoringService');
 
 const METRICS_TABLE   = process.env.DYNAMODB_TABLE_METRICS;
 const EMP_TABLE       = process.env.DYNAMODB_TABLE_EMPLOYEES;
-const CLOSED_STAGES   = new Set(['converted', 'churned']);
 const PERFORMER_ROLES = ['telecaller', 'agent', 'intern'];
 
 async function getAutoAssignConfig(companyId) {
@@ -58,11 +58,16 @@ async function pickNextEmployee(companyId, source, cfg) {
       TableName: METRICS_TABLE,
       FilterExpression: 'begins_with(PK, :prefix) AND SK = :meta AND attribute_exists(assignedTo)',
       ExpressionAttributeValues: { ':prefix': `LEAD#${companyId}#`, ':meta': 'METADATA' },
-      ProjectionExpression: 'assignedTo, stage',
+      ProjectionExpression: 'assignedTo, stage, wonAt',
       ...(lk && { ExclusiveStartKey: lk }),
     }).promise();
     (r.Items ?? []).forEach(lead => {
-      if (empIds.has(lead.assignedTo) && !CLOSED_STAGES.has(lead.stage)) {
+      // Reconciled 2026-07-06 (Era 22): this used to check its own local
+      // CLOSED_STAGES = ['converted','churned'], while LeadScoringService.
+      // isClosedLead() checked stage==='lost'||wonAt — two different, silently
+      // disagreeing conventions for the same concept. isClosedLead() is now
+      // the one canonical definition, used here too.
+      if (empIds.has(lead.assignedTo) && !isClosedLead(lead)) {
         counts[lead.assignedTo]++;
       }
     });

@@ -347,6 +347,41 @@ async function updateLastMessage(companyId, conversationId, message) {
 }
 
 /**
+ * Start AI bot handling on a conversation — the first real write to the
+ * isBotActive/handoffState fields anywhere in the codebase (both existed,
+ * reserved, since the Phase 2 scaffolding above; ConversationalAgentService.js
+ * is their first actual caller, 2026-07-06 Era 22). No version check, same
+ * reasoning as updateBotState's own doc comment — this fires once, from the
+ * webhook, on the single message that starts a bot conversation.
+ *
+ * @throws {Error} 'not_found'
+ */
+async function startBotHandling(companyId, conversationId) {
+  await _require(companyId, conversationId);
+  await repo.updateBotState(companyId, conversationId, {
+    isBotActive: true, handoffState: HANDOFF_STATE.AI, aiTurnCount: 0,
+  });
+}
+
+/**
+ * Record one completed AI turn (an AI-generated reply actually sent).
+ */
+async function incrementAiTurn(companyId, conversationId, currentTurnCount) {
+  await repo.updateBotState(companyId, conversationId, { aiTurnCount: currentTurnCount + 1 });
+}
+
+/**
+ * Hand a bot conversation off to a human — sets handoffState: pending_human
+ * and isBotActive: false so no further inbound message is treated as a bot
+ * turn (ConversationalAgentService checks handoffState before ever engaging).
+ */
+async function handoffToHuman(companyId, conversationId) {
+  await repo.updateBotState(companyId, conversationId, {
+    isBotActive: false, handoffState: HANDOFF_STATE.PENDING_HUMAN,
+  });
+}
+
+/**
  * Soft-delete a conversation. Sets deletedAt/deletedBy. Increments version.
  * Preserves the record for audit. GSI queries exclude it via attribute_not_exists(deletedAt).
  *
@@ -419,6 +454,9 @@ module.exports = {
   markRead,
   incrementUnread,
   updateLastMessage,
+  startBotHandling,
+  incrementAiTurn,
+  handoffToHuman,
   softDeleteConversation,
   restoreConversation,
   listByCompany,

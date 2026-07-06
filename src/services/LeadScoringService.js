@@ -15,6 +15,14 @@
  * and probability (the agent's own manual estimate — feeding it back into a
  * "computed" score would double-count the agent's opinion as if it were
  * independent evidence, and create a confusing feedback loop).
+ *
+ * 2026-07-06 (Era 22): added productInterest and engagement inputs, extending
+ * this existing rubric rather than building a second/parallel lead-quality
+ * score for ConversationalAgentService's conversation-derived signals. Budget
+ * and timeline signals from that same conversation deliberately do NOT get
+ * their own new inputs here — they're written onto the existing
+ * expectedValue/closureDeadline fields instead, so _valuePoints()/
+ * _urgencyPoints() already pick them up unmodified.
  */
 
 // Points contributed by an intent classification, before scaling by
@@ -104,6 +112,35 @@ function _valuePoints(lead) {
   return 0;
 }
 
+/**
+ * Up to 10 points when at least one product interest has been captured —
+ * from ANY source (manual CRM entry, CSV import, or ConversationalAgentService's
+ * conversation extraction, 2026-07-06 Era 22), not bot-conversation-specific.
+ * A flat bonus, not banded by count: stating one clear interest is the signal
+ * that matters, not how many were listed.
+ */
+function _productInterestPoints(lead) {
+  return (lead.productInterest ?? []).length > 0 ? 10 : 0;
+}
+
+/**
+ * Up to 10 points for conversation engagement depth — populated by
+ * ConversationalAgentService at handoff (aiConversationTurns is a snapshot
+ * copied from the conversation's own aiTurnCount, not a live join against
+ * CONV# — computeScore() runs across every open lead in every company on a
+ * schedule, and a per-lead conversation lookup would multiply that sweep's
+ * read cost). Absent (no bot conversation ever ran) means no adjustment,
+ * never zero-engagement punishment — same "absence isn't a penalty"
+ * philosophy as _valuePoints().
+ */
+function _engagementPoints(lead) {
+  const turns = typeof lead.aiConversationTurns === 'number' ? lead.aiConversationTurns : null;
+  if (turns === null) return 0;
+  if (turns >= 7) return 10;
+  if (turns >= 4) return 5;
+  return 0;
+}
+
 function _tierFor(score) {
   if (score >= TIER_BANDS.hot) return 'hot';
   if (score >= TIER_BANDS.warm) return 'warm';
@@ -135,6 +172,8 @@ function computeScore(lead, stages) {
     recency: _recencyPoints(lead),
     urgency: _urgencyPoints(lead),
     value: _valuePoints(lead),
+    productInterest: _productInterestPoints(lead),
+    engagement: _engagementPoints(lead),
   };
   const raw = Object.values(breakdown).reduce((sum, v) => sum + v, 0);
   const priorityScore = Math.max(0, Math.min(100, Math.round(raw)));
