@@ -120,7 +120,7 @@ async function _generate({ useCase, companyId, context = {}, user, conversationH
       const res = await _callAnthropic({ model: useCaseCfg.model, maxTokens: useCaseCfg.maxTokens, messages });
       inputTokens = res.usage?.input_tokens ?? 0;
       outputTokens = res.usage?.output_tokens ?? 0;
-      data = res.content?.[0]?.text ?? '';
+      data = _extractText(res);
     }
   } catch (err) {
     return { ok: false, reason: 'provider_error', detail: err.message };
@@ -183,6 +183,18 @@ async function _callAnthropic({ model, maxTokens, messages }) {
   return response.json();
 }
 
+// Anthropic's response `content` array is not always [{type:'text',...}] at
+// index 0 — a model may emit a `thinking` block first (seen live, 2026-07-06,
+// with claude-sonnet-5, intermittently — the model decides per-call, not a
+// request flag this codebase sets). Blindly reading content[0].text silently
+// produced '' whenever that happened, which _generateJsonWithRetry then burned
+// its one retry on and still failed — a live, intermittent bug across every
+// json-mode AND text-mode useCase, not just one. Find the text block by type.
+function _extractText(res) {
+  const block = (res.content ?? []).find((b) => b.type === 'text');
+  return block?.text ?? '';
+}
+
 function _tryParseJson(text) {
   const cleaned = String(text ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
   try {
@@ -204,7 +216,7 @@ async function _generateJsonWithRetry({ model, maxTokens, messages, schema }) {
     const res = await _callAnthropic({ model, maxTokens, messages: workingMessages });
     cumulativeInput += res.usage?.input_tokens ?? 0;
     cumulativeOutput += res.usage?.output_tokens ?? 0;
-    const rawText = res.content?.[0]?.text ?? '';
+    const rawText = _extractText(res);
 
     const parsed = _tryParseJson(rawText);
     if (parsed !== undefined) {

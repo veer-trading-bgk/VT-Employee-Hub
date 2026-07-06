@@ -321,6 +321,52 @@ describe('generate — structured output (JSON) mode', () => {
   });
 });
 
+// 2026-07-06: found live, via a manual smoke-test harness for the
+// conversational-sales-agent prompt against the real Anthropic API — some
+// responses put a `thinking` content block ahead of the `text` block
+// (model-decided, not a flag this codebase sets), which content[0]-indexing
+// silently misread as empty text. Reproduces that exact shape.
+describe('generate — Anthropic responses with a thinking block ahead of text', () => {
+  function anthropicWithThinking(text, { inputTokens = 10, outputTokens = 20 } = {}) {
+    return {
+      ok: true,
+      json: () => Promise.resolve({
+        content: [{ type: 'thinking', thinking: '', signature: 'sig' }, { type: 'text', text }],
+        usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+      }),
+    };
+  }
+
+  test('text mode still extracts the real text when a thinking block comes first', async () => {
+    global.fetch.mockResolvedValue(anthropicWithThinking('Here are your insights.'));
+    const result = await AIService.generate({ useCase: 'text-usecase', companyId: CID, user: USER });
+    expect(result.ok).toBe(true);
+    expect(result.data).toBe('Here are your insights.');
+  });
+
+  test('json mode still parses valid JSON when a thinking block comes first — no wasted retry', async () => {
+    mockAIConfig = { 'json-usecase': jsonUseCase() };
+    global.fetch.mockResolvedValue(anthropicWithThinking(JSON.stringify({ reply: 'hi', confidence: 0.9 })));
+    const result = await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
+    expect(result.ok).toBe(true);
+    expect(result.data).toEqual({ reply: 'hi', confidence: 0.9 });
+    expect(global.fetch).toHaveBeenCalledTimes(1); // real text was found first try, no retry needed
+  });
+
+  test('a response with ONLY a thinking block (no text block at all) degrades to invalid_output, not a crash', async () => {
+    mockAIConfig = { 'json-usecase': jsonUseCase() };
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        content: [{ type: 'thinking', thinking: '', signature: 'sig' }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      }),
+    });
+    const result = await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
+    expect(result).toEqual({ ok: false, reason: 'invalid_output', detail: expect.any(String) });
+  });
+});
+
 describe('generate — locale-aware prompting', () => {
   test('appends a language instruction when localeAware is true and preferredLanguage is present', async () => {
     mockAIConfig = { 'locale-usecase': LOCALE_USE_CASE };
