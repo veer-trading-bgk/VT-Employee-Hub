@@ -11,6 +11,45 @@ const aiConfigSchema = z.object({
   moduleToggles: z.record(z.string(), z.boolean()).optional(),
 }).strict();
 
+// AI Administration (Phase 2A, PR 1) — General tab. Extends CONFIG#CONVAGENT
+// (which today is just {enabled}) with 3 additive toggles. All optional with
+// no schema-level default (the .default() would only apply when the FIELD is
+// omitted from a PUT body — the real backward-compat guarantee is enforced at
+// the read site in ConversationalAgentService.js via `!== false`, not here).
+const aiAdminGeneralSchema = z.object({
+  conversationAgentEnabled: z.boolean(),
+  qualificationEnabled: z.boolean(),
+  summaryEnabled: z.boolean(),
+  crmAutoTransferEnabled: z.boolean(),
+  leadScoringEnabled: z.boolean(),
+}).strict();
+
+// AI Administration — Conversation tab (CONFIG#CONVPROMPT). Structured,
+// bounded fields only — never a free-text system-prompt override, that's
+// Prompt Management (PR 2), a deliberately separate, higher-risk surface.
+const aiAdminConversationSchema = z.object({
+  persona: z.enum(['professional_rm', 'friendly_advisor', 'concise_expert']).default('professional_rm'),
+  tone: z.enum(['professional', 'friendly', 'formal', 'casual']).default('professional'),
+  languageRules: z.string().max(300).optional().default(''),
+  conversationStyle: z.enum(['concise', 'balanced', 'detailed']).default('concise'),
+  qualificationRules: z.string().max(500).optional().default(''),
+}).strict();
+
+// AI Administration — Future AI Settings tab (CONFIG#AIFUTURE). RAG/embedding/
+// search fields are intentionally NOT in this schema yet — no RAG
+// infrastructure exists (Phase 2A explicitly defers it), so there is nothing
+// real to validate or store for them until that phase starts. temperature is
+// hard-capped well under Anthropic's real ceiling and model is an allowlist,
+// not a free-text field — see docs/bible/19_DECISION_LOG.md's Phase 2A entry
+// for why these are stored but not yet wired into any live AI call.
+const aiAdminFutureSchema = z.object({
+  customModelSettings: z.object({
+    enabled: z.boolean().default(false),
+    model: z.enum(['claude-haiku-4-5-20251001', 'claude-sonnet-5']).nullable().default(null),
+    temperature: z.number().min(0).max(0.5).nullable().default(null),
+  }).strict().default({ enabled: false, model: null, temperature: null }),
+}).strict();
+
 // "Delayed Response Message" — same enabled/message-content shape as
 // welcomeConfigSchema, plus the delay itself.
 const delayedResponseConfigSchema = z.object({
@@ -247,6 +286,9 @@ const welcomeConfigSchema = z.object({
 module.exports = {
   loginSchema,
   aiConfigSchema,
+  aiAdminGeneralSchema,
+  aiAdminConversationSchema,
+  aiAdminFutureSchema,
   delayedResponseConfigSchema,
   workingHoursConfigSchema,
   oooConfigSchema,

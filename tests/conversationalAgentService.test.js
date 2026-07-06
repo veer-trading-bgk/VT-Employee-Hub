@@ -452,4 +452,67 @@ describe('ConversationalAgentService', () => {
     expect(signalUpdate[0].ExpressionAttributeValues[':pi']).toEqual(['insurance']);
     expect(signalUpdate[0].ExpressionAttributeValues[':cd']).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
+
+  // ─── Phase 2A / PR 1 — General tab toggles ──────────────────────────────────
+  describe('AI Administration General-tab toggles', () => {
+    function mockConvAgentConfig(overrides) {
+      dynamodb.get.mockImplementation((params) => {
+        if (params.Key.PK === `CONFIG#CONVAGENT#${CID}`) return resolved({ Item: { enabled: true, ...overrides } });
+        if (params.Key.PK === LEAD_PK) return resolved({ Item: lead });
+        return resolved({});
+      });
+    }
+
+    test('qualificationEnabled: false skips the extracted-signal merge even though the model returned signals', async () => {
+      mockConvAgentConfig({ qualificationEnabled: false });
+      mockTurn({ productInterest: ['insurance'], budgetAmount: 20000, timelineDays: 14 });
+      await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'insurance, 20000, 2 weeks', timestamp: 't1' });
+
+      const signalUpdate = dynamodb.update.mock.calls.find((c) => c[0].ExpressionAttributeValues?.[':ev'] === 20000);
+      expect(signalUpdate).toBeUndefined();
+    });
+
+    test('summaryEnabled: false skips writing aiConversationSummary at handoff', async () => {
+      mockConvAgentConfig({ summaryEnabled: false });
+      mockTurn({ qualified: true });
+      await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'ready to proceed', timestamp: 't1' });
+
+      const summaryWrite = dynamodb.update.mock.calls.find((c) => c[0].UpdateExpression?.includes('aiConversationSummary'));
+      expect(summaryWrite).toBeUndefined();
+      expect(ConversationService.handoffToHuman).toHaveBeenCalledTimes(1); // handoff itself still happens
+    });
+
+    test('crmAutoTransferEnabled: false skips both assignment and stage-advance at handoff', async () => {
+      mockConvAgentConfig({ crmAutoTransferEnabled: false });
+      getAutoAssignConfig.mockResolvedValue({ enabled: true, capacity: 5, overflow: 'assign' });
+      mockTurn({ qualified: true });
+      await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'ready to proceed', timestamp: 't1' });
+
+      expect(pickNextEmployee).not.toHaveBeenCalled();
+      const stageUpdate = dynamodb.update.mock.calls.find((c) => c[0].ExpressionAttributeValues?.[':s'] === 'interested');
+      expect(stageUpdate).toBeUndefined();
+      expect(ConversationService.handoffToHuman).toHaveBeenCalledTimes(1); // handoff itself still happens
+    });
+
+    // The single most important test in this block: today's real, currently-
+    // shipped CONFIG#CONVAGENT shape is just {enabled: true} — missing all 3
+    // new fields entirely. A company that never opens AI Administration must
+    // get EXACTLY today's behavior out of every gate added in this PR.
+    test('backward compatibility: {enabled: true} with no new fields (today\'s real shape) still runs qualification, summary, and CRM transfer exactly as before', async () => {
+      mockConvAgentConfig({}); // {enabled: true} only — no qualificationEnabled/summaryEnabled/crmAutoTransferEnabled at all
+      getAutoAssignConfig.mockResolvedValue({ enabled: true, capacity: 5, overflow: 'assign' });
+      pickNextEmployee.mockResolvedValue({ id: 'emp_9', name: 'Priya' });
+      mockTurn({ qualified: true, productInterest: ['mutual funds'], budgetAmount: 15000, timelineDays: 7 });
+
+      await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'ready to proceed', timestamp: 't1' });
+
+      const signalUpdate = dynamodb.update.mock.calls.find((c) => c[0].ExpressionAttributeValues?.[':ev'] === 15000);
+      expect(signalUpdate).toBeDefined();
+      const summaryWrite = dynamodb.update.mock.calls.find((c) => c[0].UpdateExpression?.includes('aiConversationSummary'));
+      expect(summaryWrite).toBeDefined();
+      expect(pickNextEmployee).toHaveBeenCalledWith(CID, 'ai_conversation', expect.objectContaining({ enabled: true }));
+      const stageUpdate = dynamodb.update.mock.calls.find((c) => c[0].ExpressionAttributeValues?.[':s'] === 'interested');
+      expect(stageUpdate).toBeDefined();
+    });
+  });
 });

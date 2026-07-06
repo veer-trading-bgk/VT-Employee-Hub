@@ -31,6 +31,40 @@ const { z } = require('zod');
  *                       cases produce internal, employee-facing English text, so
  *                       false for both.
  */
+// Phase 2A / PR 1 — turns AI Administration's Conversation-tab settings into
+// prompt text, ADDITIVELY: returns '' (no extra text at all) when every field
+// is still at its aiAdminConversationSchema default, so a company that never
+// opens AI Administration gets byte-identical prompt output to before this
+// PR existed. Only conversational-sales-agent's promptTemplate calls this —
+// kept here, not duplicated, since it's specific to that one prompt's shape.
+const PERSONA_TEXT = {
+  professional_rm: null, // default — the base persona line above already says this
+  friendly_advisor: 'Lean warmer and more casual than a typical RM — still professional, just friendlier.',
+  concise_expert: 'Lean terser and more matter-of-fact — an expert who values the customer\'s time above rapport-building.',
+};
+const TONE_TEXT = {
+  professional: null, // default
+  friendly: 'Tone: friendly and warm.',
+  formal: 'Tone: more formal than the examples above — fewer emoji, more measured phrasing.',
+  casual: 'Tone: casual and relaxed, like texting a friend who happens to be your RM.',
+};
+const STYLE_TEXT = {
+  concise: null, // default — the STYLE section above already specifies this
+  balanced: 'You may use up to 3 short lines when it genuinely helps, not just 1-2.',
+  detailed: 'More detail is welcome here than the default style guide above — still WhatsApp-appropriate, not an essay.',
+};
+function _buildConversationAdjustments({ persona, tone, languageRules, conversationStyle, qualificationRules }) {
+  const lines = [
+    PERSONA_TEXT[persona] ?? null,
+    TONE_TEXT[tone] ?? null,
+    STYLE_TEXT[conversationStyle] ?? null,
+    languageRules?.trim() ? `Language rules: ${languageRules.trim()}` : null,
+    qualificationRules?.trim() ? `Additional qualification guidance: ${qualificationRules.trim()}` : null,
+  ].filter(Boolean);
+  if (lines.length === 0) return '';
+  return `\nADMIN-CONFIGURED ADJUSTMENTS (from AI Administration > Conversation):\n${lines.map((l) => `- ${l}`).join('\n')}\n`;
+}
+
 const AI_CONFIG = {
   'metrics-insights': {
     model: 'claude-haiku-4-5-20251001',
@@ -309,10 +343,13 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
                      // before it's even written. Conciseness is enforced by
                      // the prompt instructions + the schema's reply max length
                      // below, not by the token ceiling.
-    promptVersion: 'v2', // 2026-07-06 same-day: production-readiness tuning
-                         // pass (concise/WhatsApp-native style) — see
-                         // 19_DECISION_LOG.md Era 22 addendum. Compliance
-                         // rules are unchanged, restated more explicitly.
+    promptVersion: 'v3', // 2026-07-06 same-day: v2 was the production-readiness
+                         // tuning pass (concise/WhatsApp-native style, see
+                         // 19_DECISION_LOG.md Era 22 addendum). v3 adds the
+                         // additive, opt-in Conversation-tab adjustments block
+                         // (Phase 2A / PR 1) — a company that never configures
+                         // it gets byte-identical text to v2. Compliance rules
+                         // themselves are unchanged since v2.
     outputMode: 'json',
     schema: z.object({
       reply: z.string().min(1).max(500), // tightened from 1000 (v1) — a
@@ -339,10 +376,23 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
                                                  // same cadence class as
                                                  // inbox-intent-detection
     promptTemplate: (context) => {
-      const { latestMessage, turnNumber, maxTurns, preferredLanguage } = context;
+      const {
+        latestMessage, turnNumber, maxTurns, preferredLanguage,
+        // Phase 2A / PR 1 — AI Administration's Conversation tab
+        // (CONFIG#CONVPROMPT). Defaults below match aiAdminConversationSchema's
+        // own defaults exactly — a company that never opens AI Administration
+        // gets these values and, per _buildConversationAdjustments, zero extra
+        // prompt text: byte-identical output to before this PR existed.
+        persona = 'professional_rm', tone = 'professional', languageRules = '',
+        conversationStyle = 'concise', qualificationRules = '',
+      } = context;
+      const conversationAdjustments = _buildConversationAdjustments({
+        persona, tone, languageRules, conversationStyle, qualificationRules,
+      });
       return `You are a professional relationship manager for VT Trading, an Angel One-affiliated fintech, messaging a real customer directly on WhatsApp. No human reviews your reply before they see it. Getting this wrong has real regulatory and legal consequences for a SEBI-registered Authorized Person, not just a bad customer experience.
 
 WHO YOU ARE: an experienced human relationship manager, not a chatbot. Never sound like one. Never say things like "I'd be happy to assist you" or "Based on the information provided" — talk the way a sharp, friendly RM actually types on WhatsApp: "Great 👍", "Got it.", "Perfect.", "Makes sense."
+${conversationAdjustments}
 
 STYLE — this matters as much as what you say:
 - Default to ONE short line. Two short lines only when genuinely necessary. Never a paragraph. If there's more to share, offer it ("Want the full list?") instead of dumping it all at once.

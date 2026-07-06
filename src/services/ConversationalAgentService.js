@@ -11,6 +11,7 @@ const PipelineService = require('../services/PipelineService');
 const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
 const { resolveForLead } = require('../utils/conversationResolver');
 const { logAudit } = require('../utils/audit');
+const { aiAdminConversationSchema } = require('../utils/validation');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -123,6 +124,26 @@ function violatesGuardrail(replyText) {
   return GUARDRAIL_PATTERNS.some((re) => re.test(replyText ?? ''));
 }
 
+// Human-readable category labels for the AI Administration Compliance tab
+// (Phase 2A, PR 1, read-only display) — deliberately NOT the raw regex
+// patterns themselves (never expose enforcement internals over an API), and
+// deliberately maintained here, next to the patterns they describe, rather
+// than hand-duplicated in a route/frontend file that could silently drift
+// from what's actually enforced (the same class of gap the 2026-07-05 audit
+// found in AISection.tsx's MODULES array).
+const GUARDRAIL_CATEGORIES = [
+  'No guaranteed returns or promises of profit',
+  'No buy/sell/hold directives on any specific stock, security, or F&O position',
+  'No specific IPO application advice',
+  'No claims that a specific product will outperform others',
+  'No endorsement of one specific fund, scheme, or product as the best/right/safe choice',
+];
+const ESCALATION_CATEGORIES = [
+  'Customer asks for a human, agent, or representative',
+  'Customer asks to speak to or call a manager or relationship manager',
+  'Customer asks for customer care/service',
+];
+
 async function _getConfig(companyId) {
   const r = await dynamodb.get({
     TableName: TABLE,
@@ -162,6 +183,18 @@ async function _fetchPreferredLanguage(companyId, lead) {
   if (!lead?.contactId) return null;
   const profile = await ContactService.getContact(companyId, lead.contactId).catch(() => null);
   return profile?.preferredLanguage ?? null;
+}
+
+// Phase 2A / PR 1 — Conversation tab (CONFIG#CONVPROMPT). Reuses
+// aiAdminConversationSchema's own defaults (single source of truth — a
+// company that never opens AI Administration gets exactly these values,
+// which the prompt template treats as "say nothing extra, today's behavior").
+async function _fetchConversationSettings(companyId) {
+  const r = await dynamodb.get({
+    TableName: TABLE,
+    Key: { PK: `CONFIG#CONVPROMPT#${companyId}`, SK: 'CURRENT' },
+  }).promise().catch(() => ({}));
+  return aiAdminConversationSchema.parse(r.Item ?? {});
 }
 
 /**
@@ -272,15 +305,23 @@ async function _advanceStageAtHandoff(companyId, leadPK) {
 // verbatim-identical, LEAD#viir_trading#2d95bda8-bb47-4047-b79b-74ad4a59296f)
 // and root-caused: _runTurn() reassigns replyText to HANDOFF_MESSAGE and sends
 // it BEFORE calling _handoff(), which then unconditionally sent it again.
-async function _handoff(companyId, { leadPK, lead, conversationId, reason, turnCount, skipHandoffMessage = false }) {
+// cfg (the same CONFIG#CONVAGENT item every caller already fetched via
+// _getConfig()) gates two Phase 2A / PR 1 toggles, both `!== false` so a
+// pre-PR-1 config item (missing these fields entirely) keeps today's
+// always-on behavior — see docs/bible/19_DECISION_LOG.md's Phase 2A entry.
+async function _handoff(companyId, { leadPK, lead, conversationId, reason, turnCount, skipHandoffMessage = false, cfg = {} }) {
   if (!skipHandoffMessage) {
     await WASendSvc.sendText(companyId, { leadPK }, HANDOFF_MESSAGE, AI_ACTOR)
       .catch((e) => logger.warn(`ConversationalAgentService: handoff message send failed: ${e.message}`));
   }
   await ConversationService.handoffToHuman(companyId, conversationId);
-  await _writeHandoffSummary(companyId, leadPK, lead, reason, turnCount);
-  await _assignAtHandoff(companyId, leadPK);
-  await _advanceStageAtHandoff(companyId, leadPK);
+  if (cfg.summaryEnabled !== false) {
+    await _writeHandoffSummary(companyId, leadPK, lead, reason, turnCount);
+  }
+  if (cfg.crmAutoTransferEnabled !== false) {
+    await _assignAtHandoff(companyId, leadPK);
+    await _advanceStageAtHandoff(companyId, leadPK);
+  }
 }
 
 /**
@@ -288,21 +329,25 @@ async function _handoff(companyId, { leadPK, lead, conversationId, reason, turnC
  * audit log, extracted-signal merge, turn increment, and (if triggered)
  * handoff. Shared by both maybeStart() and continueTurn().
  */
-async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCount }) {
+async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCount, cfg }) {
   if (isEscalationRequest(text)) {
-    await _handoff(companyId, { leadPK, lead, conversationId, reason: 'escalated', turnCount });
+    await _handoff(companyId, { leadPK, lead, conversationId, reason: 'escalated', turnCount, cfg });
     return;
   }
 
-  const [conversationHistory, preferredLanguage] = await Promise.all([
+  const [conversationHistory, preferredLanguage, conversationSettings] = await Promise.all([
     _fetchConversationHistory(companyId, leadPK),
     _fetchPreferredLanguage(companyId, lead),
+    _fetchConversationSettings(companyId),
   ]);
 
   const result = await AIService.generate({
     useCase: 'conversational-sales-agent',
     companyId,
-    context: { latestMessage: text, turnNumber: turnCount + 1, maxTurns: MAX_TURNS, preferredLanguage },
+    context: {
+      latestMessage: text, turnNumber: turnCount + 1, maxTurns: MAX_TURNS, preferredLanguage,
+      ...conversationSettings,
+    },
     conversationHistory,
     user: AI_ACTOR,
     assigneeId: lead.assignedTo ?? undefined,
@@ -332,7 +377,7 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
     logger.error(`ConversationalAgentService: audit log FAILED for turn ${turnCount + 1} on ${leadPK} — message was sent, no audit record exists: ${auditErr.message}`);
   }
 
-  if (!guardrailTripped) {
+  if (!guardrailTripped && cfg.qualificationEnabled !== false) {
     await _applyExtractedSignals(companyId, leadPK, lead, result.data);
   }
 
@@ -343,7 +388,7 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
     const reason = guardrailTripped ? 'escalated' : result.data.qualified ? 'qualified' : 'turn_limit_reached';
     // guardrailTripped turns already sent HANDOFF_MESSAGE as replyText above —
     // skip _handoff's own send so the customer doesn't get it twice.
-    await _handoff(companyId, { leadPK, lead, conversationId, reason, turnCount: newTurnCount, skipHandoffMessage: guardrailTripped });
+    await _handoff(companyId, { leadPK, lead, conversationId, reason, turnCount: newTurnCount, skipHandoffMessage: guardrailTripped, cfg });
   }
 }
 
@@ -394,7 +439,7 @@ async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessa
     if (!conv?.conversationId) return false;
 
     await ConversationService.startBotHandling(companyId, conv.conversationId);
-    await _runTurn(companyId, { leadPK: lead.PK, lead, conversationId: conv.conversationId, text, turnCount: 0 });
+    await _runTurn(companyId, { leadPK: lead.PK, lead, conversationId: conv.conversationId, text, turnCount: 0, cfg });
     return true;
   } catch (err) {
     logger.error(`ConversationalAgentService.maybeStart failed [${companyId}/${phone10}]: ${err.message}`);
@@ -424,7 +469,7 @@ async function continueTurn(companyId, { leadPK, lead, phone10, text, timestamp 
     const turnCount = conversation.aiTurnCount ?? 0;
     if (turnCount >= MAX_TURNS) return false; // defensive — should already be handed off by now
 
-    await _runTurn(companyId, { leadPK, lead, conversationId: conv.conversationId, text, turnCount });
+    await _runTurn(companyId, { leadPK, lead, conversationId: conv.conversationId, text, turnCount, cfg });
     return true;
   } catch (err) {
     logger.error(`ConversationalAgentService.continueTurn failed [${leadPK}]: ${err.message}`);
@@ -438,4 +483,7 @@ module.exports = {
   violatesGuardrail,
   maybeStart,
   continueTurn,
+  HANDOFF_MESSAGE,
+  GUARDRAIL_CATEGORIES,
+  ESCALATION_CATEGORIES,
 };

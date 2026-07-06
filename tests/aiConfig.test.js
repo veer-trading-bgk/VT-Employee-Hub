@@ -255,3 +255,58 @@ describe('aiConfig — inbox-template-suggestion useCase', () => {
     expect(cfg.localeAware).toBe(false);
   });
 });
+
+// Phase 2A / PR 1 — AI Administration's Conversation tab (CONFIG#CONVPROMPT)
+// feeds into this prompt additively. These tests are the backward-compat
+// guarantee for that wiring: no existing test elsewhere calls promptTemplate()
+// directly for this useCase (conversationalAgentService.test.js mocks
+// AIService.generate entirely, so the real template function is never
+// exercised there) — this is the only place regressions here would surface.
+describe('aiConfig — conversational-sales-agent useCase (Conversation-tab adjustments)', () => {
+  const cfg = AI_CONFIG['conversational-sales-agent'];
+  const BASE_CONTEXT = { latestMessage: 'hi', turnNumber: 1, maxTurns: 10, preferredLanguage: null };
+
+  test('with no Conversation-tab context fields at all (pre-PR-1 caller shape), the prompt has no admin-adjustments section', () => {
+    const prompt = cfg.promptTemplate(BASE_CONTEXT);
+    expect(prompt).not.toContain('ADMIN-CONFIGURED ADJUSTMENTS');
+  });
+
+  test('with every field at its aiAdminConversationSchema default, the prompt is byte-identical to the no-fields case', () => {
+    const withDefaults = cfg.promptTemplate({
+      ...BASE_CONTEXT,
+      persona: 'professional_rm', tone: 'professional', languageRules: '',
+      conversationStyle: 'concise', qualificationRules: '',
+    });
+    const withNoFields = cfg.promptTemplate(BASE_CONTEXT);
+    expect(withDefaults).toBe(withNoFields);
+  });
+
+  test('a non-default persona/tone/style each add their own adjustment line', () => {
+    const prompt = cfg.promptTemplate({
+      ...BASE_CONTEXT, persona: 'friendly_advisor', tone: 'casual', conversationStyle: 'detailed',
+    });
+    expect(prompt).toContain('ADMIN-CONFIGURED ADJUSTMENTS');
+    expect(prompt).toMatch(/warmer and more casual/i);
+    expect(prompt).toMatch(/casual and relaxed/i);
+    expect(prompt).toMatch(/more detail is welcome/i);
+  });
+
+  test('non-empty languageRules/qualificationRules are embedded verbatim', () => {
+    const prompt = cfg.promptTemplate({
+      ...BASE_CONTEXT,
+      languageRules: 'Always reply in Hinglish, never pure Hindi script.',
+      qualificationRules: 'Do not qualify without an explicit budget figure.',
+    });
+    expect(prompt).toContain('Always reply in Hinglish, never pure Hindi script.');
+    expect(prompt).toContain('Do not qualify without an explicit budget figure.');
+  });
+
+  test('the hard compliance rules section is unaffected by any Conversation-tab setting', () => {
+    const prompt = cfg.promptTemplate({
+      ...BASE_CONTEXT, persona: 'concise_expert', tone: 'casual', conversationStyle: 'detailed',
+      languageRules: 'x', qualificationRules: 'y',
+    });
+    expect(prompt).toMatch(/Never guarantee or promise any specific return/);
+    expect(prompt).toMatch(/Never give a buy\/sell\/hold directive/);
+  });
+});

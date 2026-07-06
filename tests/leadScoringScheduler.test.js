@@ -173,6 +173,65 @@ describe('LeadScoringScheduler.runDueLeadScoring — sweep behavior', () => {
     expect(result.failedCount).toBe(1);
   });
 
+  // ─── Phase 2A / PR 1 — per-company opt-out ──────────────────────────────────
+  test('a company with CONFIG#LEADSCORING.enabled: false has its leads skipped, while another company with no config row is still scored', async () => {
+    mockCursor(undefined);
+    mockScanPages([
+      { PK: 'LEAD#acme#1', SK: 'METADATA', companyId: 'acme', stage: 'interested' },
+      { PK: 'LEAD#beta#1', SK: 'METADATA', companyId: 'beta', stage: 'interested' },
+    ]);
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === 'CONFIG#LEADSCORING#acme') return { promise: () => Promise.resolve({ Item: { enabled: false } }) };
+      return { promise: () => Promise.resolve({}) }; // beta: no config row → defaults enabled
+    });
+    PipelineService.getPipelineStages.mockResolvedValue(STAGES);
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    const result = await runDueLeadScoring();
+
+    expect(result.skippedCount).toBe(1);
+    expect(result.scoredCount).toBe(1);
+    expect(dynamodb.update).toHaveBeenCalledTimes(1);
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({ Key: { PK: 'LEAD#beta#1', SK: 'METADATA' } }));
+  });
+
+  test('checks CONFIG#LEADSCORING once per company per sweep, not once per lead', async () => {
+    mockCursor(undefined);
+    mockScanPages([
+      { PK: 'LEAD#acme#1', SK: 'METADATA', companyId: 'acme', stage: 'interested' },
+      { PK: 'LEAD#acme#2', SK: 'METADATA', companyId: 'acme', stage: 'new_lead' },
+      { PK: 'LEAD#acme#3', SK: 'METADATA', companyId: 'acme', stage: 'interested' },
+    ]);
+    let leadScoringConfigReads = 0;
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === 'CONFIG#LEADSCORING#acme') { leadScoringConfigReads++; return { promise: () => Promise.resolve({}) }; }
+      return { promise: () => Promise.resolve({}) };
+    });
+    PipelineService.getPipelineStages.mockResolvedValue(STAGES);
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    await runDueLeadScoring();
+    expect(leadScoringConfigReads).toBe(1);
+  });
+
+  test('a CONFIG#LEADSCORING read that fails (mimicking an unmocked/misconfigured client) defaults to scoring, not skipping', async () => {
+    mockCursor(undefined);
+    mockScanPages([{ PK: 'LEAD#acme#1', SK: 'METADATA', companyId: 'acme', stage: 'interested' }]);
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === 'CONFIG#LEADSCORING#acme') throw new Error('boom');
+      return { promise: () => Promise.resolve({}) };
+    });
+    PipelineService.getPipelineStages.mockResolvedValue(STAGES);
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    const result = await runDueLeadScoring();
+    expect(result.scoredCount).toBe(1);
+    expect(result.skippedCount).toBe(0);
+  });
+
   test('paginates the scan across multiple pages via ExclusiveStartKey', async () => {
     mockCursor(undefined);
     dynamodb.scan

@@ -76,6 +76,7 @@ async function runDueLeadScoring() {
   const eligibleCount = openLeads.length;
   let scoredCount = 0;
   let failedCount = 0;
+  let skippedCount = 0;
 
   // One pipeline fetch per company per sweep, never once per lead. Caches the
   // in-flight PROMISE itself (not its resolved value) — concurrent leads in
@@ -90,9 +91,41 @@ async function runDueLeadScoring() {
     return stagesByCompany.get(companyId);
   }
 
+  // Phase 2A / PR 1 — per-company opt-out (CONFIG#LEADSCORING#{companyId}),
+  // defaults enabled: true so a company that never opens AI Administration
+  // keeps today's real behavior (this scheduler had no per-company concept
+  // at all before this). Same promise-cache pattern as _stagesFor above, for
+  // the same reason — one read per company per sweep, not per lead.
+  const enabledByCompany = new Map();
+  function _leadScoringEnabledFor(companyId) {
+    if (!enabledByCompany.has(companyId)) {
+      // Wrapped in an async IIFE (not a bare .promise().then().catch() chain)
+      // so a dynamodb.get() call that itself throws synchronously — e.g. an
+      // unmocked/misconfigured client — is caught too, not just an async
+      // rejection. Defaults true either way: this read failing should never
+      // silently stop scoring a company that never opted out.
+      enabledByCompany.set(companyId, (async () => {
+        try {
+          const r = await dynamodb.get({
+            TableName: TABLE,
+            Key: { PK: `CONFIG#LEADSCORING#${companyId}`, SK: 'CURRENT' },
+          }).promise();
+          return r.Item?.enabled ?? true;
+        } catch {
+          return true;
+        }
+      })());
+    }
+    return enabledByCompany.get(companyId);
+  }
+
   for (const batch of _chunk(openLeads, BATCH_SIZE)) {
     await Promise.allSettled(batch.map(async (lead) => {
       try {
+        if (!(await _leadScoringEnabledFor(lead.companyId))) {
+          skippedCount++;
+          return;
+        }
         const stages = await _stagesFor(lead.companyId);
         const { priorityScore, priorityTier, priorityScoreBreakdown } = computeScore(lead, stages);
         await dynamodb.update({
@@ -116,10 +149,10 @@ async function runDueLeadScoring() {
   const executionTime = Date.now() - startTime;
   logger.info(
     `lead scoring sweep: scannedCount=${scannedCount} eligibleCount=${eligibleCount} scoredCount=${scoredCount} `
-    + `failedCount=${failedCount} executionTime=${executionTime}ms`,
+    + `skippedCount=${skippedCount} failedCount=${failedCount} executionTime=${executionTime}ms`,
   );
 
-  return { scannedCount, eligibleCount, scoredCount, failedCount, executionTime };
+  return { scannedCount, eligibleCount, scoredCount, skippedCount, failedCount, executionTime };
 }
 
 module.exports = { runDueLeadScoring };

@@ -1463,6 +1463,30 @@ review-before-push precedent as the original Era 22 build.
 
 ---
 
+## Era 24 — Phase 2A, PR 1: AI Administration Settings Module (2026-07-06)
+
+Built per the approved plan (Era 23 + the Phase 2A audit). Admin-only settings module for General/Conversation/Compliance/Future-AI-Settings — Prompt Management (PR 2) and Knowledge Center (PR 3/4) are separate, not built here.
+
+**Backend:** extended `CONFIG#CONVAGENT#{companyId}` with `qualificationEnabled`/`summaryEnabled`/`crmAutoTransferEnabled` (all `!== false`-gated for backward compat — today's real config shape, `{enabled}` alone, is unaffected). New `CONFIG#LEADSCORING#{companyId}` (per-company opt-out; `LeadScoringScheduler` had no per-company concept before this). New `CONFIG#CONVPROMPT#{companyId}` (persona/tone/languageRules/conversationStyle/qualificationRules) feeds additively into the v2 prompt template (bumped to v3) — a company that never configures it gets byte-identical prompt text to before this PR. New `CONFIG#AIFUTURE#{companyId}` stores temperature (capped 0–0.5)/model (allowlist) but does **not** wire into `AIService._callAnthropic()` yet — stored inert until PR 2's compliance-test gate exists. Compliance tab is read-only, no PUT route at all — editing arrives in PR 2. New whole-router-guarded `src/routes/aiAdmin.js`, mounted `/api/ai-admin`.
+
+The four behavior toggles (qualification/summary/CRM-transfer/lead-scoring) are genuinely wired into existing control flow, not just stored — a deliberate, reasoned choice, not scope creep: the source task's own instruction was "every setting must be configurable, nothing hardcoded," and each of these toggles gates a discrete, already-tested bookkeeping step that runs *after* the AI has already generated and sent its reply (a DB write, an assignment call) — never the generation itself. Temperature/model stayed inert specifically because that line *does* touch generation (more unpredictable phrasing), and there's no compliance-test gate yet to catch a regression there — that distinction, not an inconsistency, is why one got wired and the other didn't.
+
+**Frontend:** new top-level nav entry (`V3Sidebar.tsx`, `roles: ['owner','admin']`), new `/ai-admin` page with 4 tabs. First page in the codebase to actually use `ProtectedRoute`'s `allowedRoles` prop (built, never used elsewhere) — every other existing page enforces admin-only via nav-hiding alone today. That gap was surfaced during this PR's planning, but — important correction to how this log itself gets written — it was only ever included as one paragraph inside the approved plan document, never called out to the user as its own explicit decision the way the ADR-016 governance question and the admin-only scope question were. Flagged back to the user directly rather than left as a silently-carried-over "already decided" item; see the dedicated entry immediately below for the actual decision.
+
+**Status:** implemented, tested (28 new tests: `tests/aiAdmin.test.js` new, plus extensions to `tests/conversationalAgentService.test.js`, `tests/leadScoringScheduler.test.js`, `tests/aiConfig.test.js`). Full suite green, 1063/1063, 60 suites, up from 1035. Dashboard: `next build` + `eslint` both clean on every new/changed file.
+**Reference:** `src/routes/aiAdmin.js` (new), `src/services/ConversationalAgentService.js`, `src/services/LeadScoringScheduler.js`, `src/config/aiConfig.js`, `src/utils/validation.js`; `dashboard/src/app/(v3)/ai-admin/page.tsx` (new), `dashboard/src/components/v3/ai-admin/*` (new).
+
+### Same-day decision: the `/platform`-and-friends route-protection gap — bounded severity, fix scheduled as its own small PR
+
+**Finding:** every existing `(v3)` page enforces its role restriction via sidebar nav-hiding only — `(v3)/layout.tsx` wraps all routes in an unparameterized `<ProtectedRoute>` with no `allowedRoles`, so a wrong-role user who manually types a restricted URL (e.g. `/platform`, superadmin-only) sees the page shell render before any data loads.
+
+**Severity, directly re-verified, not assumed:** bounded. Every backend route family behind an affected page has a real, independent server-side guard — `platform.js` (`router.use(authMiddleware, platformAdminMiddleware)`), `admin.js` (`router.use(authMiddleware, adminMiddleware)`, covers `/employees` and `/metric-target`), `audit.js` (`adminMiddleware` per route), `automations.js`/`analytics.js`/`campaigns.js` (`checkRole([...])` per route). A wrong-role user sees an empty/erroring shell for a moment; no company, employee, platform, or campaign data is ever actually returned to them.
+
+**Decision:** fix it, as its own small PR — reuse the exact `<ProtectedRoute allowedRoles={[...]}>` pattern built for `/ai-admin` in this PR, one line per affected page, no shared-layout change needed. Scope: `/platform`, `/employees`, `/metric-target`, `/audit-log`, `/automation`, `/analytics`, `/campaigns` (7 pages). Not urgent enough to block PR 1 (bounded severity, no data exposure) but not left to drift either — **sequenced in soon after PR 1 lands, before or in parallel with PR 2.**
+**Reference:** `dashboard/src/components/layout/ProtectedRoute.tsx`, `dashboard/src/app/(v3)/layout.tsx`, `dashboard/src/app/(v3)/ai-admin/page.tsx` (the pattern to copy).
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or
