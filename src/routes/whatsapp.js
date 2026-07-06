@@ -1374,10 +1374,15 @@ router.post('/webhook', async (req, res) => {
             : statusType === 'failed' ? 'failedCount'
             : null;
           if (field) {
+            // #f aliases the dynamic field name — never interpolate it raw into the
+            // UpdateExpression. Today's 3 possible values aren't DynamoDB reserved
+            // words, but a future addition to this map silently could be (see
+            // AutomationEngine.js's _finalizeExecution() 'path' incident, 2026-07-06).
             await dynamodb.update({
               TableName: TABLE,
               Key: { PK: `BROADCAST#${cid}`, SK: broadcastSK },
-              UpdateExpression: `ADD ${field} :one`,
+              UpdateExpression: 'ADD #f :one',
+              ExpressionAttributeNames: { '#f': field },
               ExpressionAttributeValues: { ':one': 1 },
             }).promise().catch(() => {});
           }
@@ -1390,10 +1395,14 @@ router.post('/webhook', async (req, res) => {
             : statusType === 'failed' ? 'stats.failed'
             : null;
           if (campField) {
+            // Same #-alias discipline as the broadcast-stats update above — campField
+            // is always a two-segment "stats.X" document path, both segments aliased.
+            const [outerField, innerField] = campField.split('.');
             await dynamodb.update({
               TableName: TABLE,
               Key: { PK: `CONFIG#CAMP#${cid}`, SK: `CAMP#${campaignId}` },
-              UpdateExpression: `ADD ${campField} :one`,
+              UpdateExpression: 'ADD #o.#i :one',
+              ExpressionAttributeNames: { '#o': outerField, '#i': innerField },
               ExpressionAttributeValues: { ':one': 1 },
             }).promise().catch(() => {});
           }

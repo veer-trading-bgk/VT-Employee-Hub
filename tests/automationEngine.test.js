@@ -26,6 +26,7 @@ const WASendSvc = require('../src/services/WhatsAppSendService');
 const DelayedResponseService = require('../src/services/DelayedResponseService');
 const logger = require('../src/config/logger');
 const engine = require('../src/services/AutomationEngine');
+const { guardedUpdateMock } = require('./helpers/dynamoReservedWords');
 
 const CID     = 'comp_test';
 const LEAD_PK = `LEAD#${CID}#lead_001`;
@@ -34,7 +35,7 @@ describe('AutomationEngine — change_stage action', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
-    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.update.mockImplementation(guardedUpdateMock());
   });
 
   test('runs unattended and writes the stage when it is valid in the current pipeline', async () => {
@@ -116,7 +117,7 @@ describe('AutomationEngine — send_template failures surface Meta\'s real rejec
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
-    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.update.mockImplementation(guardedUpdateMock());
   });
 
   test('BEFORE-this-fix regression check: a plain Error (no .response) still falls back to .message unchanged', async () => {
@@ -596,7 +597,7 @@ describe('AutomationEngine — graph engine (nodes[]/edges[])', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
-    dynamodb.update.mockReturnValue(resolved({}));
+    dynamodb.update.mockImplementation(guardedUpdateMock());
     dynamodb.put.mockReturnValue(resolved({}));
   });
 
@@ -821,23 +822,13 @@ describe('AutomationEngine — graph engine (nodes[]/edges[])', () => {
   // Reproduces a real production incident (2026-07-06): every graph execution's
   // _finalizeExecution() call used the raw attribute name `path` — DynamoDB's own
   // reserved keyword — instead of aliasing it via ExpressionAttributeNames the same
-  // way #st already aliases `status`. The mock below enforces DynamoDB's actual
-  // reserved-word validation (mock dynamodb.update() otherwise always resolves
-  // regardless of expression validity, which is why 1029 passing tests never
-  // caught this before a real customer's button tap drove an execution through
-  // to finalize in production).
+  // way #st already aliases `status`. guardedUpdateMock() (applied by this describe
+  // block's beforeEach, tests/helpers/dynamoReservedWords.js) enforces DynamoDB's
+  // actual reserved-word validation for every dynamodb.update() call in this file —
+  // a plain always-resolves mock can never catch an invalid expression shape, which
+  // is why 1029 passing tests never caught this before a real customer's button tap
+  // drove an execution through to finalize in production.
   test('_finalizeExecution() aliases the reserved keyword "path" so a graph execution can actually finalize', async () => {
-    dynamodb.update.mockImplementation((params) => {
-      const usesRawPath = /(^|,)\s*path\s*=/.test(params.UpdateExpression ?? '');
-      const pathIsAliased = Object.values(params.ExpressionAttributeNames ?? {}).includes('path');
-      if (usesRawPath && !pathIsAliased) {
-        const err = new Error('Invalid UpdateExpression: Attribute name is a reserved keyword; reserved keyword: path');
-        err.code = 'ValidationException';
-        return { promise: () => Promise.reject(err) };
-      }
-      return { promise: () => Promise.resolve({}) };
-    });
-
     const workflow = {
       id: 'wf-path-bug', name: 'Path bug workflow', entryNodeId: 'n1',
       nodes: [
@@ -872,7 +863,7 @@ describe('AutomationEngine — send_buttons/send_list opt-in reply handles', () 
   beforeEach(() => {
     jest.clearAllMocks();
     process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
-    dynamodb.update.mockReturnValue(resolved({}));
+    dynamodb.update.mockImplementation(guardedUpdateMock());
     dynamodb.put.mockReturnValue(resolved({}));
   });
 

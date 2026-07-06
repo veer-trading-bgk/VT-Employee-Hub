@@ -870,11 +870,12 @@ never affected — `steps` isn't a reserved word.
 alias (`#f`), the same way `#st` already aliases `status` — never interpolated
 raw into the `UpdateExpression`.
 **Side effect discovered, not fixed automatically:** the `AUTO_WAIT#` distributed
-claim (conditional-delete) always succeeded *before* the crash, so all 17 stuck
-executions have no wait record left to resume from even after this fix — they
-need a one-time data remediation, tracked separately (see the corresponding
-conversation; executions were marked `status: 'failed'`, `failReason:
-'stuck_pre_fix_2026-07-06'`, not silently resumed).
+claim (conditional-delete) always succeeded *before* the crash, so the stuck
+executions had no wait record left to resume from even after this fix. Since the
+product is still pre-launch (testing phase, zero real customers), these were
+data-deleted outright rather than status-flipped/preserved — see the "Cleanup
+and future-proofing pass" addendum below for the exact scope and a second,
+independent bug found while investigating two further anomalous records.
 
 **Root cause 2 (independent, latent gap): `processDueWaits()`'s own code
 comment said "Wire to AWS EventBridge Scheduled Rule for production" since
@@ -906,6 +907,93 @@ validity, which is why 1029 passing tests never caught this), full suite green
 **Reference:** `src/services/AutomationEngine.js` (`_finalizeExecution()`,
 `processAllDueWaits()`, `_claimAndResume()`), `src/handler.js`;
 `tests/automationEngine.test.js`, `tests/handlerEventBridge.test.js`.
+
+### Cleanup and future-proofing pass (same day)
+
+**Data cleanup:** since the product is pre-launch (testing phase, zero real
+customers), the 17 stuck executions plus 2 further anomalous records on the
+same workflow — `40332edd-…`/`7e1feaca-…`, stuck at `status: 'running'` with no
+`path` at all, found while auditing this incident — were **deleted outright**
+(no status-flip/preservation needed at this stage), along with one now-orphaned
+`AUTO_WAIT#` record left behind by one of the deleted executions. Verified via
+read-back: 0 remaining executions for this workflow, 0 remaining `AUTO_WAIT#`
+items for the company. No other workflow or company touched.
+
+**Root cause of the 2 anomalous `running`-forever records: a second, independent
+un-awaited-async bug, same class, different call site.** `whatsapp.js`'s webhook
+handler calls `AutomationEngine.fireTrigger(companyId, 'keyword_message', ctx)`
+**without `await`** (only `.catch()`) before its own `res.sendStatus(200)` — the
+exact hazard the handler's *own* code comment two screens up warns about
+("Resolving serverless-http's response earlier freezes the execution context and
+suspends all async work until the next warm request"), just not followed here.
+Confirmed via CloudWatch: both anomalous invocations (`1e8f136f…`, `9075038e…`)
+logged their last line (`notified (inbox)`) and hit `END RequestId` within
+~155-190ms — before `fireTrigger()`'s `_startExecution()` → `_runGraph()` →
+`WASendSvc.sendInteractive()` chain (a real outbound HTTPS call to Meta) had any
+chance to run or log. **This is not a one-off:** measuring `startedAt` →
+first-node `completedAt` across all 17 (now-deleted) paused executions on this
+workflow showed gaps of **6.3s to 49.4s** (mean ~22s) — the entry message only
+went out once the same frozen Lambda execution environment happened to thaw on
+a later, unrelated invocation. For the 2 anomalous records, the environment was
+apparently recycled before ever being reused, so the frozen promise never ran at
+all — permanently stuck at `running`, no path, no error logged anywhere. **This
+independently explains the "30-120s delay, sometimes doesn't fire" framing from
+the original report at least as well as the reserved-keyword bug did** — the
+resume-side crash (this Era's main fix) was actually instant and deterministic,
+not delayed; this `fireTrigger()` gap is the delayed half.
+**Status: found, not yet fixed.** Same bug shape as the `resumeOnButtonReply()`
+call site immediately below it in the same file (which *is* internally awaited
+per-item, just not by the outer caller — that one races the DB, not a slow
+outbound HTTP call, so it never showed this symptom). Needs its own fix +
+explicit sign-off before changing `whatsapp.js`'s webhook handler further
+tonight.
+
+**Reserved-keyword sweep (codebase-wide):** grepped every `UpdateExpression:`
+built with a template literal. Only one other site shared the `_finalizeExecution()`
+bug's shape — `whatsapp.js`'s broadcast/campaign stats increments
+(`ADD ${field} :one` / `ADD ${campField} :one`) — a dynamic attribute name
+interpolated raw. **Not currently exploitable** (the two literal value sets —
+`deliveredCount`/`readCount`/`failedCount` and `stats.delivered`/`stats.read`/
+`stats.failed` — happen not to collide with any reserved word today) but the
+same fragile shape, so hardened anyway: both now go through `#`-aliased
+`ExpressionAttributeNames`, the `stats.X` case aliasing each dot-segment
+separately. Every other dynamic-`SET`-clause site in the codebase
+(`CustomerIdentityService.js`, `crm.js` ×2, `companies.js`, `platform.js`,
+`compensation.js`, `automations.js`) already threads every dynamic key through
+a `#${k}`-alias — `_finalizeExecution()` was the sole place in the entire
+codebase that didn't.
+
+**Test infrastructure:** extracted the reserved-keyword-enforcing mock into
+`tests/helpers/dynamoReservedWords.js` (`guardedUpdateMock()` — a curated subset
+of DynamoDB's ~570 reserved words realistic for this schema, explicitly not
+exhaustive) and applied it to all 4 `dynamodb.update` mock setups in
+`tests/automationEngine.test.js` (previously each just unconditionally resolved,
+regardless of expression validity). Not retrofitted across the other 43 test
+files' own inline `dynamodb` mocks — none of them construct a dynamic
+`UpdateExpression` at all, so there was nothing there for this helper to catch;
+it's available for any future test that does.
+
+**Recommendation — a real CI/static check, not just a smarter mock:** a jest
+mock can only ever catch what a specific test happens to exercise. The durable
+fix is a small static-analysis script (no live AWS call needed) that scans
+`src/**/*.js` for every `UpdateExpression`/`ConditionExpression` template
+literal, extracts any raw (non-`#`, non-`:`) identifier, and checks it against
+AWS's full, authoritative reserved-word list — failing CI if a new one shows up
+unaliased. Worth adding given this bug class has now hit this codebase once for
+real; scope is small (one script, one `package.json` check, run in the same
+place ESLint already runs) and it protects every future dynamic-field update,
+not just the ones a test author remembers to guard.
+
+**Status:** data cleanup done and verified; `whatsapp.js` stats-increment
+hardening done, tested (full suite 1031/1031 green — no test previously covered
+this code path, consistent with the file's existing convention of unit-testing
+exported pure helpers rather than full-handler webhook tests); shared test
+helper built and applied. The `fireTrigger()` un-awaited call is a **known, open
+issue** — not fixed in this pass, pending explicit sign-off. The CI
+reserved-word check is a **recommendation**, not yet built.
+**Reference:** `src/routes/whatsapp.js` (broadcast/campaign stats increments,
+and the still-open `fireTrigger('keyword_message', …)` call site),
+`tests/helpers/dynamoReservedWords.js`.
 
 ---
 
