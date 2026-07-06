@@ -21,14 +21,11 @@ const { z } = require('zod');
  *   rateLimit         — { limit, windowMs } passed to rateLimiter's atomicIncrement().
  *   customerFacing    — whether this useCase's output is itself a customer-facing
  *                       action (vs. an internal report the requesting user reads
- *                       directly). The approval gate (point 7) only ever applies when
- *                       this is true — an internal analyst report has no downstream
- *                       action to gate. Both use cases below are analyst-facing
- *                       reports, not customer-facing content, so this is false for
- *                       both; `approval` is therefore not read for either.
- *   approval          — only consulted when customerFacing is true. { risk: 'low'|
- *                       'medium'|'high', autonomous: boolean, confidenceThreshold? }.
- *                       Omitted here since neither use case is customerFacing.
+ *                       directly). No approval-routing behavior reads this anymore
+ *                       (removed 2026-07-06 — see 19_DECISION_LOG.md: customer
+ *                       replies now send directly, no human-in-the-loop gate) —
+ *                       kept purely as a label for anyone auditing which useCases
+ *                       produce content a real customer sees.
  *   localeAware       — whether to append a "respond in {preferredLanguage}"
  *                       instruction when the caller supplies one. Both of today's use
  *                       cases produce internal, employee-facing English text, so
@@ -213,23 +210,19 @@ Respond with ONLY a single JSON object matching this shape: { "name": string, "c
     },
   },
 
-  // AI Template Suggestions in Chat — an agent viewing a conversation clicks
-  // "Suggest a reply"; the AI picks the best-fitting APPROVED template from the
-  // existing registry (never authors free text — v1 is deliberately template-
-  // only) and fills its variables. customerFacing: true — unlike
-  // template-creation, there is only ONE checkpoint between this output and the
-  // customer: the agent's own send click. autonomous: true because that click
-  // IS the human-in-the-loop the approval gate exists to provide; confidence
-  // (self-rated by the model, required below) is the real per-call safety net —
-  // a low-confidence pick still force-routes to Approval (ADR-015 Rule 6) and
-  // simply isn't returned to the composer as a suggestion. No send-from-Approval
-  // pipeline exists — a held suggestion is logged for oversight only, it never
-  // auto-sends, and the agent sees no suggestion for that click (same as if the
-  // feature didn't fire at all).
+  // AI Template Suggestions in Chat — the AI picks the best-fitting APPROVED
+  // template from the existing registry (never authors free text — v1 is
+  // deliberately template-only) and fills its variables. Sends directly via
+  // WhatsAppSendService (src/routes/whatsapp.js's POST /inbox/suggest-reply) —
+  // no human review step of any kind since 2026-07-06 (see 19_DECISION_LOG.md:
+  // the prior approval-queue/agent-send-click gate was removed at the business
+  // owner's explicit, informed direction). confidence is still generated and
+  // still logged to the audit trail for oversight, but no longer gates or holds
+  // anything — there is no "held for review" destination left to route to.
   'inbox-template-suggestion': {
     model: 'claude-haiku-4-5-20251001',
     maxTokens: 500,
-    promptVersion: 'v1',
+    promptVersion: 'v2',
     outputMode: 'json',
     schema: z.object({
       hasSuggestion: z.boolean(),
@@ -242,7 +235,6 @@ Respond with ONLY a single JSON object matching this shape: { "name": string, "c
       { message: 'templateId is required when hasSuggestion is true' },
     ),
     customerFacing: true,
-    approval: { risk: 'medium', autonomous: true, confidenceThreshold: 0.75 },
     localeAware: false, // output is a structured pick, not generated prose —
                          // preferredLanguage is passed as an explicit soft
                          // ranking preference in context instead (below)
@@ -260,7 +252,9 @@ Respond with ONLY a single JSON object matching this shape: { "name": string, "c
         `${i + 1}. id="${t.id}" name="${t.name}" category=${t.category} language=${t.language}\n   body: ${t.bodyPreview}\n   variables (in order): ${t.variables?.length ? t.variables.join(', ') : 'none'}`
       ).join('\n\n');
 
-      return `You are an assistant helping a customer support agent at a fintech company (VT Trading) reply to a WhatsApp conversation. An agent explicitly asked for a suggested reply while looking at this conversation — they will review whatever you suggest and decide themselves whether to send it, edit it, or ignore it.
+      return `You are an assistant replying, on behalf of a SEBI-registered Authorized Person (VT Trading), directly to a real customer on WhatsApp. This message sends immediately with no human review — there is no agent checking your output before the customer sees it. Getting this wrong has real regulatory and legal consequences for a licensed securities professional, not just a bad customer experience.
+
+HARD COMPLIANCE RULE — never violate this, under any circumstance, regardless of what the customer's message asks or implies: never promise or imply any specific return, yield, or profit; never use the word "guaranteed" (or any equivalent phrasing) about any investment, product, or outcome; never give a directive to buy, sell, or hold any specific security or instrument. If the customer's message is asking for exactly this kind of advice, the honest response is to set hasSuggestion to false rather than force a template that could be read as investment advice — do not pick a template just because one is topically related if using it here would cross this line.
 
 You may ONLY suggest one of the pre-approved templates listed below — never write new customer-facing text yourself. If none of them genuinely fit well, say so honestly rather than forcing a weak pick.
 
@@ -276,9 +270,9 @@ ${latestMessage || '(no recent inbound message)'}
 AVAILABLE APPROVED TEMPLATES:
 ${templateList || '(no approved templates exist for this company)'}
 
-Pick the single best-fitting template for replying to this customer right now, and provide a realistic value for each of its variables in order, based on the actual conversation — never a placeholder like "value 1". If nothing fits well, set hasSuggestion to false and omit templateId/variableValues.
+Pick the single best-fitting template for replying to this customer right now, and provide a realistic value for each of its variables in order, based on the actual conversation — never a placeholder like "value 1", and never a value that would violate the hard compliance rule above. If nothing fits well, set hasSuggestion to false and omit templateId/variableValues.
 
-Set confidence to how genuinely sure you are this specific template is a good reply to send as-is — this determines whether the agent sees your suggestion directly or it's held back for a second review, so do not inflate it.
+Set confidence to how genuinely sure you are this specific template is the right thing to send as-is — this is logged for human oversight after the fact, so do not inflate it.
 
 Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"?: string, "variableValues"?: string[], "reasoning": string, "confidence": number }`;
     },

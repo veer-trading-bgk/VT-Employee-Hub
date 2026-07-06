@@ -180,12 +180,16 @@ describe('aiConfig — inbox-template-suggestion useCase', () => {
     expect(cfg.outputMode).toBe('json');
   });
 
-  test('customerFacing: true — unlike template-creation, only one checkpoint (the agent\'s send click) sits between this output and the customer', () => {
+  test('customerFacing: true — this output sends directly to a real customer with no human review step (2026-07-06)', () => {
     expect(cfg.customerFacing).toBe(true);
+    expect(cfg.approval).toBeUndefined();
   });
 
-  test('autonomous: true with a confidence threshold — the agent reviewing the chip is the human-in-the-loop, confidence is the real per-call safety net', () => {
-    expect(cfg.approval).toEqual({ risk: 'medium', autonomous: true, confidenceThreshold: 0.75 });
+  test('promptTemplate carries the hard SEBI-compliance rule: no guarantees, no promised returns, no buy/sell directives', () => {
+    const prompt = cfg.promptTemplate({ latestMessage: 'x', templates: [], priorIntent: null, priorIntentConfidence: null, preferredLanguage: null });
+    expect(prompt).toMatch(/never promise or imply any specific return, yield, or profit/i);
+    expect(prompt).toMatch(/never use the word "guaranteed"/i);
+    expect(prompt).toMatch(/never give a directive to buy, sell, or hold/i);
   });
 
   test('schema accepts a valid suggestion with a templateId and matching variableValues', () => {

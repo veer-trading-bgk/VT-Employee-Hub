@@ -14,7 +14,6 @@ import {
   Flame,
   Target,
   Phone,
-  ClipboardCheck,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/v3/ui/Card';
@@ -455,51 +454,6 @@ function LeadPriorityWidget({ contacts, loading }: { contacts: Contact[]; loadin
   );
 }
 
-// ── AI Insights: Approvals Pending ────────────────────────────────────────────
-// Same /api/approvals?status=pending query V3Sidebar.tsx already runs for its
-// nav badge — reusing the identical query key shares the cache rather than
-// firing a second request for the same count.
-
-function ApprovalsPendingWidget({ count, loading }: { count: number; loading: boolean }) {
-  return (
-    <Card noPadding>
-      <div className="border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <ClipboardCheck className="h-4 w-4 text-primary-600" aria-hidden />
-            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-              Approvals pending
-            </h2>
-          </div>
-          <Link href="/approvals" className="text-xs font-medium text-primary-600 hover:text-primary-700">
-            Review
-          </Link>
-        </div>
-      </div>
-
-      <div className="p-4">
-        {loading ? (
-          <SkeletonRow />
-        ) : count === 0 ? (
-          <EmptyState
-            icon={ClipboardCheck}
-            title="Nothing waiting"
-            description="No AI-drafted actions need review right now"
-            className="py-4"
-          />
-        ) : (
-          <Link href="/approvals" className="flex items-center gap-3 hover:opacity-80 transition-opacity">
-            <span className="text-3xl font-bold text-neutral-900 dark:text-neutral-100">{count}</span>
-            <span className="text-sm text-neutral-500">
-              {count === 1 ? 'item needs' : 'items need'} your review
-            </span>
-          </Link>
-        )}
-      </div>
-    </Card>
-  );
-}
-
 // ── Section 5: KPIs ───────────────────────────────────────────────────────────
 
 interface KpiCardProps {
@@ -569,16 +523,6 @@ export default function MyWorkPage() {
     staleTime: 30_000,
   });
 
-  const { data: approvalsData, isLoading: approvalsLoading } = useQuery({
-    // Shared cache key with V3Sidebar.tsx's nav badge query — same endpoint,
-    // already mounted app-wide, so this just subscribes rather than refetching.
-    queryKey: ['approvals-badge-count'],
-    queryFn: () => apiFetch<{ success: boolean; approvals: unknown[] }>('/api/approvals?status=pending'),
-    staleTime: 30_000,
-    refetchInterval: 60_000,
-  });
-  const pendingApprovalsCount = approvalsData?.approvals.length ?? 0;
-
   return (
     <div className="min-h-full">
       {/* Page header */}
@@ -608,7 +552,6 @@ export default function MyWorkPage() {
           </h2>
           <div className="grid gap-5 md:grid-cols-2">
             <LeadPriorityWidget contacts={priorityContacts ?? []} loading={priorityLoading} />
-            <ApprovalsPendingWidget count={pendingApprovalsCount} loading={approvalsLoading} />
           </div>
         </div>
 

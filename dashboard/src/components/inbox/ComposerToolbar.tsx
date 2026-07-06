@@ -49,17 +49,16 @@ interface WaFlow {
 }
 
 // POST /api/whatsapp/inbox/suggest-reply's response shape (AI Template
-// Suggestions in Chat). hasSuggestion: false covers three distinct server-side
-// reasons (no approved templates, model found no good fit, or the pick is held
-// for Approval on low confidence — no send-from-Approval pipeline in v1, so
-// that case is indistinguishable here from "no suggestion" by design) — the
-// UI doesn't need to tell them apart, so `reason` is read but not branched on.
+// Suggestions in Chat). Sends directly server-side since 2026-07-06 — no
+// human review step, so there is no suggestion to show/edit/dismiss here
+// anymore, only a result. sent: false covers two server-side reasons (no
+// approved templates, or the model found no good fit / hallucinated) — the UI
+// doesn't need to tell them apart, so `reason` is read but not branched on.
 interface SuggestReplyResponse {
   success: boolean;
-  hasSuggestion: boolean;
+  sent: boolean;
   reason?: string;
-  template?: { id: string; name: string; bodyPreview: string; variables: string[] };
-  variableValues?: string[];
+  template?: { id: string; name: string };
   reasoning?: string;
   confidence?: number;
 }
@@ -207,9 +206,6 @@ export function ComposerToolbar({
   const [newBody, setNewBody] = useState('');
   const [showFlowPicker, setShowFlowPicker] = useState(false);
   const [showBranchPicker, setShowBranchPicker] = useState(false);
-  // AI Template Suggestions in Chat — independent of `panel` (a suggestion can
-  // sit above the composer regardless of which toolbar panel, if any, is open).
-  const [suggestion, setSuggestion] = useState<SuggestReplyResponse | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Close panel on outside click
@@ -318,7 +314,6 @@ export function ComposerToolbar({
     onSuccess: () => {
       toast.success('Template sent');
       closePanel();
-      setSuggestion(null); // no-op unless this send came from the suggestion chip
       qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
       qc.invalidateQueries({ queryKey: ['wa-inbox'] });
       onTemplateSent();
@@ -326,12 +321,12 @@ export function ComposerToolbar({
     onError: (e: Error) => toast.error(e.message || 'Failed to send template'),
   });
 
-  // ── AI Template Suggestions in Chat — on-demand, agent-triggered ──────────
-  // customerFacing: true, autonomous: true (aiConfig.js's inbox-template-
-  // suggestion useCase) — the agent clicking "Suggest a reply" and then
-  // reviewing the result before Send is the human-in-the-loop; a low-confidence
-  // pick is held for Approval server-side and simply comes back as
-  // hasSuggestion: false here, indistinguishable from "no good fit" by design.
+  // ── AI reply — sends directly, no human review step (2026-07-06) ─────────
+  // aiConfig.js's inbox-template-suggestion useCase. Previously showed a
+  // suggestion chip the agent reviewed and explicitly clicked Send on; that
+  // gate was removed at the business owner's explicit direction, so this
+  // mutation's onSuccess reports what already happened rather than something
+  // pending the agent's decision.
   const suggestMut = useMutation({
     mutationFn: () => {
       const body: Record<string, unknown> = {};
@@ -342,12 +337,16 @@ export function ComposerToolbar({
       });
     },
     onSuccess: (res) => {
-      // The inline card (rendered below, for both outcomes) is the actual
-      // "no confident suggestion" surface — no separate toast, to avoid
-      // showing the same message twice.
-      setSuggestion(res);
+      if (res.sent && res.template) {
+        toast.success(`AI sent "${res.template.name}"`);
+        qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
+        qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+        onTemplateSent();
+      } else {
+        toast.info('No confident AI reply available right now.');
+      }
     },
-    onError: (e: Error) => toast.error(e.message || 'Failed to get a suggestion'),
+    onError: (e: Error) => toast.error(e.message || 'AI reply failed'),
   });
 
   const sendFlowMut = useMutation({
@@ -457,69 +456,9 @@ export function ComposerToolbar({
           disabled={disabled || suggestMut.isPending}
           onClick={() => suggestMut.mutate()}
           icon={suggestMut.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-          label="Suggest a reply"
+          label="Send AI reply"
         />
       </div>
-
-      {/* ── AI suggestion chip — on-demand, one at a time, above the textarea ── */}
-      {suggestion?.hasSuggestion && suggestion.template && (
-        <div className="mb-2 rounded-xl border border-primary-200 bg-primary-50 p-3 dark:border-primary-900/40 dark:bg-primary-900/10">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-start gap-2 min-w-0">
-              <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary-600 dark:text-primary-400" aria-hidden />
-              <div className="min-w-0">
-                <p className="text-xs font-semibold text-primary-700 dark:text-primary-300">{suggestion.template.name}</p>
-                <p className="mt-0.5 whitespace-pre-wrap text-xs text-primary-900/90 dark:text-primary-100/90">
-                  {suggestion.template.bodyPreview.replace(/\{\{(\d+)\}\}/g, (_, n) =>
-                    suggestion.variableValues?.[parseInt(n, 10) - 1] || `{{${n}}}`)}
-                </p>
-                {suggestion.reasoning && (
-                  <p className="mt-1 text-[10px] text-primary-600/80 dark:text-primary-400/70">{suggestion.reasoning}</p>
-                )}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setSuggestion(null)}
-              aria-label="Dismiss suggestion"
-              className="shrink-0 text-primary-400 hover:text-primary-600 dark:hover:text-primary-300"
-            >
-              <X className="h-3.5 w-3.5" aria-hidden />
-            </button>
-          </div>
-          <div className="mt-2 flex gap-2">
-            <button
-              type="button"
-              onClick={() => sendTplMut.mutate({ templateId: suggestion.template!.id, vars: suggestion.variableValues ?? [] })}
-              disabled={sendTplMut.isPending}
-              className="flex items-center gap-1.5 rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-700 disabled:opacity-50"
-            >
-              {sendTplMut.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <SendIcon className="h-3 w-3" />}
-              Send
-            </button>
-            <button
-              type="button"
-              onClick={() => setSuggestion(null)}
-              className="rounded-lg px-3 py-1.5 text-xs font-medium text-primary-700 hover:bg-primary-100 dark:text-primary-300 dark:hover:bg-primary-900/20"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      )}
-      {suggestion && !suggestion.hasSuggestion && (
-        <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 dark:border-neutral-700 dark:bg-neutral-800/60">
-          <p className="text-xs text-neutral-500 dark:text-neutral-400">No confident suggestion right now.</p>
-          <button
-            type="button"
-            onClick={() => setSuggestion(null)}
-            aria-label="Dismiss"
-            className="shrink-0 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-300"
-          >
-            <X className="h-3.5 w-3.5" aria-hidden />
-          </button>
-        </div>
-      )}
 
       {/* ── Emoji panel ──────────────────────────────────────────────────── */}
       {panel === 'emoji' && (

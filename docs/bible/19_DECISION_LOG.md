@@ -1095,6 +1095,86 @@ couldn't exist yet. Live results appended once available.
 
 ---
 
+## Era 21 — Removed the AI customer-reply approval gate: AI now sends directly (2026-07-06)
+
+**What:** `POST /api/whatsapp/inbox/suggest-reply` (aiConfig.js's
+`inbox-template-suggestion` useCase, the only `customerFacing: true` useCase in
+the codebase) now sends the AI's chosen template directly via
+`WhatsAppSendService.sendTemplate()`, with no human review step of any kind.
+Previously, the only human-in-the-loop mechanisms were (a) a confidence-gated
+`ApprovalService` hold for low-confidence picks, which — per that service's own
+code comment — never actually released/sent anything even once approved (a
+"standing, deliberate architectural gap"), and (b) the agent's own manual
+"Send" click on the suggestion chip in the Inbox composer. Both are now gone;
+a high-or-low-confidence pick either sends immediately or doesn't (per the
+model's own `hasSuggestion` judgment), with no queued/held state left at all.
+
+**Explicit, informed business decision — not a default.** This was investigated
+and flagged before any implementation: the real gate blocking autonomous sends
+today was the agent's manual click, not `ApprovalService` (which had no
+send-trigger wired to it at all); building "sends directly" meant building a
+brand-new autonomous-send capability from scratch, not deleting an existing
+one. This exact question had already been circled twice in this project's
+history and deliberately deferred both times (`ApprovalService`'s own comment,
+and ADR-016's "AI Chat with Customers, pre-implementation requirements" draft
+that was never built) — surfaced explicitly given the regulatory stakes (VT
+Trading's owner is a SEBI-registered Authorized Person; an unsupervised AI
+message that reads as investment advice has real legal/regulatory consequences,
+not just a bad customer experience) before writing any code. The business
+owner explicitly weighed this and directed it to proceed anyway.
+
+**Compliance mitigations built in, given zero human review:**
+1. **Hard system-prompt rule** (`aiConfig.js`, `inbox-template-suggestion`
+   promptVersion bumped v1→v2): never promise/imply any return, yield, or
+   profit; never use "guaranteed" about any investment/product/outcome; never
+   give a buy/sell/hold directive — the model is instructed to set
+   `hasSuggestion: false` rather than force a template that could cross this
+   line, even if the customer's message is explicitly asking for that kind of
+   advice. Known limitation, stated plainly: a system prompt is not an airtight
+   compliance control on its own — LLMs don't reliably hold to prompt
+   constraints under adversarial/edge-case input. This is a mitigation, not a
+   guarantee.
+2. **Mandatory, awaited audit trail** — every AI-sent message now calls
+   `logAudit()` (`action: 'ai_customer_reply_sent'`, `details.aiGenerated:
+   true`, plus `useCase`/`templateId`/`confidence`/`reasoning`/`wamid`), awaited
+   before the response resolves (not fire-and-forget) so this record can never
+   be silently lost — this is the only trail that an unreviewed message went
+   out at all. A failure to write the audit record is logged loudly
+   (`logger.error`, not `warn`) but does not fail the request, since the
+   message was already delivered and cannot be un-sent either way.
+3. Sends via a dedicated system actor (`{ id: 'system', name: 'AI Assistant' }`),
+   not the requesting agent's identity, so the `MSG#` record and any future
+   Inbox display honestly attribute the send to the AI, not to whichever agent
+   happened to trigger generation.
+
+**Deleted as dead weight, not left half-disabled:** `src/services/ApprovalService.js`,
+`src/routes/approvals.js` (and its `/api/approvals` mount in `app.js`),
+`dashboard/src/app/(v3)/approvals/page.tsx`, the sidebar nav item + badge query
+(`V3Sidebar.tsx`), and the `/home` "Approvals pending" AI-insights widget +
+query — all had exactly one real caller (this one useCase's now-removed
+approval path), and per CLAUDE.md's anti-dead-code stance, an inert admin page
+with nothing left to route to isn't worth preserving. `AIService.js`'s entire
+"human-in-the-loop approval routing" block (~30 lines) and the `approvalRequired`/
+`approvalId` fields on its return shape are gone too — `customerFacing` stays on
+the useCase config purely as a label (nothing reads it anymore), the way the
+other 4 useCases already carry `customerFacing: false` as documentation only.
+
+**Explicitly out of scope, flagged for later:** `crm.js`'s 3 `runAutomations()`
+call sites (`lead_created`/`tag_added`/`stage_changed`) never used
+`ApprovalService` at all — untouched, unaffected.
+
+**Status:** implemented, tests updated (`tests/approvalService.test.js` and
+`tests/approvals.test.js` deleted; `tests/aiService.test.js`/`tests/aiConfig.test.js`
+had their approval-routing describe blocks removed; `tests/suggestReply.test.js`
+rewritten for the send-directly behavior + audit-log assertions), full backend
+suite green (992/992, 58 suites), dashboard build green (30/30 routes, 0
+ESLint errors in every file touched).
+**Reference:** `src/services/AIService.js`, `src/config/aiConfig.js`
+(`inbox-template-suggestion`), `src/routes/whatsapp.js` (`/inbox/suggest-reply`),
+`dashboard/src/components/inbox/ComposerToolbar.tsx`.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or

@@ -21,6 +21,7 @@ const ContactService       = require('../services/ContactService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
 const { welcomeConfigSchema, delayedResponseConfigSchema, workingHoursConfigSchema, oooConfigSchema, branchSchema } = require('../utils/validation');
 const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
+const { logAudit } = require('../utils/audit');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -2838,13 +2839,16 @@ function _messageSummary(m) {
 }
 
 // ── POST /api/whatsapp/inbox/suggest-reply — AI Template Suggestions in Chat ──
-// customerFacing: true, autonomous: true (aiConfig.js) — the agent viewing this
-// conversation clicked "Suggest a reply" themselves; they review and explicitly
-// send. A low-confidence pick force-routes to Approval instead (ADR-015 Rule 6)
-// and simply isn't returned here as a suggestion — no send-from-Approval
-// pipeline exists in v1 (deliberate boundary, see docs/bible/07_DATABASE.md).
-// Same leadPK > leadId > phone target-resolution shape as /send-template above,
-// reusing WhatsAppSendService.resolveContact() rather than a second lookup.
+// customerFacing: true (aiConfig.js). Sends directly via WhatsAppSendService —
+// no human review step of any kind since 2026-07-06 (19_DECISION_LOG.md: the
+// prior approval-queue/agent-send-click gate was removed at the business
+// owner's explicit, informed direction, having weighed the SEBI-compliance risk
+// of an unreviewed AI reply against wanting zero-latency customer responses).
+// Every send here is logAudit()-tagged as AI-originated (action:
+// 'ai_customer_reply_sent') specifically because no human touched it — this is
+// the only record that one went out at all. Same leadPK > leadId > phone
+// target-resolution shape as /send-template above, reusing
+// WhatsAppSendService.resolveContact() rather than a second lookup.
 router.post('/inbox/suggest-reply', authMiddleware, rateLimit(30, 60_000), async (req, res, next) => {
   try {
     const { leadId, leadPK: leadPK0, phone } = req.body;
@@ -2916,7 +2920,7 @@ router.post('/inbox/suggest-reply', authMiddleware, rateLimit(30, 60_000), async
     }).promise();
     const approvedTemplates = (tmplRes.Items ?? []).filter((t) => t.status === 'APPROVED');
     if (approvedTemplates.length === 0) {
-      return res.json({ success: true, hasSuggestion: false, reason: 'no_approved_templates' });
+      return res.json({ success: true, sent: false, reason: 'no_approved_templates' });
     }
 
     const result = await AIService.generate({
@@ -2939,28 +2943,49 @@ router.post('/inbox/suggest-reply', authMiddleware, rateLimit(30, 60_000), async
 
     if (!result.ok) return sendAIError(res, result);
 
-    // Held for Approval (low confidence or high risk) — no send-from-Approval
-    // pipeline in v1; the composer simply shows no suggestion for this click.
-    if (result.approvalRequired) {
-      return res.json({ success: true, hasSuggestion: false, reason: 'pending_approval' });
-    }
-
     if (!result.data.hasSuggestion) {
-      return res.json({ success: true, hasSuggestion: false, reason: 'no_good_fit' });
+      return res.json({ success: true, sent: false, reason: 'no_good_fit' });
     }
 
     // Validate the model's pick against the real registry — never trust a
     // templateId or variable count that wasn't actually offered to it.
     const chosen = approvedTemplates.find((t) => t.id === result.data.templateId);
     if (!chosen || (result.data.variableValues ?? []).length !== (chosen.variables ?? []).length) {
-      return res.json({ success: true, hasSuggestion: false, reason: 'invalid_model_output' });
+      return res.json({ success: true, sent: false, reason: 'invalid_model_output' });
+    }
+
+    // Sends immediately — no human review step (see the header comment above).
+    // Uses a dedicated system actor, not req.user, so the MSG# record and any
+    // future Inbox display honestly reflect that the agent didn't write or
+    // click-send this — the AI did, unattended.
+    const AI_ACTOR = { id: 'system', role: 'admin', name: 'AI Assistant' };
+    const sendResult = await WASendSvc.sendTemplate(companyId, target, chosen.id, result.data.variableValues, AI_ACTOR);
+
+    // Mandatory, awaited — this is the only record that an unreviewed AI
+    // message went out at all, so it must be durable before the response
+    // resolves, not fire-and-forget. A failure here does not undo the send
+    // (already delivered), but is logged loudly since a silent gap in this
+    // specific trail defeats the entire point of keeping it.
+    try {
+      await logAudit(req.user.id, 'ai_customer_reply_sent', chosen.id, 'success', req.ip, {
+        aiGenerated: true,
+        useCase: 'inbox-template-suggestion',
+        templateId: chosen.id,
+        templateName: chosen.name,
+        variableValues: result.data.variableValues,
+        confidence: result.data.confidence,
+        reasoning: result.data.reasoning,
+        wamid: sendResult.wamid,
+        contactPK: contact.pk,
+      }, companyId);
+    } catch (auditErr) {
+      logger.error(`inbox/suggest-reply: AI-send audit log FAILED for wamid ${sendResult.wamid} — message was sent, no audit record exists: ${auditErr.message}`);
     }
 
     res.json({
       success: true,
-      hasSuggestion: true,
-      template: { id: chosen.id, name: chosen.name, bodyPreview: chosen.bodyPreview, variables: chosen.variables ?? [] },
-      variableValues: result.data.variableValues,
+      sent: true,
+      template: { id: chosen.id, name: chosen.name },
       reasoning: result.data.reasoning,
       confidence: result.data.confidence,
     });

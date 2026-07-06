@@ -10,7 +10,7 @@
  *
  * The two real useCases in src/config/aiConfig.js (metrics-insights,
  * team-metrics-insights) are both text-mode and non-customerFacing — they can't
- * exercise the json-mode/approval/locale/allowFields machinery. So this file mocks
+ * exercise the json-mode/locale/allowFields machinery. So this file mocks
  * aiConfig.js with synthetic test-only useCase entries built specifically to
  * exercise every branch of AIService's own orchestration logic. The real prompt
  * text/shape for the two production useCases is instead proven by
@@ -26,9 +26,6 @@ jest.mock('../src/config/logger', () => ({
 }));
 jest.mock('../src/middleware/rateLimiter', () => ({
   atomicIncrement: jest.fn(),
-}));
-jest.mock('../src/services/ApprovalService', () => ({
-  routeApproval: jest.fn(),
 }));
 
 const TEXT_USE_CASE = {
@@ -57,13 +54,12 @@ function fakeSchema(shouldPass) {
   return { safeParse: (x) => (shouldPass ? { success: true, data: x } : { success: false, error: 'bad shape' }) };
 }
 
-function jsonUseCase({ autonomous, risk = 'medium', confidenceThreshold = 0.7, schemaPasses = true }) {
+function jsonUseCase({ schemaPasses = true } = {}) {
   return {
     model: 'test-model', maxTokens: 100, promptVersion: 'v1', outputMode: 'json',
     schema: fakeSchema(schemaPasses),
     customerFacing: true, localeAware: false,
     rateLimit: { limit: 5, windowMs: 60_000 },
-    approval: { risk, autonomous, confidenceThreshold },
     promptTemplate: () => 'JSON PROMPT',
   };
 }
@@ -82,7 +78,6 @@ jest.mock('../src/config/aiConfig', () => ({
 const dynamodb        = require('../src/config/dynamodb');
 const logger           = require('../src/config/logger');
 const rateLimiter       = require('../src/middleware/rateLimiter');
-const ApprovalService   = require('../src/services/ApprovalService');
 const AIService         = require('../src/services/AIService');
 
 const CID  = 'comp_test';
@@ -265,11 +260,6 @@ describe('generate — text mode success + usage tracking', () => {
     expect(item.PK).toMatch(/^AIUSAGE#comp_test#\d{4}-\d{2}-\d{2}$/);
   });
 
-  test('approvalRequired is false and ApprovalService is never called for a non-customerFacing useCase', async () => {
-    const result = await AIService.generate({ useCase: 'text-usecase', companyId: CID, user: USER });
-    expect(result.approvalRequired).toBe(false);
-    expect(ApprovalService.routeApproval).not.toHaveBeenCalled();
-  });
 });
 
 describe('generate — provider error handling', () => {
@@ -294,21 +284,17 @@ describe('generate — provider error handling', () => {
 });
 
 describe('generate — structured output (JSON) mode', () => {
-  // autonomous:true + a high-confidence response keeps these two tests isolated
-  // to JSON parsing/retry mechanics — approval routing gets its own dedicated
-  // describe block below, using autonomous:false specifically to exercise it.
   test('valid JSON on the first try — returns the parsed+validated object, exactly one fetch call', async () => {
-    mockAIConfig = { 'json-usecase': jsonUseCase({ autonomous: true }) };
+    mockAIConfig = { 'json-usecase': jsonUseCase() };
     global.fetch.mockResolvedValue(anthropicOk(JSON.stringify({ reply: 'hi', confidence: 0.9 })));
     const result = await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
     expect(result.ok).toBe(true);
     expect(result.data).toEqual({ reply: 'hi', confidence: 0.9 });
     expect(global.fetch).toHaveBeenCalledTimes(1);
-    expect(ApprovalService.routeApproval).not.toHaveBeenCalled();
   });
 
   test('invalid JSON on the first try, valid on retry — succeeds after exactly 2 fetch calls', async () => {
-    mockAIConfig = { 'json-usecase': jsonUseCase({ autonomous: true }) };
+    mockAIConfig = { 'json-usecase': jsonUseCase() };
     global.fetch
       .mockResolvedValueOnce(anthropicOk('not json at all'))
       .mockResolvedValueOnce(anthropicOk(JSON.stringify({ reply: 'hi', confidence: 0.9 })));
@@ -319,7 +305,7 @@ describe('generate — structured output (JSON) mode', () => {
   });
 
   test('invalid JSON on both tries — returns invalid_output, never a raw/unvalidated blob, exactly 2 fetch calls', async () => {
-    mockAIConfig = { 'json-usecase': jsonUseCase({ autonomous: false }) };
+    mockAIConfig = { 'json-usecase': jsonUseCase() };
     global.fetch.mockResolvedValue(anthropicOk('still not json'));
     const result = await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
     expect(result).toEqual({ ok: false, reason: 'invalid_output', detail: expect.any(String) });
@@ -327,7 +313,7 @@ describe('generate — structured output (JSON) mode', () => {
   });
 
   test('schema-valid JSON but failing safeParse still triggers the retry-then-degrade path', async () => {
-    mockAIConfig = { 'json-usecase': jsonUseCase({ autonomous: false, schemaPasses: false }) };
+    mockAIConfig = { 'json-usecase': jsonUseCase({ schemaPasses: false }) };
     global.fetch.mockResolvedValue(anthropicOk(JSON.stringify({ reply: 'hi', confidence: 0.9 })));
     const result = await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
     expect(result).toEqual({ ok: false, reason: 'invalid_output', detail: expect.any(String) });
@@ -371,75 +357,6 @@ describe('generate — multi-turn conversation history', () => {
     await AIService.generate({ useCase: 'text-usecase', companyId: CID, user: USER });
     const body = JSON.parse(global.fetch.mock.calls[0][1].body);
     expect(body.messages).toHaveLength(1);
-  });
-});
-
-describe('generate — human-in-the-loop approval routing (customerFacing gate)', () => {
-  test('non-customerFacing useCases never trigger approval, regardless of confidence', async () => {
-    global.fetch.mockResolvedValue(anthropicOk('plain text, no confidence field at all'));
-    const result = await AIService.generate({ useCase: 'text-usecase', companyId: CID, user: USER });
-    expect(result.approvalRequired).toBe(false);
-    expect(ApprovalService.routeApproval).not.toHaveBeenCalled();
-  });
-
-  test('customerFacing + autonomous:false (default-conservative) always requires approval', async () => {
-    mockAIConfig = { 'json-usecase': jsonUseCase({ autonomous: false }) };
-    ApprovalService.routeApproval.mockResolvedValue({ approvalId: 'appr_1' });
-    global.fetch.mockResolvedValue(anthropicOk(JSON.stringify({ reply: 'hi', confidence: 0.99 })));
-
-    const result = await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER, assigneeId: 'emp_2' });
-    expect(result.approvalRequired).toBe(true);
-    expect(result.approvalId).toBe('appr_1');
-    expect(ApprovalService.routeApproval).toHaveBeenCalledWith(CID, expect.objectContaining({
-      useCase: 'json-usecase', riskLevel: 'medium', promptVersion: 'v1', assigneeId: 'emp_2',
-    }));
-  });
-
-  test('customerFacing + autonomous:true + confidence at/above threshold + non-high risk → no approval needed', async () => {
-    mockAIConfig = { 'json-usecase': jsonUseCase({ autonomous: true, risk: 'medium', confidenceThreshold: 0.7 }) };
-    global.fetch.mockResolvedValue(anthropicOk(JSON.stringify({ reply: 'hi', confidence: 0.9 })));
-
-    const result = await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
-    expect(result.approvalRequired).toBe(false);
-    expect(ApprovalService.routeApproval).not.toHaveBeenCalled();
-  });
-
-  test('low confidence overrides autonomous:true and still forces approval', async () => {
-    mockAIConfig = { 'json-usecase': jsonUseCase({ autonomous: true, risk: 'medium', confidenceThreshold: 0.7 }) };
-    ApprovalService.routeApproval.mockResolvedValue({ approvalId: 'appr_2' });
-    global.fetch.mockResolvedValue(anthropicOk(JSON.stringify({ reply: 'hi', confidence: 0.3 })));
-
-    const result = await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
-    expect(result.approvalRequired).toBe(true);
-    expect(ApprovalService.routeApproval).toHaveBeenCalled();
-  });
-
-  test('risk:"high" overrides autonomous:true and forces approval even with high confidence', async () => {
-    mockAIConfig = { 'json-usecase': jsonUseCase({ autonomous: true, risk: 'high', confidenceThreshold: 0.5 }) };
-    ApprovalService.routeApproval.mockResolvedValue({ approvalId: 'appr_3' });
-    global.fetch.mockResolvedValue(anthropicOk(JSON.stringify({ reply: 'hi', confidence: 0.99 })));
-
-    const result = await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
-    expect(result.approvalRequired).toBe(true);
-    expect(ApprovalService.routeApproval).toHaveBeenCalled();
-  });
-
-  test('assigneeId defaults to the calling user\'s id when not explicitly provided', async () => {
-    mockAIConfig = { 'json-usecase': jsonUseCase({ autonomous: false }) };
-    ApprovalService.routeApproval.mockResolvedValue({ approvalId: 'appr_4' });
-    global.fetch.mockResolvedValue(anthropicOk(JSON.stringify({ reply: 'hi', confidence: 0.9 })));
-
-    await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
-    expect(ApprovalService.routeApproval).toHaveBeenCalledWith(CID, expect.objectContaining({ assigneeId: USER.id }));
-  });
-
-  test('a failure creating the approval record degrades to provider_error rather than returning unsafe unreviewed data', async () => {
-    mockAIConfig = { 'json-usecase': jsonUseCase({ autonomous: false }) };
-    ApprovalService.routeApproval.mockRejectedValue(new Error('DynamoDB unavailable'));
-    global.fetch.mockResolvedValue(anthropicOk(JSON.stringify({ reply: 'hi', confidence: 0.9 })));
-
-    const result = await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
-    expect(result).toEqual({ ok: false, reason: 'provider_error', detail: expect.any(String) });
   });
 });
 

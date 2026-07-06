@@ -3,7 +3,6 @@
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 const { atomicIncrement } = require('../middleware/rateLimiter');
-const ApprovalService = require('./ApprovalService');
 const { redactContext, scrubSensitivePatterns } = require('../utils/aiRedaction');
 // Accessed as aiConfig.AI_CONFIG / aiConfig.PRICING (not destructured at require
 // time) so every call reads the registry fresh — destructuring once here would
@@ -140,39 +139,6 @@ async function _generate({ useCase, companyId, context = {}, user, conversationH
     return { ok: false, reason: 'invalid_output', detail: 'Model did not return valid JSON matching the required schema after a retry.' };
   }
 
-  // 8. Human-in-the-loop approval routing — only meaningful for useCases whose
-  //    output IS a customer-facing action; an internal analyst report (both of
-  //    today's real useCases) has no downstream action to gate, so this block
-  //    never engages for them. Confidence/risk override autonomy, never the
-  //    reverse — a useCase marked autonomous still gets force-routed to approval
-  //    on low confidence or risk: 'high'.
-  let approvalRequired = false;
-  let approvalId;
-  if (useCaseCfg.customerFacing) {
-    const approvalCfg = useCaseCfg.approval ?? { risk: 'medium', autonomous: false };
-    const meetsConfidence = useCaseCfg.outputMode !== 'json'
-      || (typeof data?.confidence === 'number' && data.confidence >= (approvalCfg.confidenceThreshold ?? 1));
-    const forceApproval = approvalCfg.risk === 'high' || !meetsConfidence;
-    approvalRequired = !approvalCfg.autonomous || forceApproval;
-
-    if (approvalRequired) {
-      try {
-        const approval = await ApprovalService.routeApproval(companyId, {
-          useCase,
-          output: data,
-          confidence: data?.confidence,
-          riskLevel: approvalCfg.risk,
-          promptVersion: useCaseCfg.promptVersion,
-          assigneeId: assigneeId ?? user.id,
-        });
-        approvalId = approval.approvalId;
-      } catch (err) {
-        logger.error(`AIService: approval routing failed for useCase "${useCase}"`, err.message);
-        return { ok: false, reason: 'provider_error', detail: 'Approval routing failed — cannot safely return unreviewed output.' };
-      }
-    }
-  }
-
   return {
     ok: true,
     data,
@@ -180,8 +146,6 @@ async function _generate({ useCase, companyId, context = {}, user, conversationH
       inputTokens, outputTokens, costUsd, walletPoints,
       model: useCaseCfg.model, promptVersion: useCaseCfg.promptVersion,
     },
-    approvalRequired,
-    ...(approvalId && { approvalId }),
   };
 }
 
