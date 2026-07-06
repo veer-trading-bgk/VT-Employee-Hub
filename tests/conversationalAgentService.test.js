@@ -216,6 +216,21 @@ describe('ConversationalAgentService', () => {
     expect(ConversationService.handoffToHuman).toHaveBeenCalledTimes(1);
   });
 
+  // 2026-07-06 same-day: found live in production — a guardrail-tripped turn
+  // sent the handoff message twice (replyText reassigned to HANDOFF_MESSAGE
+  // and sent, then _handoff() sent the identical text again). Confirmed via
+  // real DynamoDB records, two outbound messages 758ms apart, verbatim-identical.
+  test('a guardrail-tripped turn sends the handoff message exactly ONCE, not twice', async () => {
+    mockTurn({ reply: 'I guarantee this stock will double in a year, you should buy it now.' });
+    await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'what stock should I buy', timestamp: 't1' });
+
+    const handoffSends = WASendSvc.sendText.mock.calls.filter(
+      (c) => c[2].includes("connecting you with one of our senior relationship managers"),
+    );
+    expect(handoffSends).toHaveLength(1);
+    expect(WASendSvc.sendText).toHaveBeenCalledTimes(1); // the ONLY send this turn is the (replaced) handoff message
+  });
+
   test('specific IPO application advice is rejected the same way', async () => {
     mockTurn({ reply: 'You should definitely apply for this IPO, it looks very promising.' });
     await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'should I apply for the XYZ IPO', timestamp: 't1' });

@@ -265,9 +265,18 @@ async function _advanceStageAtHandoff(companyId, leadPK) {
   }).promise().catch((e) => logger.warn(`ConversationalAgentService: stage advance failed: ${e.message}`));
 }
 
-async function _handoff(companyId, { leadPK, lead, conversationId, reason, turnCount }) {
-  await WASendSvc.sendText(companyId, { leadPK }, HANDOFF_MESSAGE, AI_ACTOR)
-    .catch((e) => logger.warn(`ConversationalAgentService: handoff message send failed: ${e.message}`));
+// 2026-07-06 same-day (post-deploy manual test): skipHandoffMessage lets a
+// caller that already sent HANDOFF_MESSAGE as this turn's reply skip _handoff's
+// own send. Without it, a guardrail-tripped turn sent the identical handoff
+// text twice — confirmed live (two real outbound messages 758ms apart,
+// verbatim-identical, LEAD#viir_trading#2d95bda8-bb47-4047-b79b-74ad4a59296f)
+// and root-caused: _runTurn() reassigns replyText to HANDOFF_MESSAGE and sends
+// it BEFORE calling _handoff(), which then unconditionally sent it again.
+async function _handoff(companyId, { leadPK, lead, conversationId, reason, turnCount, skipHandoffMessage = false }) {
+  if (!skipHandoffMessage) {
+    await WASendSvc.sendText(companyId, { leadPK }, HANDOFF_MESSAGE, AI_ACTOR)
+      .catch((e) => logger.warn(`ConversationalAgentService: handoff message send failed: ${e.message}`));
+  }
   await ConversationService.handoffToHuman(companyId, conversationId);
   await _writeHandoffSummary(companyId, leadPK, lead, reason, turnCount);
   await _assignAtHandoff(companyId, leadPK);
@@ -332,7 +341,9 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
 
   if (guardrailTripped || result.data.qualified || newTurnCount >= MAX_TURNS) {
     const reason = guardrailTripped ? 'escalated' : result.data.qualified ? 'qualified' : 'turn_limit_reached';
-    await _handoff(companyId, { leadPK, lead, conversationId, reason, turnCount: newTurnCount });
+    // guardrailTripped turns already sent HANDOFF_MESSAGE as replyText above —
+    // skip _handoff's own send so the customer doesn't get it twice.
+    await _handoff(companyId, { leadPK, lead, conversationId, reason, turnCount: newTurnCount, skipHandoffMessage: guardrailTripped });
   }
 }
 
