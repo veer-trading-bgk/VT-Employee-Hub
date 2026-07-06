@@ -232,6 +232,86 @@ describe('ConversationalAgentService', () => {
     expect(agent.violatesGuardrail('Mutual funds are a great way to start investing based on your goals')).toBe(false);
   });
 
+  // ─── 2026-07-06 production-readiness pass: re-verify every guardrail
+  // category against SHORT, casual phrasing — the new concise style drops
+  // the "you should"/"I recommend" scaffolding the v1 patterns leaned on, so
+  // this is not assumed to still work, it's tested. ────────────────────────
+  describe('guardrail re-verification against shorter, casual phrasing (v2)', () => {
+    test('casual buy/sell directives without "you should" scaffolding are still caught', () => {
+      expect(agent.violatesGuardrail('Buy this now, great pick!')).toBe(true);
+      expect(agent.violatesGuardrail('Sell it now before it drops.')).toBe(true);
+      expect(agent.violatesGuardrail('Go ahead and buy, you won\'t regret it.')).toBe(true);
+      expect(agent.violatesGuardrail("I'd buy this if I were you.")).toBe(true);
+      expect(agent.violatesGuardrail('Time to buy, honestly.')).toBe(true);
+    });
+
+    test('casual IPO endorsements without "you should apply" scaffolding are still caught', () => {
+      expect(agent.violatesGuardrail('Apply for this IPO, looks solid!')).toBe(true);
+      expect(agent.violatesGuardrail('Grab this IPO while you can.')).toBe(true);
+      expect(agent.violatesGuardrail('This IPO is hot, apply now!')).toBe(true);
+    });
+
+    test('casual guarantee-equivalents without the word "guaranteed" are still caught', () => {
+      expect(agent.violatesGuardrail('This will double in a year, easy.')).toBe(true);
+      expect(agent.violatesGuardrail("It's a sure shot, trust me.")).toBe(true);
+      expect(agent.violatesGuardrail("Can't go wrong with this one.")).toBe(true);
+      expect(agent.violatesGuardrail('Totally risk-free, no worries.')).toBe(true);
+      expect(agent.violatesGuardrail('No risk at all with this plan.')).toBe(true);
+      expect(agent.violatesGuardrail('Assured returns on this one.')).toBe(true);
+      expect(agent.violatesGuardrail('Fixed returns, every month.')).toBe(true);
+    });
+
+    test('short implicit endorsements of a specific product are caught (the 9 required phrasings)', () => {
+      expect(agent.violatesGuardrail("That's a great choice.")).toBe(true);
+      expect(agent.violatesGuardrail('Excellent fund.')).toBe(true);
+      expect(agent.violatesGuardrail('Solid investment.')).toBe(true);
+      expect(agent.violatesGuardrail('Perfect fund.')).toBe(true);
+      expect(agent.violatesGuardrail('Best option.')).toBe(true);
+      expect(agent.violatesGuardrail("You'll likely benefit from this.")).toBe(true);
+      expect(agent.violatesGuardrail('I recommend this.')).toBe(true);
+      expect(agent.violatesGuardrail('You should choose this.')).toBe(true);
+      expect(agent.violatesGuardrail('Safe investment.')).toBe(true);
+    });
+
+    test('other semantic-equivalent implicit endorsements are caught', () => {
+      expect(agent.violatesGuardrail('Good scheme for you.')).toBe(true);
+      expect(agent.violatesGuardrail("It's the best option for your goals.")).toBe(true);
+      expect(agent.violatesGuardrail("You'll definitely benefit from that.")).toBe(true);
+      expect(agent.violatesGuardrail("I'd go with this one.")).toBe(true);
+      expect(agent.violatesGuardrail('You should go with this.')).toBe(true);
+    });
+
+    test('approved rapport-only phrases from the new concise style do NOT false-positive', () => {
+      expect(agent.violatesGuardrail('Great 👍')).toBe(false);
+      expect(agent.violatesGuardrail('Got it.')).toBe(false);
+      expect(agent.violatesGuardrail('Perfect.')).toBe(false);
+      expect(agent.violatesGuardrail('Makes sense.')).toBe(false);
+      expect(agent.violatesGuardrail('Great, thanks!')).toBe(false);
+      expect(agent.violatesGuardrail('Got it — what\'s your budget looking like?')).toBe(false);
+    });
+
+    test('short bulleted educational replies (category-level, not product-specific) do NOT false-positive', () => {
+      expect(agent.violatesGuardrail(
+        'Here are a few options:\n- Mutual Funds\n- SIP\n- Insurance\nWhich one interests you?',
+      )).toBe(false);
+      expect(agent.violatesGuardrail('A SIP just means investing a fixed amount every month — no lump sum needed.')).toBe(false);
+    });
+
+    // 2026-07-06: found via a live-model smoke test — the original v1
+    // /\b(buy|sell)\b.{0,20}\bstock\b/i pattern was loose enough to trip on
+    // genuine educational replies explaining what a Demat account is for.
+    test('explaining what a Demat account is for (generic "buy or sell on the stock market") does NOT false-positive', () => {
+      expect(agent.violatesGuardrail(
+        "A Demat account is where your stocks/shares get stored electronically. You need one to buy or sell on the stock market.",
+      )).toBe(false);
+    });
+
+    test('a genuine directive to buy/sell "this/that/the stock" is still caught after the narrowing', () => {
+      expect(agent.violatesGuardrail('Buy this stock, it looks great.')).toBe(true);
+      expect(agent.violatesGuardrail("Sell that stock before it's too late.")).toBe(true);
+    });
+  });
+
   // ─── Handoff summary + assignment ───────────────────────────────────────────
   test('handoff writes a usable, non-empty conversation summary onto the lead record', async () => {
     mockTurn({ reply: 'Great, thanks!', qualified: true, productInterest: ['mutual funds'], budgetAmount: 50000, timelineDays: 30 });

@@ -73,12 +73,46 @@ const ESCALATION_PATTERNS = [
 // words a model commonly inserts ("you should *definitely* apply") without
 // trying to enumerate every possible one individually.
 const GUARDRAIL_PATTERNS = [
+  // --- v1 (Era 22): explicit directive phrasing ---
   /\bguarantee(d|s)?\b/i,
   /\byou should\b.{0,20}\b(buy|sell|purchase)\b/i,
   /\bi recommend\b.{0,20}\b(buying|selling|you buy|you sell)\b/i,
-  /\b(buy|sell)\b.{0,20}\bstock\b/i,
+  // 2026-07-06: narrowed from /\b(buy|sell)\b.{0,20}\bstock\b/i — that loose
+  // form false-tripped on genuine educational replies during live testing
+  // ("you need one to buy or sell on the stock market" while explaining what
+  // a Demat account is), forcing an unnecessary escalation on a safe reply.
+  // Directive phrasing ("buy this/that/the stock") is what the rule actually
+  // targets; generic buy/sell imperatives without "stock" are still caught
+  // by the v2 casual-directive patterns below regardless of this narrowing.
+  /\b(buy|sell) (this|that|the) stock\b/i,
   /\byou should\b.{0,20}\bapply\b/i, /\bdon'?t apply\b/i, /\bskip this ipo\b/i, /\bavoid this ipo\b/i,
   /\bwill outperform\b/i, /\bwill definitely (grow|rise|increase)\b/i,
+
+  // --- v2 (2026-07-06, production-readiness pass): the same v1 categories,
+  // but in the short imperative phrasing the concise WhatsApp style favours
+  // ("Buy this now" instead of "You should buy this") — the v1 patterns
+  // above require scaffolding words ("you should", "I recommend") that a
+  // terser reply may simply drop, so re-verified and extended rather than
+  // assumed to still catch these.
+  /\b(buy|sell|grab) (this|it|that) now\b/i,
+  /\bgo ahead and\b.{0,20}\b(buy|sell)\b/i,
+  /\bi'?d (buy|sell|go with|choose|pick) (this|it|that)\b/i,
+  /\btime to (buy|sell)\b/i,
+  /\bapply (for|to) this ipo\b/i, /\bgrab this ipo\b/i, /\bipo\b.{0,20}\bapply now\b/i,
+  /\bwill (double|triple|multiply)\b/i, /\bsure[- ]shot\b/i, /\bcan'?t go wrong\b/i,
+  /\brisk[- ]?free\b/i, /\bno risk\b/i, /\bassured returns?\b/i, /\bfixed returns?\b/i,
+
+  // --- v2 (2026-07-06): implicit endorsement of a SPECIFIC product. The
+  // model doesn't have to say "I recommend X" to cross the compliance line —
+  // praising one option as the best/right/safe choice is the same violation
+  // in shorter clothing. Scoped to endorsement-adjective + product-noun (or
+  // an explicit "recommend/choose this" phrase), not bare adjectives, so
+  // approved rapport phrases like "Great 👍" or "Perfect." alone are not
+  // swept in — those have no product noun immediately following.
+  /\b(great|good|excellent|solid|perfect|best|safe) (fund|scheme|plan|policy|investment|option|choice|pick|bet)\b/i,
+  /\byou'?ll (likely |definitely |probably )?benefit from (this|it|that)\b/i,
+  /\bi recommend (this|it|that)\b/i,
+  /\byou should (choose|pick|go with|select) (this|it|that)\b/i,
 ];
 
 function isEscalationRequest(text) {

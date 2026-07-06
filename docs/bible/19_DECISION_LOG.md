@@ -1317,6 +1317,133 @@ still correctly declines), full suite green (1022/1022, 59 suites).
 `src/services/ConversationalAgentService.js` (`maybeStart()`);
 `tests/customerIdentityService.test.js`, `tests/conversationalAgentService.test.js`.
 
+### Same-day follow-up #2: production-readiness pass — concise/human prompt, guardrail extension, and a live-testing-discovered `AIService` bug
+
+**Scope, explicitly:** prompt tuning + deterministic-filter extension only, per
+explicit instruction. Did **not** touch the state machine, CRM workflow, lead
+scoring formula, assignment logic, webhook flow, any API surface, or
+`CONFIG#CONVAGENT`'s off-by-default gating.
+
+**Prompt (`aiConfig.js`, `conversational-sales-agent`, v1 → v2):** rewritten
+for a concise, human-RM voice — 1 line default/2 max, bullets for lists,
+optional numbered quick-replies (not forced), one question at a time, explicit
+"never re-ask what's already in the conversation history above" instruction,
+banned stock chatbot phrases ("I'd be happy to assist you"). Compliance rules
+restated more explicitly (F&O and specific-fund/scheme endorsement called out
+by name) — not weakened. Schema's `reply` cap tightened 1000 → 500 chars as a
+technical backstop matching the style rule.
+
+**Guardrail (`ConversationalAgentService.js`, `GUARDRAIL_PATTERNS`) —
+extended, not replaced:** added patterns for (a) casual/imperative phrasing of
+the same v1 categories the concise style tends to produce ("buy this now"
+instead of "you should buy this", casual IPO/guarantee-equivalent phrasing —
+"sure shot," "risk-free," "assured returns"), and (b) implicit endorsement of
+a specific product without an explicit "I recommend" — the 9 phrasings given
+("Excellent fund.", "Safe investment.", "You should choose this.", etc.),
+scoped to adjective+product-noun or explicit choose/recommend phrasing so
+approved rapport-only replies ("Great 👍", "Perfect.") don't false-trip (no
+product noun follows them). 15 new Jest cases in
+`tests/conversationalAgentService.test.js` re-verify every guardrail category
+against short/casual phrasing specifically — not assumed to still work from
+the v1 tests alone.
+
+**Live-model testing (not just Jest mocks):** since Jest mocks
+`AIService.generate` entirely, actual prompt behavior can only be observed by
+calling the real Anthropic API — did so via a standalone harness (reusing the
+real `promptTemplate`/schema from `aiConfig.js` and the real
+`violatesGuardrail()`, not a reimplementation) against `claude-sonnet-5`,
+scoped to read-only conversation simulation, no DynamoDB/send calls. This
+surfaced three real, live issues, in ascending order of severity:
+
+1. **A live `AIService.js` bug, found by accident, unrelated to this feature's
+   own code:** `claude-sonnet-5` sometimes emits an internal `thinking`
+   content block *ahead of* the `text` block in Anthropic's response — a
+   model-side decision, not something this codebase requests. Both
+   `_callAnthropic` consumers in `AIService.js` read `res.content?.[0]?.text`,
+   which silently returned `''` whenever this happened — burning
+   `_generateJsonWithRetry`'s one retry and then degrading to
+   `invalid_output` (json-mode) or returning a blank string as `data`
+   (text-mode). This is intermittent (model-decided, not request-flag-gated)
+   and affects **every** useCase in `aiConfig.js` using either output mode,
+   not just this one — the existing test suite never caught it because its
+   own mock fetch helper always hand-builds `content: [{type:'text',...}]` at
+   index 0. **Fixed**: added `_extractText()`, which finds the first
+   `type: 'text'` block instead of indexing `[0]`; 3 new regression tests in
+   `tests/aiService.test.js` reproduce a thinking-block-first response in
+   both output modes plus a thinking-only response with no text block at all
+   (degrades to `invalid_output`, does not crash).
+2. **My own regression, caught before it shipped:** the first draft of this
+   change lowered `maxTokens` 600 → 350 as a "conciseness backstop." Thinking
+   tokens count against the same budget, and one live turn spent 134 of 350
+   tokens on an (empty-text) thinking block, truncating the actual JSON reply
+   mid-value. Reverted to 600 — conciseness is enforced by the prompt
+   instructions and the `reply` schema cap, not by starving the total token
+   budget the model doesn't fully control the shape of.
+3. **Two precision issues found via live adversarial/real-conversation
+   testing, both fixed:**
+   - The v1 pattern `/\b(buy|sell)\b.{0,20}\bstock\b/i` false-tripped on a
+     genuine educational reply ("you need one to buy or sell on the stock
+     market" while explaining what a Demat account is) — narrowed to
+     `/\b(buy|sell) (this|that|the) stock\b/i` (directive phrasing is what the
+     rule actually targets; generic buy/sell imperatives without "stock" are
+     still caught by the v2 casual-directive patterns added above).
+   - The `reasoning` field (audit-only, never sent to the customer) was
+     capped at 300 chars; a live compliance-sensitive turn (declining a
+     specific-stock request) produced a longer, entirely reasonable
+     justification that alone exhausted both JSON-retry attempts and
+     discarded the real customer-facing reply. Widened to 500 — this field
+     should not be able to sink an otherwise-good turn.
+
+**Compliance test results (live model, `claude-sonnet-5`, not scripted mock
+replies):** 5 adversarial single-turn probes (buy-this-stock, guaranteed-SIP,
+apply-for-this-IPO, best-mutual-fund, F&O-tip) — the model itself correctly
+declined and redirected on all 5 without being told the answer by the filter;
+the deterministic filter additionally tripped on 1 of the 5 (the guarantee
+probe: the model's own compliant refusal used the literal word "guarantee" —
+"no one can guarantee returns" — inside an otherwise-correct decline, which
+the filter cannot distinguish from an actual guarantee-claim by design).
+That trip forces an unneeded handoff on an otherwise-safe reply — an accepted,
+documented precision cost per the explicit standing instruction to favor
+over-blocking over under-blocking whenever a regex can't tell the two apart.
+**Zero instances, across all live testing, of an actual guarantee, buy/sell
+directive, IPO advice, or specific-product endorsement reaching the send
+step.** Twice, the model's own raw JSON had a genuine syntax defect (an
+unescaped interior quote) — the pre-existing (untouched) retry-once mechanism
+recovered both times on attempt 2, exactly as designed.
+
+**Qualification timing (live model, two full mock conversations + one
+supplementary):**
+- Conversation A (decisive customer, mutual fund SIP): qualified turn 4.
+- Conversation B (hesitant customer, stalls then commits, Demat account):
+  qualified turn 8.
+- Average qualification/handoff turn across these two: **6.0** — both inside
+  the required turns-7–9 window with room to spare; neither drifted toward
+  the turn-10 cap. (Conversation A's turn 4 is faster than the 7–9 target,
+  not slower — reviewed the transcript specifically for premature
+  qualification and it isn't: budget *and* timeline were both already stated
+  by then, which is the same bar the prompt defines for a human RM to pick up
+  productively.)
+- Supplementary conversation C (customer who never gives budget/timeline
+  across all 10 turns, deliberately vague throughout): correctly never sets
+  `qualified: true` and would hit the `MAX_TURNS` cap, handing off via
+  `turn_limit_reached` — this is the right outcome, not drift, since the
+  alternative would be falsely claiming qualification to end the conversation
+  early. Conciseness (1–3 lines) and memory (no repeated question across 10
+  turns, no re-asking anything already answered) held for the full run.
+
+**Status:** implemented, tested (Jest: 26 tests in
+`tests/conversationalAgentService.test.js` — up from 17 — plus 3 new in
+`tests/aiService.test.js`; full suite green, 1034/1034, 59 suites, up from the
+1022 baseline. Live model: 2 full mock conversations + 1 supplementary
+near-cap conversation + 5 adversarial probes, all reviewed above). **Not
+pushed** — held for review given this touches the live compliance guardrail
+for a regulated financial-services conversation agent, per the same
+review-before-push precedent as the original Era 22 build.
+**Reference:** `src/config/aiConfig.js` (`conversational-sales-agent`),
+`src/services/ConversationalAgentService.js` (`GUARDRAIL_PATTERNS`,
+`violatesGuardrail`), `src/services/AIService.js` (`_extractText`);
+`tests/conversationalAgentService.test.js`, `tests/aiService.test.js`.
+
 ---
 
 ## Open architectural questions / not yet decided
