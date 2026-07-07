@@ -10,6 +10,7 @@ import { WorkflowCreateDrawer } from '@/components/automation/WorkflowCreateDraw
 import { WelcomeMessagePanel } from '@/components/settings/WelcomeMessagePanel';
 import { WorkingHoursPanel } from '@/components/settings/WorkingHoursPanel';
 import { DelayedResponsePanel } from '@/components/settings/DelayedResponsePanel';
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 
 type Tab = 'dashboard' | 'workflows' | 'executions';
 
@@ -19,7 +20,7 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: 'executions', label: 'Executions', icon: Activity        },
 ];
 
-export default function AutomationPage() {
+function AutomationPageInner() {
   const [activeTab,    setActiveTab]    = useState<Tab>('dashboard');
   const [createOpen,   setCreateOpen]   = useState(false);
 
@@ -85,5 +86,16 @@ export default function AutomationPage() {
       {/* Global create drawer — triggered from dashboard empty state */}
       <WorkflowCreateDrawer key={createOpen ? 'open' : 'closed'} open={createOpen} onClose={() => setCreateOpen(false)} />
     </div>
+  );
+}
+
+// Admin-only — nav already hides this (V3Sidebar's roles: ['owner','admin']),
+// but that was nav-hiding only, not real route enforcement (Phase 2A audit,
+// 2026-07-06). See docs/bible/19_DECISION_LOG.md's Era 24 entry.
+export default function AutomationPage() {
+  return (
+    <ProtectedRoute allowedRoles={['admin']}>
+      <AutomationPageInner />
+    </ProtectedRoute>
   );
 }

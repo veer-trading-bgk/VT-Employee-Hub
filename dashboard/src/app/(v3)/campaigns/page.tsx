@@ -8,6 +8,7 @@ import { CampaignList } from '@/components/campaigns/CampaignList';
 import { CampaignCreateDrawer } from '@/components/campaigns/CampaignCreateDrawer';
 import { TemplateDashboard } from '@/components/templates/TemplateDashboard';
 import { TemplateList } from '@/components/templates/TemplateList';
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 
 type Tab = 'dashboard' | 'campaigns' | 'audience' | 'analytics' | 'history' | 'templates';
 type TemplateView = 'overview' | 'list';
@@ -21,7 +22,7 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: 'templates', label: 'Templates', icon: FileText       },
 ];
 
-export default function CampaignsPage() {
+function CampaignsPageInner() {
   const [activeTab,     setActiveTab]     = useState<Tab>('dashboard');
   const [createOpen,    setCreateOpen]    = useState(false);
   const [templateView,  setTemplateView]  = useState<TemplateView>('overview');
@@ -120,6 +121,17 @@ export default function CampaignsPage() {
       {/* Global create drawer — triggered from dashboard empty state */}
       <CampaignCreateDrawer open={createOpen} onClose={() => setCreateOpen(false)} />
     </div>
+  );
+}
+
+// Admin/manager — nav already hides this (V3Sidebar's roles: ['owner','admin','manager']),
+// but that was nav-hiding only, not real route enforcement (Phase 2A audit,
+// 2026-07-06). See docs/bible/19_DECISION_LOG.md's Era 24 entry.
+export default function CampaignsPage() {
+  return (
+    <ProtectedRoute allowedRoles={['admin', 'manager']}>
+      <CampaignsPageInner />
+    </ProtectedRoute>
   );
 }
 

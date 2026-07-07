@@ -1487,6 +1487,33 @@ The four behavior toggles (qualification/summary/CRM-transfer/lead-scoring) are 
 
 ---
 
+## Era 25 — Route-protection fast-follow: real `allowedRoles` enforcement on 7 pages (2026-07-06)
+
+Applies the exact `<ProtectedRoute allowedRoles={[...]}>` pattern already built for `/ai-admin` (Era 24) to the 7 pages that previously enforced their role restriction via sidebar nav-hiding only:
+
+| Page | `allowedRoles` | Nav restriction it now matches |
+|---|---|---|
+| `/platform` | `[]` | `['owner']` — superadmin-only; empty list is correct since `ProtectedRoute` already bypasses unconditionally for superadmin |
+| `/employees` | `['admin']` | `['owner','admin']` |
+| `/audit-log` | `['admin']` | `['owner','admin']` |
+| `/automation` | `['admin']` | `['owner','admin']` |
+| `/metric-target` | `['admin','manager']` | `['owner','admin','manager']` |
+| `/analytics` | `['admin','manager']` | `['owner','admin','manager']` |
+| `/campaigns` | `['admin','manager']` | `['owner','admin','manager']` |
+
+Each page: the original default-exported function was renamed to an unexported `...Inner` component; a new default export wraps it in `ProtectedRoute`. No changes to any page's existing logic, state, or JSX — confirmed via `git diff` for each file.
+
+**Verification — real proof, not inference, per explicit instruction given these are live, actively-used pages.** A temporary harness page (`dashboard/src/app/proute-verify-temp/page.tsx`) rendered the real `AuthContext.Provider` + the real `ProtectedRoute` with a hand-fed fake user per role, and a Playwright spec drove a real Chromium browser against it — 5/5 passed: superadmin + `allowedRoles=[]` renders (the exact `/platform` claim), admin + `[]` redirects away (proves empty ≠ "everyone"), and both directions of the `['admin']` / `['admin','manager']` gates used across the other 6 pages. `next build` + `eslint` both clean across all 7 pages.
+
+The harness was used solely to generate this proof and was then **fully removed** (`dashboard/src/app/proute-verify-temp/page.tsx` deleted; the one-line `AuthContext` export added to support it in `context/AuthContext.tsx` reverted after confirming — via a repo-wide grep — that nothing else imports the raw context object, only `useAuth`/`AuthProvider`) — an explicit decision against leaving even a production-inert, `notFound()`-gated version of the route sitting in the app once its one-time verification purpose was served. `dashboard/e2e/smoke/protectedRoute.spec.ts` is kept, `test.describe.skip`, with a full header documenting the harness's exact shape and how to reconstruct it (also retrievable from git history) if `ProtectedRoute.tsx` or `AuthContext.tsx` changes again and this needs re-verifying — documented methodology, not currently-passing coverage, since its harness no longer exists.
+
+Full end-to-end content-correctness for all 7 pages (not just the gating mechanism) was **not** verified — this environment has no second-role test credentials, and only one `E2E_EMAIL`/`E2E_PASSWORD` account is configured (not currently set locally). The user did their own manual admin-login pass across all 7 pages in production immediately after this deployed.
+
+**Status:** implemented, mechanism-level-verified as above, harness generated and removed same-day. Backend was already fully guarded for all 7 pages (re-verified in Era 24) — this closes the frontend-shell gap only.
+**Reference:** `dashboard/src/components/layout/ProtectedRoute.tsx`, `dashboard/e2e/smoke/protectedRoute.spec.ts` (skipped, documented); the 7 page files listed above.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or

@@ -6,8 +6,9 @@ import { Button } from '@/components/v3/ui/Button';
 import { EmployeesSection, triggerAddEmployee } from '@/components/v3/team/EmployeesSection';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role } from '@/types/v3';
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 
-export default function EmployeesPage() {
+function EmployeesPageInner() {
   const qc = useQueryClient();
   const { user } = useAuth();
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
@@ -51,5 +52,16 @@ export default function EmployeesPage() {
         <EmployeesSection />
       </div>
     </div>
+  );
+}
+
+// Admin-only — nav already hides this (V3Sidebar's roles: ['owner','admin']),
+// but that was nav-hiding only, not real route enforcement (Phase 2A audit,
+// 2026-07-06). See docs/bible/19_DECISION_LOG.md's Era 24 entry.
+export default function EmployeesPage() {
+  return (
+    <ProtectedRoute allowedRoles={['admin']}>
+      <EmployeesPageInner />
+    </ProtectedRoute>
   );
 }

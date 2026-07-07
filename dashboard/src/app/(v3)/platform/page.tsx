@@ -11,6 +11,7 @@ import { cn } from '@/lib/cn';
 import { api, apiFetch } from '@/lib/api';
 import type { PlatformCompany } from '@/lib/api';
 import { toast } from 'sonner';
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -262,7 +263,7 @@ function HealthTab() {
 
 type PlatformTab = 'overview' | 'companies' | 'health';
 
-export default function PlatformPage() {
+function PlatformPageInner() {
   const [tab, setTab] = useState<PlatformTab>('overview');
 
   const TABS: { id: PlatformTab; label: string; icon: React.ReactNode }[] = [
@@ -302,5 +303,19 @@ export default function PlatformPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+// Superadmin-only — nav already hides this from everyone else (V3Sidebar's
+// roles: ['owner']), but that was nav-hiding only, not real route
+// enforcement (found during the Phase 2A audit, 2026-07-06). allowedRoles=[]
+// is correct here, not ['superadmin']: ProtectedRoute already bypasses its
+// own check unconditionally for superadmin, so an empty list is exactly
+// "nobody else gets in."
+export default function PlatformPage() {
+  return (
+    <ProtectedRoute allowedRoles={[]}>
+      <PlatformPageInner />
+    </ProtectedRoute>
   );
 }

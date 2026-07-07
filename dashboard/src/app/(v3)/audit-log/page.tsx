@@ -9,6 +9,7 @@ import { Badge } from '@/components/v3/ui/Badge';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
 import { apiFetch } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 
 // ── Types & constants ─────────────────────────────────────────────────────────
 
@@ -81,7 +82,7 @@ function AuditTable({ rows, suspicious }: { rows: AuditLog[]; suspicious?: boole
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-export default function AuditLogPage() {
+function AuditLogPageInner() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<AuditTab>('logs');
   const [hours, setHours] = useState(24);
@@ -295,5 +296,16 @@ export default function AuditLogPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+// Admin-only — nav already hides this (V3Sidebar's roles: ['owner','admin']),
+// but that was nav-hiding only, not real route enforcement (Phase 2A audit,
+// 2026-07-06). See docs/bible/19_DECISION_LOG.md's Era 24 entry.
+export default function AuditLogPage() {
+  return (
+    <ProtectedRoute allowedRoles={['admin']}>
+      <AuditLogPageInner />
+    </ProtectedRoute>
   );
 }

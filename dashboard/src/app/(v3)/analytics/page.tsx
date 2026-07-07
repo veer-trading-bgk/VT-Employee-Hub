@@ -40,6 +40,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import { formatMetricValue } from '@/lib/metrics.config';
 import { toast } from 'sonner';
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 
 type AnalyticsTab = 'overview' | 'pipeline' | 'conversations' | 'team' | 'sources';
 
@@ -648,7 +649,7 @@ function StubTab({ label }: { label: string }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function AnalyticsPage() {
+function AnalyticsPageInner() {
   const [activeTab, setActiveTab] = useState<AnalyticsTab>('overview');
   const [dateRange, setDateRange] = useState<DateRange>('30d');
 
@@ -694,5 +695,16 @@ export default function AnalyticsPage() {
         {activeTab === 'sources'       && <StubTab label="Sources" />}
       </div>
     </div>
+  );
+}
+
+// Admin/manager — nav already hides this (V3Sidebar's roles: ['owner','admin','manager']),
+// but that was nav-hiding only, not real route enforcement (Phase 2A audit,
+// 2026-07-06). See docs/bible/19_DECISION_LOG.md's Era 24 entry.
+export default function AnalyticsPage() {
+  return (
+    <ProtectedRoute allowedRoles={['admin', 'manager']}>
+      <AnalyticsPageInner />
+    </ProtectedRoute>
   );
 }

@@ -10,6 +10,7 @@ import { apiFetch } from '@/lib/api';
 import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import { toast } from 'sonner';
 import { cn } from '@/lib/cn';
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 
 type TargetPeriod = 'day' | 'month';
 interface TargetEntry { target: number; targetPeriod: TargetPeriod; pointsWeight?: number; }
@@ -17,7 +18,7 @@ interface TargetsResponse { success: boolean; data: Record<string, TargetEntry>;
 
 const inputCls = 'w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm transition focus:border-primary-600 focus:outline-none focus:ring-2 focus:ring-primary-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100';
 
-export default function MetricTargetPage() {
+function MetricTargetPageInner() {
   const qc = useQueryClient();
   const { metrics } = useMetricsConfig();
   const [form, setForm] = useState<Record<string, TargetEntry>>({});
@@ -249,5 +250,16 @@ export default function MetricTargetPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+// Admin/manager — nav already hides this (V3Sidebar's roles: ['owner','admin','manager']),
+// but that was nav-hiding only, not real route enforcement (Phase 2A audit,
+// 2026-07-06). See docs/bible/19_DECISION_LOG.md's Era 24 entry.
+export default function MetricTargetPage() {
+  return (
+    <ProtectedRoute allowedRoles={['admin', 'manager']}>
+      <MetricTargetPageInner />
+    </ProtectedRoute>
   );
 }
