@@ -1675,3 +1675,21 @@ already fully enforced just because an ADR exists.
     version — none introduced by anything shipped this session; every file this
     session's features touched is clean. Tracked as known debt, not new breakage — a
     literal `npm run lint` would surface all 135 today.
+
+13. **Two known, deferred `GUARDRAIL_PATTERNS` false positives — `/\bsure[- ]?shot\b/i`
+    and the v2 "best fund" endorsement pattern — found during Phase 2A PR 2's live
+    verification (2026-07-07, see Era 26), not fixed.** Same class of issue as the
+    "guarantee" word false positive documented at Era 22 and eventually fixed at Era 26:
+    a compliant refusal can naturally contain the literal phrase a pattern matches on
+    ("no one can promise a sure shot on trades", "can't crown a single best fund for
+    you"), tripping `violatesGuardrail()` even though the reply itself is safe. Unlike
+    "guarantee" (reproducible on essentially every live run), each of these appeared only
+    once during PR 2's live-verification runs — not proven reproducible enough to justify
+    fixing yet, so deliberately left un-exempted rather than patched. Applies in both
+    places that call `violatesGuardrail()`: live customer conversations
+    (`ConversationalAgentService.js`'s post-generation check discards the reply and
+    forces an unnecessary handoff via `HANDOFF_MESSAGE`) and the admin `/ai-admin` Prompt
+    Management test gate (`PromptTestService.js` — shows as a genuine, non-`knownIssue`
+    FAIL). **Not fixed, deliberately out of scope for PR 2** — revisit if either becomes
+    reproducible/frequent enough to matter, the same trigger condition that eventually
+    got "guarantee" fixed.
