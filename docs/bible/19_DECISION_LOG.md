@@ -1594,6 +1594,39 @@ Closes the second half of ADR-016's "no Knowledge Center exists" blocker: raw do
 
 ---
 
+## Era 29 — RAG integration, PR A: Embedding infrastructure + structured entries go semantic (2026-07-07)
+
+First of a 3-PR RAG arc (PR A: embedding infra + entries go semantic and live; PR B: document text extraction/chunking/embedding, verified standalone; PR C: wire document retrieval into the live conversation flow, unified with entries). Upgrades `KnowledgeService.js`'s structured-entry matching from keyword/substring to real semantic (cosine-similarity) retrieval, live in the conversational-sales-agent flow. Document retrieval itself is out of scope until PR C — this PR only touches structured entries.
+
+4 decisions locked before implementation: (1) **Voyage AI**, specifically `voyage-finance-2` — a measurable retrieval-quality advantage on financial content (7-12% better than general models on published benchmarks), and APForce's entire target market (AP/sub-broker businesses) is finance-domain, so this is the fixed default, not a per-company config choice; (2) legacy binary document formats (.doc/.ppt/.xls) stay out of scope for retrieval entirely — a PR B concern; (3) a **new sibling ADR** (`docs/adr/ADR-017-embedding-service-boundary.md`) rather than folding into ADR-015 — embeddings are text-in/vector-out, not ADR-015's prompt-in/text-out shape, so forcing them through `AIService.generate()` would bend Rule 1's own stated rationale; (4) structured entries go semantic **and live** in this PR, not left as unused infrastructure until PR C.
+
+**ADR-017** mirrors ADR-015's spirit with an adapted shape: `EmbeddingService.embed({ texts, companyId, inputType: 'query' | 'document' })`, mandatory `companyId` (usage/cost attribution, not cross-tenant-mixing prevention — a single embed call doesn't carry that risk the way a shared prompt does), model/provider in config (`src/config/embeddingConfig.js`), usage tracked per company (`EMBEDUSAGE#{companyId}#{date}`), never sends or decides what to do with a vector (mirrors ADR-015 Rule 5), deliberately no new company-facing toggle (embeddings are an internal retrieval-quality mechanism, not something a company opts into separately).
+
+**Data model additions:** `KNOWLEDGE#{companyId}` / `ENTRY#{entryId}` gains `activeEmbedding: number[] | null` (confirmed 1024 dimensions for `voyage-finance-2` via live verification); `KNOWLEDGE_VERSIONS#{companyId}#{entryId}` / `VERSION#{n}` gains the same `embedding` snapshot, matching `testResult`'s existing snapshot pattern.
+
+**`KnowledgeService.getMatchingEntries()` — semantic primary, keyword fallback only:** entries with an `activeEmbedding` are ranked by cosine similarity against the live customer message's own embedding (computed fresh per turn, `inputType: 'query'`); entries without one (not yet backfilled, or a past publish whose embed call failed) stay reachable via the original keyword-substring check, merged in after semantic matches; a failed query-embedding call (provider error/timeout) falls back to full keyword matching for that turn — graceful degradation, not a failed turn, same resilience stance as `_fetchPromptAddendum`'s empty-object fallback. `_runTurn()` in `ConversationalAgentService.js` required **zero changes** — the call site (`KnowledgeService.getMatchingEntries(companyId, text)`) is unchanged; all new complexity is encapsulated inside `KnowledgeService.js` and the new `EmbeddingService.js` it calls.
+
+**Company isolation and Published-only gating — confirmed inherited unchanged from PR 3, not re-implemented, before this entry was approved.** The semantic step is a local, in-memory re-ranking of whatever `listEntries(companyId)` already returned — that single company-scoped DynamoDB query (`PK: KNOWLEDGE#{companyId}`) is still the only data-fetching call in the function; `EmbeddingService.embed()` is called only to embed the incoming query text, never to fetch or compare against stored data, so there is no code path where another company's vector could enter the similarity computation. Published-only gating is enforced twice over: the same `!archived && activeVersion > 0` filter PR 3 shipped still runs before the semantic/keyword split, *and* independently, a draft entry structurally cannot have an `activeEmbedding` in the first place (only `/publish`/`/restore` ever write it) — even a hypothetical bypass of the first filter would have nothing to rank against.
+
+**Publish-time embedding computation** (`knowledgeCenter.js`'s `/publish` and `/versions/:version/restore`): after the existing compliance test passes (unchanged), also computes and stores `activeEmbedding` (snapshotted into the `VERSION#` item too). **A failed embed call does not block publish** — the compliance test remains the only safety-critical gate; embedding is a retrieval-quality concern. `activeEmbedding` stays `null`, matched via keyword fallback until backfilled/retried, logged as a warning only.
+
+**Backfill script** (`scripts/backfill-knowledge-embeddings.js`, modeled on the existing `backfill-media-s3.js` convention): scans every company's published entries missing `activeEmbedding` and computes them, so entries published before this PR aren't stuck on keyword-only matching indefinitely.
+
+**Verification:** `tests/embeddingService.test.js` (new, 8 tests), `tests/knowledgeService.test.js` extended (+10: cosine-ranking correctness, zero-keyword-overlap semantic match, fallback behavior, cap enforcement), `tests/knowledgeCenter.test.js` extended (+3: embedding computed and stored on publish, a failed embed doesn't block publish, restore re-embeds rather than reusing the old version's stored vector). Full suite: **1186/1186 passing, 66 suites** (was 1165 before this PR). No frontend changes — retrieval quality improves transparently, the existing Knowledge Center UI is unchanged.
+
+**Live verification against the real Voyage API and real DynamoDB (not mocked):**
+- Backfill script run for real (not `--dry-run`): found 1 scratch entry missing `activeEmbedding`, embedded it via a real API call, confirmed via direct DynamoDB read (1024-dim vector present), cleaned up.
+- Semantic-match proof: two real, published entries (SIP, fees) with real embeddings. Query *"Tell me about systematic investment plans for building wealth over time"* — zero keyword overlap with the SIP entry's only trigger (`"sip options"`) — correctly retrieved the SIP entry via pure semantic similarity.
+- Control proof: query *"how much does it cost to open a trading account with you"* (different wording than the fees entry's trigger) correctly ranked the fees entry first, not SIP — proving the ranking discriminates between topics rather than matching everything.
+- Both entries cleaned up after verification.
+
+**⚠️ PRE-LAUNCH BLOCKER, found during live verification — not a code defect, an account-configuration gap:** the Voyage AI account has no payment method attached, capping it at the free tier's **3 requests/minute**. Confirmed by hitting this limit mid-verification: the code handled it exactly as designed (`EmbeddingService.embed()` returned `{ ok: false }`, `KnowledgeService` fell back to keyword matching, no crash) — but at 3 RPM, a live production system embedding a query on every customer turn would hit this constantly, silently degrading most turns to keyword-only matching regardless of how good the semantic model is. **Add a payment method on Voyage's dashboard (https://dashboard.voyageai.com/) before enabling `CONFIG#CONVAGENT` for any company** — this is a go-live blocker for real customer traffic, not a nice-to-have, and is not fixed by anything in this codebase; it's an account-level action outside this repo.
+
+**Status:** implemented, tested, live-verified (including against the real Voyage API and real DynamoDB), committed. **Not yet safe for a company to actually enable the conversational agent against real traffic until the pre-launch blocker above is resolved.**
+**Reference:** `docs/adr/ADR-017-embedding-service-boundary.md`, `src/services/EmbeddingService.js`, `src/config/embeddingConfig.js`, `src/services/KnowledgeService.js`, `src/routes/knowledgeCenter.js`, `scripts/backfill-knowledge-embeddings.js`.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or
@@ -1764,3 +1797,15 @@ already fully enforced just because an ADR exists.
     distinguished between the three sub-types at the byte level (would need real CFBF
     directory parsing). **Not fixed, deliberately out of scope for PR 4** — revisit if
     Document Knowledge's usage grows enough to justify a dedicated AV-scanning project.
+
+15. **PRE-LAUNCH BLOCKER — the Voyage AI account has no payment method attached,
+    capped at the free tier's 3 requests/minute (found during RAG PR A's live
+    verification, Era 29).** Not a code defect — `EmbeddingService`/`KnowledgeService`
+    handle the resulting rate-limit error exactly as designed (graceful fallback to
+    keyword matching, no crash). But at 3 RPM, a live production system embedding a
+    query on every customer turn would hit this constantly, silently degrading most
+    turns to keyword-only matching regardless of model quality — this defeats the
+    actual point of RAG PR A for any company running real traffic. **Add a payment
+    method on Voyage's dashboard (https://dashboard.voyageai.com/) before enabling
+    `CONFIG#CONVAGENT` for any company** — an account-level action outside this repo,
+    not fixable in code. Treat this as a go-live checklist item, not a nice-to-have.

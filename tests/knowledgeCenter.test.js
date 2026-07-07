@@ -16,11 +16,13 @@ jest.mock('../src/config/logger', () => ({
 }));
 jest.mock('../src/utils/audit', () => ({ logAudit: jest.fn().mockResolvedValue(undefined) }));
 jest.mock('../src/services/PromptTestService', () => ({ testKnowledgeEntry: jest.fn() }));
+jest.mock('../src/services/EmbeddingService', () => ({ embed: jest.fn() }));
 
 process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
 
 const dynamodb = require('../src/config/dynamodb');
 const { testKnowledgeEntry } = require('../src/services/PromptTestService');
+const EmbeddingService = require('../src/services/EmbeddingService');
 const { authMiddleware, adminMiddleware } = require('../src/middleware/auth');
 const knowledgeRouter = require('../src/routes/knowledgeCenter');
 
@@ -155,7 +157,10 @@ describe('POST /api/knowledge/:entryId/test', () => {
 
 describe('POST /api/knowledge/:entryId/publish', () => {
   const handler = getRouteHandler(knowledgeRouter, '/:entryId/publish', 'post');
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    EmbeddingService.embed.mockResolvedValue({ ok: true, data: { embeddings: [[0.1, 0.2, 0.3]] } });
+  });
 
   test('re-tests the CURRENT draft even when a stale lastTestResult already exists', async () => {
     dynamodb.get.mockReturnValue(resolved({
@@ -210,6 +215,44 @@ describe('POST /api/knowledge/:entryId/publish', () => {
     }));
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, version: 2 }));
   });
+
+  test('computes and stores an embedding for the question+answer on successful publish (RAG PR A)', async () => {
+    dynamodb.get.mockReturnValue(resolved({
+      Item: { entryId: 'e1', draftQuestion: 'What are your fees?', draftTriggers: ['fees'], draftAnswer: 'No fee.', activeVersion: 0 },
+    }));
+    testKnowledgeEntry.mockResolvedValue({ allPassed: true, results: [], testedAt: 'x' });
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockReturnValue(resolved({}));
+
+    await handler({ user: USER, ip: '1.1.1.1', params: { entryId: 'e1' } }, mockRes(), jest.fn());
+
+    expect(EmbeddingService.embed).toHaveBeenCalledWith({
+      texts: ['What are your fees?\nNo fee.'], companyId: CID, inputType: 'document',
+    });
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({ embedding: [0.1, 0.2, 0.3] }),
+    }));
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      ExpressionAttributeValues: expect.objectContaining({ ':em': [0.1, 0.2, 0.3] }),
+    }));
+  });
+
+  test('a failed embedding call does NOT block publish — activeEmbedding stays null, entry still publishes', async () => {
+    dynamodb.get.mockReturnValue(resolved({
+      Item: { entryId: 'e1', draftQuestion: 'q', draftTriggers: ['t'], draftAnswer: 'a', activeVersion: 0 },
+    }));
+    testKnowledgeEntry.mockResolvedValue({ allPassed: true, results: [], testedAt: 'x' });
+    EmbeddingService.embed.mockResolvedValue({ ok: false, reason: 'embedding_failed' });
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockReturnValue(resolved({}));
+    const res = mockRes();
+
+    await handler({ user: USER, ip: '1.1.1.1', params: { entryId: 'e1' } }, res, jest.fn());
+
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({ Item: expect.objectContaining({ embedding: null }) }));
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({ ExpressionAttributeValues: expect.objectContaining({ ':em': null }) }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
 });
 
 describe('GET /api/knowledge/:entryId/versions', () => {
@@ -230,7 +273,10 @@ describe('GET /api/knowledge/:entryId/versions', () => {
 
 describe('POST /api/knowledge/:entryId/versions/:version/restore', () => {
   const handler = getRouteHandler(knowledgeRouter, '/:entryId/versions/:version/restore', 'post');
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    EmbeddingService.embed.mockResolvedValue({ ok: true, data: { embeddings: [[0.4, 0.5, 0.6]] } });
+  });
 
   test('re-tests against CURRENT rules, and mirrors draft fields to the restored content on success', async () => {
     dynamodb.get.mockImplementation((params) => {
@@ -256,6 +302,24 @@ describe('POST /api/knowledge/:entryId/versions/:version/restore', () => {
       }),
     }));
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, version: 4, restoredFrom: 1 }));
+  });
+
+  test('re-embeds the restored content rather than reusing any stored embedding from the old version (RAG PR A)', async () => {
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.SK === 'VERSION#000001') {
+        return resolved({ Item: { version: 1, question: 'old q', triggers: ['old-trigger'], answer: 'old answer', category: 'Old', embedding: [9, 9, 9] } });
+      }
+      return resolved({ Item: { entryId: 'e1', activeVersion: 3 } });
+    });
+    testKnowledgeEntry.mockResolvedValue({ allPassed: true, results: [], testedAt: 'x' });
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockReturnValue(resolved({}));
+
+    await handler({ user: USER, ip: '1.1.1.1', params: { entryId: 'e1', version: '1' } }, mockRes(), jest.fn());
+
+    expect(EmbeddingService.embed).toHaveBeenCalledWith({ texts: ['old q\nold answer'], companyId: CID, inputType: 'document' });
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({ Item: expect.objectContaining({ embedding: [0.4, 0.5, 0.6] }) }));
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({ ExpressionAttributeValues: expect.objectContaining({ ':em': [0.4, 0.5, 0.6] }) }));
   });
 
   test('blocks restore (422) when the version no longer passes today\'s rules', async () => {

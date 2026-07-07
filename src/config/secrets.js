@@ -31,6 +31,7 @@ async function loadSecrets() {
       'JWT_SECRET',
       'REFRESH_TOKEN_SECRET',
       'ANTHROPIC_API_KEY',
+      'VOYAGE_API_KEY',
       'TELEGRAM_BOT_TOKEN',
       'TELEGRAM_ADMIN_CHAT_ID',
     ];

@@ -5,10 +5,12 @@ const express = require('express');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimiter');
 const dynamodb = require('../config/dynamodb');
+const logger = require('../config/logger');
 const { logAudit } = require('../utils/audit');
 const { knowledgeEntryDraftSchema } = require('../utils/validation');
 const { entryKey, versionKey, listEntries } = require('../services/KnowledgeService');
 const { testKnowledgeEntry } = require('../services/PromptTestService');
+const EmbeddingService = require('../services/EmbeddingService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -34,10 +36,31 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
  * row, so "clear to empty" (PR 2's literal behavior for its one free-text
  * field) isn't structurally possible here; mirroring means the edit form
  * always shows "what's currently live," ready for further editing.
+ *
+ * RAG PR A (ADR-017): publish/restore also compute and store an embedding
+ * (activeEmbedding, via EmbeddingService) for KnowledgeService's semantic
+ * retrieval — never blocking on failure (see computeEmbeddingOrNull).
  */
 router.use(authMiddleware, adminMiddleware);
 
 const KNOWLEDGE_TEST_RATE_LIMIT = rateLimit(30, 60 * 60_000);
+
+// RAG PR A (ADR-017) — computed at publish/restore time only, never at
+// query time. A failed embed call does NOT block publish: the compliance
+// test above is the safety-critical gate; embedding is a retrieval-quality
+// concern, not a safety one. Returns null on failure — the entry still
+// publishes with activeEmbedding: null, reachable via KnowledgeService's
+// keyword fallback until a retry (e.g. the backfill script) fills it in.
+async function computeEmbeddingOrNull(companyId, question, answer) {
+  const result = await EmbeddingService.embed({
+    texts: [`${question}\n${answer}`], companyId, inputType: 'document',
+  });
+  if (!result.ok) {
+    logger.error(`knowledgeCenter: embedding computation failed for ${companyId} — publishing without one (falls back to keyword matching until retried): ${result.reason}`);
+    return null;
+  }
+  return result.data.embeddings[0];
+}
 
 router.get('/', async (req, res, next) => {
   try {
@@ -141,6 +164,7 @@ router.post('/:entryId/publish', KNOWLEDGE_TEST_RATE_LIMIT, async (req, res, nex
 
     const newVersion = (r.Item.activeVersion ?? 0) + 1;
     const now = new Date().toISOString();
+    const embedding = await computeEmbeddingOrNull(companyId, candidate.question, candidate.answer);
 
     await dynamodb.put({
       TableName: TABLE,
@@ -148,21 +172,21 @@ router.post('/:entryId/publish', KNOWLEDGE_TEST_RATE_LIMIT, async (req, res, nex
         ...versionKey(companyId, entryId, newVersion),
         companyId, entryId, version: newVersion,
         question: candidate.question, triggers: candidate.triggers, answer: candidate.answer, category: r.Item.category,
-        publishedAt: now, publishedBy: req.user.id, testResult, restoredFrom: null,
+        publishedAt: now, publishedBy: req.user.id, testResult, restoredFrom: null, embedding,
       },
     }).promise();
 
     await dynamodb.update({
       TableName: TABLE,
       Key: entryKey(companyId, entryId),
-      UpdateExpression: 'SET activeQuestion = :q, activeTriggers = :t, activeAnswer = :a, activeVersion = :v, activePublishedAt = :pa, lastTestResult = :tr, updatedBy = :ub, updatedAt = :ua',
+      UpdateExpression: 'SET activeQuestion = :q, activeTriggers = :t, activeAnswer = :a, activeVersion = :v, activePublishedAt = :pa, activeEmbedding = :em, lastTestResult = :tr, updatedBy = :ub, updatedAt = :ua',
       ExpressionAttributeValues: {
         ':q': candidate.question, ':t': candidate.triggers, ':a': candidate.answer, ':v': newVersion, ':pa': now,
-        ':tr': testResult, ':ub': req.user.id, ':ua': now,
+        ':em': embedding, ':tr': testResult, ':ub': req.user.id, ':ua': now,
       },
     }).promise();
 
-    await logAudit(req.user.id, 'knowledge_entry_publish', companyId, 'success', req.ip, { entryId, version: newVersion }, companyId);
+    await logAudit(req.user.id, 'knowledge_entry_publish', companyId, 'success', req.ip, { entryId, version: newVersion, embedded: embedding !== null }, companyId);
     res.json({ success: true, version: newVersion, testResult });
   } catch (err) { next(err); }
 });
@@ -205,6 +229,7 @@ router.post('/:entryId/versions/:version/restore', KNOWLEDGE_TEST_RATE_LIMIT, as
 
     const newVersion = (current.Item.activeVersion ?? 0) + 1;
     const now = new Date().toISOString();
+    const embedding = await computeEmbeddingOrNull(companyId, candidate.question, candidate.answer);
 
     await dynamodb.put({
       TableName: TABLE,
@@ -212,7 +237,7 @@ router.post('/:entryId/versions/:version/restore', KNOWLEDGE_TEST_RATE_LIMIT, as
         ...versionKey(companyId, entryId, newVersion),
         companyId, entryId, version: newVersion,
         question: candidate.question, triggers: candidate.triggers, answer: candidate.answer, category: versionRow.Item.category,
-        publishedAt: now, publishedBy: req.user.id, testResult, restoredFrom: version,
+        publishedAt: now, publishedBy: req.user.id, testResult, restoredFrom: version, embedding,
       },
     }).promise();
 
@@ -220,14 +245,14 @@ router.post('/:entryId/versions/:version/restore', KNOWLEDGE_TEST_RATE_LIMIT, as
       TableName: TABLE,
       Key: entryKey(companyId, entryId),
       // Draft fields mirror the restored content too — see file header note.
-      UpdateExpression: 'SET activeQuestion = :q, activeTriggers = :t, activeAnswer = :a, activeVersion = :v, activePublishedAt = :pa, draftQuestion = :q, draftTriggers = :t, draftAnswer = :a, category = :c, lastTestResult = :tr, updatedBy = :ub, updatedAt = :ua',
+      UpdateExpression: 'SET activeQuestion = :q, activeTriggers = :t, activeAnswer = :a, activeVersion = :v, activePublishedAt = :pa, activeEmbedding = :em, draftQuestion = :q, draftTriggers = :t, draftAnswer = :a, category = :c, lastTestResult = :tr, updatedBy = :ub, updatedAt = :ua',
       ExpressionAttributeValues: {
         ':q': candidate.question, ':t': candidate.triggers, ':a': candidate.answer, ':v': newVersion, ':pa': now,
-        ':c': versionRow.Item.category ?? null, ':tr': testResult, ':ub': req.user.id, ':ua': now,
+        ':em': embedding, ':c': versionRow.Item.category ?? null, ':tr': testResult, ':ub': req.user.id, ':ua': now,
       },
     }).promise();
 
-    await logAudit(req.user.id, 'knowledge_entry_restore', companyId, 'success', req.ip, { entryId, fromVersion: version, newVersion }, companyId);
+    await logAudit(req.user.id, 'knowledge_entry_restore', companyId, 'success', req.ip, { entryId, fromVersion: version, newVersion, embedded: embedding !== null }, companyId);
     res.json({ success: true, version: newVersion, restoredFrom: version, testResult });
   } catch (err) { next(err); }
 });
