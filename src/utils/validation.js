@@ -50,6 +50,15 @@ const aiAdminFutureSchema = z.object({
   }).strict().default({ enabled: false, model: null, temperature: null }),
 }).strict();
 
+// AI Administration — Prompt Management's addendum draft (CONFIG#PROMPTADDENDUM).
+// Bounded per the explicit "bounded addendum only" decision — this is a
+// free-text field, unlike the enum/bounded Conversation-tab fields, so it's
+// gated behind PromptTestService's live-generation test before publish, not
+// just this schema. This schema only validates shape (length), never safety.
+const promptAddendumDraftSchema = z.object({
+  text: z.string().max(1000),
+}).strict();
+
 // "Delayed Response Message" — same enabled/message-content shape as
 // welcomeConfigSchema, plus the delay itself.
 const delayedResponseConfigSchema = z.object({
@@ -289,6 +298,7 @@ module.exports = {
   aiAdminGeneralSchema,
   aiAdminConversationSchema,
   aiAdminFutureSchema,
+  promptAddendumDraftSchema,
   delayedResponseConfigSchema,
   workingHoursConfigSchema,
   oooConfigSchema,

@@ -453,6 +453,38 @@ describe('ConversationalAgentService', () => {
     expect(signalUpdate[0].ExpressionAttributeValues[':cd']).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
+  // ─── Phase 2A / PR 2 — Prompt Management addendum wiring ────────────────────
+  test('the published CONFIG#PROMPTADDENDUM activeText is passed into AIService.generate as promptAddendum', async () => {
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === `CONFIG#CONVAGENT#${CID}`) return resolved({ Item: { enabled: true } });
+      if (params.Key.PK === LEAD_PK) return resolved({ Item: lead });
+      if (params.Key.PK === `CONFIG#PROMPTADDENDUM#${CID}`) return resolved({ Item: { activeText: 'Always mention our 24hr response time.', activeVersion: 3 } });
+      return resolved({});
+    });
+    mockTurn();
+    await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'hi', timestamp: 't1' });
+
+    expect(AIService.generate).toHaveBeenCalledWith(expect.objectContaining({
+      useCase: 'conversational-sales-agent',
+      context: expect.objectContaining({ promptAddendum: 'Always mention our 24hr response time.' }),
+    }));
+  });
+
+  test('an unpublished draftText is never passed to AIService.generate — only activeText reaches a live conversation', async () => {
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === `CONFIG#CONVAGENT#${CID}`) return resolved({ Item: { enabled: true } });
+      if (params.Key.PK === LEAD_PK) return resolved({ Item: lead });
+      if (params.Key.PK === `CONFIG#PROMPTADDENDUM#${CID}`) return resolved({ Item: { activeText: 'published text', draftText: 'unpublished draft text', activeVersion: 1 } });
+      return resolved({});
+    });
+    mockTurn();
+    await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'hi', timestamp: 't1' });
+
+    expect(AIService.generate).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ promptAddendum: 'published text' }),
+    }));
+  });
+
   // ─── Phase 2A / PR 1 — General tab toggles ──────────────────────────────────
   describe('AI Administration General-tab toggles', () => {
     function mockConvAgentConfig(overrides) {

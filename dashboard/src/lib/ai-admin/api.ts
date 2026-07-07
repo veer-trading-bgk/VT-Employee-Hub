@@ -8,6 +8,8 @@ export const aiAdminKeys = {
   conversation: () => [...aiAdminKeys.all, 'conversation'] as const,
   compliance: () => [...aiAdminKeys.all, 'compliance'] as const,
   future: () => [...aiAdminKeys.all, 'future'] as const,
+  promptAddendum: () => [...aiAdminKeys.all, 'prompt-addendum'] as const,
+  promptAddendumVersions: () => [...aiAdminKeys.all, 'prompt-addendum', 'versions'] as const,
 };
 
 // ── General ──────────────────────────────────────────────────────────────────
@@ -84,4 +86,63 @@ export async function fetchFutureSettings(): Promise<FutureSettings> {
 
 export async function saveFutureSettings(payload: Pick<FutureSettings, 'customModelSettings'>): Promise<{ success: boolean }> {
   return apiFetch(`${BASE}/future`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+// ── Prompt Management (Phase 2A, PR 2) ───────────────────────────────────────
+// Bounded free-text addendum, appended after the permanently code-locked
+// hard compliance rules — never a full prompt override. Every path that can
+// make it live (publish, restore) re-runs the compliance test gate server-
+// side, fresh, every time; a client-shown prior pass is UX only.
+
+export interface TestResultItem {
+  input: string;
+  passed: boolean;
+  reply: string | null;
+  reason: string | null;
+  knownIssue: string | null;
+}
+export interface TestResult {
+  allPassed: boolean;
+  results: TestResultItem[];
+  testedAt: string;
+}
+export interface PromptAddendumState {
+  activeText: string;
+  activeVersion: number;
+  draftText: string;
+  lastTestResult: TestResult | null;
+}
+export interface PromptAddendumVersion {
+  version: number;
+  text: string;
+  publishedAt: string;
+  publishedBy: string;
+  testResult: TestResult;
+  restoredFrom: number | null;
+}
+
+export async function fetchPromptAddendum(): Promise<PromptAddendumState> {
+  return apiFetch<PromptAddendumState>(`${BASE}/prompt-addendum`);
+}
+
+export async function savePromptAddendumDraft(text: string): Promise<{ success: boolean }> {
+  return apiFetch(`${BASE}/prompt-addendum/draft`, { method: 'PUT', body: JSON.stringify({ text }) });
+}
+
+export async function testPromptAddendum(text?: string): Promise<TestResult> {
+  return apiFetch<TestResult>(`${BASE}/prompt-addendum/test`, {
+    method: 'POST', body: JSON.stringify(text === undefined ? {} : { text }),
+  });
+}
+
+export async function publishPromptAddendum(): Promise<{ success: boolean; version: number; testResult: TestResult }> {
+  return apiFetch(`${BASE}/prompt-addendum/publish`, { method: 'POST', body: JSON.stringify({}) });
+}
+
+export async function fetchPromptAddendumVersions(): Promise<{ versions: PromptAddendumVersion[] }> {
+  return apiFetch(`${BASE}/prompt-addendum/versions`);
+}
+
+export async function restorePromptAddendumVersion(version: number): Promise<{ success: boolean; version: number; restoredFrom: number; testResult: TestResult }> {
+  return apiFetch(`${BASE}/prompt-addendum/versions/${version}/restore`, { method: 'POST', body: JSON.stringify({}) });
 }

@@ -12,7 +12,7 @@
  */
 
 jest.mock('../src/config/dynamodb', () => ({
-  get: jest.fn(), put: jest.fn(),
+  get: jest.fn(), put: jest.fn(), update: jest.fn(), query: jest.fn(),
 }));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
@@ -23,12 +23,14 @@ jest.mock('../src/services/ConversationalAgentService', () => ({
   ESCALATION_CATEGORIES: ['esc-a'],
   HANDOFF_MESSAGE: 'connecting you with a senior relationship manager',
 }));
+jest.mock('../src/services/PromptTestService', () => ({ testPromptAddendum: jest.fn() }));
 
 process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
 
 const dynamodb = require('../src/config/dynamodb');
 const { logAudit } = require('../src/utils/audit');
 const { authMiddleware, adminMiddleware } = require('../src/middleware/auth');
+const { testPromptAddendum } = require('../src/services/PromptTestService');
 const aiAdminRouter = require('../src/routes/aiAdmin');
 
 function getRouteHandler(router, path, method) {
@@ -246,5 +248,200 @@ describe('GET/PUT /api/ai-admin/future — capped temperature/model, stored but 
       }),
     }));
     expect(res.json).toHaveBeenCalledWith({ success: true });
+  });
+});
+
+// Phase 2A / PR 2 — Prompt Management. testPromptAddendum is mocked here;
+// its own real behavior (real AIService.generate calls, real violatesGuardrail
+// checking) is covered by tests/promptTestService.test.js — these tests are
+// about the ROUTES' own logic: does draft save skip the gate, does publish
+// re-test regardless of a stale prior result, does restore re-test against
+// current rules, is a blocked test/publish/restore reported with the itemized
+// result, not just a generic error.
+describe('GET/PUT /api/ai-admin/prompt-addendum', () => {
+  const getHandler = getRouteHandler(aiAdminRouter, '/prompt-addendum', 'get');
+  const putDraftHandler = getRouteHandler(aiAdminRouter, '/prompt-addendum/draft', 'put');
+  beforeEach(() => jest.clearAllMocks());
+
+  test('GET with no config row returns empty/zero defaults', async () => {
+    dynamodb.get.mockReturnValue(resolved({}));
+    const res = mockRes();
+    await getHandler({ user: USER }, res, jest.fn());
+    expect(res.json).toHaveBeenCalledWith({ activeText: '', activeVersion: 0, draftText: '', lastTestResult: null });
+  });
+
+  test('PUT draft saves without calling the test gate at all', async () => {
+    dynamodb.update.mockReturnValue(resolved({}));
+    const res = mockRes();
+    await putDraftHandler({ user: USER, body: { text: 'Always mention our 24hr response time.' } }, res, jest.fn());
+
+    expect(testPromptAddendum).not.toHaveBeenCalled();
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: `CONFIG#PROMPTADDENDUM#${CID}`, SK: 'CURRENT' },
+      ExpressionAttributeValues: expect.objectContaining({ ':d': 'Always mention our 24hr response time.' }),
+    }));
+    expect(res.json).toHaveBeenCalledWith({ success: true });
+  });
+
+  test('PUT draft 400s on text over 1000 chars', async () => {
+    const res = mockRes();
+    await putDraftHandler({ user: USER, body: { text: 'x'.repeat(1001) } }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.update).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/ai-admin/prompt-addendum/test', () => {
+  const handler = getRouteHandler(aiAdminRouter, '/prompt-addendum/test', 'post');
+  beforeEach(() => jest.clearAllMocks());
+
+  test('tests the given text and stores the result as lastTestResult', async () => {
+    testPromptAddendum.mockResolvedValue({ allPassed: true, results: [], testedAt: '2026-07-06T00:00:00.000Z' });
+    dynamodb.update.mockReturnValue(resolved({}));
+    const res = mockRes();
+    await handler({ user: USER, body: { text: 'candidate text' }, ip: '1.1.1.1' }, res, jest.fn());
+
+    expect(testPromptAddendum).toHaveBeenCalledWith(CID, 'candidate text');
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      ExpressionAttributeValues: expect.objectContaining({ ':tr': { allPassed: true, results: [], testedAt: '2026-07-06T00:00:00.000Z' } }),
+    }));
+    expect(res.json).toHaveBeenCalledWith({ allPassed: true, results: [], testedAt: '2026-07-06T00:00:00.000Z' });
+  });
+
+  test('falls back to the saved draft text when no text is given in the body', async () => {
+    testPromptAddendum.mockResolvedValue({ allPassed: true, results: [], testedAt: 'x' });
+    dynamodb.get.mockReturnValue(resolved({ Item: { draftText: 'the saved draft' } }));
+    dynamodb.update.mockReturnValue(resolved({}));
+    await handler({ user: USER, body: {}, ip: '1.1.1.1' }, mockRes(), jest.fn());
+    expect(testPromptAddendum).toHaveBeenCalledWith(CID, 'the saved draft');
+  });
+});
+
+describe('POST /api/ai-admin/prompt-addendum/publish', () => {
+  const handler = getRouteHandler(aiAdminRouter, '/prompt-addendum/publish', 'post');
+  beforeEach(() => jest.clearAllMocks());
+
+  test('re-tests the CURRENT draft even when a stale lastTestResult already exists — the specific regression this design is for', async () => {
+    dynamodb.get.mockReturnValue(resolved({
+      Item: { draftText: 'new edited text', activeVersion: 2, lastTestResult: { allPassed: true, results: [], testedAt: 'stale' } },
+    }));
+    testPromptAddendum.mockResolvedValue({ allPassed: true, results: [], testedAt: 'fresh' });
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockReturnValue(resolved({}));
+
+    await handler({ user: USER, body: {}, ip: '1.1.1.1' }, mockRes(), jest.fn());
+
+    expect(testPromptAddendum).toHaveBeenCalledWith(CID, 'new edited text');
+    expect(testPromptAddendum).toHaveBeenCalledTimes(1);
+  });
+
+  test('blocks publish (422, itemized body) when the gate reports a failure — writes nothing', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: { draftText: 'risky text', activeVersion: 0 } }));
+    const failResult = { allPassed: false, results: [{ input: 'x', passed: false, reply: 'bad', reason: 'matched' }], testedAt: 't' };
+    testPromptAddendum.mockResolvedValue(failResult);
+    const res = mockRes();
+
+    await handler({ user: USER, body: {}, ip: '1.1.1.1' }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ testResult: failResult }));
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('on success, writes a new VERSION# item and updates CURRENT', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: { draftText: 'good text', activeVersion: 2 } }));
+    testPromptAddendum.mockResolvedValue({ allPassed: true, results: [], testedAt: 't' });
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockReturnValue(resolved({}));
+
+    const res = mockRes();
+    await handler({ user: USER, body: {}, ip: '1.1.1.1' }, res, jest.fn());
+
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({ PK: `CONFIG#PROMPTADDENDUM#${CID}`, SK: 'VERSION#000003', version: 3, text: 'good text', restoredFrom: null }),
+    }));
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      ExpressionAttributeValues: expect.objectContaining({ ':t': 'good text', ':v': 3 }),
+    }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, version: 3 }));
+  });
+});
+
+describe('GET /api/ai-admin/prompt-addendum/versions', () => {
+  const handler = getRouteHandler(aiAdminRouter, '/prompt-addendum/versions', 'get');
+  beforeEach(() => jest.clearAllMocks());
+
+  test('lists versions newest-first via the padded VERSION# sort key', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [{ version: 3 }, { version: 2 }, { version: 1 }] }));
+    const res = mockRes();
+    await handler({ user: USER }, res, jest.fn());
+    expect(dynamodb.query).toHaveBeenCalledWith(expect.objectContaining({
+      ExpressionAttributeValues: { ':pk': `CONFIG#PROMPTADDENDUM#${CID}`, ':pfx': 'VERSION#' },
+      ScanIndexForward: false,
+    }));
+    expect(res.json).toHaveBeenCalledWith({ versions: [{ version: 3 }, { version: 2 }, { version: 1 }] });
+  });
+});
+
+describe('POST /api/ai-admin/prompt-addendum/versions/:version/restore', () => {
+  const handler = getRouteHandler(aiAdminRouter, '/prompt-addendum/versions/:version/restore', 'post');
+  beforeEach(() => jest.clearAllMocks());
+
+  test('re-tests against CURRENT rules, not the rules live when the version was published', async () => {
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.SK === 'VERSION#000001') return resolved({ Item: { version: 1, text: 'old text' } });
+      return resolved({ Item: { activeVersion: 3 } }); // CURRENT
+    });
+    testPromptAddendum.mockResolvedValue({ allPassed: true, results: [], testedAt: 't' });
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockReturnValue(resolved({}));
+
+    await handler({ user: USER, params: { version: '1' }, body: {}, ip: '1.1.1.1' }, mockRes(), jest.fn());
+    expect(testPromptAddendum).toHaveBeenCalledWith(CID, 'old text');
+  });
+
+  test('blocks restore when the old version no longer passes current rules', async () => {
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.SK === 'VERSION#000001') return resolved({ Item: { version: 1, text: 'old text now unsafe' } });
+      return resolved({ Item: { activeVersion: 3 } });
+    });
+    const failResult = { allPassed: false, results: [{ input: 'x', passed: false, reply: 'bad', reason: 'matched' }], testedAt: 't' };
+    testPromptAddendum.mockResolvedValue(failResult);
+    const res = mockRes();
+
+    await handler({ user: USER, params: { version: '1' }, body: {}, ip: '1.1.1.1' }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('on success, publishes as a NEW version with restoredFrom set — never rewinds the version counter', async () => {
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.SK === 'VERSION#000001') return resolved({ Item: { version: 1, text: 'old text' } });
+      return resolved({ Item: { activeVersion: 3 } });
+    });
+    testPromptAddendum.mockResolvedValue({ allPassed: true, results: [], testedAt: 't' });
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockReturnValue(resolved({}));
+
+    const res = mockRes();
+    await handler({ user: USER, params: { version: '1' }, body: {}, ip: '1.1.1.1' }, res, jest.fn());
+
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({ SK: 'VERSION#000004', version: 4, text: 'old text', restoredFrom: 1 }),
+    }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, version: 4, restoredFrom: 1 }));
+  });
+
+  test('404s when the requested version does not exist', async () => {
+    dynamodb.get.mockReturnValue(resolved({}));
+    const res = mockRes();
+    await handler({ user: USER, params: { version: '99' }, body: {}, ip: '1.1.1.1' }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  test('400s on a non-numeric version param', async () => {
+    const res = mockRes();
+    await handler({ user: USER, params: { version: 'abc' }, body: {}, ip: '1.1.1.1' }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(400);
   });
 });

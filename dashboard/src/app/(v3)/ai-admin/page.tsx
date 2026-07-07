@@ -1,20 +1,22 @@
 'use client';
 
 import { useState } from 'react';
-import { Bot, Settings2, ShieldCheck, FlaskConical } from 'lucide-react';
+import { Bot, Settings2, ShieldCheck, FlaskConical, PenSquare } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 import { GeneralTab } from '@/components/v3/ai-admin/GeneralTab';
 import { ConversationTab } from '@/components/v3/ai-admin/ConversationTab';
 import { ComplianceTab } from '@/components/v3/ai-admin/ComplianceTab';
 import { FutureAiSettingsTab } from '@/components/v3/ai-admin/FutureAiSettingsTab';
+import { PromptManagementTab } from '@/components/v3/ai-admin/PromptManagementTab';
 
-type AiAdminTab = 'general' | 'conversation' | 'compliance' | 'future';
+type AiAdminTab = 'general' | 'conversation' | 'compliance' | 'prompt' | 'future';
 
 const TABS: { id: AiAdminTab; label: string; icon: React.ReactNode }[] = [
   { id: 'general', label: 'General', icon: <Settings2 className="h-4 w-4" /> },
   { id: 'conversation', label: 'Conversation', icon: <Bot className="h-4 w-4" /> },
   { id: 'compliance', label: 'Compliance', icon: <ShieldCheck className="h-4 w-4" /> },
+  { id: 'prompt', label: 'Prompt Management', icon: <PenSquare className="h-4 w-4" /> },
   { id: 'future', label: 'Future AI Settings', icon: <FlaskConical className="h-4 w-4" /> },
 ];
 
@@ -57,6 +59,7 @@ function AiAdminPageInner() {
           {tab === 'general' && <GeneralTab />}
           {tab === 'conversation' && <ConversationTab />}
           {tab === 'compliance' && <ComplianceTab />}
+          {tab === 'prompt' && <PromptManagementTab />}
           {tab === 'future' && <FutureAiSettingsTab />}
         </div>
       </div>

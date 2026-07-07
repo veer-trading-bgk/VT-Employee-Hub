@@ -197,6 +197,20 @@ async function _fetchConversationSettings(companyId) {
   return aiAdminConversationSchema.parse(r.Item ?? {});
 }
 
+// Phase 2A / PR 2 — Prompt Management (CONFIG#PROMPTADDENDUM). A live
+// conversation turn only ever sees `activeText` — the published, tested
+// version — never `draftText` (unpublished work-in-progress never reaches a
+// real customer). Defaults to '' (no row, or no active text yet), which
+// aiConfig.js's promptTemplate renders as nothing extra — byte-identical to
+// before this addendum existed.
+async function _fetchPromptAddendum(companyId) {
+  const r = await dynamodb.get({
+    TableName: TABLE,
+    Key: { PK: `CONFIG#PROMPTADDENDUM#${companyId}`, SK: 'CURRENT' },
+  }).promise().catch(() => ({}));
+  return r.Item?.activeText ?? '';
+}
+
 /**
  * Merge conversation-extracted signals onto the lead record. productInterest
  * is additive-union (same convention CIS itself uses); expectedValue/
@@ -335,10 +349,11 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
     return;
   }
 
-  const [conversationHistory, preferredLanguage, conversationSettings] = await Promise.all([
+  const [conversationHistory, preferredLanguage, conversationSettings, promptAddendum] = await Promise.all([
     _fetchConversationHistory(companyId, leadPK),
     _fetchPreferredLanguage(companyId, lead),
     _fetchConversationSettings(companyId),
+    _fetchPromptAddendum(companyId),
   ]);
 
   const result = await AIService.generate({
@@ -347,6 +362,7 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
     context: {
       latestMessage: text, turnNumber: turnCount + 1, maxTurns: MAX_TURNS, preferredLanguage,
       ...conversationSettings,
+      promptAddendum,
     },
     conversationHistory,
     user: AI_ACTOR,
@@ -486,4 +502,5 @@ module.exports = {
   HANDOFF_MESSAGE,
   GUARDRAIL_CATEGORIES,
   ESCALATION_CATEGORIES,
+  AI_ACTOR,
 };

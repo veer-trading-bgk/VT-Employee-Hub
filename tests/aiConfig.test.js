@@ -309,4 +309,33 @@ describe('aiConfig — conversational-sales-agent useCase (Conversation-tab adju
     expect(prompt).toMatch(/Never guarantee or promise any specific return/);
     expect(prompt).toMatch(/Never give a buy\/sell\/hold directive/);
   });
+
+  // Phase 2A / PR 2 — Prompt Management's addendum. Same backward-compat
+  // guarantee pattern as every PR1/PR2 field: absent/empty renders nothing.
+  test('with no promptAddendum, the prompt is byte-identical to the no-field case (backward compat)', () => {
+    const withEmpty = cfg.promptTemplate({ ...BASE_CONTEXT, promptAddendum: '' });
+    const withNoField = cfg.promptTemplate(BASE_CONTEXT);
+    expect(withEmpty).toBe(withNoField);
+    expect(withEmpty).not.toContain('ADDITIONAL COMPANY GUIDANCE');
+  });
+
+  test('a non-empty promptAddendum renders as its own clearly-subordinate section, verbatim', () => {
+    const prompt = cfg.promptTemplate({ ...BASE_CONTEXT, promptAddendum: 'Always mention our 24hr response time.' });
+    expect(prompt).toContain('ADDITIONAL COMPANY GUIDANCE');
+    expect(prompt).toContain('Always mention our 24hr response time.');
+    expect(prompt).toMatch(/UNLESS it would ever conflict with the HARD COMPLIANCE RULES above, which always take precedence/);
+  });
+
+  test('the addendum section appears AFTER the hard compliance rules, never before', () => {
+    const prompt = cfg.promptTemplate({ ...BASE_CONTEXT, promptAddendum: 'test addendum text' });
+    const rulesIndex = prompt.indexOf('HARD COMPLIANCE RULES');
+    const addendumIndex = prompt.indexOf('ADDITIONAL COMPANY GUIDANCE');
+    expect(rulesIndex).toBeGreaterThan(-1);
+    expect(addendumIndex).toBeGreaterThan(rulesIndex);
+  });
+
+  test('whitespace-only promptAddendum is treated as empty', () => {
+    const prompt = cfg.promptTemplate({ ...BASE_CONTEXT, promptAddendum: '   \n  ' });
+    expect(prompt).not.toContain('ADDITIONAL COMPANY GUIDANCE');
+  });
 });
