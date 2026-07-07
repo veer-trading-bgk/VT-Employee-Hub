@@ -166,6 +166,39 @@ describe('GET/PUT /api/ai-admin/conversation', () => {
     });
   });
 
+  // Production incident, 2026-07-07: a REAL saved item (exactly what PUT
+  // writes below — PK/SK/companyId/updatedAt/updatedBy alongside the actual
+  // fields) crashed this route's own .strict() schema parse with
+  // "Unrecognized keys". The empty-row test above never caught this because
+  // an empty/missing row never has these fields in the first place — this
+  // test is the one that would have caught it before it shipped.
+  test('GET with a real saved row (including PK/SK/companyId/updatedAt/updatedBy) does not throw — storage metadata is stripped before validation', async () => {
+    dynamodb.get.mockReturnValue(resolved({
+      Item: {
+        PK: `CONFIG#CONVPROMPT#${CID}`, SK: 'CURRENT', companyId: CID,
+        persona: 'friendly_advisor', tone: 'casual', languageRules: '', conversationStyle: 'concise', qualificationRules: '',
+        updatedBy: 'emp_1', updatedAt: '2026-07-07T08:00:00.000Z',
+      },
+    }));
+    const res = mockRes();
+    await getHandler({ user: USER }, res, jest.fn());
+    expect(res.json).toHaveBeenCalledWith({
+      persona: 'friendly_advisor', tone: 'casual', languageRules: '',
+      conversationStyle: 'concise', qualificationRules: '',
+    });
+  });
+
+  test('GET still rejects a row with a genuinely unexpected field (not just storage metadata)', async () => {
+    dynamodb.get.mockReturnValue(resolved({
+      Item: { PK: `CONFIG#CONVPROMPT#${CID}`, SK: 'CURRENT', companyId: CID, persona: 'friendly_advisor', someTypoField: 'oops' },
+    }));
+    const res = mockRes();
+    const next = jest.fn();
+    await getHandler({ user: USER }, res, next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+    expect(res.json).not.toHaveBeenCalled();
+  });
+
   test('PUT rejects a persona value outside the enum', async () => {
     const res = mockRes();
     await putHandler({ user: USER, body: { persona: 'salesy_bro' } }, res, jest.fn());
@@ -216,6 +249,24 @@ describe('GET/PUT /api/ai-admin/future — capped temperature/model, stored but 
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
       customModelSettings: { enabled: false, model: null, temperature: null },
       rag: { enabled: false, locked: true },
+    }));
+  });
+
+  // Production incident, 2026-07-07 — same root cause as /conversation above:
+  // a real saved row (PK/SK/companyId/updatedAt/updatedBy alongside the
+  // actual fields) crashed this route's .strict() schema parse too.
+  test('GET with a real saved row (including PK/SK/companyId/updatedAt/updatedBy) does not throw', async () => {
+    dynamodb.get.mockReturnValue(resolved({
+      Item: {
+        PK: `CONFIG#AIFUTURE#${CID}`, SK: 'CURRENT', companyId: CID,
+        customModelSettings: { enabled: true, model: 'claude-sonnet-5', temperature: 0.2 },
+        updatedBy: 'emp_1', updatedAt: '2026-07-07T08:00:00.000Z',
+      },
+    }));
+    const res = mockRes();
+    await getHandler({ user: USER }, res, jest.fn());
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      customModelSettings: { enabled: true, model: 'claude-sonnet-5', temperature: 0.2 },
     }));
   });
 

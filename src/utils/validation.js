@@ -1,6 +1,23 @@
 const { z } = require('zod');
 const { DOCUMENT_ALLOWED_MIME } = require('./documentConstants');
 
+// Production incident, 2026-07-07: a .strict() schema rejects ANY unrecognized
+// key, including DynamoDB's own storage/audit metadata (PK, SK, companyId,
+// updatedAt, updatedBy) — fine written into an item, fatal if that same raw
+// item is ever handed straight to Schema.parse() on read. This bug was
+// dormant since it was introduced (Phase 2A / PR 1, 66de50d) because it only
+// throws once a company has actually saved a real record — a first-write for
+// any company instantly breaks every subsequent read. Strip these known
+// storage-only fields before validating a raw read against a .strict()
+// business schema; the schema still correctly rejects any OTHER genuinely
+// unexpected field.
+const STORAGE_METADATA_KEYS = ['PK', 'SK', 'companyId', 'updatedAt', 'updatedBy'];
+function stripStorageMetadata(item) {
+  const rest = { ...(item ?? {}) };
+  for (const key of STORAGE_METADATA_KEYS) delete rest[key];
+  return rest;
+}
+
 const loginSchema = z.object({
   email: z.string().email('Invalid email'),
   password: z.string().min(8, 'Password must be at least 8 characters')
@@ -321,6 +338,7 @@ const welcomeConfigSchema = z.object({
 
 module.exports = {
   loginSchema,
+  stripStorageMetadata,
   aiConfigSchema,
   aiAdminGeneralSchema,
   aiAdminConversationSchema,

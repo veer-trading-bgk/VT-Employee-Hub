@@ -613,6 +613,44 @@ describe('ConversationalAgentService', () => {
     });
   });
 
+  // Production incident, 2026-07-07: _fetchConversationSettings passed the
+  // RAW CONFIG#CONVPROMPT item straight into aiAdminConversationSchema's
+  // .strict().parse() — the moment any company actually saved Conversation
+  // tab settings (via aiAdmin.js's PUT /conversation, which stores
+  // PK/SK/companyId/updatedAt/updatedBy alongside the real fields), every
+  // subsequent live turn crashed with a Zod unrecognized_keys error. Every
+  // pre-existing test in this file only ever exercised the empty-row default
+  // (dynamodb.get's blanket beforeEach mock returns {} for anything not
+  // explicitly special-cased) — this is the gap that let it ship. Fixed via
+  // validation.js's stripStorageMetadata(); this test exercises a REAL saved
+  // row, the exact shape that crashed in production.
+  describe('conversation settings (AI Administration Conversation tab)', () => {
+    test('a real saved CONFIG#CONVPROMPT row (with PK/SK/companyId/updatedAt/updatedBy) does not crash a live turn, and its settings reach the prompt', async () => {
+      dynamodb.get.mockImplementation((params) => {
+        if (params.Key.PK === `CONFIG#CONVAGENT#${CID}`) return resolved({ Item: { enabled: true } });
+        if (params.Key.PK === LEAD_PK) return resolved({ Item: lead });
+        if (params.Key.PK === `CONFIG#CONVPROMPT#${CID}`) {
+          return resolved({
+            Item: {
+              PK: `CONFIG#CONVPROMPT#${CID}`, SK: 'CURRENT', companyId: CID,
+              persona: 'friendly_advisor', tone: 'casual', languageRules: '', conversationStyle: 'concise', qualificationRules: '',
+              updatedBy: 'emp_1', updatedAt: '2026-07-07T08:00:00.000Z',
+            },
+          });
+        }
+        return resolved({});
+      });
+
+      mockTurn();
+      const started = await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hi', timestamp: 't1', waMessageId: 'wam1' });
+
+      expect(started).toBe(true);
+      expect(WASendSvc.sendText).toHaveBeenCalled(); // did not crash before ever generating/sending a reply
+      const generateCall = AIService.generate.mock.calls.find(([params]) => params.useCase === 'conversational-sales-agent');
+      expect(generateCall[0].context).toEqual(expect.objectContaining({ persona: 'friendly_advisor', tone: 'casual' }));
+    });
+  });
+
   // RAG PR C — document chunk retrieval, unified with structured entries.
   // KnowledgeService/DocumentChunkService/DocumentChunkRetrievalService are
   // deliberately left REAL (unmocked) here, same as KnowledgeService already

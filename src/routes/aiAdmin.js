@@ -8,6 +8,7 @@ const logger = require('../config/logger');
 const { logAudit } = require('../utils/audit');
 const {
   aiAdminGeneralSchema, aiAdminConversationSchema, aiAdminFutureSchema, promptAddendumDraftSchema,
+  stripStorageMetadata,
 } = require('../utils/validation');
 const {
   GUARDRAIL_CATEGORIES, ESCALATION_CATEGORIES, HANDOFF_MESSAGE,
@@ -110,7 +111,7 @@ router.put('/general', async (req, res, next) => {
 router.get('/conversation', async (req, res, next) => {
   try {
     const r = await dynamodb.get({ TableName: TABLE, Key: configKey('CONVPROMPT', req.user.companyId) }).promise();
-    const parsed = aiAdminConversationSchema.parse(r.Item ?? {});
+    const parsed = aiAdminConversationSchema.parse(stripStorageMetadata(r.Item));
     res.json(parsed);
   } catch (err) { next(err); }
 });
@@ -146,7 +147,7 @@ router.get('/compliance', async (req, res) => {
 router.get('/future', async (req, res, next) => {
   try {
     const r = await dynamodb.get({ TableName: TABLE, Key: configKey('AIFUTURE', req.user.companyId) }).promise();
-    const parsed = aiAdminFutureSchema.parse(r.Item ?? {});
+    const parsed = aiAdminFutureSchema.parse(stripStorageMetadata(r.Item));
     res.json({
       ...parsed,
       // Locked placeholders — no RAG infra exists yet (Phase 2A explicitly defers it).

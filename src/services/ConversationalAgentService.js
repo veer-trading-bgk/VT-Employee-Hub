@@ -15,7 +15,7 @@ const EmbeddingService = require('../services/EmbeddingService');
 const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
 const { resolveForLead } = require('../utils/conversationResolver');
 const { logAudit } = require('../utils/audit');
-const { aiAdminConversationSchema } = require('../utils/validation');
+const { aiAdminConversationSchema, stripStorageMetadata } = require('../utils/validation');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -198,7 +198,7 @@ async function _fetchConversationSettings(companyId) {
     TableName: TABLE,
     Key: { PK: `CONFIG#CONVPROMPT#${companyId}`, SK: 'CURRENT' },
   }).promise().catch(() => ({}));
-  return aiAdminConversationSchema.parse(r.Item ?? {});
+  return aiAdminConversationSchema.parse(stripStorageMetadata(r.Item));
 }
 
 // Phase 2A / PR 2 — Prompt Management (CONFIG#PROMPTADDENDUM). A live
