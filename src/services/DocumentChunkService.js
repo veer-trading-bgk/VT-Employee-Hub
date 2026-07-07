@@ -6,8 +6,10 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
 /**
  * RAG PR B — chunk storage for Document Knowledge. Mirrors KnowledgeService.js's
- * shape for the storage side; PR C owns retrieval (ranking chunks against a
- * live query), not this file.
+ * shape for the storage side. Ranking chunks against a live query is owned by
+ * DocumentChunkRetrievalService.js (RAG PR C), not this file — this file only
+ * grew a company-wide list function (listChunksForCompany) for that service
+ * to call.
  *
  * `KNOWLEDGE_DOCUMENT_CHUNKS#{companyId}` / `CHUNK#{documentId}#{chunkIndex}`
  * (zero-padded) — one partition PER COMPANY, not per document, deliberately
@@ -72,6 +74,18 @@ async function setChunksArchived(companyId, documentId, archived) {
   }).promise()));
 }
 
+// RAG PR C — company-wide fetch for live-turn retrieval, which doesn't know
+// in advance which document(s) are relevant. Same partition-scoped Query
+// shape as listChunksForDocument, just without the SK prefix condition.
+async function listChunksForCompany(companyId) {
+  const { Items = [] } = await dynamodb.query({
+    TableName: TABLE,
+    KeyConditionExpression: 'PK = :pk',
+    ExpressionAttributeValues: { ':pk': `KNOWLEDGE_DOCUMENT_CHUNKS#${companyId}` },
+  }).promise();
+  return Items;
+}
+
 module.exports = {
-  chunkKey, listChunksForDocument, deleteChunksForDocument, createChunks, setChunksArchived,
+  chunkKey, listChunksForDocument, listChunksForCompany, deleteChunksForDocument, createChunks, setChunksArchived,
 };

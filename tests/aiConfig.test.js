@@ -375,4 +375,53 @@ describe('aiConfig — conversational-sales-agent useCase (Conversation-tab adju
     expect(knowledgeIndex).toBeGreaterThan(addendumIndex);
     expect(addendumIndex).toBeGreaterThan(rulesIndex);
   });
+
+  // RAG PR C — Document Knowledge chunks. Same backward-compat guarantee:
+  // absent/empty renders nothing, byte-identical to v5. Deliberately its own
+  // section, never merged into knowledgeEntries (entries-first, additive).
+  test('with no documentExcerpts, the prompt is byte-identical to the no-field case (backward compat)', () => {
+    const withEmpty = cfg.promptTemplate({ ...BASE_CONTEXT, documentExcerpts: [] });
+    const withNoField = cfg.promptTemplate(BASE_CONTEXT);
+    expect(withEmpty).toBe(withNoField);
+    expect(withEmpty).not.toContain('REFERENCE DOCUMENT EXCERPTS');
+  });
+
+  test('non-empty documentExcerpts render as their own clearly-subordinate, lower-trust section', () => {
+    const prompt = cfg.promptTemplate({
+      ...BASE_CONTEXT,
+      documentExcerpts: [{ text: 'AMC is charged from the second year onward at ₹300 p.a.' }],
+    });
+    expect(prompt).toContain('REFERENCE DOCUMENT EXCERPTS');
+    expect(prompt).toContain('AMC is charged from the second year onward at ₹300 p.a.');
+    expect(prompt).toMatch(/HARD COMPLIANCE RULES above still always take precedence/);
+    expect(prompt).toMatch(/less vetted than the RELEVANT COMPANY KNOWLEDGE above/);
+  });
+
+  test('knowledgeEntries and documentExcerpts can both render together without interfering', () => {
+    const prompt = cfg.promptTemplate({
+      ...BASE_CONTEXT,
+      knowledgeEntries: [{ question: 'What are your fees?', answer: 'No account opening fee.' }],
+      documentExcerpts: [{ text: 'AMC is waived for the first year only.' }],
+    });
+    expect(prompt).toContain('RELEVANT COMPANY KNOWLEDGE');
+    expect(prompt).toContain('Q: What are your fees?');
+    expect(prompt).toContain('REFERENCE DOCUMENT EXCERPTS');
+    expect(prompt).toContain('AMC is waived for the first year only.');
+  });
+
+  test('the document excerpts section appears AFTER the hard compliance rules, addendum, AND knowledge sections — entries keep top billing', () => {
+    const prompt = cfg.promptTemplate({
+      ...BASE_CONTEXT, promptAddendum: 'test addendum text',
+      knowledgeEntries: [{ question: 'q', answer: 'a' }],
+      documentExcerpts: [{ text: 'excerpt text' }],
+    });
+    const rulesIndex = prompt.indexOf('HARD COMPLIANCE RULES');
+    const addendumIndex = prompt.indexOf('ADDITIONAL COMPANY GUIDANCE');
+    const knowledgeIndex = prompt.indexOf('RELEVANT COMPANY KNOWLEDGE');
+    const excerptsIndex = prompt.indexOf('REFERENCE DOCUMENT EXCERPTS');
+    expect(rulesIndex).toBeGreaterThan(-1);
+    expect(addendumIndex).toBeGreaterThan(rulesIndex);
+    expect(knowledgeIndex).toBeGreaterThan(addendumIndex);
+    expect(excerptsIndex).toBeGreaterThan(knowledgeIndex);
+  });
 });

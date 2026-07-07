@@ -6,7 +6,7 @@ jest.mock('../src/config/dynamodb', () => ({
 
 const dynamodb = require('../src/config/dynamodb');
 const {
-  chunkKey, listChunksForDocument, deleteChunksForDocument, createChunks, setChunksArchived,
+  chunkKey, listChunksForDocument, listChunksForCompany, deleteChunksForDocument, createChunks, setChunksArchived,
 } = require('../src/services/DocumentChunkService');
 
 const CID = 'comp_test';
@@ -92,5 +92,35 @@ describe('DocumentChunkService', () => {
     await expect(setChunksArchived(CID, DOC_ID, true)).resolves.toBeUndefined();
     expect(dynamodb.delete).not.toHaveBeenCalled();
     expect(dynamodb.update).not.toHaveBeenCalled();
+  });
+
+  // RAG PR C
+  test('listChunksForCompany queries the company partition only, no SK prefix condition', async () => {
+    dynamodb.query.mockReturnValue(resolved({
+      Items: [
+        { PK: `KNOWLEDGE_DOCUMENT_CHUNKS#${CID}`, SK: `CHUNK#doc-a#000000` },
+        { PK: `KNOWLEDGE_DOCUMENT_CHUNKS#${CID}`, SK: `CHUNK#doc-b#000000` },
+      ],
+    }));
+    const items = await listChunksForCompany(CID);
+    expect(items).toHaveLength(2);
+    expect(dynamodb.query).toHaveBeenCalledWith(expect.objectContaining({
+      KeyConditionExpression: 'PK = :pk',
+      ExpressionAttributeValues: { ':pk': `KNOWLEDGE_DOCUMENT_CHUNKS#${CID}` },
+    }));
+  });
+
+  test('listChunksForCompany returns archived items too — filtering is the caller\'s job, mirroring listEntries', async () => {
+    dynamodb.query.mockReturnValue(resolved({
+      Items: [{ SK: `CHUNK#doc-a#000000`, archived: true }, { SK: `CHUNK#doc-a#000001`, archived: false }],
+    }));
+    const items = await listChunksForCompany(CID);
+    expect(items).toHaveLength(2);
+    expect(items.some((i) => i.archived)).toBe(true);
+  });
+
+  test('no chunks for a company — listChunksForCompany returns []', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [] }));
+    await expect(listChunksForCompany(CID)).resolves.toEqual([]);
   });
 });

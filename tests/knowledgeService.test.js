@@ -8,7 +8,7 @@ jest.mock('../src/services/EmbeddingService', () => ({ embed: jest.fn() }));
 const dynamodb = require('../src/config/dynamodb');
 const EmbeddingService = require('../src/services/EmbeddingService');
 const {
-  getMatchingEntries, listEntries, entryKey, versionKey, MAX_MATCHED_ENTRIES, cosineSimilarity,
+  getMatchingEntries, listEntries, entryKey, versionKey, MAX_MATCHED_ENTRIES, cosineSimilarity, hasSemanticEntry,
 } = require('../src/services/KnowledgeService');
 
 const CID = 'comp_test';
@@ -43,6 +43,15 @@ describe('KnowledgeService', () => {
         activeTriggers: ['fees'], activeQuestion: 'What are your fees?', activeAnswer: 'No account opening fee.',
         ...overrides,
       };
+    }
+
+    function embeddedEntry(overrides) {
+      return entry({
+        entryId: 'e-embedded', activeEmbedding: [1, 0, 0],
+        activeQuestion: 'What are SIP options?', activeAnswer: 'We offer SIPs starting at ₹500/month.',
+        activeTriggers: ['sip options'], // deliberately narrow — the point is semantic match works WITHOUT this
+        ...overrides,
+      });
     }
 
     test('matches case-insensitively via substring against the customer message', async () => {
@@ -90,15 +99,6 @@ describe('KnowledgeService', () => {
     });
 
     describe('semantic retrieval (RAG PR A, ADR-017)', () => {
-      function embeddedEntry(overrides) {
-        return entry({
-          entryId: 'e-embedded', activeEmbedding: [1, 0, 0],
-          activeQuestion: 'What are SIP options?', activeAnswer: 'We offer SIPs starting at ₹500/month.',
-          activeTriggers: ['sip options'], // deliberately narrow — the point is semantic match works WITHOUT this
-          ...overrides,
-        });
-      }
-
       test('an embedding-bearing entry matches semantically even with ZERO keyword overlap', async () => {
         dynamodb.query.mockReturnValue(resolved({ Items: [embeddedEntry()] }));
         EmbeddingService.embed.mockResolvedValue({ ok: true, data: { embeddings: [[0.9, 0.1, 0]] } });
@@ -164,6 +164,60 @@ describe('KnowledgeService', () => {
         expect(matches).toHaveLength(MAX_MATCHED_ENTRIES);
         expect(matches.every((m) => m.question.startsWith('sem-q'))).toBe(true); // semantic fills the cap first
       });
+    });
+
+    describe('queryVector param (RAG PR C — shared embedding across entries + document chunks)', () => {
+      test('a pre-computed queryVector is used directly, skipping embed entirely', async () => {
+        const item = embeddedEntry();
+        dynamodb.query.mockReturnValue(resolved({ Items: [item] }));
+
+        const matches = await getMatchingEntries(CID, 'anything', { queryVector: [1, 0, 0] });
+        expect(EmbeddingService.embed).not.toHaveBeenCalled();
+        expect(matches).toEqual([{ question: item.activeQuestion, answer: item.activeAnswer }]);
+      });
+
+      test('queryVector: null skips embed and falls back to keyword matching, same as a failed embed call', async () => {
+        const item = embeddedEntry({ activeTriggers: ['sip options'] });
+        dynamodb.query.mockReturnValue(resolved({ Items: [item] }));
+
+        const matches = await getMatchingEntries(CID, 'what are sip options', { queryVector: null });
+        expect(EmbeddingService.embed).not.toHaveBeenCalled();
+        expect(matches).toEqual([{ question: item.activeQuestion, answer: item.activeAnswer }]);
+      });
+
+      test('omitting the 3rd argument entirely still computes its own embedding exactly as before (no regression)', async () => {
+        dynamodb.query.mockReturnValue(resolved({ Items: [embeddedEntry()] }));
+        EmbeddingService.embed.mockResolvedValue({ ok: true, data: { embeddings: [[1, 0, 0]] } });
+
+        await getMatchingEntries(CID, 'anything');
+        expect(EmbeddingService.embed).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('hasSemanticEntry (RAG PR C)', () => {
+    function entry(overrides) {
+      return { archived: false, activeVersion: 1, ...overrides };
+    }
+
+    test('true when at least one eligible entry has an embedding', () => {
+      expect(hasSemanticEntry([entry({ activeEmbedding: [1, 0] })])).toBe(true);
+    });
+
+    test('false for an empty list', () => {
+      expect(hasSemanticEntry([])).toBe(false);
+    });
+
+    test('false when the only embedded entry is archived', () => {
+      expect(hasSemanticEntry([entry({ activeEmbedding: [1, 0], archived: true })])).toBe(false);
+    });
+
+    test('false when the only embedded entry is never-published (activeVersion 0)', () => {
+      expect(hasSemanticEntry([entry({ activeEmbedding: [1, 0], activeVersion: 0 })])).toBe(false);
+    });
+
+    test('false when entries exist but none has an embedding', () => {
+      expect(hasSemanticEntry([entry(), entry()])).toBe(false);
     });
   });
 

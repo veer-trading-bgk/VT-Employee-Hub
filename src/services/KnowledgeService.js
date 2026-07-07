@@ -75,7 +75,17 @@ function newestFirst(entries) {
 // entries (activeVersion === 0) never match, and never get an embedding
 // computed in the first place (see knowledgeCenter.js) — the searchable set
 // cannot contain draft content by construction, not by a runtime filter.
-async function getMatchingEntries(companyId, latestMessage) {
+//
+// RAG PR C — optional 3rd param {queryVector} lets a caller that's ALSO
+// ranking document chunks this same turn (ConversationalAgentService.js)
+// embed the customer's message once and reuse the vector here, instead of
+// this function embedding it again — Voyage is rate-limited (see Era 29's
+// pre-launch blocker), so a redundant embed call per turn is a real, not
+// theoretical, cost. undefined (the default, every pre-existing caller) ->
+// unchanged behavior, computes its own embedding exactly as before. A real
+// vector -> reused, no embed call. null -> caller already tried and failed,
+// skip straight to keyword fallback rather than trying again.
+async function getMatchingEntries(companyId, latestMessage, { queryVector } = {}) {
   if (!latestMessage) return [];
   const lowerMsg = String(latestMessage).toLowerCase();
 
@@ -89,14 +99,17 @@ async function getMatchingEntries(companyId, latestMessage) {
     return toPromptShape(newestFirst(keywordMatch(eligible, lowerMsg)).slice(0, MAX_MATCHED_ENTRIES));
   }
 
-  const queryResult = await EmbeddingService.embed({ texts: [latestMessage], companyId, inputType: 'query' });
-  if (!queryResult.ok) {
+  let vector = queryVector;
+  if (vector === undefined) {
+    const queryResult = await EmbeddingService.embed({ texts: [latestMessage], companyId, inputType: 'query' });
+    vector = queryResult.ok ? queryResult.data.embeddings[0] : null;
+  }
+  if (!vector) {
     return toPromptShape(newestFirst(keywordMatch(eligible, lowerMsg)).slice(0, MAX_MATCHED_ENTRIES));
   }
 
-  const [queryVector] = queryResult.data.embeddings;
   const semanticMatches = withEmbedding
-    .map((e) => ({ entry: e, score: cosineSimilarity(queryVector, e.activeEmbedding) }))
+    .map((e) => ({ entry: e, score: cosineSimilarity(vector, e.activeEmbedding) }))
     .sort((a, b) => b.score - a.score)
     .map((s) => s.entry);
 
@@ -106,6 +119,15 @@ async function getMatchingEntries(companyId, latestMessage) {
   return toPromptShape(merged);
 }
 
+// RAG PR C — lets a caller decide up front (without a Voyage call) whether
+// embedding the customer's message is worth attempting at all, i.e. whether
+// ANY eligible entry could actually use it. Reuses the exact same
+// eligibility+embedding check getMatchingEntries applies inline, so the two
+// can never drift out of sync with each other.
+function hasSemanticEntry(entries) {
+  return entries.some((e) => !e.archived && (e.activeVersion ?? 0) > 0 && hasEmbedding(e));
+}
+
 module.exports = {
-  listEntries, getMatchingEntries, entryKey, versionKey, MAX_MATCHED_ENTRIES, cosineSimilarity,
+  listEntries, getMatchingEntries, entryKey, versionKey, MAX_MATCHED_ENTRIES, cosineSimilarity, hasSemanticEntry,
 };

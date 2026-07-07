@@ -33,9 +33,15 @@ jest.mock('../src/services/ConversationService', () => ({
   handoffToHuman: jest.fn(),
 }));
 jest.mock('../src/events/timeline', () => ({ writeTlRecord: jest.fn().mockResolvedValue(undefined) }));
+// RAG PR C — KnowledgeService/DocumentChunkService/DocumentChunkRetrievalService
+// are deliberately left real/unmocked (same as KnowledgeService already was);
+// only the embedding provider boundary itself is mocked.
+jest.mock('../src/services/EmbeddingService', () => ({ embed: jest.fn() }));
 
 const dynamodb = require('../src/config/dynamodb');
 const AIService = require('../src/services/AIService');
+const EmbeddingService = require('../src/services/EmbeddingService');
+const DocumentChunkRetrievalService = require('../src/services/DocumentChunkRetrievalService');
 const WASendSvc = require('../src/services/WhatsAppSendService');
 const CustomerIdentityService = require('../src/services/CustomerIdentityService');
 const PipelineService = require('../src/services/PipelineService');
@@ -604,6 +610,160 @@ describe('ConversationalAgentService', () => {
       expect(pickNextEmployee).toHaveBeenCalledWith(CID, 'ai_conversation', expect.objectContaining({ enabled: true }));
       const stageUpdate = dynamodb.update.mock.calls.find((c) => c[0].ExpressionAttributeValues?.[':s'] === 'interested');
       expect(stageUpdate).toBeDefined();
+    });
+  });
+
+  // RAG PR C — document chunk retrieval, unified with structured entries.
+  // KnowledgeService/DocumentChunkService/DocumentChunkRetrievalService are
+  // deliberately left REAL (unmocked) here, same as KnowledgeService already
+  // was before this PR — only their own dependencies (dynamodb, EmbeddingService)
+  // are mocked, so these tests exercise the actual merge/gating logic, not a
+  // stand-in for it.
+  describe('document chunk retrieval (RAG PR C)', () => {
+    function mockKnowledgeQuery({ entries = [], chunks = [] } = {}) {
+      dynamodb.query.mockImplementation((params) => {
+        const pk = params.ExpressionAttributeValues?.[':pk'];
+        if (pk === `KNOWLEDGE#${CID}`) return resolved({ Items: entries });
+        if (pk === `KNOWLEDGE_DOCUMENT_CHUNKS#${CID}`) return resolved({ Items: chunks });
+        return resolved({ Items: [] }); // conversation history and anything else — empty by default
+      });
+    }
+
+    function activeChunk(overrides) {
+      return {
+        companyId: CID, documentId: 'doc-1', chunkIndex: 0, archived: false,
+        text: 'AMC is waived for the first year only.', embedding: [1, 0, 0],
+        ...overrides,
+      };
+    }
+
+    function embeddedEntry(overrides) {
+      return {
+        entryId: 'e1', archived: false, activeVersion: 1, activePublishedAt: '2026-07-01T00:00:00.000Z',
+        activeEmbedding: [1, 0, 0], activeQuestion: 'What are your fees?', activeAnswer: 'No account opening fee.',
+        activeTriggers: [],
+        ...overrides,
+      };
+    }
+
+    function lastTurnContext() {
+      const call = AIService.generate.mock.calls.find(([params]) => params.useCase === 'conversational-sales-agent');
+      return call[0].context;
+    }
+
+    async function runTurn(text = 'anything') {
+      mockTurn();
+      return agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text, timestamp: 't1', waMessageId: 'wam1' });
+    }
+
+    test('a matching published chunk reaches AIService.generate as documentExcerpts', async () => {
+      mockKnowledgeQuery({ chunks: [activeChunk()] });
+      EmbeddingService.embed.mockResolvedValue({ ok: true, data: { embeddings: [[1, 0, 0]] } });
+      await runTurn('Do you charge an AMC fee?');
+      expect(lastTurnContext().documentExcerpts).toEqual([{ text: activeChunk().text }]);
+    });
+
+    test('an archived chunk never reaches documentExcerpts despite a strong match', async () => {
+      mockKnowledgeQuery({ chunks: [activeChunk({ archived: true })] });
+      await runTurn('Do you charge an AMC fee?');
+      expect(lastTurnContext().documentExcerpts).toEqual([]);
+      expect(EmbeddingService.embed).not.toHaveBeenCalled(); // no active chunk, no eligible entry -> nothing to embed for
+    });
+
+    test('a company with nothing published gets documentExcerpts: [] and zero embed calls (ADR-017 Rule 7 preserved)', async () => {
+      mockKnowledgeQuery({ entries: [], chunks: [] });
+      await runTurn('Hi');
+      expect(lastTurnContext().documentExcerpts).toEqual([]);
+      expect(lastTurnContext().knowledgeEntries).toEqual([]);
+      expect(EmbeddingService.embed).not.toHaveBeenCalled();
+    });
+
+    test('cap enforcement: more than MAX_MATCHED_CHUNKS active chunks reach exactly MAX_MATCHED_CHUNKS, highest-scoring first', async () => {
+      const items = [
+        activeChunk({ chunkIndex: 0, text: 'best', embedding: [1, 0, 0] }),
+        activeChunk({ chunkIndex: 1, text: 'mid', embedding: [0.9, 0.1, 0] }),
+        activeChunk({ chunkIndex: 2, text: 'worst', embedding: [0, 1, 0] }),
+      ];
+      mockKnowledgeQuery({ chunks: items });
+      EmbeddingService.embed.mockResolvedValue({ ok: true, data: { embeddings: [[1, 0, 0]] } });
+      await runTurn();
+      expect(lastTurnContext().documentExcerpts).toHaveLength(DocumentChunkRetrievalService.MAX_MATCHED_CHUNKS);
+      expect(lastTurnContext().documentExcerpts[0]).toEqual({ text: 'best' });
+    });
+
+    test('entries render their normal result even when zero chunks exist', async () => {
+      const entry = embeddedEntry();
+      mockKnowledgeQuery({ entries: [entry], chunks: [] });
+      EmbeddingService.embed.mockResolvedValue({ ok: true, data: { embeddings: [[1, 0, 0]] } });
+      await runTurn('what are your fees');
+      expect(lastTurnContext().knowledgeEntries).toEqual([{ question: entry.activeQuestion, answer: entry.activeAnswer }]);
+    });
+
+    test('entries-unaffected-by-chunks: the same entry produces the same knowledgeEntries result even with a strongly-matching chunk also present (additive, never displacing)', async () => {
+      const entry = embeddedEntry();
+      mockKnowledgeQuery({ entries: [entry], chunks: [activeChunk()] });
+      EmbeddingService.embed.mockResolvedValue({ ok: true, data: { embeddings: [[1, 0, 0]] } });
+      await runTurn('what are your fees');
+      expect(lastTurnContext().knowledgeEntries).toEqual([{ question: entry.activeQuestion, answer: entry.activeAnswer }]);
+      expect(lastTurnContext().documentExcerpts).toEqual([{ text: activeChunk().text }]); // both present, neither crowds out the other
+    });
+
+    test('single-embed-call-per-turn: an embedded entry AND an active chunk both present -> EmbeddingService.embed is called exactly once', async () => {
+      mockKnowledgeQuery({ entries: [embeddedEntry()], chunks: [activeChunk()] });
+      EmbeddingService.embed.mockResolvedValue({ ok: true, data: { embeddings: [[1, 0, 0]] } });
+      await runTurn('what are your fees');
+      expect(EmbeddingService.embed).toHaveBeenCalledTimes(1);
+    });
+
+    test('a failed query embed degrades documentExcerpts to [] while entries still fall back to keyword matching independently', async () => {
+      const entry = embeddedEntry({ activeTriggers: ['fees'] });
+      mockKnowledgeQuery({ entries: [entry], chunks: [activeChunk()] });
+      EmbeddingService.embed.mockResolvedValue({ ok: false, reason: 'embedding_failed' });
+      await runTurn('what are your fees');
+      expect(lastTurnContext().documentExcerpts).toEqual([]);
+      expect(lastTurnContext().knowledgeEntries).toEqual([{ question: entry.activeQuestion, answer: entry.activeAnswer }]);
+    });
+
+    test('a listChunksForCompany rejection degrades to documentExcerpts: [] — the turn still completes and sends a reply', async () => {
+      dynamodb.query.mockImplementation((params) => {
+        const pk = params.ExpressionAttributeValues?.[':pk'];
+        if (pk === `KNOWLEDGE_DOCUMENT_CHUNKS#${CID}`) return { promise: () => Promise.reject(new Error('DynamoDB throttled')) };
+        return resolved({ Items: [] });
+      });
+      const started = await runTurn('Hi');
+      expect(started).toBe(true);
+      expect(WASendSvc.sendText).toHaveBeenCalled();
+      expect(lastTurnContext().documentExcerpts).toEqual([]);
+    });
+
+    // The actual safety net for the weaker-vetted content source: a document
+    // chunk only ever gets PR B's non-blocking advisory scan at publish time
+    // (violatesGuardrail() run once, non-blocking) — never PromptTestService's
+    // live-generation test the way a published entry does. This proves the
+    // EXISTING, unmodified output-side guardrail (violatesGuardrail() on the
+    // generated reply, _runTurn lines ~426-431) still catches unsafe content
+    // that reached the prompt via a chunk, exactly as it would from any other
+    // source — the check is on the REPLY TEXT, content-blind to where the
+    // model picked up the unsafe phrasing.
+    test('a chunk containing guardrail-triggering language reaching the prompt does NOT bypass the existing output-side guardrail', async () => {
+      const riskyChunk = activeChunk({ text: 'This mutual fund is a guaranteed 20% return investment with zero risk.' });
+      mockKnowledgeQuery({ chunks: [riskyChunk] });
+      EmbeddingService.embed.mockResolvedValue({ ok: true, data: { embeddings: [[1, 0, 0]] } });
+      // Simulates the model echoing the risky chunk's own claim into its reply.
+      mockTurn({ reply: 'Yes, this fund offers a guaranteed 20% return, so it is a very safe pick.' });
+
+      await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Tell me about this fund', timestamp: 't1', waMessageId: 'wam1' });
+
+      // Proof 1: the risky chunk really did reach the prompt context.
+      expect(lastTurnContext().documentExcerpts).toEqual([{ text: riskyChunk.text }]);
+      // Proof 2: the unsafe reply was never sent to the customer — replaced by the handoff message.
+      expect(WASendSvc.sendText).toHaveBeenCalledWith(
+        CID, { leadPK: LEAD_PK },
+        expect.not.stringContaining('guaranteed'),
+        expect.anything(),
+      );
+      // Proof 3: same forced-escalation path as any other guardrail trip (entries, or the model's own generation).
+      expect(ConversationService.handoffToHuman).toHaveBeenCalledTimes(1);
     });
   });
 });

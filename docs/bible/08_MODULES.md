@@ -507,6 +507,26 @@ Everything else (`_normPhone`, `_findByPhone`, `_createCustomer`, `_enrichCustom
 
 ---
 
+### RAG / Knowledge Center service cluster (`KnowledgeService.js`, `EmbeddingService.js`, `DocumentChunkService.js`, `DocumentChunkRetrievalService.js`) — Eras 29-31
+
+Documented as one cluster since they were built together across the 3-PR RAG arc and are tightly coupled; the wider Phase 2A AI Administration/Prompt Management/pre-RAG Knowledge Center route layer (`ai.js`, `knowledgeCenter.js`, `knowledgeDocuments.js`, `PromptTestService.js`, `AIService.js`, `ConversationalAgentService.js`) predates this cluster and remains undocumented in this file — a separate, larger gap, not backfilled here.
+
+**`src/services/EmbeddingService.js` (ADR-017)** — the single governed entry point for every embedding call APForce makes, mirroring `AIService.generate()`'s boundary shape but text-in/vector-out instead of prompt-in/text-out. **Key export:** `embed({texts, companyId, inputType: 'query'|'document'})` → `{ok: true, data: {embeddings: number[][]}}` or `{ok: false, reason}` — never throws for expected runtime conditions (provider error, timeout, missing key), so callers can degrade gracefully. Model/provider live in `src/config/embeddingConfig.js` (Voyage AI `voyage-finance-2`, 1024 dimensions, chosen for a measured retrieval-quality advantage on finance-domain content). Usage tracked per company/day at `EMBEDUSAGE#{companyId}#{date}`. **Depended on by:** `KnowledgeService.js`, `DocumentChunkRetrievalService.js`, `ConversationalAgentService.js` (the shared per-turn query embed), `knowledgeCenter.js`'s `/publish`, `knowledgeDocuments.js`'s `/publish`.
+
+**`src/services/KnowledgeService.js`** — storage + semantic retrieval for structured Knowledge Center entries (`KNOWLEDGE#{companyId}` / `ENTRY#{entryId}`). **Key exports:** `listEntries(companyId)`; `getMatchingEntries(companyId, latestMessage, {queryVector})` — published+non-archived entries ranked by cosine similarity against the customer message's embedding (computed by the caller when `queryVector` is supplied, or self-computed when omitted — the optional param exists so `ConversationalAgentService.js` can share one embed call with document-chunk ranking in the same turn), falling back to keyword-substring matching for entries never backfilled with an embedding or when the embed call itself fails, capped at `MAX_MATCHED_ENTRIES = 3`; `hasSemanticEntry(entries)` — cheap pre-check for whether embedding is worth attempting at all, without a Voyage call; `cosineSimilarity(a, b)` — shared by the whole cluster.
+
+**`src/services/DocumentChunkService.js`** — storage only (deliberately no ranking logic) for Document Knowledge chunks (`KNOWLEDGE_DOCUMENT_CHUNKS#{companyId}` / `CHUNK#{documentId}#{chunkIndex}`, zero-padded — **one partition per company**, not per document, specifically so retrieval can fetch every chunk across every document in a single Query). **Key exports:** `createChunks`, `listChunksForDocument`, `listChunksForCompany` (company-wide, used only by retrieval), `deleteChunksForDocument`, `setChunksArchived` (denormalizes `archived` onto every chunk item, kept in sync by `knowledgeDocuments.js`'s `/archive`/`/unarchive`). A chunk only ever exists once its parent document has been published — `createChunks(` has exactly one call site codebase-wide (`knowledgeDocuments.js`'s `/publish`).
+
+**`src/services/DocumentChunkRetrievalService.js`** — chunk ranking (the capability `DocumentChunkService.js`'s own docstring explicitly deferred to this file). **Key export:** `getMatchingChunks(companyId, latestMessage, {queryVector})` — same shared-vector contract as `getMatchingEntries` above, ranks a company's non-archived chunks by cosine similarity, capped at `MAX_MATCHED_CHUNKS = 2` (smaller than entries' cap — chunks run up to ~1000 characters each). No keyword fallback (a stored chunk can never lack an embedding; `/publish` blocks on a failed embed call), no similarity floor.
+
+**Coordination point:** `ConversationalAgentService._fetchKnowledgeContext(companyId, latestMessage)` (private helper, `_runTurn`'s replacement for a direct `KnowledgeService.getMatchingEntries` call) — embeds the customer's message at most once per turn and hands the vector to both `getMatchingEntries` and `getMatchingChunks`, entries-first-additive per Era 31's locked decision (chunks can never displace an entry). Rendered into the `conversational-sales-agent` prompt (`aiConfig.js`) as two separate sections, `RELEVANT COMPANY KNOWLEDGE` then `REFERENCE DOCUMENT EXCERPTS`, both subordinate to `HARD COMPLIANCE RULES`.
+
+**Known interim decision:** `DocumentChunkRetrievalService.getMatchingChunks`'s company-wide `Query` + in-process cosine scan has no vector index — accepted explicitly in `docs/adr/ADR-018-document-chunk-retrieval-scan.md`, same class of decision as `CampaignScheduler.js`'s ADR-014 Scan above, with its own (more conservative) revisit triggers.
+
+**Tests:** `tests/embeddingService.test.js`, `tests/knowledgeService.test.js`, `tests/documentChunkService.test.js`, `tests/documentChunkRetrievalService.test.js`, `tests/conversationalAgentService.test.js` (the knowledge-context describe blocks specifically).
+
+---
+
 ### `src/services/notifications.js` (880 bytes — dead code)
 
 **Purpose:** A stateless wrapper around Expo's push-notification API.

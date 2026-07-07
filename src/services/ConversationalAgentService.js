@@ -9,6 +9,9 @@ const ContactService = require('../services/ContactService');
 const CustomerIdentityService = require('../services/CustomerIdentityService');
 const PipelineService = require('../services/PipelineService');
 const KnowledgeService = require('../services/KnowledgeService');
+const DocumentChunkService = require('../services/DocumentChunkService');
+const DocumentChunkRetrievalService = require('../services/DocumentChunkRetrievalService');
+const EmbeddingService = require('../services/EmbeddingService');
 const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
 const { resolveForLead } = require('../utils/conversationResolver');
 const { logAudit } = require('../utils/audit');
@@ -339,6 +342,48 @@ async function _handoff(companyId, { leadPK, lead, conversationId, reason, turnC
   }
 }
 
+// RAG PR C — unifies structured-entry and document-chunk retrieval for one
+// turn: embeds the customer's message AT MOST ONCE (Voyage is rate-limited,
+// see Era 29's pre-launch blocker — a redundant second embed call per turn
+// is a real, not theoretical, cost) and hands the same vector to both
+// rankers. Entries-first, additive, per the locked design decision: entries
+// (KnowledgeService.getMatchingEntries) run their own unchanged top-3
+// logic completely unaffected by whether any documents exist; document
+// chunks (DocumentChunkRetrievalService.getMatchingChunks) are a small,
+// separate, supplementary result that can never displace an entry.
+// A chunk-side failure (list or rank) degrades to an empty documentExcerpts
+// for this turn rather than failing the whole conversation — entries'
+// own failure handling (inside getMatchingEntries) is untouched.
+async function _fetchKnowledgeContext(companyId, latestMessage) {
+  if (!latestMessage) return { knowledgeEntries: [], documentExcerpts: [] };
+
+  const [entries, chunks] = await Promise.all([
+    KnowledgeService.listEntries(companyId),
+    DocumentChunkService.listChunksForCompany(companyId).catch((err) => {
+      logger.warn(`ConversationalAgentService: chunk list fetch failed for ${companyId}, document excerpts skipped this turn: ${err.message}`);
+      return [];
+    }),
+  ]);
+
+  const needsVector = KnowledgeService.hasSemanticEntry(entries) || chunks.some((c) => !c.archived);
+
+  let queryVector = null;
+  if (needsVector) {
+    const embedResult = await EmbeddingService.embed({ texts: [latestMessage], companyId, inputType: 'query' });
+    queryVector = embedResult.ok ? embedResult.data.embeddings[0] : null;
+  }
+
+  const [knowledgeEntries, documentExcerpts] = await Promise.all([
+    KnowledgeService.getMatchingEntries(companyId, latestMessage, { queryVector }),
+    DocumentChunkRetrievalService.getMatchingChunks(companyId, latestMessage, { queryVector }).catch((err) => {
+      logger.warn(`ConversationalAgentService: chunk ranking failed for ${companyId}, document excerpts omitted this turn: ${err.message}`);
+      return [];
+    }),
+  ]);
+
+  return { knowledgeEntries, documentExcerpts };
+}
+
 /**
  * Runs one AI turn: escalation check, generate, guardrail filter, send,
  * audit log, extracted-signal merge, turn increment, and (if triggered)
@@ -350,12 +395,12 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
     return;
   }
 
-  const [conversationHistory, preferredLanguage, conversationSettings, promptAddendum, knowledgeEntries] = await Promise.all([
+  const [conversationHistory, preferredLanguage, conversationSettings, promptAddendum, knowledgeContext] = await Promise.all([
     _fetchConversationHistory(companyId, leadPK),
     _fetchPreferredLanguage(companyId, lead),
     _fetchConversationSettings(companyId),
     _fetchPromptAddendum(companyId),
-    KnowledgeService.getMatchingEntries(companyId, text),
+    _fetchKnowledgeContext(companyId, text),
   ]);
 
   const result = await AIService.generate({
@@ -365,7 +410,8 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
       latestMessage: text, turnNumber: turnCount + 1, maxTurns: MAX_TURNS, preferredLanguage,
       ...conversationSettings,
       promptAddendum,
-      knowledgeEntries,
+      knowledgeEntries: knowledgeContext.knowledgeEntries,
+      documentExcerpts: knowledgeContext.documentExcerpts,
     },
     conversationHistory,
     user: AI_ACTOR,

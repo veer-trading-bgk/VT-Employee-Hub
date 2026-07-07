@@ -817,6 +817,40 @@ All follow the same shape: `PK = CONFIG#{NAME}#{companyId}` (or the bare
 
 ---
 
+### 2.36 KNOWLEDGE# / KNOWLEDGE_VERSIONS# / KNOWLEDGE_DOCUMENT_CHUNKS# — Knowledge Center + Document Knowledge (RAG, Eras 26-31)
+
+- **`KNOWLEDGE#{companyId}` / `ENTRY#{entryId}`** — one structured Q&A entry. Draft
+  fields (`draftQuestion`/`draftAnswer`/`draftTriggers`) vs. active/published fields
+  (`activeQuestion`/`activeAnswer`/`activeTriggers`/`activeVersion`/`activePublishedAt`/
+  `activeEmbedding: number[] | null`) are kept deliberately separate — a live
+  conversation turn only ever reads the `active*` fields, never drafts. `archived: boolean`.
+  A never-published entry has `activeVersion: 0` and no `activeEmbedding`; both are
+  required (not just `!archived`) for an entry to be reachable by a live turn — see
+  `KnowledgeService.getMatchingEntries` (`08_MODULES.md`'s RAG / Knowledge Center service cluster entry).
+- **`KNOWLEDGE_VERSIONS#{companyId}#{entryId}` / `VERSION#{n}` (zero-padded)** — an
+  immutable snapshot written on every publish, including a `testResult` snapshot
+  (PromptTestService) and an `embedding` snapshot (RAG PR A), mirroring each other's
+  pattern.
+- **`KNOWLEDGE_DOCUMENT_CHUNKS#{companyId}` / `CHUNK#{documentId}#{chunkIndex}`
+  (zero-padded)** — **one partition PER COMPANY, not per document** (deliberately
+  mirrors `KNOWLEDGE#{companyId}`'s own pattern) so a single Query can fetch every
+  chunk across every document a company has published. Fields: `companyId`,
+  `documentId`, `chunkIndex`, `text`, `embedding: number[]`, `archived: boolean`,
+  `createdAt`. A chunk is written only from `knowledgeDocuments.js`'s `/publish` route
+  (extract → chunk → embed, all-or-nothing) — a draft or never-published document has
+  zero chunk items by construction, the same structural guarantee entries have via
+  `activeVersion`. `archived` is denormalized per-chunk (not structural — an archived
+  document's chunks still physically exist, flagged `archived: true`, kept in sync by
+  `/archive`/`/unarchive`), so retrieval runtime-filters on it, unlike the
+  published/draft gate.
+- **`EMBEDUSAGE#{companyId}#{date}` / `{timestamp}`** — per-embed-call usage/cost log,
+  written only by `EmbeddingService.js`, mirrors `AIUSAGE#`'s (§2.28) shape/reasoning.
+- **Owner:** `KnowledgeService.js` (entries), `DocumentKnowledgeService.js` + `DocumentChunkService.js` (documents/chunks storage), `DocumentChunkRetrievalService.js` (chunk ranking), `EmbeddingService.js` (usage log) — see `08_MODULES.md`'s RAG / Knowledge Center service cluster entry for the full retrieval design.
+- **Known interim decision:** chunk retrieval is a company-scoped `Query` + in-process
+  cosine scan, no vector index — `docs/adr/ADR-018-document-chunk-retrieval-scan.md`.
+
+---
+
 ## 3. Entity reference — other tables
 
 ### 3.1 EMPLOYEES table (`DYNAMODB_TABLE_EMPLOYEES`)
