@@ -8,6 +8,7 @@ const ConversationService = require('../services/ConversationService');
 const ContactService = require('../services/ContactService');
 const CustomerIdentityService = require('../services/CustomerIdentityService');
 const PipelineService = require('../services/PipelineService');
+const KnowledgeService = require('../services/KnowledgeService');
 const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
 const { resolveForLead } = require('../utils/conversationResolver');
 const { logAudit } = require('../utils/audit');
@@ -349,11 +350,12 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
     return;
   }
 
-  const [conversationHistory, preferredLanguage, conversationSettings, promptAddendum] = await Promise.all([
+  const [conversationHistory, preferredLanguage, conversationSettings, promptAddendum, knowledgeEntries] = await Promise.all([
     _fetchConversationHistory(companyId, leadPK),
     _fetchPreferredLanguage(companyId, lead),
     _fetchConversationSettings(companyId),
     _fetchPromptAddendum(companyId),
+    KnowledgeService.getMatchingEntries(companyId, text),
   ]);
 
   const result = await AIService.generate({
@@ -363,6 +365,7 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
       latestMessage: text, turnNumber: turnCount + 1, maxTurns: MAX_TURNS, preferredLanguage,
       ...conversationSettings,
       promptAddendum,
+      knowledgeEntries,
     },
     conversationHistory,
     user: AI_ACTOR,

@@ -338,4 +338,41 @@ describe('aiConfig — conversational-sales-agent useCase (Conversation-tab adju
     const prompt = cfg.promptTemplate({ ...BASE_CONTEXT, promptAddendum: '   \n  ' });
     expect(prompt).not.toContain('ADDITIONAL COMPANY GUIDANCE');
   });
+
+  // Phase 2A / PR 3 — Structured Knowledge Center entries. Same backward-
+  // compat guarantee: absent/empty renders nothing, byte-identical to v4.
+  test('with no knowledgeEntries, the prompt is byte-identical to the no-field case (backward compat)', () => {
+    const withEmpty = cfg.promptTemplate({ ...BASE_CONTEXT, knowledgeEntries: [] });
+    const withNoField = cfg.promptTemplate(BASE_CONTEXT);
+    expect(withEmpty).toBe(withNoField);
+    expect(withEmpty).not.toContain('RELEVANT COMPANY KNOWLEDGE');
+  });
+
+  test('non-empty knowledgeEntries render as their own clearly-subordinate section, one Q/A per entry', () => {
+    const prompt = cfg.promptTemplate({
+      ...BASE_CONTEXT,
+      knowledgeEntries: [
+        { question: 'What are your fees?', answer: 'No account opening fee.' },
+        { question: 'How do I open an account?', answer: 'Share your PAN and Aadhaar, we handle the rest.' },
+      ],
+    });
+    expect(prompt).toContain('RELEVANT COMPANY KNOWLEDGE');
+    expect(prompt).toContain('Q: What are your fees?');
+    expect(prompt).toContain('A: No account opening fee.');
+    expect(prompt).toContain('Q: How do I open an account?');
+    expect(prompt).toMatch(/HARD COMPLIANCE RULES above always take precedence/);
+  });
+
+  test('the knowledge section appears AFTER both the hard compliance rules and the addendum section', () => {
+    const prompt = cfg.promptTemplate({
+      ...BASE_CONTEXT, promptAddendum: 'test addendum text',
+      knowledgeEntries: [{ question: 'q', answer: 'a' }],
+    });
+    const rulesIndex = prompt.indexOf('HARD COMPLIANCE RULES');
+    const addendumIndex = prompt.indexOf('ADDITIONAL COMPANY GUIDANCE');
+    const knowledgeIndex = prompt.indexOf('RELEVANT COMPANY KNOWLEDGE');
+    expect(rulesIndex).toBeGreaterThan(-1);
+    expect(knowledgeIndex).toBeGreaterThan(addendumIndex);
+    expect(addendumIndex).toBeGreaterThan(rulesIndex);
+  });
 });

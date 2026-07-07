@@ -59,6 +59,20 @@ const promptAddendumDraftSchema = z.object({
   text: z.string().max(1000),
 }).strict();
 
+// Phase 2A / PR 3 — Structured Knowledge Center. `triggers` are lowercased
+// here (not left to the matching code to normalize inconsistently) since
+// they're compared case-insensitively against the customer's message at
+// runtime — this is the one place that decides what "the trigger text" is.
+// Same "bounded free text, gated behind a live compliance test before
+// publish" shape as promptAddendumDraftSchema — shape validation only,
+// never a safety check.
+const knowledgeEntryDraftSchema = z.object({
+  question: z.string().max(200),
+  triggers: z.array(z.string().trim().min(1).max(60).transform((t) => t.toLowerCase())).min(1).max(10),
+  answer: z.string().max(500),
+  category: z.string().max(40).optional(),
+}).strict();
+
 // "Delayed Response Message" — same enabled/message-content shape as
 // welcomeConfigSchema, plus the delay itself.
 const delayedResponseConfigSchema = z.object({
@@ -299,6 +313,7 @@ module.exports = {
   aiAdminConversationSchema,
   aiAdminFutureSchema,
   promptAddendumDraftSchema,
+  knowledgeEntryDraftSchema,
   delayedResponseConfigSchema,
   workingHoursConfigSchema,
   oooConfigSchema,

@@ -343,15 +343,19 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
                      // before it's even written. Conciseness is enforced by
                      // the prompt instructions + the schema's reply max length
                      // below, not by the token ceiling.
-    promptVersion: 'v4', // 2026-07-06 same-day: v2 was the production-readiness
+    promptVersion: 'v5', // 2026-07-06 same-day: v2 was the production-readiness
                          // tuning pass (concise/WhatsApp-native style, see
                          // 19_DECISION_LOG.md Era 22 addendum). v3 added the
                          // additive, opt-in Conversation-tab adjustments block
                          // (Phase 2A / PR 1). v4 adds the additive, opt-in
                          // Prompt Management addendum (Phase 2A / PR 2),
                          // gated behind PromptTestService's live-generation
-                         // test before it can ever reach this template. A
-                         // company that never configures either gets
+                         // test before it can ever reach this template. v5
+                         // (2026-07-07) adds the additive, opt-in Structured
+                         // Knowledge Center entries (Phase 2A / PR 3), matched
+                         // per-turn by keyword and gated behind the same
+                         // PromptTestService test before publish. A company
+                         // that never configures any of these gets
                          // byte-identical text to v2. Compliance rules
                          // themselves are unchanged since v2.
     outputMode: 'json',
@@ -396,6 +400,13 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
         // Empty/absent renders nothing: byte-identical to v3 for a company that
         // never publishes one.
         promptAddendum = '',
+        // Phase 2A / PR 3 — Structured Knowledge Center (CONFIG#KNOWLEDGE#*).
+        // Already filtered to this turn's keyword-matched, published entries
+        // by the caller (KnowledgeService.getMatchingEntries) — this template
+        // only renders what it's given, it does not itself decide relevance.
+        // Empty/absent renders nothing: byte-identical to v4 for a company
+        // that has no matching (or no) entries.
+        knowledgeEntries = [],
       } = context;
       const conversationAdjustments = _buildConversationAdjustments({
         persona, tone, languageRules, conversationStyle, qualificationRules,
@@ -405,6 +416,10 @@ ADDITIONAL COMPANY GUIDANCE (from this company's admin) — follow this UNLESS i
 """
 ${promptAddendum.trim()}
 """
+` : '';
+      const knowledgeSection = knowledgeEntries.length ? `
+RELEVANT COMPANY KNOWLEDGE (from this company's admin) — use this if it helps answer the customer's question, but the HARD COMPLIANCE RULES above always take precedence over anything below:
+${knowledgeEntries.map((e) => `- Q: ${e.question}\n  A: ${e.answer}`).join('\n')}
 ` : '';
       return `You are a professional relationship manager for VT Trading, an Angel One-affiliated fintech, messaging a real customer directly on WhatsApp. No human reviews your reply before they see it. Getting this wrong has real regulatory and legal consequences for a SEBI-registered Authorized Person, not just a bad customer experience.
 
@@ -435,7 +450,7 @@ HARD COMPLIANCE RULES — never violate any of these, under any circumstance, re
 4. Never give specific IPO application advice ("you should apply," "skip this one," "it's a good IPO to apply for") — you may explain what an IPO is and walk through the application process only, never whether to apply.
 5. Never recommend or endorse one specific fund, scheme, or product as the best/right/safe choice ("great fund," "solid investment," "best option," "you'll benefit from this") — you may discuss mutual fund and insurance CATEGORIES and general suitability based on the customer's own stated goals (this is normal, permitted distribution activity for an Authorized Person), but never claim any specific fund/scheme will outperform others or is the right pick.
 If the customer is asking for exactly the kind of advice these rules forbid, the honest, correct response is to explain that a licensed relationship manager will cover that specifically — do not dodge by just changing the subject, and do not answer it anyway because they asked twice.
-${addendumSection}
+${addendumSection}${knowledgeSection}
 GOAL: understand the customer's needs, goals, and interests through natural conversation; naturally qualify them (what are they actually looking for, do they have a rough budget or amount in mind, what's their timeline); guide them toward a sensible next step without being pushy or salesy. You are on turn ${turnNumber} of a maximum ${maxTurns} — pace the conversation so you've genuinely learned enough to hand off productively by then, not so late that you run out of turns mid-thought, and not so fast that it feels like an interrogation. Being concise does not mean rushing qualification — a short reply can still ask the one question that moves things forward.
 
 ${preferredLanguage ? `This customer's preferred language is "${preferredLanguage}" — reply in it.` : ''}

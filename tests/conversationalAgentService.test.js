@@ -485,6 +485,65 @@ describe('ConversationalAgentService', () => {
     }));
   });
 
+  // ─── Phase 2A / PR 3 — Structured Knowledge Center wiring ──────────────────
+  test('a matching published knowledge entry is passed into AIService.generate as knowledgeEntries', async () => {
+    dynamodb.query.mockImplementation((params) => {
+      if (params.ExpressionAttributeValues?.[':pk'] === `KNOWLEDGE#${CID}`) {
+        return resolved({
+          Items: [{
+            entryId: 'e1', archived: false, activeVersion: 2, activePublishedAt: '2026-07-07T00:00:00.000Z',
+            activeTriggers: ['fees', 'charges'], activeQuestion: 'What are your fees?',
+            activeAnswer: 'No account opening fee; AMC is ₹0 for the first year.',
+          }],
+        });
+      }
+      return resolved({ Items: [] }); // conversation history default
+    });
+    mockTurn();
+    await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'What are the fees for opening an account?', timestamp: 't1' });
+
+    expect(AIService.generate).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({
+        knowledgeEntries: [{ question: 'What are your fees?', answer: 'No account opening fee; AMC is ₹0 for the first year.' }],
+      }),
+    }));
+  });
+
+  test('an archived or never-published knowledge entry never reaches AIService.generate even if its trigger matches', async () => {
+    dynamodb.query.mockImplementation((params) => {
+      if (params.ExpressionAttributeValues?.[':pk'] === `KNOWLEDGE#${CID}`) {
+        return resolved({
+          Items: [
+            { entryId: 'archived', archived: true, activeVersion: 1, activeTriggers: ['fees'], activeQuestion: 'q', activeAnswer: 'a' },
+            { entryId: 'draft-only', archived: false, activeVersion: 0, activeTriggers: ['fees'], activeQuestion: 'q2', activeAnswer: 'a2' },
+          ],
+        });
+      }
+      return resolved({ Items: [] });
+    });
+    mockTurn();
+    await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'question about fees', timestamp: 't1' });
+
+    expect(AIService.generate).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ knowledgeEntries: [] }),
+    }));
+  });
+
+  test('a non-matching message passes an empty knowledgeEntries array', async () => {
+    dynamodb.query.mockImplementation((params) => {
+      if (params.ExpressionAttributeValues?.[':pk'] === `KNOWLEDGE#${CID}`) {
+        return resolved({ Items: [{ entryId: 'e1', archived: false, activeVersion: 1, activeTriggers: ['fees'], activeQuestion: 'q', activeAnswer: 'a' }] });
+      }
+      return resolved({ Items: [] });
+    });
+    mockTurn();
+    await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'totally unrelated message', timestamp: 't1' });
+
+    expect(AIService.generate).toHaveBeenCalledWith(expect.objectContaining({
+      context: expect.objectContaining({ knowledgeEntries: [] }),
+    }));
+  });
+
   // ─── Phase 2A / PR 1 — General tab toggles ──────────────────────────────────
   describe('AI Administration General-tab toggles', () => {
     function mockConvAgentConfig(overrides) {

@@ -1543,6 +1543,31 @@ A further live-verification pass then found the content-based pattern itself was
 
 ---
 
+## Era 27 — Phase 2A, PR 3: Structured Knowledge Center — keyword-matched FAQ entries (2026-07-07)
+
+Closes ADR-016's hard blocker ("no Knowledge Center exists") for the structured half only — plain admin-authored Q&A entries, deterministically matched by keyword against the customer's message. No vector store, no embeddings, no semantic search — that stays explicitly out of scope for PR 4 and beyond. 4 decisions locked before implementation: (1) keyword/substring matching, not "inject everything," bounded prompt size regardless of entry count; (2) simple Q&A shape (question/triggers/answer/category), not freeform topic/body text; (3) reused compliance gate — publish/restore re-run a real live-generation test, same authority model as PR 2; (4) soft archive, not hard delete — removing an entry excludes it from live matching but keeps the record and version history queryable.
+
+**Data model:** `KNOWLEDGE#{companyId}` / `ENTRY#{entryId}` (current state: draft*/active* fields, `activeVersion`, `activePublishedAt`, `category`, `archived`, `lastTestResult`) and `KNOWLEDGE_VERSIONS#{companyId}#{entryId}` / `VERSION#{n}` (own PK per entry, zero-padded, immutable) — split specifically so listing a company's entries never has to filter out version-history noise in the same query.
+
+**Field-gating, refined during implementation beyond the plan's shorthand:** the plan listed only `answer`/`category` as draft/active-split. Extended to also split `question` — it renders directly into the live prompt (`Q: {question}`) exactly like `answer` does, so it's equally compliance-relevant and needed the same gate. `category` is the only field that stays live-editable with no gate, since it's never rendered into the prompt at all (display/filter metadata only).
+
+**Matching** (`src/services/KnowledgeService.js`): `getMatchingEntries(companyId, latestMessage)` queries only the company's own `KNOWLEDGE#{companyId}` partition (structurally isolated — a query scoped to one company's partition key cannot return another company's items), matches lowercased substring against each entry's `activeTriggers` only (never `draftTriggers` — an entry only reaches a live prompt after at least one successful publish, gated by `activeVersion > 0` and `!archived`), capped at 3 matches, most-recently-published first.
+
+**Test gate** (`src/services/PromptTestService.js`): new `testKnowledgeEntry()`, reusing `violatesGuardrail()`/`isKnownGuaranteeFalsePositive()` unchanged (no second compliance engine). Deliberately tests against the candidate entry's own triggers (capped at 5) rather than the fixed 5 `ADVERSARIAL_INPUTS` — those wouldn't necessarily invoke this specific entry at all, since entries are triggered by their own keywords, not by generic questions.
+
+**Restore re-validates against today's rules**, same principle as PR 2 (Era 26 decision 4), not entry-specific: `POST /:entryId/versions/:version/restore` re-runs `testKnowledgeEntry()` against the version's stored content, using the live, current `violatesGuardrail()` — never trusting the version's originally-stored `testResult`.
+
+**Publish/restore mirror draft fields instead of clearing them, unlike PR 2.** PR 2's restore/publish clear `draftText` to `''`. Not structurally possible here — an entry's schema requires non-empty `question`/`triggers`/`answer` to remain a valid list row. Instead, publish/restore set the draft fields to match the newly-active ones, so the edit form always shows "what's currently live." A deliberate divergence, not an oversight.
+
+**Frontend:** new top-level nav item `/knowledge-center` (not nested under `/ai-admin`, per Era 23's decision), `KnowledgeList.tsx` (search/filter, status badges Draft/Published vN/Archived) + `KnowledgeEntryDrawer.tsx` (question/triggers/answer/category form, Run Test/Publish/Archive, version history + restore). `TestResultPanel` extracted out of `PromptManagementTab.tsx` into its own shared component so both features render identical itemized pass/fail/known-issue results rather than two drifting copies.
+
+**Verification:** `tests/knowledgeService.test.js`, `tests/knowledgeCenter.test.js` (new), `tests/promptTestService.test.js`, `tests/aiConfig.test.js`, `tests/conversationalAgentService.test.js` extended (including explicit tests that archived and never-published entries never reach `AIService.generate()` even when their triggers match). Full suite: **1131/1131 passing, 63 suites** (was 1092 before this PR). `next build` (33 routes incl. `/knowledge-center`) + `eslint` + `tsc` all clean. Live verification, 2 runs each against the real Anthropic API: a safe fees-FAQ entry → `allPassed: true` both times; a deliberately unsafe entry (answer text baking in a "guarantees 12% returns" claim) → `allPassed: false` both times — correctly blocked from publishing even though the live model itself also refused to relay the bad claim (HARD COMPLIANCE RULES held as designed; the entry's own answer text is still correctly rejected regardless).
+
+**Status:** implemented, tested, live-verified, committed.
+**Reference:** `src/services/KnowledgeService.js`, `src/services/PromptTestService.js`, `src/routes/knowledgeCenter.js`, `src/config/aiConfig.js`, `dashboard/src/components/knowledge/`.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or

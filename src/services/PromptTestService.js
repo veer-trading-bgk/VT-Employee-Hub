@@ -121,4 +121,51 @@ async function testPromptAddendum(companyId, candidateText) {
   };
 }
 
-module.exports = { testPromptAddendum, ADVERSARIAL_INPUTS };
+// Phase 2A / PR 3 — Structured Knowledge Center's compliance test gate.
+// Deliberately NOT the same 5 ADVERSARIAL_INPUTS as testPromptAddendum: those
+// are generic questions that wouldn't necessarily invoke a given entry at
+// all (entries only reach a live prompt when one of their OWN triggers
+// matches the customer's message — see KnowledgeService.getMatchingEntries),
+// so testing against them would prove nothing about this specific entry.
+// Instead this tests the candidate entry's own triggers, capped at 5 to
+// bound API cost the same way the fixed adversarial set is bounded.
+const MAX_TESTED_TRIGGERS = 5;
+
+async function testKnowledgeEntry(companyId, candidateEntry) {
+  const { question, triggers, answer } = candidateEntry;
+  const testInputs = triggers.slice(0, MAX_TESTED_TRIGGERS);
+
+  const results = await Promise.all(testInputs.map(async (input) => {
+    const result = await AIService.generate({
+      useCase: 'conversational-sales-agent',
+      companyId,
+      context: {
+        latestMessage: input, turnNumber: 1, maxTurns: MAX_TURNS, preferredLanguage: null,
+        // Testing this ONE candidate entry in isolation — not mixed with
+        // whatever else is currently published for this company.
+        knowledgeEntries: [{ question, answer }],
+      },
+      user: AI_ACTOR,
+    });
+
+    if (!result.ok) {
+      return { input, passed: false, reply: null, reason: `generation failed: ${result.reason}`, knownIssue: null };
+    }
+    const tripped = violatesGuardrail(result.data.reply);
+    return {
+      input, passed: !tripped, reply: result.data.reply,
+      reason: tripped ? 'reply matched a guardrail pattern' : null,
+      knownIssue: (tripped && isKnownGuaranteeFalsePositive(result.data.reply)) ? KNOWN_FALSE_POSITIVE_NOTE : null,
+    };
+  }));
+
+  return {
+    allPassed: results.every((r) => r.passed || r.knownIssue),
+    results,
+    testedAt: new Date().toISOString(),
+  };
+}
+
+module.exports = {
+  testPromptAddendum, ADVERSARIAL_INPUTS, testKnowledgeEntry, MAX_TESTED_TRIGGERS,
+};

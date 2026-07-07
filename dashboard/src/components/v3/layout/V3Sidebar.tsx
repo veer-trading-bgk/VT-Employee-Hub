@@ -26,6 +26,7 @@ import {
   ScrollText,
   Send,
   Bot,
+  BookOpen,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Avatar } from '@/components/v3/ui/Avatar';
@@ -79,6 +80,7 @@ const BOTTOM_ITEMS: NavItem[] = [
   { href: '/analytics',  label: 'Analytics',  icon: <BarChart3 className="h-5 w-5" />,   roles: ['owner', 'admin', 'manager'] },
   { href: '/automation', label: 'Automation', icon: <Zap className="h-5 w-5" />,         roles: ['owner', 'admin'] },
   { href: '/ai-admin',   label: 'AI Administration', icon: <Bot className="h-5 w-5" />,  roles: ['owner', 'admin'] },
+  { href: '/knowledge-center', label: 'Knowledge Center', icon: <BookOpen className="h-5 w-5" />, roles: ['owner', 'admin'] },
   { href: '/platform',   label: 'Platform',   icon: <ShieldCheck className="h-5 w-5" />, roles: ['owner'] },
   { href: '/settings',   label: 'Settings',   icon: <Settings className="h-5 w-5" />,    roles: ['owner', 'admin', 'manager', 'sales', 'support'] },
 ];

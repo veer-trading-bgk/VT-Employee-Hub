@@ -31,7 +31,9 @@ jest.mock('../src/services/ConversationService', () => ({
 jest.mock('../src/events/timeline', () => ({ writeTlRecord: jest.fn().mockResolvedValue(undefined) }));
 
 const AIService = require('../src/services/AIService');
-const { ADVERSARIAL_INPUTS, testPromptAddendum } = require('../src/services/PromptTestService');
+const {
+  ADVERSARIAL_INPUTS, testPromptAddendum, testKnowledgeEntry, MAX_TESTED_TRIGGERS,
+} = require('../src/services/PromptTestService');
 
 const CID = 'comp_test';
 const SAFE_REPLY = 'Sure, happy to help! What are you looking for today?';
@@ -195,6 +197,110 @@ describe('PromptTestService.testPromptAddendum', () => {
   test('includes a testedAt timestamp', async () => {
     mockAllReplies(SAFE_REPLY);
     const result = await testPromptAddendum(CID, 'x');
+    expect(result.testedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+describe('PromptTestService.testKnowledgeEntry', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const ENTRY = {
+    question: 'What are your fees?',
+    triggers: ['fees', 'charges', 'account opening'],
+    answer: 'No account opening fee; AMC is ₹0 for the first year.',
+  };
+
+  test('calls AIService.generate once per trigger (not the fixed ADVERSARIAL_INPUTS), with only this entry in knowledgeEntries context', async () => {
+    mockAllReplies(SAFE_REPLY);
+    await testKnowledgeEntry(CID, ENTRY);
+
+    expect(AIService.generate).toHaveBeenCalledTimes(ENTRY.triggers.length);
+    expect(AIService.generate).not.toHaveBeenCalledTimes(ADVERSARIAL_INPUTS.length);
+    for (const trigger of ENTRY.triggers) {
+      expect(AIService.generate).toHaveBeenCalledWith(expect.objectContaining({
+        useCase: 'conversational-sales-agent',
+        companyId: CID,
+        context: expect.objectContaining({
+          latestMessage: trigger,
+          knowledgeEntries: [{ question: ENTRY.question, answer: ENTRY.answer }],
+        }),
+      }));
+    }
+  });
+
+  test('caps tested triggers at MAX_TESTED_TRIGGERS', async () => {
+    mockAllReplies(SAFE_REPLY);
+    const manyTriggers = Array.from({ length: MAX_TESTED_TRIGGERS + 3 }, (_, i) => `trigger${i}`);
+    await testKnowledgeEntry(CID, { ...ENTRY, triggers: manyTriggers });
+    expect(AIService.generate).toHaveBeenCalledTimes(MAX_TESTED_TRIGGERS);
+  });
+
+  test('every trigger passing produces allPassed: true', async () => {
+    mockAllReplies(SAFE_REPLY);
+    const result = await testKnowledgeEntry(CID, ENTRY);
+    expect(result.allPassed).toBe(true);
+    expect(result.results).toHaveLength(ENTRY.triggers.length);
+  });
+
+  test('a guardrail-tripping reply on one trigger produces allPassed: false and surfaces which trigger failed', async () => {
+    let call = 0;
+    AIService.generate.mockImplementation(() => {
+      call++;
+      const reply = call === 2 ? UNSAFE_REPLY : SAFE_REPLY;
+      return Promise.resolve({ ok: true, data: { reply, qualified: false, productInterest: [], budgetAmount: null, timelineDays: null, reasoning: 'test' } });
+    });
+
+    const result = await testKnowledgeEntry(CID, ENTRY);
+    expect(result.allPassed).toBe(false);
+    const failed = result.results.find((r) => !r.passed);
+    expect(failed.input).toBe(ENTRY.triggers[1]);
+    expect(failed.knownIssue).toBeNull();
+  });
+
+  test('reuses the same content-based known-false-positive exemption as testPromptAddendum', async () => {
+    const guaranteeEntry = {
+      question: 'Can you guarantee my SIP will double?',
+      triggers: ['guarantee sip'],
+      answer: 'irrelevant for this test',
+    };
+    mockAllReplies("Can't promise that, no one can guarantee returns on market-linked SIPs.");
+
+    const result = await testKnowledgeEntry(CID, guaranteeEntry);
+    expect(result.allPassed).toBe(true);
+    expect(result.results[0].knownIssue).toMatch(/fully compliant refusal/i);
+  });
+
+  test('a genuinely unsafe reply is NOT exempted by the known-false-positive logic', async () => {
+    const guaranteeEntry = {
+      question: 'Can you guarantee my SIP will double?',
+      triggers: ['guarantee sip'],
+      answer: 'irrelevant for this test',
+    };
+    mockAllReplies('Yes, absolutely — I guarantee your SIP will double in 3 years.');
+
+    const result = await testKnowledgeEntry(CID, guaranteeEntry);
+    expect(result.allPassed).toBe(false);
+    expect(result.results[0].knownIssue).toBeNull();
+  });
+
+  test('a generate() failure is reported as a failure, not silently skipped or a crash', async () => {
+    let call = 0;
+    AIService.generate.mockImplementation(() => {
+      call++;
+      if (call === 2) return Promise.resolve({ ok: false, reason: 'rate_limited', detail: 'slow down' });
+      return Promise.resolve({ ok: true, data: { reply: SAFE_REPLY, qualified: false, productInterest: [], budgetAmount: null, timelineDays: null, reasoning: 'test' } });
+    });
+
+    const result = await testKnowledgeEntry(CID, ENTRY);
+    expect(result.allPassed).toBe(false);
+    const failed = result.results.find((r) => !r.passed);
+    expect(failed.reply).toBeNull();
+    expect(failed.reason).toMatch(/generation failed/i);
+  });
+
+  test('includes a testedAt timestamp', async () => {
+    mockAllReplies(SAFE_REPLY);
+    const result = await testKnowledgeEntry(CID, ENTRY);
     expect(result.testedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 });
