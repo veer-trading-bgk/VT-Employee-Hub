@@ -1568,6 +1568,32 @@ Closes ADR-016's hard blocker ("no Knowledge Center exists") for the structured 
 
 ---
 
+## Era 28 — Phase 2A, PR 4: Document Knowledge — file upload + RAG-prep (2026-07-07)
+
+Closes the second half of ADR-016's "no Knowledge Center exists" blocker: raw document upload (PDF/DOC/DOCX/PPT/PPTX/XLS/XLSX/CSV/TXT/MD) so a future RAG pipeline has something to chunk/embed. **No chunking, embeddings, or retrieval in this PR** — a document's content is never read into any prompt here, only its metadata (filename, type, status) exists. 4 decisions locked before implementation: (1) 20MB per-document limit, enforced server-side against the actual uploaded object, not a client-reported hint; (2) malware/AV scanning deliberately deferred as a documented gap (no GuardDuty detector enabled anywhere in the account, no AV Lambda layer, and the Lambda itself is 512MB/30s — not sized for one); (3) an IAM policy change, executed and verified this session (below); (4) Document Knowledge is a second tab ("Documents") on the existing `/knowledge-center` page, not a new top-level nav item — Era 23's "one top-level nav item for Knowledge Center" stays intact.
+
+**Audit found a real infrastructure gap before any code was written:** the Lambda's inline policy `vt-employee-bot-s3-media` only granted `PutObject`/`GetObject`/`DeleteObject` on `uploads/*` and `inbound/*` — a new `knowledge-documents/*` prefix would have been silently denied by IAM. Fixed via an additive `aws iam put-role-policy` (one more ARN in the existing Resource array, no new action types, no wildcard broadening), verified applied via `get-role-policy` before any upload code was written against it.
+
+**Data model — simpler than PR 3, no version history.** `KNOWLEDGE_DOCUMENTS#{companyId}` / `DOC#{documentId}`: `filename`, `category`, `s3Key`, `mimeType` (claimed), `detectedType` (actually detected), `fileSize` (actual, from `HeadObject`, never the client-reported hint), `status: 'draft' | 'published' | 'archived'`. Documents are immutable blobs — changing content means uploading a new document and archiving the old one, not editing in place, so there's no `VERSION#` concept here. `createDocument()` always sets `status: 'draft'`; the only path to `'published'` is the explicit `PUT /:documentId/publish` route — no auto-publish anywhere. `status` is a schema-only forward-compat gate in this PR: correctly built and tested (draft-by-default, explicit-publish-required, archived excluded), but nothing yet consumes `status === 'published'` to decide retrieval eligibility, since no RAG/ingestion job exists yet — that's explicitly a later PR's scope, not a gap in this one.
+
+**Upload flow reuses WhatsApp's presigned-PUT shape (`whatsapp.js`'s `/upload-url`/`/upload-send`) but closes two gaps the audit found there:** the existing flow only checks `fileSize` if the client bothers to report it, and has no content-signature validation anywhere in the codebase. Here: `GET /upload-url` issues a presigned PUT after validating the *claimed* mimeType/size; `POST /` (finalize) re-checks the *actual* uploaded object — `HeadObject` for real size (over 20MB → delete + reject) and a `GetObject` Range read of the first 8KB run through `detectFileType()` (`src/utils/fileSignature.js`, new, dependency-free — no `file-type` npm package, since every current major version is ESM-only and won't `require()` in this CommonJS Lambda bundle). Detects PDF (`%PDF` magic), legacy OLE2 (.doc/.xls/.ppt — CFBF signature, not distinguished between the three sub-types at the byte level, documented limitation), and OOXML (.docx/.xlsx/.pptx — ZIP signature plus a best-effort substring scan for `word/`/`xl/`/`ppt/` marker paths, not a full ZIP parse, documented limitation). Plain text (CSV/TXT/MD) has no real magic number — validated only by a "does this look like text" heuristic (no NUL bytes, low proportion of non-printable bytes). Any mismatch or unrecognized signature → the S3 object is deleted before the function returns; a draft record is never created for an unvalidated file.
+
+**Company isolation**, same mechanism as PR 3: every route touching a `documentId` looks it up via `getDocument(companyId, documentId)` where `companyId` is always `req.user.companyId` — the DynamoDB key itself (`PK: KNOWLEDGE_DOCUMENTS#{companyId}`) makes another company's document simply not exist for this lookup, 404 before S3 is ever touched. The finalize route additionally checks the claimed `s3Key` actually starts with `knowledge-documents/{companyId}/` (403 if not) as defense in depth.
+
+**Live verification against the real AWS account (not mocked), all three of this PR's hard requirements proven with evidence before sign-off:**
+- Real upload of a genuine PDF → `{ ok: true, fileSize: 68, detectedType: 'pdf' }`, object retained.
+- A JPEG renamed to `.pdf` claiming `application/pdf` → rejected (`Unrecognized file signature`), object deleted — confirmed gone via a follow-up `HeadObject`.
+- A real 21MB PDF-signed object (isolating the size check from the signature check) → rejected (`File exceeds the 20MB limit.`), object deleted — confirmed gone via a follow-up `HeadObject`.
+
+**Frontend:** `/knowledge-center` gains a second tab, "Documents" (`DocumentList.tsx`) — native file picker, mandatory warning banner ("Upload only reference/product material — never customer data, leads, or personal information"), status badges, Publish/Archive/Unarchive, download via a presigned GET resolved only through the company-scoped DB lookup above (never a raw key from the client).
+
+**Verification:** `tests/fileSignature.test.js` (new, 15 tests — correct detection per format, disguised-extension attacks rejected, OOXML sub-type mismatch rejected, text heuristic), `tests/knowledgeDocuments.test.js` (new, 19 tests — upload-url validation, finalize's real-size/signature rejection paths delete the object and never call `dynamodb.put`, status transitions, company isolation proven via a cross-company documentId 404ing before S3 is touched). Full suite: **1165/1165 passing, 65 suites** (was 1131 before this PR) — WhatsApp's own upload/media tests (110 tests, 6 suites) explicitly re-confirmed unaffected. `next build` (32 routes) + `eslint` + `tsc` clean.
+
+**Status:** implemented, tested, live-verified (including against the real AWS account), committed.
+**Reference:** `src/services/DocumentKnowledgeService.js`, `src/utils/fileSignature.js`, `src/utils/documentConstants.js`, `src/routes/knowledgeDocuments.js`, `dashboard/src/components/knowledge/DocumentList.tsx`.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or
@@ -1718,3 +1744,23 @@ already fully enforced just because an ADR exists.
     FAIL). **Not fixed, deliberately out of scope for PR 2** — revisit if either becomes
     reproducible/frequent enough to matter, the same trigger condition that eventually
     got "guarantee" fixed.
+
+14. **Document Knowledge (PR 4, Era 28) has no malware/AV scanning — a deliberate,
+    explicitly-decided gap, confirmed infeasible in that PR, not silently omitted.**
+    Verified directly against the live AWS account during PR 4's audit: no GuardDuty
+    detector exists in any region for this account, no AV Lambda layer exists, and the
+    Lambda itself is 512MB/30s — not sized for an inline scan even if a layer existed.
+    Real scanning would mean enabling GuardDuty S3 Malware Protection account-wide (a
+    standalone cost/security decision) or standing up a dedicated ClamAV-Lambda
+    pipeline — both out of scope for a single feature PR. File-signature validation
+    (`src/utils/fileSignature.js`) closes the "wrong content behind a trusted extension"
+    gap but does **not** scan for actual malicious payloads. Two further, smaller
+    limitations in that same file, both intentional trade-offs of staying dependency-free
+    for a bounded format list: OOXML (.docx/.xlsx/.pptx) sub-type detection is a
+    substring scan for a marker path (`word/`/`xl/`/`ppt/`), not a full ZIP
+    central-directory parse — closes the realistic "renamed .exe" attack but a
+    deliberately crafted ZIP could in theory fake the marker path; legacy OLE2
+    (.doc/.xls/.ppt) is validated as "genuinely an OLE2 compound file" only, not
+    distinguished between the three sub-types at the byte level (would need real CFBF
+    directory parsing). **Not fixed, deliberately out of scope for PR 4** — revisit if
+    Document Knowledge's usage grows enough to justify a dedicated AV-scanning project.

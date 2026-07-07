@@ -1,4 +1,5 @@
 const { z } = require('zod');
+const { DOCUMENT_ALLOWED_MIME } = require('./documentConstants');
 
 const loginSchema = z.object({
   email: z.string().email('Invalid email'),
@@ -70,6 +71,18 @@ const knowledgeEntryDraftSchema = z.object({
   question: z.string().max(200),
   triggers: z.array(z.string().trim().min(1).max(60).transform((t) => t.toLowerCase())).min(1).max(10),
   answer: z.string().max(500),
+  category: z.string().max(40).optional(),
+}).strict();
+
+// Phase 2A / PR 4 — Document Knowledge's upload-finalize body. Shape
+// validation only — the actual safety check (does the content match the
+// claimed mimeType) happens server-side in fileSignature.js against the
+// real uploaded bytes, not here.
+const knowledgeDocumentMetaSchema = z.object({
+  documentId: z.string().uuid(),
+  s3Key: z.string().min(1).max(512),
+  filename: z.string().min(1).max(255),
+  mimeType: z.string().refine((m) => DOCUMENT_ALLOWED_MIME.has(m), { message: 'Unsupported document type' }),
   category: z.string().max(40).optional(),
 }).strict();
 
@@ -314,6 +327,7 @@ module.exports = {
   aiAdminFutureSchema,
   promptAddendumDraftSchema,
   knowledgeEntryDraftSchema,
+  knowledgeDocumentMetaSchema,
   delayedResponseConfigSchema,
   workingHoursConfigSchema,
   oooConfigSchema,
