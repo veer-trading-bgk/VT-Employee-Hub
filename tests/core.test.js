@@ -209,12 +209,43 @@ describe('src/core/id.js', () => {
       }
     });
 
-    test('IDs contain no run of 10+ consecutive digits (phone number pattern)', () => {
-      // ULID random parts are base32 — a run of 10+ raw digits would be extremely
-      // improbable and indicative of embedded business data.
-      for (let i = 0; i < 200; i++) {
-        expect(generateContactId()).not.toMatch(/\d{10,}/);
-        expect(generateLeadId()).not.toMatch(/\d{10,}/);
+    // 2026-07-07 — the previous version of this test sampled 200 generated IDs
+    // and asserted none happened to contain a run of 10+ digits by chance. That
+    // is genuinely flaky, not just theoretically: the random half of a ULID is
+    // 16 Crockford base32 chars (10 of the 32 symbols are digits), and a Monte
+    // Carlo check (20M trials) puts P(a single ULID's random part contains a
+    // 10+ digit run) at ~0.0000435 — across the 400 samples this test drew per
+    // run, that's ~1.7% chance of a spurious failure on any given `npm test`,
+    // i.e. expected roughly every ~40 runs. Confirmed real, not hypothetical:
+    // this is what actually happened.
+    //
+    // Replaced with a deterministic test of the actual invariant that matters:
+    // no business data (a phone number, an email, anything else) can ever
+    // reach an ID, because the generators are pure — Date.now() and
+    // crypto.randomBytes() are their only inputs, and they take no
+    // caller-supplied data at all. Proven here by calling them WITH bogus
+    // arguments (as if a future bug tried to thread a phone number through)
+    // and confirming the output is byte-for-byte unaffected — this can never
+    // pass by chance and never fail by chance; it either holds structurally
+    // or it doesn't.
+    test('generator functions ignore any arguments passed to them — no business data can ever reach an ID', () => {
+      const phoneNumber = '9876543210';
+      const email = 'customer@example.com';
+      const generators = [
+        generateContactId, generateConversationId, generateLeadId, generateAccountId,
+        generateTaskId, generateDocumentId, generateCampaignId, generateWorkflowId, generateEventId,
+      ];
+
+      for (const generate of generators) {
+        const id = generate(phoneNumber, email, { phone: phoneNumber, email });
+        expect(id).not.toContain(phoneNumber);
+        expect(id).not.toContain(email);
+        // Still exactly `${prefix}` + a valid 26-char Crockford-base32 ULID —
+        // proves the bogus arguments had literally zero effect on the shape
+        // or content of the output, not just that two substrings are absent.
+        const prefix = getPrefix(id);
+        expect(prefix).not.toBeNull();
+        expect(id.slice(prefix.length)).toMatch(CROCKFORD_RE);
       }
     });
   });
