@@ -24,6 +24,16 @@ jest.mock('aws-sdk', () => {
   };
   return { S3: jest.fn(() => mockS3Instance), __mockS3Instance: mockS3Instance };
 });
+jest.mock('../src/services/EmbeddingService', () => ({ embed: jest.fn() }));
+// Mocked wholesale (not the real ConversationalAgentService.js) — that file
+// has its own large dependency tree, and this test only needs a
+// controllable violatesGuardrail() to prove the compliance-advisory scan's
+// wiring; the real GUARDRAIL_PATTERNS regex correctness is already
+// exhaustively covered by tests/conversationalAgentService.test.js.
+jest.mock('../src/services/ConversationalAgentService', () => ({ violatesGuardrail: jest.fn() }));
+jest.mock('../src/services/DocumentChunkService', () => ({
+  createChunks: jest.fn(), deleteChunksForDocument: jest.fn(), setChunksArchived: jest.fn(),
+}));
 
 process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
 process.env.WA_MEDIA_BUCKET = 'apforce-wa-media-test';
@@ -31,7 +41,11 @@ process.env.WA_MEDIA_BUCKET = 'apforce-wa-media-test';
 const AWS = require('aws-sdk');
 const mockS3 = AWS.__mockS3Instance;
 const dynamodb = require('../src/config/dynamodb');
+const EmbeddingService = require('../src/services/EmbeddingService');
+const { violatesGuardrail } = require('../src/services/ConversationalAgentService');
+const { createChunks, deleteChunksForDocument, setChunksArchived } = require('../src/services/DocumentChunkService');
 const { authMiddleware, adminMiddleware } = require('../src/middleware/auth');
+const { MAX_CHUNKS_PER_DOCUMENT } = require('../src/utils/documentConstants');
 const knowledgeDocumentsRouter = require('../src/routes/knowledgeDocuments');
 
 function getRouteHandler(router, path, method) {
@@ -198,7 +212,24 @@ describe('PUT /api/knowledge-documents/:documentId', () => {
 
 describe('PUT /api/knowledge-documents/:documentId/publish', () => {
   const handler = getRouteHandler(knowledgeDocumentsRouter, '/:documentId/publish', 'put');
-  beforeEach(() => jest.clearAllMocks());
+
+  function textDoc(overrides = {}) {
+    return {
+      documentId: 'd1', s3Key: `knowledge-documents/${CID}/d1.txt`,
+      detectedType: 'text', mimeType: 'text/plain', activeVersion: 0,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    violatesGuardrail.mockReturnValue(false);
+    mockS3.getObject.mockReturnValue(resolved({ Body: Buffer.from('Some genuine reference content about our products.') }));
+    EmbeddingService.embed.mockResolvedValue({ ok: true, data: { embeddings: [[0.1, 0.2, 0.3]] } });
+    createChunks.mockResolvedValue(undefined);
+    deleteChunksForDocument.mockResolvedValue(undefined);
+    dynamodb.update.mockReturnValue(resolved({}));
+  });
 
   test('404s when missing', async () => {
     dynamodb.get.mockReturnValue(resolved({}));
@@ -207,15 +238,70 @@ describe('PUT /api/knowledge-documents/:documentId/publish', () => {
     expect(res.status).toHaveBeenCalledWith(404);
   });
 
-  test('sets status published with publishedAt/publishedBy', async () => {
-    dynamodb.get.mockReturnValue(resolved({ Item: { documentId: 'd1' } }));
-    dynamodb.update.mockReturnValue(resolved({}));
+  test('on success: extracts, chunks, embeds, stores chunks, and sets status published', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: textDoc() }));
     const res = mockRes();
     await handler({ user: USER, ip: '1.1.1.1', params: { documentId: 'd1' } }, res, jest.fn());
+
+    expect(EmbeddingService.embed).toHaveBeenCalledWith({
+      texts: ['Some genuine reference content about our products.'], companyId: CID, inputType: 'document',
+    });
+    expect(deleteChunksForDocument).toHaveBeenCalledWith(CID, 'd1');
+    expect(createChunks).toHaveBeenCalledWith(CID, 'd1', ['Some genuine reference content about our products.'], [[0.1, 0.2, 0.3]]);
     expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
       ExpressionAttributeValues: expect.objectContaining({ ':s': 'published', ':pb': USER.id }),
     }));
-    expect(res.json).toHaveBeenCalledWith({ success: true });
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, chunkCount: 1, complianceAdvisory: [] }));
+  });
+
+  test('extraction failure blocks publish (422) — legacy OLE2, no chunks written', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: textDoc({ detectedType: 'ole2', mimeType: 'application/msword' }) }));
+    const res = mockRes();
+    await handler({ user: USER, ip: '1.1.1.1', params: { documentId: 'd1' } }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(EmbeddingService.embed).not.toHaveBeenCalled();
+    expect(createChunks).not.toHaveBeenCalled();
+    expect(dynamodb.update).not.toHaveBeenCalled();
+  });
+
+  test('a chunk count over MAX_CHUNKS_PER_DOCUMENT blocks publish (422), clear error', async () => {
+    mockS3.getObject.mockReturnValue(resolved({ Body: Buffer.from('A'.repeat((MAX_CHUNKS_PER_DOCUMENT + 10) * 1000)) }));
+    dynamodb.get.mockReturnValue(resolved({ Item: textDoc() }));
+    const res = mockRes();
+    await handler({ user: USER, ip: '1.1.1.1', params: { documentId: 'd1' } }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringMatching(/chunks.*over the.*limit/i) }));
+    expect(EmbeddingService.embed).not.toHaveBeenCalled();
+  });
+
+  test('a failed embedding call blocks publish (422) — a document has no keyword-fallback the way an entry does', async () => {
+    EmbeddingService.embed.mockResolvedValue({ ok: false, reason: 'embedding_failed' });
+    dynamodb.get.mockReturnValue(resolved({ Item: textDoc() }));
+    const res = mockRes();
+    await handler({ user: USER, ip: '1.1.1.1', params: { documentId: 'd1' } }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(422);
+    expect(createChunks).not.toHaveBeenCalled();
+    expect(dynamodb.update).not.toHaveBeenCalled();
+  });
+
+  test('the compliance advisory scan flags a chunk WITHOUT blocking publish', async () => {
+    violatesGuardrail.mockReturnValue(true);
+    dynamodb.get.mockReturnValue(resolved({ Item: textDoc() }));
+    const res = mockRes();
+    await handler({ user: USER, ip: '1.1.1.1', params: { documentId: 'd1' } }, res, jest.fn());
+
+    expect(res.status).not.toHaveBeenCalledWith(422);
+    expect(createChunks).toHaveBeenCalled();
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      ExpressionAttributeValues: expect.objectContaining({ ':s': 'published' }),
+    }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      complianceAdvisory: [{ chunkIndex: 0, text: 'Some genuine reference content about our products.' }],
+    }));
   });
 });
 
@@ -224,30 +310,35 @@ describe('PUT /api/knowledge-documents/:documentId/archive and /unarchive', () =
   const unarchiveHandler = getRouteHandler(knowledgeDocumentsRouter, '/:documentId/unarchive', 'put');
   beforeEach(() => jest.clearAllMocks());
 
-  test('archive sets status archived', async () => {
+  test('archive sets status archived AND propagates archived: true to every chunk of this document', async () => {
     dynamodb.get.mockReturnValue(resolved({ Item: { documentId: 'd1' } }));
     dynamodb.update.mockReturnValue(resolved({}));
+    setChunksArchived.mockResolvedValue(undefined);
     const res = mockRes();
     await archiveHandler({ user: USER, ip: '1.1.1.1', params: { documentId: 'd1' } }, res, jest.fn());
     expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
       ExpressionAttributeValues: expect.objectContaining({ ':s': 'archived' }),
     }));
+    expect(setChunksArchived).toHaveBeenCalledWith(CID, 'd1', true);
   });
 
-  test('unarchive restores to published when the document was previously published', async () => {
+  test('unarchive restores to published when the document was previously published, unarchiving its chunks too', async () => {
     dynamodb.get.mockReturnValue(resolved({ Item: { documentId: 'd1', publishedAt: '2026-07-01T00:00:00.000Z' } }));
     dynamodb.update.mockReturnValue(resolved({}));
+    setChunksArchived.mockResolvedValue(undefined);
     const res = mockRes();
     await unarchiveHandler({ user: USER, ip: '1.1.1.1', params: { documentId: 'd1' } }, res, jest.fn());
     expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
       ExpressionAttributeValues: expect.objectContaining({ ':s': 'published' }),
     }));
+    expect(setChunksArchived).toHaveBeenCalledWith(CID, 'd1', false);
     expect(res.json).toHaveBeenCalledWith({ success: true, status: 'published' });
   });
 
   test('unarchive restores to draft when the document was never published', async () => {
     dynamodb.get.mockReturnValue(resolved({ Item: { documentId: 'd1', publishedAt: null } }));
     dynamodb.update.mockReturnValue(resolved({}));
+    setChunksArchived.mockResolvedValue(undefined);
     const res = mockRes();
     await unarchiveHandler({ user: USER, ip: '1.1.1.1', params: { documentId: 'd1' } }, res, jest.fn());
     expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({

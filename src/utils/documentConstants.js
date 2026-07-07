@@ -18,4 +18,12 @@ const DOCUMENT_ALLOWED_MIME = new Set([
 
 const MAX_DOCUMENT_SIZE_BYTES = 20 * 1024 * 1024;
 
-module.exports = { DOCUMENT_ALLOWED_MIME, MAX_DOCUMENT_SIZE_BYTES };
+// RAG PR B — caps chunk count per document at publish time. Comfortably
+// inside Voyage's confirmed batch limits for voyage-finance-2 (1,000 texts /
+// 120K tokens per request), generous for any realistic reference document.
+// A document that would exceed this is rejected at publish with a clear
+// error rather than risking a Lambda timeout or exceeding Voyage's batch
+// limits mid-request.
+const MAX_CHUNKS_PER_DOCUMENT = 300;
+
+module.exports = { DOCUMENT_ALLOWED_MIME, MAX_DOCUMENT_SIZE_BYTES, MAX_CHUNKS_PER_DOCUMENT };

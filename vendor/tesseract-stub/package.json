@@ -1,0 +1,7 @@
+{
+  "name": "tesseract.js",
+  "version": "7.0.0",
+  "description": "Stub replacing the real tesseract.js — see index.js for why.",
+  "main": "index.js",
+  "license": "ISC"
+}

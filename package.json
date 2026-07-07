@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "jest",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "package:lambda": "powershell -ExecutionPolicy Bypass -File scripts/package-lambda.ps1",
     "deploy": "npm run package:lambda && aws lambda update-function-code --function-name vt-employee-bot-api --zip-file fileb://deployment.zip --region ap-south-1",
     "deploy:env": "aws lambda update-function-configuration --function-name vt-employee-bot-api --environment file://scripts/lambda-env.json --region ap-south-1"
@@ -25,6 +25,7 @@
     "express": "^5.2.1",
     "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.3",
+    "officeparser": "^7.2.3",
     "qrcode": "^1.5.4",
     "serverless-http": "^4.0.0",
     "speakeasy": "^2.0.0",
@@ -33,5 +34,8 @@
   },
   "devDependencies": {
     "jest": "^30.4.2"
+  },
+  "overrides": {
+    "tesseract.js": "file:./vendor/tesseract-stub"
   }
 }

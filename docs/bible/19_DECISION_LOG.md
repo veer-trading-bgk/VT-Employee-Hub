@@ -1627,6 +1627,45 @@ First of a 3-PR RAG arc (PR A: embedding infra + entries go semantic and live; P
 
 ---
 
+## Era 30 — RAG integration, PR B: Document text extraction, chunking, and embedding (2026-07-07)
+
+Second of the 3-PR RAG arc (PR A: embedding infra + entries live; PR B: this — documents become retrievable content; PR C: wire document retrieval into the live conversation flow). Extends PR 4's Document Knowledge (upload/validate/store only, content never read) with real extraction, chunking, and per-chunk embeddings. **No live-conversation wiring in this PR** — verified entirely via standalone scripts and Jest, same as every other PR this session.
+
+Audit was verified hands-on before any code was written: real `.docx`/`.pptx`/`.xlsx`/`.pdf` files were generated with known text, run through the candidate library (`officeParser`), and a corrupted file was fed through to confirm failure behavior. One initial finding was corrected after deeper investigation rather than left standing: `officeParser`'s `tesseract.js` (OCR) dependency looked like a real ~46MB runtime cost at first, but tracing its source showed it's dynamically `import()`-ed only inside the OCR path (never reached, since this codebase never requests OCR) — the real, deployed Lambda package is 17.5MB against a 250MB ceiling, so even officeParser's full footprint fits comfortably. The `overrides` stub (below) was still done, as approved, for hygiene.
+
+4 decisions locked before implementation:
+1. **officeParser** + an npm `overrides` stub for `tesseract.js` (`vendor/tesseract-stub/`) — verified hands-on for all 4 formats, and verified the stub doesn't break non-OCR parsing (real `tesseract.js-core` no longer installs at all).
+2. **Non-blocking compliance advisory scan** at publish time.
+3. **Extraction failure blocks publish** with a clear error.
+4. **300 chunks per document** safety cap.
+
+**Data model:** `KNOWLEDGE_DOCUMENT_CHUNKS#{companyId}` / `CHUNK#{documentId}#{chunkIndex}` (zero-padded) — one partition **per company**, not per document, deliberately mirroring `KNOWLEDGE#{companyId}`'s pattern so a future retrieval query (PR C) can fetch every chunk across every document for a company in a single Query. `archived` is denormalized onto each chunk (not just the parent `DOC#` item) and kept in sync by `archive`/`unarchive`, so a future retrieval query can filter using only a chunk's own item, never cross-referencing the parent document.
+
+**Extraction** (`src/utils/documentExtraction.js`): dispatches on the `detectedType` already recorded by PR 4's `fileSignature.js` (never re-detected). Legacy OLE2 (.doc/.xls/.ppt) still explicitly out of scope — re-confirmed, no new information changes PR 4/PR A's decision. PDF/DOCX/XLSX/PPTX go through `officeParser`, which returns a structured AST (paragraphs/slides/rows with metadata), not flat text as documentation alone suggested — a dedicated flattening step per format reconstructs XLSX/CSV rows as `"{header}: {value}, ..."` using the header row as labels, directly solving "spreadsheet extraction is a different problem than prose."
+
+**Two real, concrete fixes found during implementation, not assumed:**
+- officeParser runs its **own internal file-type auto-detection** from the buffer, separate from (and, on a malformed input, less precise than) the detection this codebase already trusts — found when a corrupted-file test surfaced a confusing "auto-detection failed" message instead of the expected error. Fixed by passing an explicit `fileType` hint derived from our own `detectedType`.
+- officeParser's PDF support (`pdfjs-dist`) **defaults to loading its parser worker from a CDN URL** (`cdn.jsdelivr.net`) — a real external production dependency this Lambda otherwise has nowhere else. Fixed by pointing `pdfWorkerSrc` at the copy `pdfjs-dist` already ships in `node_modules`.
+
+**A test-infrastructure fix, not a source-code one:** Jest's default CommonJS VM context cannot execute a dynamic `import()` inside `pdfjs-dist`'s PDF-parsing path (`A dynamic import callback was invoked without --experimental-vm-modules`) — confirmed this is purely a Jest limitation, not a real bug: the identical extraction call was run successfully in plain Node, both before and after the CDN-worker fix above. `npm test` now invokes Node directly with `--experimental-vm-modules` (`package.json`, documented in `jest.config.js`) — a standard, stable Node flag, verified not to affect any of the other 1,196 pre-existing tests.
+
+**Chunking** (`src/utils/chunking.js`): structure-aware fixed-size — ~1000 characters per chunk, ~150 character overlap, preferring the extraction step's own block boundaries (paragraph/slide/row) and only hard-splitting a single block that alone exceeds the target size. Pure and deterministic.
+
+**Compliance advisory scan** ([knowledgeDocuments.js:147-150](src/routes/knowledgeDocuments.js#L147-L150)): every extracted chunk is run through the real, unchanged `violatesGuardrail()` at publish time; flagged chunks are returned in a `complianceAdvisory` array, **never blocking publish**. A genuinely different mechanism from `PromptTestService.testKnowledgeEntry()` (which proves actual model behavior via live generation against known triggers) — documents have no trigger phrases to test with, so this is a cheaper, blunter, admin-facing signal. The already-established downstream protection (HARD COMPLIANCE RULES precedence + the same post-generation guardrail filter, proven live in PR 3 against a deliberately unsafe entry) still applies to anything PR C eventually retrieves, regardless of this scan's result.
+
+**Publish flow** ([knowledgeDocuments.js:119-169](src/routes/knowledgeDocuments.js#L119-L169)): fetch bytes from S3 → extract (failure blocks, 422) → chunk (over 300, blocks, 422) → compliance advisory scan (non-blocking) → embed all chunks in one `EmbeddingService.embed()` call (failure blocks, 422 — unlike PR A's per-entry embedding, a document's entire value is its chunks; there is no keyword-matching fallback for documents) → replace any existing chunks → store → flip `status: 'published'`.
+
+**Published-only gating and company isolation — structural, re-verified directly before this entry was written, not assumed.** `grep -rn "createChunks(" src/` returns exactly one call site in the whole codebase — inside `/publish` — so a draft document has zero chunk items by construction, the same guarantee PR A established for entries. `companyId` is always `req.user.companyId`, never client-suppliable, threaded into every `DocumentChunkService` call, which builds `KNOWLEDGE_DOCUMENT_CHUNKS#{companyId}` as the partition key — same structural isolation mechanism as every other service this session.
+
+**Verification:** `tests/documentExtraction.test.js` (new, 11 tests — against real, committed binary fixtures `tests/fixtures/sample.{docx,pptx,xlsx,pdf}`, generated during the audit, not mocks), `tests/chunking.test.js` (new, 10 tests, pure/deterministic), `tests/documentChunkService.test.js` (new, 7 tests), `tests/knowledgeDocuments.test.js` extended (+4: successful publish extracts/chunks/embeds/stores; extraction failure blocks publish; chunk-count-over-300 blocks publish; a failed embed blocks publish; compliance advisory flags without blocking; archive/unarchive propagate to chunks). Full suite: **1218/1218 passing, 69 suites** (was 1186 before this PR).
+
+**Live end-to-end verification** against the real S3 bucket, real DynamoDB, and real Voyage API (not mocked): uploaded a real `.docx`, ran the actual extract→chunk→embed→store pipeline, confirmed a real 1024-dim chunk embedding in DynamoDB, then proved retrieval *quality* directly — a differently-worded query ("Is there any charge for setting up a new account with you?") scored **0.52 cosine similarity** against the stored "account opening fees" chunk, confirming the stored embeddings are genuinely useful for retrieval, not merely present. Cleaned up afterward.
+
+**Status:** implemented, tested, live-verified, committed. Same pre-launch blocker as Era 29 applies here too (Voyage account needs a payment method before real traffic).
+**Reference:** `src/utils/documentExtraction.js`, `src/utils/chunking.js`, `src/services/DocumentChunkService.js`, `src/routes/knowledgeDocuments.js`, `vendor/tesseract-stub/`, `tests/fixtures/`.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or

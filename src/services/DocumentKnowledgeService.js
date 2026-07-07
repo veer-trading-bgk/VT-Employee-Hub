@@ -111,7 +111,16 @@ function getDownloadUrl(s3Key) {
   return s3Client.getSignedUrl('getObject', { Bucket: MEDIA_BUCKET, Key: s3Key, Expires: 3600 });
 }
 
+// RAG PR B — fetches the full object for extraction at publish time
+// (unlike validateUploadedObject's Range-limited sample, extraction needs
+// the whole document). Only ever called after validateUploadedObject has
+// already accepted the object, so no separate size check here.
+async function getObjectBuffer(s3Key) {
+  const obj = await s3Client.getObject({ Bucket: MEDIA_BUCKET, Key: s3Key }).promise();
+  return obj.Body;
+}
+
 module.exports = {
   documentKey, s3KeyFor, listDocuments, getDocument, getUploadUrl,
-  validateUploadedObject, createDocument, updateMetadata, setStatus, getDownloadUrl,
+  validateUploadedObject, createDocument, updateMetadata, setStatus, getDownloadUrl, getObjectBuffer,
 };
