@@ -25,6 +25,15 @@ export interface KnowledgeDocument {
   publishedAt: string | null;
 }
 
+// RAG PR B — a chunk whose extracted text matched the same violatesGuardrail()
+// used elsewhere in this codebase. Non-blocking (publish still succeeds) —
+// this is the admin-visible half of that decision; computing it and never
+// displaying it would make the safeguard exist in name only.
+export interface ComplianceAdvisoryItem {
+  chunkIndex: number;
+  text: string;
+}
+
 export async function fetchDocuments(): Promise<{ documents: KnowledgeDocument[] }> {
   return apiFetch(`${BASE}/`);
 }
@@ -56,7 +65,7 @@ export async function updateDocumentMeta({ documentId, filename, category }: { d
   return apiFetch(`${BASE}/${documentId}`, { method: 'PUT', body: JSON.stringify({ filename, category }) });
 }
 
-export async function publishDocument(documentId: string): Promise<{ success: boolean }> {
+export async function publishDocument(documentId: string): Promise<{ success: boolean; chunkCount: number; complianceAdvisory: ComplianceAdvisoryItem[] }> {
   return apiFetch(`${BASE}/${documentId}/publish`, { method: 'PUT', body: JSON.stringify({}) });
 }
 

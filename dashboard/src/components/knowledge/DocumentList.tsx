@@ -9,7 +9,7 @@ import { Badge } from '@/components/v3/ui/Badge';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
 import {
   documentKeys, fetchDocuments, uploadDocument, publishDocument, archiveDocument, unarchiveDocument, getDownloadUrl,
-  type KnowledgeDocument,
+  type KnowledgeDocument, type ComplianceAdvisoryItem,
 } from '@/lib/knowledge/documentsApi';
 
 const ACCEPT = '.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.txt,.md';
@@ -25,11 +25,37 @@ function formatSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// The admin-visible half of the publish-time compliance advisory scan — a
+// flag computed but never shown here would make the safeguard exist in name
+// only. Same itemized-list grammar as TestResultPanel (header + divided list
+// of the actual flagged content), not that component itself: the data shape
+// ({chunkIndex, text}[]) doesn't match TestResultPanel's ({allPassed, results,
+// testedAt}) and this is a non-blocking advisory, not a pass/fail test.
+function ComplianceAdvisoryPanel({ items }: { items: ComplianceAdvisoryItem[] }) {
+  return (
+    <div className="mt-2 rounded-lg border border-warning-200 dark:border-warning-900/40">
+      <div className="flex items-center gap-2 rounded-t-lg bg-warning-50 px-3 py-2 text-xs font-semibold text-warning-900 dark:bg-warning-900/20 dark:text-warning-300">
+        <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        {items.length} chunk{items.length > 1 ? 's' : ''} flagged for compliance review — published, but read before relying on this content
+      </div>
+      <ul className="divide-y divide-warning-100 dark:divide-warning-900/30">
+        {items.map((item) => (
+          <li key={item.chunkIndex} className="px-3 py-2 text-xs text-neutral-700 dark:text-neutral-300">
+            <span className="font-medium text-neutral-500 dark:text-neutral-500">Chunk {item.chunkIndex}: </span>
+            &ldquo;{item.text}&rdquo;
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export function DocumentList() {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: documentKeys.list(), queryFn: fetchDocuments });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadingName, setUploadingName] = useState<string | null>(null);
+  const [advisoryByDoc, setAdvisoryByDoc] = useState<Record<string, ComplianceAdvisoryItem[]>>({});
 
   const uploadMutation = useMutation({
     mutationFn: uploadDocument,
@@ -46,7 +72,15 @@ export function DocumentList() {
 
   const publishMutation = useMutation({
     mutationFn: publishDocument,
-    onSuccess: () => { qc.invalidateQueries({ queryKey: documentKeys.list() }); toast.success('Published'); },
+    onSuccess: (res, documentId) => {
+      qc.invalidateQueries({ queryKey: documentKeys.list() });
+      if (res.complianceAdvisory.length > 0) {
+        setAdvisoryByDoc((prev) => ({ ...prev, [documentId]: res.complianceAdvisory }));
+        toast.warning(`Published — ${res.complianceAdvisory.length} chunk${res.complianceAdvisory.length > 1 ? 's' : ''} flagged for compliance review below.`);
+      } else {
+        toast.success('Published');
+      }
+    },
     onError: () => toast.error('Publish failed — try again.'),
   });
 
@@ -112,36 +146,39 @@ export function DocumentList() {
         ) : (
           <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
             {data.documents.map((doc) => (
-              <li key={doc.documentId} className="flex items-center justify-between gap-3 px-4 py-3">
-                <div className="flex min-w-0 items-center gap-3">
-                  <FileText className="h-5 w-5 shrink-0 text-neutral-400" />
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{doc.filename}</p>
-                    <p className="mt-0.5 text-xs text-neutral-500">
-                      {formatSize(doc.fileSize)}
-                      {doc.category && <span className="ml-2">· {doc.category}</span>}
-                    </p>
+              <li key={doc.documentId} className="px-4 py-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <FileText className="h-5 w-5 shrink-0 text-neutral-400" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">{doc.filename}</p>
+                      <p className="mt-0.5 text-xs text-neutral-500">
+                        {formatSize(doc.fileSize)}
+                        {doc.category && <span className="ml-2">· {doc.category}</span>}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {statusBadge(doc)}
+                    <Button size="sm" variant="secondary" iconLeft={<Download className="h-3.5 w-3.5" />} onClick={() => downloadMutation.mutate(doc.documentId)}>
+                      Download
+                    </Button>
+                    {doc.status !== 'published' && doc.status !== 'archived' && (
+                      <Button size="sm" iconLeft={<CheckCircle2 className="h-3.5 w-3.5" />} disabled={publishMutation.isPending} onClick={() => publishMutation.mutate(doc.documentId)}>
+                        Publish
+                      </Button>
+                    )}
+                    <Button
+                      size="sm" variant="secondary"
+                      iconLeft={doc.status === 'archived' ? <ArchiveRestore className="h-3.5 w-3.5" /> : <Archive className="h-3.5 w-3.5" />}
+                      disabled={archiveMutation.isPending}
+                      onClick={() => archiveMutation.mutate(doc)}
+                    >
+                      {doc.status === 'archived' ? 'Unarchive' : 'Archive'}
+                    </Button>
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  {statusBadge(doc)}
-                  <Button size="sm" variant="secondary" iconLeft={<Download className="h-3.5 w-3.5" />} onClick={() => downloadMutation.mutate(doc.documentId)}>
-                    Download
-                  </Button>
-                  {doc.status !== 'published' && doc.status !== 'archived' && (
-                    <Button size="sm" iconLeft={<CheckCircle2 className="h-3.5 w-3.5" />} disabled={publishMutation.isPending} onClick={() => publishMutation.mutate(doc.documentId)}>
-                      Publish
-                    </Button>
-                  )}
-                  <Button
-                    size="sm" variant="secondary"
-                    iconLeft={doc.status === 'archived' ? <ArchiveRestore className="h-3.5 w-3.5" /> : <Archive className="h-3.5 w-3.5" />}
-                    disabled={archiveMutation.isPending}
-                    onClick={() => archiveMutation.mutate(doc)}
-                  >
-                    {doc.status === 'archived' ? 'Unarchive' : 'Archive'}
-                  </Button>
-                </div>
+                {advisoryByDoc[doc.documentId]?.length ? <ComplianceAdvisoryPanel items={advisoryByDoc[doc.documentId]} /> : null}
               </li>
             ))}
           </ul>
