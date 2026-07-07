@@ -1461,6 +1461,8 @@ review-before-push precedent as the original Era 22 build.
 **Status:** bug fix implemented, tested (new regression test confirmed failing against pre-fix code via `git stash`, passing after), pushed. Full suite green (1035/1035, 59 suites). Phase 2A implementation (PR 1: AI Administration Settings) not yet started — awaiting explicit go-ahead per the standing "report before implementing" instruction for this task.
 **Reference:** `src/services/ConversationalAgentService.js` (`_handoff`), `tests/conversationalAgentService.test.js`; `docs/adr/ADR-016-ai-chat-design-requirements.md` (2026-07-06 addendum).
 
+**Closure (2026-07-06, same day):** the "inbound message received twice" thread above is now closed. The user confirmed the duplicate "hello? still there?" inbound message was sent by them manually (testing), not a system bug. No further investigation needed — the backend/DB findings above (every wamid processed exactly once, zero `Duplicate webhook ignored` events) were correct; there was simply nothing to find. The escalation-message duplicate (the actual bug, fixed same-day above) is unaffected by this closure and remains resolved.
+
 ---
 
 ## Era 24 — Phase 2A, PR 1: AI Administration Settings Module (2026-07-06)
