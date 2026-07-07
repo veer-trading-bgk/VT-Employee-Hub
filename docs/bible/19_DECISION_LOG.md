@@ -1622,7 +1622,9 @@ First of a 3-PR RAG arc (PR A: embedding infra + entries go semantic and live; P
 
 **⚠️ PRE-LAUNCH BLOCKER, found during live verification — not a code defect, an account-configuration gap:** the Voyage AI account has no payment method attached, capping it at the free tier's **3 requests/minute**. Confirmed by hitting this limit mid-verification: the code handled it exactly as designed (`EmbeddingService.embed()` returned `{ ok: false }`, `KnowledgeService` fell back to keyword matching, no crash) — but at 3 RPM, a live production system embedding a query on every customer turn would hit this constantly, silently degrading most turns to keyword-only matching regardless of how good the semantic model is. **Add a payment method on Voyage's dashboard (https://dashboard.voyageai.com/) before enabling `CONFIG#CONVAGENT` for any company** — this is a go-live blocker for real customer traffic, not a nice-to-have, and is not fixed by anything in this codebase; it's an account-level action outside this repo.
 
-**Status:** implemented, tested, live-verified (including against the real Voyage API and real DynamoDB), committed. **Not yet safe for a company to actually enable the conversational agent against real traffic until the pre-launch blocker above is resolved.**
+**✅ RESOLVED, same day (2026-07-07), shortly after this entry was written.** A payment method was added to the Voyage account and a $5 recharge applied. Re-verified live at RAG PR C's closeout (not just taken on the account holder's word): 5 sequential real `EmbeddingService.embed()` calls with zero pacing all succeeded, then 10 fully concurrent real calls (`Promise.all`, zero pacing) all succeeded in under 1 second total — both bursts are far beyond what the free tier's 3 RPM cap would have tolerated (a real 3 RPM cap would reject the majority of a 10-concurrent burst instantly). Voyage's API does not expose a rate-limit-remaining header to confirm the exact new ceiling numerically, so the new limit's precise value is unconfirmed, but the specific 3 RPM free-tier constraint this entry describes is empirically no longer in effect. Item 15 in "Open architectural questions" below is updated accordingly — do not re-cite this section's original blocker language as still-current without checking that update first.
+
+**Status:** implemented, tested, live-verified (including against the real Voyage API and real DynamoDB), committed. The pre-launch blocker above was resolved the same day — see the resolution note directly above before assuming this is still open.
 **Reference:** `docs/adr/ADR-017-embedding-service-boundary.md`, `src/services/EmbeddingService.js`, `src/config/embeddingConfig.js`, `src/services/KnowledgeService.js`, `src/routes/knowledgeCenter.js`, `scripts/backfill-knowledge-embeddings.js`.
 
 ---
@@ -1663,7 +1665,7 @@ Audit was verified hands-on before any code was written: real `.docx`/`.pptx`/`.
 
 **Post-review fix — compliance advisory was computed but never displayed.** Before this PR was accepted as closed, review of the four locked decisions surfaced a real gap: `complianceAdvisory` was computed by `/publish` and returned in the response, but the dashboard discarded it entirely — `publishDocument()`'s TypeScript return type didn't declare the field, and `DocumentList.tsx`'s `onSuccess` handler didn't read the response body. A safeguard that is computed but never shown to the admin who is supposed to judge it does not function in practice. Fixed: `documentsApi.ts` gained a `ComplianceAdvisoryItem` type and a corrected `publishDocument` return type; `DocumentList.tsx` now captures the response, stores any non-empty advisory per document, swaps the success toast for `toast.warning(...)` naming the flagged count, and renders a new `ComplianceAdvisoryPanel` listing each flagged chunk's actual text — same itemized header+list grammar as `TestResultPanel` (Era 26/PR2's endorsement-list visibility), built as its own component rather than force-fit into `TestResultPanel`'s `{allPassed, results, testedAt}` shape, which this data doesn't match. Verified: `tsc --noEmit` clean, ESLint clean, `next build` succeeded.
 
-**Status:** implemented, tested, live-verified, committed — including the frontend advisory display. Same pre-launch blocker as Era 29 applies here too (Voyage account needs a payment method before real traffic).
+**Status:** implemented, tested, live-verified, committed — including the frontend advisory display. Era 29's pre-launch blocker (Voyage account needed a payment method) was resolved the same day, shortly after Era 29 was written — see Era 29's resolution note. Not re-verified independently as part of this PR at the time this entry was first written; re-confirmed live during Era 31's closeout instead (see that entry).
 **Reference:** `src/utils/documentExtraction.js`, `src/utils/chunking.js`, `src/services/DocumentChunkService.js`, `src/routes/knowledgeDocuments.js`, `vendor/tesseract-stub/`, `tests/fixtures/`, `dashboard/src/lib/knowledge/documentsApi.ts`, `dashboard/src/components/knowledge/DocumentList.tsx`.
 
 ---
@@ -1692,7 +1694,7 @@ Third and final PR of the RAG arc (PR A: embedding infra + entries go semantic; 
 
 **Live verification against real DynamoDB and real Voyage AI (not mocked):** two real scratch companies, each with a real published entry and a real published document. Confirmed: exactly one `EmbeddingService.embed` call per turn shared across entries+chunks ranking; the rendered prompt contains both sections correctly ordered (HARD COMPLIANCE RULES < RELEVANT COMPANY KNOWLEDGE < REFERENCE DOCUMENT EXCERPTS); a company's own 3 real chunks correctly cap at `MAX_MATCHED_CHUNKS = 2` in the returned result; archiving a document's chunks live removed them from `documentExcerpts` on the next turn while the same company's `knowledgeEntries` result was byte-identical to before the archive (entries genuinely unaffected by chunk state). Company isolation was re-confirmed via the structural argument (distinct partition keys make cross-company leakage impossible by construction, re-verified against the current code) rather than a live cross-company text search — an initial naive substring check in the verification script itself falsely flagged a "leak" because company B's own legitimate content ("mutual fund SIPs") contains the substring "SIP", which the check hadn't excluded; this was a bug in the verification script's assertion, not in the production code, and is noted here rather than silently discarded so the record is honest about what was and wasn't directly observed. All scratch entries/chunks cleaned up after; `EMBEDUSAGE#` usage records from the live calls were intentionally retained (real usage, not scratch data).
 
-**Status:** implemented, tested, live-verified, committed. This is the last of the 3 RAG PRs — Document Knowledge is now fully wired end to end (upload → extract → chunk → embed → retrieve → prompt). Same pre-launch blocker as Era 29/30 applies here too, now for entries AND documents alike (Voyage account needs a payment method before real traffic; a redundant per-turn embed call was specifically avoided in this PR's design because of this).
+**Status:** implemented, tested, live-verified, committed. This is the last of the 3 RAG PRs — Document Knowledge is now fully wired end to end (upload → extract → chunk → embed → retrieve → prompt). Era 29's pre-launch blocker was already resolved (payment method + $5 recharge, same day as Era 29) before this PR started — re-verified live at this PR's own closeout: 5 sequential + 10 fully concurrent real embed calls, zero pacing, all 15 succeeded, far beyond the original 3 RPM free-tier cap. The shared-embed-call design (one call per turn instead of two) remains the right call on its own merits — cost/latency discipline, not a response to an active rate-limit emergency.
 **Reference:** `src/services/DocumentChunkRetrievalService.js`, `src/services/DocumentChunkService.js`, `src/services/KnowledgeService.js`, `src/services/ConversationalAgentService.js`, `src/config/aiConfig.js`, `docs/adr/ADR-018-document-chunk-retrieval-scan.md`.
 
 ---
@@ -1868,17 +1870,17 @@ already fully enforced just because an ADR exists.
     directory parsing). **Not fixed, deliberately out of scope for PR 4** — revisit if
     Document Knowledge's usage grows enough to justify a dedicated AV-scanning project.
 
-15. **PRE-LAUNCH BLOCKER — the Voyage AI account has no payment method attached,
+15. ~~**PRE-LAUNCH BLOCKER — the Voyage AI account has no payment method attached,
     capped at the free tier's 3 requests/minute (found during RAG PR A's live
-    verification, Era 29).** Not a code defect — `EmbeddingService`/`KnowledgeService`
-    handle the resulting rate-limit error exactly as designed (graceful fallback to
-    keyword matching, no crash). But at 3 RPM, a live production system embedding a
-    query on every customer turn would hit this constantly, silently degrading most
-    turns to keyword-only matching regardless of model quality — this defeats the
-    actual point of RAG PR A for any company running real traffic. **Add a payment
-    method on Voyage's dashboard (https://dashboard.voyageai.com/) before enabling
-    `CONFIG#CONVAGENT` for any company** — an account-level action outside this repo,
-    not fixable in code. Treat this as a go-live checklist item, not a nice-to-have.
+    verification, Era 29).**~~ **Resolved same day (2026-07-07), shortly after Era 29
+    was written** — a payment method was added and a $5 recharge applied. Empirically
+    re-confirmed at RAG PR C's closeout (Era 31), not just taken on record: 5
+    sequential and 10 fully concurrent real `EmbeddingService.embed()` calls, zero
+    pacing, all 15 succeeded — far beyond what a real 3 RPM cap would tolerate.
+    `EmbeddingService`/`KnowledgeService` still handle a rate-limit-style rejection
+    gracefully if one ever occurs again (fallback to keyword matching, no crash) —
+    that resilience code path is unchanged and still worth knowing about, it's just
+    not currently being triggered by this specific, now-resolved constraint.
 
 16. **Document chunk retrieval (RAG PR C, Era 31) uses an in-process brute-force
     cosine scan, an explicit interim decision, not a silently-accepted limitation.**
