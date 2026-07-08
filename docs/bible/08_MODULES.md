@@ -920,7 +920,7 @@ full detail only for the context/provider files that own shared state.
 
 | Folder | Owns |
 |---|---|
-| `ai/` | Single AI insights widget (`InsightsPanel.tsx`) — maps to the Customer 360 "Activity Panel" AI integration point, not a standalone tab |
+| `ai/` | **Empty (correction, 2026-07-08).** This row previously claimed a "Single AI insights widget (`InsightsPanel.tsx`)... maps to the Customer 360 'Activity Panel' AI integration point" — that widget was never actually wired to the Activity Panel's reserved health-score slot (Phase 2 Commit 6), was unmounted anywhere in the dashboard, and was removed 2026-07-05 as confirmed-dead code. `dashboard/src/components/ai/` is an empty directory today. See `docs/bible/19_DECISION_LOG.md` Era 33. |
 | `automation/` | Pre-v3 workflow automation UI (dashboard, builder, execution list) — still actively used by `app/(v3)/automation/page.tsx` |
 | `badges/` | Generic badge/achievement display card |
 | `campaigns/` | Campaign management UI (audience builder, create drawer, list, dashboard) |

@@ -211,7 +211,9 @@ f:\aws\vt-employee-bot\
 | Gamification (Points/Badges) | Complete | Medium | `routes/points.js`, `routes/badges.js`, `config/metricsConfig.js` | DynamoDB |
 | Attendance Tracking | Complete | Simple | `routes/attendance.js`, `dashboard/src/app/*/attendance/` | DynamoDB |
 | Compensation Management | Complete | Medium | `routes/compensation.js`, `dashboard/src/app/admin/compensation/` | DynamoDB |
-| AI Insights | Complete | Simple | `routes/ai.js`, `components/ai/InsightsPanel.tsx` | Anthropic API |
+| AI Insights | Complete | Simple | `routes/ai.js`, ~~`components/ai/InsightsPanel.tsx`~~ | Anthropic API |
+
+> **Correction (2026-07-08):** `components/ai/InsightsPanel.tsx` no longer exists — it was accurate when this row was written (2026-06-27) but was removed 2026-07-05 as confirmed-dead code (unmounted anywhere in the dashboard, and already broken against the live API response shape). `dashboard/src/components/ai/` is an empty directory today. See `docs/bible/19_DECISION_LOG.md` Era 33 for how this was found, and `src/routes/ai.js` for the route's current (2026-07-08, deliberately disconnected) behavior.
 | WhatsApp Broadcasts | Complete | Complex | `routes/whatsapp.js`, `utils/whatsappSend.js`, `config/whatsapp.js` | Meta Cloud API |
 | Telegram Bot | Complete | Medium | `routes/telegram.js`, `config/telegram.js` | Telegraf |
 | Workflow Automations | Complete | Complex | `routes/automations.js`, `dashboard/src/app/admin/crm/automations/` | DynamoDB, CRM |
