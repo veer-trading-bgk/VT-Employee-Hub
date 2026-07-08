@@ -5,6 +5,7 @@ const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 const WASendSvc = require('./WhatsAppSendService');
 const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
+const { to10Digit } = require('../utils/phone');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 const SYSTEM_USER = { id: 'system', role: 'admin', name: 'Delayed Response' };
@@ -36,13 +37,18 @@ function _delayMs(cfg) {
 }
 
 async function _findPending(companyId, phone) {
+  // ADR-013 Rule 3: never compare raw phone numbers. cancelPending() can be called
+  // with a lead's raw phone field (up to 12 digits — see CustomerIdentityService's
+  // leadItem.phone, which stores the caller's input as-is), while scheduleIfEnabled()
+  // always stores a 10-digit phone10. Normalize both sides before comparing.
+  const phone10 = to10Digit(phone);
   const { Items = [] } = await dynamodb.query({
     TableName: TABLE,
     KeyConditionExpression: 'PK = :pk',
     ExpressionAttributeValues: { ':pk': `AUTO_WAIT#${companyId}` },
     Limit: 100,
   }).promise();
-  return Items.filter((item) => item.waitType === 'delayed_response' && item.delayedResponse?.phone === phone);
+  return Items.filter((item) => item.waitType === 'delayed_response' && to10Digit(item.delayedResponse?.phone) === phone10);
 }
 
 /**

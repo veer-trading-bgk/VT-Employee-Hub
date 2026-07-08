@@ -138,6 +138,20 @@ describe('cancelPending()', () => {
     dynamodb.query.mockReturnValue({ promise: () => Promise.reject(new Error('timeout')) });
     await expect(DelayedResponseService.cancelPending(CID, PHONE)).resolves.toBeUndefined();
   });
+
+  test('Fix 2 (Wave 1 audit): a 12-digit raw phone (e.g. a lead\'s un-truncated phone field) still cancels a wait scheduled under the 10-digit normalized form', async () => {
+    const RAW_12_DIGIT = `91${PHONE}`; // same subscriber, +91-prefixed/un-truncated shape
+    dynamodb.query.mockReturnValue(queryResult([
+      { PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#a', waitType: 'delayed_response', delayedResponse: { phone: PHONE } },
+    ]));
+    dynamodb.delete.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    await DelayedResponseService.cancelPending(CID, RAW_12_DIGIT);
+
+    expect(dynamodb.delete).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#a' },
+    }));
+  });
 });
 
 describe('resume()', () => {
