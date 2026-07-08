@@ -284,7 +284,10 @@ function ContactsContent() {
   // rejects them) and wrongly include team_lead in its shared 'manager' bucket
   // (backend rejects team_lead too — only raw manager is allowed).
   const canCreate    = canAssignOwner(user?.role);
-  const canImport    = ['owner', 'admin', 'manager'].includes(v3Role);
+  // Raw role, not v3Role — matches POST /api/crm/import's checkRole(['admin','manager'])
+  // exactly (same scope canAssignOwner already encodes). v3Role would wrongly include
+  // team_lead in its shared 'manager' bucket — backend rejects team_lead here too.
+  const canImport    = canAssignOwner(user?.role);
   const canEditOwner = ['owner', 'admin'].includes(v3Role);
 
   const queryKey = ['contacts', { search, page, pageSize, sortKey, sortDir, stageFilter }];
