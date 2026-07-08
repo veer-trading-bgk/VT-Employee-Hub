@@ -1531,6 +1531,13 @@ function CustomerSnapshotPanel({
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+      // Customer360Provider owns this same lead under a separate ['contact', leadId]
+      // cache (Customer360Context.tsx) — without this, a stage change made from
+      // Inbox left Customer 360's CRM tab showing the old stage for up to 60s
+      // (its staleTime), or indefinitely if that tab wasn't refocused.
+      if (conversation.leadId) {
+        qc.invalidateQueries({ queryKey: ['contact', conversation.leadId] });
+      }
       toast.success('Stage updated');
     },
     onError: (err) => {
