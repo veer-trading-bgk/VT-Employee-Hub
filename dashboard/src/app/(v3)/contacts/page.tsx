@@ -24,7 +24,6 @@ import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
 import type { Contact } from '@/types/v3';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role } from '@/types/v3';
 import { canAssignOwner } from '@/lib/permissions';
 import { toast } from 'sonner';
 import Link from 'next/link';
@@ -277,7 +276,6 @@ function ContactsContent() {
   );
   const STAGE_OPTIONS = pipelineStages.map((s) => ({ value: s.key, label: s.label }));
 
-  const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   // Raw role, not v3Role — matches POST /api/crm/leads's checkRole(['admin','manager'])
   // exactly (same gate canAssignOwner already encodes for the equivalent Inbox/CrmTab
   // assign controls). v3Role would wrongly include 'sales' (agent/telecaller, backend
@@ -288,7 +286,12 @@ function ContactsContent() {
   // exactly (same scope canAssignOwner already encodes). v3Role would wrongly include
   // team_lead in its shared 'manager' bucket — backend rejects team_lead here too.
   const canImport    = canAssignOwner(user?.role);
-  const canEditOwner = ['owner', 'admin'].includes(v3Role);
+  // Raw role, not v3Role — matches PUT /api/crm/leads/:id/assign's
+  // checkRole(['admin','manager']) exactly. Was ['owner','admin'].includes(v3Role),
+  // which wrongly EXCLUDED raw manager (backend allows manager) — the opposite-
+  // direction bug from canCreate/canImport, found during the Part 2 v3Role sweep.
+  // Now consistent with Inbox's OwnerSelect call site, which already used this.
+  const canEditOwner = canAssignOwner(user?.role);
 
   const queryKey = ['contacts', { search, page, pageSize, sortKey, sortDir, stageFilter }];
 
