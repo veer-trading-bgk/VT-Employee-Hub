@@ -297,7 +297,23 @@ Unless otherwise noted, all entities below live in the METRICS table.
   purged lead's `LEAD#...METADATA.convId` pointer is present (fixed 2026-07-08,
   Era 37 — see `19_DECISION_LOG.md`; previously left behind, see Era 36 /
   `TECHNICAL_DEBT.md`). Leads that pre-date the `convId` pointer, or that never
-  received an inbound WhatsApp message, have no linked CONV# to delete.
+  received an inbound WhatsApp message, have no linked CONV# to delete. Also
+  checks `INBOX#`'s own `convId` and purges that conversation too if it
+  differs from the lead's (Era 41 — closes a gap Era 37 itself left; see below).
+- **Cross-path creation race (Era 41, fixed 2026-07-08):** `resolveForInbox()`
+  and `resolveForLead()` (`conversationResolver.js`) can run concurrently for
+  the same contact from two independent call stacks (the webhook's
+  unknown-contact branch, fire-and-forget, vs. `ConversationalAgentService`'s
+  auto-lead-promotion path, awaited) — before this fix, each created its own
+  `CONV#` entity, permanently splitting one physical thread in two and
+  stranding the contact's first message in whichever one lost. Both functions
+  now check/claim `CONTACT#...META.primaryConversationId` (§2.10) before
+  creating a new Conversation, with the losing side's Conversation discarded
+  and its caller deferring to the winner. 117 already-orphaned `CONV#`
+  entities from before this fix (all `viir_trading` test data) were deleted
+  outright in the same pass — not a migration, since the historical purge
+  route had already destroyed the recoverable side's message data on every
+  prior test → purge → retest cycle, well before this fix or Era 37 existed.
 
 ### 2.10 CONTACT — unified contact identity (Phase 2 entity model)
 
@@ -317,9 +333,17 @@ Unless otherwise noted, all entities below live in the METRICS table.
   identities[] (append-only: {channel, value, isPrimary, verified, addedAt}),
   preferredChannel, preferredLanguage, timezone, leadCount, convCount,
   primaryConversationId, contactCompanyPK` (GSI attribute), system metadata.
+  `leadCount`/`convCount` remain dead placeholders (initialized `0`, never
+  incremented anywhere — confirmed by grep, Era 39). `primaryConversationId`
+  was the same kind of dormant reserved field until 2026-07-08 (Era 41) — it
+  is now the live, actively-read-and-written shared pointer both
+  `conversationResolver.resolveForInbox()`/`resolveForLead()` check before
+  creating a new `CONV#` entity, and race-safely claim (if_not_exists +
+  `ReturnValues`) if not yet set — see §2.9 and Era 41.
 - **Owner:** `src/services/ContactService.js` (backed by
   `src/repositories/ContactRepository.js`); also written by
-  `conversationResolver.js` (find-or-create on first WhatsApp message) and
+  `conversationResolver.js` (find-or-create on first WhatsApp message, and
+  the `primaryConversationId` claim itself, Era 41) and
   `src/services/LeadService.linkContactToLead()` (fire-and-forget link from an
   existing LEAD# to a newly-created or existing CONTACT#).
 - **Readers:** `ContactService`, `conversationResolver.js`, `LeadService`.

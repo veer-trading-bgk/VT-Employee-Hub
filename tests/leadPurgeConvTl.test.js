@@ -292,9 +292,102 @@ describe('lead purge → CONV#/TL# extension (Era 37)', () => {
       // Audit record shows the actual per-partition outcome, not a blanket "success".
       const auditCall = logAudit.mock.calls.find((c) => c[1] === 'crm_lead_purged');
       expect(auditCall).toBeDefined();
-      expect(auditCall[5].convTlPurge).toEqual({ tlLead: false, conv: false, tlConv: false });
+      expect(auditCall[5].convTlPurge).toEqual({
+        tlLead: false, conv: false, tlConv: false, inboxConv: null, tlInboxConv: null,
+      });
     } finally {
       dynamodb.query = realQuery;
     }
+  }, 20000);
+});
+
+describe('lead purge → orphaned INBOX#-linked conversation extension (Era 41)', () => {
+  beforeEach(() => { store.clear(); jest.clearAllMocks(); });
+
+  test('purges an orphaned INBOX#-linked conversation that differs from the lead\'s own — the exact pre-Era-41-fix duplicate-conversation scenario', async () => {
+    const created = await CIS.resolveOrCreate(
+      COMPANY, { phone: PHONE, name: 'Race Customer', source: 'whatsapp', idempotencyKey: 'k-era41-1' }, { createdBy: 'emp_1' },
+    );
+    await flushImmediate();
+
+    // The lead's own conversation (what resolveForLead() would have created).
+    const leadConv = await ConversationService.createConversation(COMPANY, {
+      contactId: 'ctc-era41', channel: 'whatsapp', channelAddress: '+919901251785',
+    }, 'system');
+    await flushImmediate();
+    const leadKey = k(leadPK(COMPANY, created.leadId), 'METADATA');
+    store.set(leadKey, { ...store.get(leadKey), convId: leadConv.conversationId, contactId: 'ctc-era41' });
+
+    // A SEPARATE, orphaned conversation linked only from INBOX# — simulates the
+    // pre-Era-41 race: resolveForInbox() created its own conversation before this
+    // lead existed, and nothing ever reconciled the two.
+    const inboxConv = await ConversationService.createConversation(COMPANY, {
+      contactId: 'ctc-era41', channel: 'whatsapp', channelAddress: '+919901251785',
+    }, 'system');
+    await flushImmediate();
+    const inboxKey = k(`INBOX#${COMPANY}#${PHONE}`, 'CONTACT');
+    store.set(inboxKey, {
+      PK: `INBOX#${COMPANY}#${PHONE}`, SK: 'CONTACT', companyId: COMPANY, phone: PHONE,
+      convId: inboxConv.conversationId, contactId: 'ctc-era41',
+    });
+
+    // Pre-purge sanity: both conversations genuinely exist, and differ.
+    expect(leadConv.conversationId).not.toBe(inboxConv.conversationId);
+    expect(store.has(k(conversationPK(COMPANY, leadConv.conversationId), 'CONV#META'))).toBe(true);
+    expect(store.has(k(conversationPK(COMPANY, inboxConv.conversationId), 'CONV#META'))).toBe(true);
+
+    const { res } = await purgeLead(created.leadId);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+
+    // Both conversations — not just the lead-linked one — are gone.
+    expect(store.has(k(conversationPK(COMPANY, leadConv.conversationId), 'CONV#META'))).toBe(false);
+    expect(store.has(k(conversationPK(COMPANY, inboxConv.conversationId), 'CONV#META'))).toBe(false);
+    expect(itemsUnderPK(tlPK(COMPANY, ENTITY.CONV, leadConv.conversationId)).length).toBe(0);
+    expect(itemsUnderPK(tlPK(COMPANY, ENTITY.CONV, inboxConv.conversationId)).length).toBe(0);
+
+    const auditCall = logAudit.mock.calls.find((c) => c[1] === 'crm_lead_purged');
+    expect(auditCall[5].inboxConvId).toBe(inboxConv.conversationId);
+    expect(auditCall[5].convTlPurge.inboxConv).toBe(true);
+    expect(auditCall[5].convTlPurge.tlInboxConv).toBe(true);
+  }, 20000);
+
+  test('does not attempt an INBOX-linked purge when INBOX#\'s convId is the SAME as the lead\'s (no real orphan)', async () => {
+    const created = await CIS.resolveOrCreate(
+      COMPANY, { phone: PHONE, name: 'Normal Customer', source: 'whatsapp', idempotencyKey: 'k-era41-2' }, { createdBy: 'emp_1' },
+    );
+    await flushImmediate();
+
+    const conv = await ConversationService.createConversation(COMPANY, {
+      contactId: 'ctc-era41-2', channel: 'whatsapp', channelAddress: '+919901251785',
+    }, 'system');
+    await flushImmediate();
+    const leadKey = k(leadPK(COMPANY, created.leadId), 'METADATA');
+    store.set(leadKey, { ...store.get(leadKey), convId: conv.conversationId, contactId: 'ctc-era41-2' });
+
+    const inboxKey = k(`INBOX#${COMPANY}#${PHONE}`, 'CONTACT');
+    store.set(inboxKey, {
+      PK: `INBOX#${COMPANY}#${PHONE}`, SK: 'CONTACT', companyId: COMPANY, phone: PHONE,
+      convId: conv.conversationId, contactId: 'ctc-era41-2', // SAME convId — the Era 41 fix already reconciled them
+    });
+
+    await purgeLead(created.leadId);
+
+    const auditCall = logAudit.mock.calls.find((c) => c[1] === 'crm_lead_purged');
+    expect(auditCall[5].convTlPurge.inboxConv).toBeNull();
+    expect(auditCall[5].convTlPurge.tlInboxConv).toBeNull();
+  }, 20000);
+
+  test('handles a missing INBOX# CONTACT item entirely — no error, inboxConvId stays null', async () => {
+    const created = await CIS.resolveOrCreate(
+      COMPANY, { phone: '9000000005', name: 'No Inbox Lead', source: 'whatsapp', idempotencyKey: 'k-era41-3' }, { createdBy: 'emp_1' },
+    );
+    await flushImmediate();
+
+    const { res, next } = await purgeLead(created.leadId);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+
+    const auditCall = logAudit.mock.calls.find((c) => c[1] === 'crm_lead_purged');
+    expect(auditCall[5].inboxConvId).toBeNull();
   }, 20000);
 });

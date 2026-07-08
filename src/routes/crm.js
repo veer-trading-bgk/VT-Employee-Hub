@@ -610,11 +610,17 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
 // record and any pre-promotion INBOX# messages for the same phone, the lead's own
 // TL# timeline, and — if a WhatsApp conversation was ever linked (leadItem.convId,
 // written by conversationResolver.js) — that CONV# entity and its TL# timeline too.
+// Also checks INBOX#'s OWN convId pointer (Era 41): before the Era 41 fix,
+// resolveForInbox() and resolveForLead() could independently create two different
+// CONV# entities for the same contact (a genuine cross-call-stack race, see
+// 19_DECISION_LOG.md Era 41) — Era 37's purge only ever followed the lead's own
+// convId, silently leaving the INBOX#-linked one behind as a permanent orphan.
+// This purges that one too, whenever it differs from the lead's.
 // CONTACT#'s own TL# partition (TL#{cid}#CONTACT#{contactId}) is deliberately left
 // alone: the Contact entity is a separate, longer-lived identity that survives this
 // lead's deletion (this route never touches CONTACT# at all), so its timeline —
 // which may include fan-out entries from this conversation — legitimately continues
-// to exist. See docs/bible/19_DECISION_LOG.md Era 36/37 and
+// to exist. See docs/bible/19_DECISION_LOG.md Era 36/37/41 and
 // docs/phase3/TECHNICAL_DEBT.md for the incident this closes.
 router.delete('/leads/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
@@ -654,8 +660,18 @@ router.delete('/leads/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 
     // 1. Delete all items under LEAD# PK (METADATA, MSG#*, NOTE#*, etc.)
     await purgePartition(PK);
 
-    // 2. Delete all items under INBOX# PK for this phone (shadow CONTACT + pre-promotion MSG#*)
-    if (phone) await purgePartition(`INBOX#${companyId}#${phone}`).catch(() => {});
+    // 2. Delete all items under INBOX# PK for this phone (shadow CONTACT + pre-promotion MSG#*).
+    //    Read the INBOX# CONTACT item's own convId FIRST, before purging it away —
+    //    Era 37 only ever checked the LEAD#'s own convId; this can differ (see Era 41).
+    let inboxConvId = null;
+    if (phone) {
+      const inboxItem = await dynamodb.get({
+        TableName: TABLE,
+        Key: { PK: `INBOX#${companyId}#${phone}`, SK: 'CONTACT' },
+      }).promise().catch(() => ({}));
+      inboxConvId = inboxItem.Item?.convId ?? null;
+      await purgePartition(`INBOX#${companyId}#${phone}`).catch(() => {});
+    }
 
     // 3. Delete the lead's own TL# timeline (touch_received entries, written by
     //    CustomerIdentityService on every resolveOrCreate() call — independent of
@@ -694,6 +710,29 @@ router.delete('/leads/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 
     } else {
       logger.info(`crm/leads purge: leadId=${leadId} has no convId — skipping CONV#/TL#(CONV) purge (pre-dates conversation pointer or never messaged)`);
     }
+
+    // 4b. (Era 41) The INBOX# CONTACT item's own convId can point at a DIFFERENT
+    //     conversation than the lead's — resolveForInbox() and resolveForLead() used
+    //     to race independently before the Era 41 fix, each creating its own CONV#
+    //     for the same contact. Purge that orphan too, whenever it's not the same
+    //     one just purged above (or wasn't purged because the lead had no convId).
+    convTlPurge.inboxConv = null;
+    convTlPurge.tlInboxConv = null;
+    if (inboxConvId && inboxConvId !== convId) {
+      convTlPurge.inboxConv = true;
+      convTlPurge.tlInboxConv = true;
+      await purgePartition(conversationPK(companyId, inboxConvId))
+        .catch((e) => {
+          convTlPurge.inboxConv = false;
+          logger.warn(`crm/leads purge: INBOX-linked CONV# delete failed leadId=${leadId} inboxConvId=${inboxConvId}: ${e.message}`);
+        });
+      await purgePartition(tlPK(companyId, ENTITY.CONV, inboxConvId))
+        .catch((e) => {
+          convTlPurge.tlInboxConv = false;
+          logger.warn(`crm/leads purge: TL#(INBOX-linked CONV) delete failed leadId=${leadId} inboxConvId=${inboxConvId}: ${e.message}`);
+        });
+      logger.info(`crm/leads purge: leadId=${leadId} purged orphaned INBOX-linked conversation inboxConvId=${inboxConvId}`);
+    }
     const convTlPartialFailure = Object.values(convTlPurge).some((v) => v === false);
 
     // 5. Release the LEAD_PHONE# uniqueness lock (a separate PK, written by
@@ -716,6 +755,7 @@ router.delete('/leads/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 
     await logAudit(req.user.id, 'crm_lead_purged', leadId, 'success', req.ip, {
       phone,
       convId: convId ?? null,
+      inboxConvId: inboxConvId ?? null,
       convTlPurge,
     });
 

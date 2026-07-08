@@ -5,6 +5,7 @@
 jest.mock('../src/config/dynamodb', () => ({
   get:    jest.fn(),
   update: jest.fn(),
+  delete: jest.fn(),
 }));
 jest.mock('../src/services/ContactService');
 jest.mock('../src/services/ConversationService');
@@ -13,6 +14,7 @@ const dynamodb            = require('../src/config/dynamodb');
 const ContactService      = require('../src/services/ContactService');
 const ConversationService = require('../src/services/ConversationService');
 const resolver            = require('../src/utils/conversationResolver');
+const { contactPK, contactSK, conversationPK, conversationSK } = require('../src/core/entityKeys');
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -31,6 +33,7 @@ beforeEach(() => {
   // Default: no existing convId on DDB items
   dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
   dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+  dynamodb.delete.mockReturnValue({ promise: () => Promise.resolve({}) });
 
   // ContactService defaults
   ContactService.createContact.mockResolvedValue({ contact: CONTACT, created: true });
@@ -77,7 +80,7 @@ describe('resolveForInbox()', () => {
 
   test('uses if_not_exists to guard concurrent webhook races', async () => {
     await resolver.resolveForInbox(CID, PHONE10, { inboxPK: INBOX_PK });
-    const call = dynamodb.update.mock.calls[0][0];
+    const call = dynamodb.update.mock.calls.find((c) => c[0].Key.PK === INBOX_PK)[0];
     expect(call.UpdateExpression).toMatch(/if_not_exists\(convId/);
     expect(call.UpdateExpression).toMatch(/if_not_exists\(contactId/);
   });
@@ -248,6 +251,159 @@ describe('resolveForLead()', () => {
   test('never throws — catches ContactService error', async () => {
     ContactService.createContact.mockRejectedValue(new Error('conflict'));
     await expect(resolver.resolveForLead(CID, LEAD_PK, PHONE10, {})).resolves.toBeUndefined();
+  });
+});
+
+// ─── Cross-path conversation dedup (Era 41) ───────────────────────────────────
+//
+// Reproduces the real production bug: whatsapp.js's unknown-contact branch
+// fires resolveForInbox() fire-and-forget, then — if the auto-bot-engagement
+// feature is on — awaits ConversationalAgentService.maybeStart(), which
+// independently calls resolveForLead() for the same contact. Before this fix,
+// each created its own Conversation, permanently splitting one physical
+// WhatsApp thread into two CONV# entities (the first message stuck in
+// whichever one lost). CONTACT#...META.primaryConversationId is now the
+// shared pointer both functions check/claim to prevent this.
+
+describe('cross-path conversation dedup (Era 41)', () => {
+  const CONTACT_PK = contactPK(CID, CONTACT.contactId);
+
+  test('resolveForInbox reuses an already-claimed Contact conversation instead of creating a new one', async () => {
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === CONTACT_PK) return { promise: () => Promise.resolve({ Item: { primaryConversationId: 'conv_existing_from_lead' } }) };
+      return { promise: () => Promise.resolve({}) }; // INBOX# CONTACT — no local convId yet
+    });
+
+    const result = await resolver.resolveForInbox(CID, PHONE10, { inboxPK: INBOX_PK, text: 'Hi', timestamp: '2026-07-08T09:46:33.000Z' });
+
+    expect(result).toEqual({ conversationId: 'conv_existing_from_lead' });
+    expect(ConversationService.createConversation).not.toHaveBeenCalled();
+    expect(ConversationService.updateLastMessage).toHaveBeenCalledWith(CID, 'conv_existing_from_lead', expect.objectContaining({ text: 'Hi' }));
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: INBOX_PK, SK: 'CONTACT' },
+      ExpressionAttributeValues: expect.objectContaining({ ':cv': 'conv_existing_from_lead' }),
+    }));
+  });
+
+  test('resolveForLead reuses an already-claimed Contact conversation instead of creating a new one', async () => {
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === CONTACT_PK) return { promise: () => Promise.resolve({ Item: { primaryConversationId: 'conv_existing_from_inbox' } }) };
+      if (params.Key.PK === LEAD_PK) return { promise: () => Promise.resolve({ Item: { leadId: 'lead_abc', name: 'Bob' } }) };
+      return { promise: () => Promise.resolve({}) };
+    });
+
+    const result = await resolver.resolveForLead(CID, LEAD_PK, PHONE10, { text: 'hello', timestamp: '2026-07-08T09:46:41.000Z' });
+
+    expect(result).toEqual({ conversationId: 'conv_existing_from_inbox' });
+    expect(ConversationService.createConversation).not.toHaveBeenCalled();
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: LEAD_PK, SK: 'METADATA' },
+      ExpressionAttributeValues: expect.objectContaining({ ':cv': 'conv_existing_from_inbox' }),
+    }));
+  });
+
+  test('genuine concurrent race — resolveForInbox and resolveForLead fire near-simultaneously for a brand-new contact, exactly ONE Conversation survives', async () => {
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === LEAD_PK) return { promise: () => Promise.resolve({ Item: { leadId: 'lead_abc', name: 'Veer' } }) };
+      return { promise: () => Promise.resolve({}) }; // CONTACT#/INBOX# — nothing claimed yet, real first-ever message
+    });
+
+    let convCounter = 0;
+    ConversationService.createConversation.mockImplementation(async () => ({ conversationId: `conv_${++convCounter}` }));
+
+    // Real DynamoDB if_not_exists()+ReturnValues semantics for the shared
+    // Contact pointer: whichever caller's UpdateItem actually executes first
+    // wins; every later caller reading the same in-memory value defers to it.
+    let claimedConvId = null;
+    dynamodb.update.mockImplementation((params) => {
+      if (params.Key.PK === CONTACT_PK && params.UpdateExpression.includes('primaryConversationId')) {
+        if (!claimedConvId) claimedConvId = params.ExpressionAttributeValues[':cv'];
+        return { promise: () => Promise.resolve({ Attributes: { primaryConversationId: claimedConvId } }) };
+      }
+      return { promise: () => Promise.resolve({}) };
+    });
+
+    const [inboxResult, leadResult] = await Promise.all([
+      resolver.resolveForInbox(CID, PHONE10, { inboxPK: INBOX_PK, text: 'Hi', timestamp: '2026-07-08T09:46:33.000Z' }),
+      resolver.resolveForLead(CID, LEAD_PK, PHONE10, { text: 'Hi', timestamp: '2026-07-08T09:46:41.000Z' }),
+    ]);
+
+    // Exactly one conversationId survives, shared by both call paths — not two.
+    expect(inboxResult.conversationId).toBe(leadResult.conversationId);
+    // Both paths did each create their own Conversation initially (matches the
+    // real trace) — but the loser must have been discarded, leaving one live.
+    expect(ConversationService.createConversation).toHaveBeenCalledTimes(2);
+    expect(dynamodb.delete).toHaveBeenCalledTimes(1);
+  });
+
+  test('loser path: resolveForInbox loses the claim race, discards its own Conversation, and reuses the winner\'s', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) }); // no pointer set when first checked
+    ConversationService.createConversation.mockResolvedValue({ conversationId: 'conv_inbox_created_then_discarded' });
+
+    // Simulate: by the time resolveForInbox's claim-write actually executes, a
+    // concurrent resolveForLead() call already won and set a DIFFERENT conversationId.
+    dynamodb.update.mockImplementation((params) => {
+      if (params.Key.PK === CONTACT_PK && params.UpdateExpression.includes('primaryConversationId')) {
+        return { promise: () => Promise.resolve({ Attributes: { primaryConversationId: 'conv_lead_won' } }) };
+      }
+      return { promise: () => Promise.resolve({}) };
+    });
+
+    const result = await resolver.resolveForInbox(CID, PHONE10, { inboxPK: INBOX_PK, text: 'Hi', timestamp: '2026-07-08T09:46:33.000Z' });
+
+    expect(result).toEqual({ conversationId: 'conv_lead_won' });
+    expect(dynamodb.delete).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: conversationPK(CID, 'conv_inbox_created_then_discarded'), SK: conversationSK() },
+    }));
+    expect(ConversationService.updateLastMessage).toHaveBeenCalledWith(CID, 'conv_lead_won', expect.objectContaining({ text: 'Hi' }));
+    expect(ConversationService.incrementUnread).toHaveBeenCalledWith(CID, 'conv_lead_won', 1);
+    expect(ConversationService.updateLastMessage).not.toHaveBeenCalledWith(CID, 'conv_inbox_created_then_discarded', expect.anything());
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: INBOX_PK, SK: 'CONTACT' },
+      ExpressionAttributeValues: expect.objectContaining({ ':cv': 'conv_lead_won' }),
+    }));
+  });
+
+  test('loser path: resolveForLead loses the claim race, discards its own Conversation, and reuses the winner\'s', async () => {
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === LEAD_PK) return { promise: () => Promise.resolve({ Item: { leadId: 'lead_abc', name: 'Veer' } }) };
+      return { promise: () => Promise.resolve({}) };
+    });
+    ConversationService.createConversation.mockResolvedValue({ conversationId: 'conv_lead_created_then_discarded' });
+
+    dynamodb.update.mockImplementation((params) => {
+      if (params.Key.PK === CONTACT_PK && params.UpdateExpression.includes('primaryConversationId')) {
+        return { promise: () => Promise.resolve({ Attributes: { primaryConversationId: 'conv_inbox_won' } }) };
+      }
+      return { promise: () => Promise.resolve({}) };
+    });
+
+    const result = await resolver.resolveForLead(CID, LEAD_PK, PHONE10, { text: 'hello', timestamp: '2026-07-08T09:47:54.000Z' });
+
+    expect(result).toEqual({ conversationId: 'conv_inbox_won' });
+    expect(dynamodb.delete).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: conversationPK(CID, 'conv_lead_created_then_discarded'), SK: conversationSK() },
+    }));
+    expect(ConversationService.updateLastMessage).toHaveBeenCalledWith(CID, 'conv_inbox_won', expect.objectContaining({ text: 'hello' }));
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: LEAD_PK, SK: 'METADATA' },
+      ExpressionAttributeValues: expect.objectContaining({ ':cv': 'conv_inbox_won' }),
+    }));
+  });
+
+  test('discard failure is logged and swallowed — never surfaces to the caller', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    ConversationService.createConversation.mockResolvedValue({ conversationId: 'conv_inbox_created_then_discarded' });
+    dynamodb.update.mockImplementation((params) => {
+      if (params.Key.PK === CONTACT_PK && params.UpdateExpression.includes('primaryConversationId')) {
+        return { promise: () => Promise.resolve({ Attributes: { primaryConversationId: 'conv_lead_won' } }) };
+      }
+      return { promise: () => Promise.resolve({}) };
+    });
+    dynamodb.delete.mockReturnValue({ promise: () => Promise.reject(new Error('delete failed')) });
+
+    const result = await resolver.resolveForInbox(CID, PHONE10, { inboxPK: INBOX_PK, text: 'Hi', timestamp: '2026-07-08T09:46:33.000Z' });
+    expect(result).toEqual({ conversationId: 'conv_lead_won' });
   });
 });
 
