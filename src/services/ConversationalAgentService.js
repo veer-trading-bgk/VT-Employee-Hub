@@ -525,9 +525,12 @@ async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessa
     // (no send, so WhatsAppSendService's own self-heal never fires either).
     // Scoped to action === 'created' only — an 'enriched' hit means CIS
     // resolved to a pre-existing lead with its own message history maintained
-    // elsewhere, not this fix's concern. WhatsAppSendService._updateLastMessage()
-    // may still overwrite this moments later in the same request once the bot
-    // actually replies — safe regardless of exact sequencing, since both calls
+    // elsewhere, not this fix's concern. WhatsAppSendService's own outbound call to
+    // updateLeadLastMessage() (utils/updateLeadLastMessage.js — WhatsAppSendService's
+    // former private _updateLastMessage() copy was deleted and folded into this
+    // shared util, Wave 1 audit Fix 5) may still overwrite this moments later in
+    // the same request once the bot actually replies — safe regardless of exact
+    // sequencing, since both calls
     // always SET a real, chronologically-forward timestamp (this inbound
     // message's `timestamp` now, the reply's own later send-time `ts`
     // afterward), so last-write-wins is always correct.

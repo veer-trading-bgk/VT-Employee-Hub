@@ -93,4 +93,12 @@ describe('sendLocation()', () => {
     await flushMicrotasks();
     expect(DelayedResponseService.cancelPending).not.toHaveBeenCalled();
   });
+
+  test('Fix 5 (Wave 1 audit): an outbound send now bumps ACTIVITY#, via the shared updateLeadLastMessage() util (private _updateLastMessage duplicate deleted)', async () => {
+    await WASendSvc.sendLocation(CID, { phone: PHONE }, { latitude: 1, longitude: 2 }, AGENT_USER);
+
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: `ACTIVITY#${CID}`, SK: 'WA' },
+    }));
+  });
 });

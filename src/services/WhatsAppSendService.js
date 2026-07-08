@@ -25,6 +25,7 @@ const dynamodb            = require('../config/dynamodb');
 const logger              = require('../config/logger');
 const { to10Digit }       = require('../utils/phone');
 const ConversationService = require('./ConversationService');
+const { updateLeadLastMessage } = require('../utils/updateLeadLastMessage');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0'}`;
@@ -119,32 +120,6 @@ class WhatsAppSendService {
         ConditionExpression: 'attribute_not_exists(PK)',
       }).promise();
     } catch { /* ignore duplicate */ }
-  }
-
-  async _updateLastMessage(pk, content, direction, ts, isLead) {
-    const preview = String(content).slice(0, 100);
-    if (isLead) {
-      let expr = 'SET lastMessageAt = :ts, lastMessagePreview = :prev, lastMessageDirection = :dir';
-      const vals = { ':ts': ts, ':prev': preview, ':dir': direction };
-      if (direction === 'inbound') {
-        expr += ', lastInboundAt = :ts, unreadCount = if_not_exists(unreadCount, :zero) + :one';
-        vals[':zero'] = 0;
-        vals[':one'] = 1;
-      }
-      await dynamodb.update({
-        TableName: TABLE,
-        Key: { PK: pk, SK: 'METADATA' },
-        UpdateExpression: expr,
-        ExpressionAttributeValues: vals,
-      }).promise().catch((e) => logger.warn('_updateLastMessage(lead) failed', e.message));
-    } else {
-      await dynamodb.update({
-        TableName: TABLE,
-        Key: { PK: pk, SK: 'CONTACT' },
-        UpdateExpression: 'SET lastMessageAt = :ts, lastMessagePreview = :prev, lastMessageDirection = :dir',
-        ExpressionAttributeValues: { ':ts': ts, ':prev': preview, ':dir': direction },
-      }).promise().catch((e) => logger.warn('_updateLastMessage(contact) failed', e.message));
-    }
   }
 
   // ── Contact Resolution ────────────────────────────────────────────────────
@@ -280,7 +255,7 @@ class WhatsAppSendService {
 
     await Promise.all([
       this._storeWamidLookup(waMessageId, contact.pk, msgSK, companyId),
-      this._updateLastMessage(contact.pk, message, 'outbound', ts, contact.isLead),
+      updateLeadLastMessage(contact.pk, message, 'outbound', ts, contact.isLead),
     ]);
 
     if (contact.leadItem?.convId) {
@@ -379,7 +354,7 @@ class WhatsAppSendService {
 
     await Promise.all([
       this._storeWamidLookup(wamid, contact.pk, msgSK, companyId, options.wamidExtras ?? {}),
-      this._updateLastMessage(contact.pk, content, 'outbound', ts, contact.isLead),
+      updateLeadLastMessage(contact.pk, content, 'outbound', ts, contact.isLead),
     ]);
 
     if (contact.leadItem?.convId) {
@@ -429,7 +404,7 @@ class WhatsAppSendService {
 
     await Promise.all([
       this._storeWamidLookup(wamid, contact.pk, msgSK, companyId),
-      this._updateLastMessage(contact.pk, preview, 'outbound', ts, contact.isLead),
+      updateLeadLastMessage(contact.pk, preview, 'outbound', ts, contact.isLead),
     ]);
 
     if (contact.leadItem?.convId) {
@@ -500,7 +475,7 @@ class WhatsAppSendService {
 
     await Promise.all([
       this._storeWamidLookup(wamid, contact.pk, msgSK, companyId),
-      this._updateLastMessage(contact.pk, preview, 'outbound', ts, contact.isLead),
+      updateLeadLastMessage(contact.pk, preview, 'outbound', ts, contact.isLead),
     ]);
 
     if (contact.leadItem?.convId) {
@@ -661,7 +636,7 @@ class WhatsAppSendService {
 
     await Promise.all([
       this._storeWamidLookup(wamid, contact.pk, msgSK, companyId),
-      this._updateLastMessage(contact.pk, preview, 'outbound', ts, contact.isLead),
+      updateLeadLastMessage(contact.pk, preview, 'outbound', ts, contact.isLead),
     ]);
 
     if (contact.leadItem?.convId) {
