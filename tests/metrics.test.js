@@ -346,3 +346,36 @@ describe('GET /api/metrics/my — userId targeting', () => {
     expect(dynamodb.query).not.toHaveBeenCalled();
   });
 });
+
+describe('POST /api/metrics/add-for-member — cross-tenant guard (Fix 1b)', () => {
+  const handler = getRouteHandler(metricsRouter, '/add-for-member', 'post');
+
+  test('team_lead targeting a performer in a DIFFERENT company is rejected with 403', async () => {
+    const req = {
+      user: TEAMLEAD_USER,
+      body: { targetUserId: CROSS_COMPANY_EMP.id, metric_type: 'kyc', value: 2 },
+      ip: '1.1.1.1',
+    };
+    const res = mockRes();
+    await handler(req, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: 'Access denied' }));
+    expect(dynamodb.update).not.toHaveBeenCalled();
+  });
+
+  test('team_lead targeting a performer on their own team, same company, is still allowed', async () => {
+    const req = {
+      user: TEAMLEAD_USER,
+      body: { targetUserId: OWN_TEAM_MEMBER.id, metric_type: 'kyc', value: 2 },
+      ip: '1.1.1.1',
+    };
+    const res = mockRes();
+    await handler(req, res, jest.fn());
+
+    expect(res.status).not.toHaveBeenCalledWith(403);
+    expect(res.status).not.toHaveBeenCalledWith(404);
+    const updateCall = dynamodb.update.mock.calls[0][0];
+    expect(updateCall.Key.PK).toBe(OWN_TEAM_MEMBER.id);
+  });
+});

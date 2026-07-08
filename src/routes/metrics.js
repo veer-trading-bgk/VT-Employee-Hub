@@ -1023,6 +1023,12 @@ router.post('/add-for-member', checkRole(['team_lead', 'manager', 'admin']), rat
     const target = targetResult.Item;
     if (!target) return res.status(404).json({ error: 'Employee not found' });
 
+    // Cross-tenant guard — same check resolveTargetUserId() applies for the
+    // other 4 routes, and the same pattern admin.js uses inline (e.g. line 65).
+    if (req.user.role !== 'superadmin' && target.companyId !== req.user.companyId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
     const PERFORMER_ROLES = new Set(['agent', 'telecaller', 'intern']);
     if (!PERFORMER_ROLES.has(target.role)) {
       return res.status(403).json({ error: 'Can only add metrics for performers (agent/telecaller/intern)' });
