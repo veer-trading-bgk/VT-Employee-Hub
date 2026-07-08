@@ -294,15 +294,27 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
     // useCase yet). 5-question adversarial suite re-verified against Haiku
     // with no regression vs. the Sonnet baseline. See 19_DECISION_LOG.md.
     // Rollback: revert this string to 'claude-sonnet-5'.
-    maxTokens: 600, // kept at v1's budget, NOT reduced — live testing showed
-                     // this model sometimes emits an internal "thinking" block
-                     // that also counts against maxTokens (see AIService.js's
+    maxTokens: 700, // 2026-07-08 (cost-audit retry-rate fix): raised from 600 —
+                     // a small safety margin alongside the new reasoning-brevity
+                     // instruction below, not a reduction in conciseness
+                     // enforcement (still enforced by prompt + schema max
+                     // length, same as before). kept at v1's original 600 for
+                     // over a month; live data showed ~4.3% of real calls were
+                     // hitting the 600-token ceiling mid-generation on
+                     // compliance-sensitive turns whose reasoning ran long,
+                     // forcing a full 2nd-attempt retry (double cost) on those
+                     // calls — see 19_DECISION_LOG.md. This headroom is a
+                     // complement to the brevity instruction, not a
+                     // replacement: still watch for the same "thinking" block
+                     // interaction noted below.
+                     //
+                     // Historical note (v1 rationale, still true): this model
+                     // sometimes emits an internal "thinking" block that also
+                     // counts against maxTokens (see AIService.js's
                      // _extractText fix); starving the total budget to enforce
                      // conciseness risks truncating the actual JSON reply
-                     // before it's even written. Conciseness is enforced by
-                     // the prompt instructions + the schema's reply max length
-                     // below, not by the token ceiling.
-    promptVersion: 'v6', // 2026-07-06 same-day: v2 was the production-readiness
+                     // before it's even written.
+    promptVersion: 'v7', // 2026-07-06 same-day: v2 was the production-readiness
                          // tuning pass (concise/WhatsApp-native style, see
                          // 19_DECISION_LOG.md Era 22 addendum). v3 added the
                          // additive, opt-in Conversation-tab adjustments block
@@ -321,10 +333,16 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
                          // entries, never gated by PromptTestService (only
                          // publish-time's cheaper, non-blocking guardrail
                          // scan — see 19_DECISION_LOG.md Era 30/31), and
-                         // never able to displace an entry. A company that
-                         // never configures any of these gets byte-identical
-                         // text to v2. Compliance rules themselves are
-                         // unchanged since v2.
+                         // never able to displace an entry. v7 (2026-07-08,
+                         // cost-audit retry-rate fix) adds one sentence
+                         // instructing brevity on the `reasoning` field only
+                         // (audit-only, never customer-facing) to cut the
+                         // ~4.3% retry rate found in real data — the
+                         // customer-facing `reply` and all HARD COMPLIANCE
+                         // RULES content are byte-identical to v6. A company
+                         // that never configures any of the opt-in sections
+                         // above still gets identical text to v2 plus this
+                         // one new sentence.
     outputMode: 'json',
     schema: z.object({
       reply: z.string().min(1).max(500), // tightened from 1000 (v1) — a
@@ -443,7 +461,7 @@ CUSTOMER'S MOST RECENT MESSAGE:
 ${latestMessage}
 """
 
-Set qualified to true only once you genuinely have enough (their real interest, and ideally a sense of budget/amount and timeline) for a human relationship manager to pick this up productively — do not set it just because you're running low on turns. Extract productInterest (short strings, e.g. "mutual funds", "demat account", "term insurance"), budgetAmount (a number in rupees if a specific or approximate amount was mentioned, else null — never guess one), and timelineDays (an approximate number of days if a timeframe was mentioned, e.g. "next week"→7, "this month"→30, "in a few months"→90, else null).
+Set qualified to true only once you genuinely have enough (their real interest, and ideally a sense of budget/amount and timeline) for a human relationship manager to pick this up productively — do not set it just because you're running low on turns. Extract productInterest (short strings, e.g. "mutual funds", "demat account", "term insurance"), budgetAmount (a number in rupees if a specific or approximate amount was mentioned, else null — never guess one), and timelineDays (an approximate number of days if a timeframe was mentioned, e.g. "next week"→7, "this month"→30, "in a few months"→90, else null). Keep reasoning to 1-2 short sentences — it's an internal note for a human reviewing later, never shown to the customer, so it doesn't need to be exhaustive even on a turn where you're declining a specific-stock or IPO-advice request.
 
 Respond with ONLY a single JSON object: { "reply": string, "qualified": boolean, "productInterest": string[], "budgetAmount": number|null, "timelineDays": number|null, "reasoning": string }`;
     },

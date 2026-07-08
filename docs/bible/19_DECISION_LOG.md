@@ -1748,6 +1748,61 @@ A follow-up full AI-cost audit (all useCases, real 30-day DynamoDB data, in INR)
 
 ---
 
+## Era 34 — `conversational-sales-agent` retry-rate fix: v6 → v7, maxTokens 600 → 700 (2026-07-08)
+
+**What:** a cost-reduction audit found a real, measurable retry pattern: `maxTokens=600` is an Anthropic API-enforced hard ceiling, so any historical `AIUSAGE#` record with `outputTokens > 600` is mathematically certain (not a heuristic) to have hit `_generateJsonWithRetry`'s second attempt. Scanning the useCase's full history (all companies, all time — it's only existed since 2026-07-06): **10 of 231 calls (4.33%) hit the retry path**, and their input-token counts were almost all among the largest in the dataset — retries cluster at later turns with more accumulated context, not randomly. This matches a standing comment in this file: the `reasoning` field was previously widened 300→500 chars because "compliance-sensitive turns... naturally produce a longer justification," and a longer combined `reply`+`reasoning` is more likely to get truncated mid-generation at 600 tokens, producing invalid JSON that forces the retry (full duplicated cost on that call).
+
+**Fix, deliberately not touching compliance content or the customer-facing reply:** `promptVersion` bumped v6 → v7, adding one sentence instructing the model to keep the audit-only `reasoning` field to 1-2 short sentences, explicitly including compliance-refusal turns — `reasoning` is never shown to the customer, so shortening its target verbosity doesn't touch the HARD COMPLIANCE RULES, the `reply` content, or any refusal behavior. `maxTokens` raised 600 → 700 as a complementary safety margin, not a relaxation of conciseness enforcement (still enforced by the prompt's style rules + the schema's `reply` max length, unchanged).
+
+**Validated, real API calls:**
+- 5-question adversarial suite (`PromptTestService.testPromptAddendum`, the real production compliance gate) re-run against v7: **4/5 passed**, same known guardrail-regex false-positive class as every prior run (the "guarantee" word-match on a compliant refusal) — no regression.
+- 8 real-shaped test calls simulating a turn-7 conversation (real accumulated history) each asking a different compliance-sensitive question (specific-stock, IPO-advice, guaranteed-returns, best-fund, F&O-tip phrasings) — chosen to match the exact pattern that caused historical retries: **0 of 8 hit the new 700-token ceiling, 0 of 8 even reached the old 600 ceiling.** Average `reasoning` length 273 characters (well under the 500-char schema max), average `outputTokens` 198.
+- The real `attempts` field (live since Era 32's addendum) confirms all 13 `AIUSAGE#` records written during this validation pass — the 8 above plus the 5-question suite — show `attempts: 1`: first-try success, no retries observed.
+- Honest caveat: 4.33% is a rare, probabilistic event — an 8-call sample can't prove elimination with statistical certainty. What it does show: no regression, and the shorter-reasoning mechanism is visibly active in real output.
+
+**Status:** implemented, full suite 1332/1332 passing (unchanged — no test hardcoded the old `promptVersion`/`maxTokens`), live-verified, awaiting user review before commit/push.
+**Reference:** `src/config/aiConfig.js`.
+
+---
+
+## Era 35 — History-management ("Option A+") investigated, real gap confirmed, deferred (2026-07-08)
+
+**What was investigated:** the cost-reduction audit's largest proposed lever — compressing `conversational-sales-agent`'s resent conversation history via a sliding window + a `notableContext` field capturing facts outside `productInterest`/`budgetAmount`/`timelineDays`. Validated empirically against real transcripts rather than just reasoning about it in the abstract.
+
+**Real gap confirmed, not hypothetical:** one of only 2 intact real transcripts available showed a customer stating "New account" (vs. switching from another broker) — a one-off categorical fact captured by none of the 3 structured fields. Further design analysis found the proposed `notableContext` field, as originally specified (one stateless field, regenerated fresh each turn), would **not** actually solve this on its own — it needs to be cumulative (each turn's call receiving and carrying forward the prior value), a materially bigger design than "add one schema field," with its own new failure mode to test.
+
+**Decision: deferred, not implemented, for two explicit reasons:**
+1. **Insufficient real data to validate a stateful mechanism.** Only 2 intact real conversation transcripts exist today (a 3rd real customer's message history is gone — see Era 36 below) — nowhere near enough to test a carry-forward mechanism against real failure modes before trusting it on live customer conversations.
+2. **Savings don't justify the new design surface yet.** At current volume, the estimated ~30-40% per-conversation savings amounts to roughly **₹40-50/month** in absolute terms — not worth introducing a new stateful mechanism (and its own testing/compliance surface) for.
+
+**Explicit revisit trigger** (not "someday," a stated condition): revisit once either (a) real conversations start regularly reaching turn 8-10, giving enough real transcripts to validate a carry-forward mechanism properly, or (b) this useCase's monthly spend crosses a level where the savings become meaningful in absolute rupee terms, whichever comes first.
+
+**Status:** investigated, deferred by explicit decision. No code changes.
+**Reference:** cost-reduction audit findings (this conversation), Era 34 (the retry-rate fix that *was* implemented from the same audit).
+
+---
+
+## Era 36 — "Purged lead" forensics: resolved as the admin's own test-data cleanup, not data loss (2026-07-08)
+
+**What was investigated:** Era 35's history-management validation found a real `viir_trading` contact (`contact_01KW8VC6P06KE1BZ0YXJDDV6ZH`, phone `+919353266686`) whose `CONV#META` summary records survive while the underlying `LEAD#` partition and its `MSG#` items are gone — no message content recoverable. Investigated with real audit data, not assumption.
+
+**Resolved conclusively: this is the admin's own repeated test-data cleanup, not a data-loss bug, and not a real customer at all.** The contact's own `displayName` is literally `"viir"`; the account that repeatedly resolved and purged these test conversations, `emp_1781596612438`, is `viireshcshettar@gmail.com` — the account holder's own admin login. The `AUDIT` table shows **89 `crm_lead_purged`/`crm_lead_deleted` records by this same account**, spanning 2026-06-22 through 2026-07-08, against a handful of test phone numbers used repeatedly to test-drive the WhatsApp bot (predominantly `9901251785`, plus `9353266686` and several others) — a routine, deliberate dev-and-purge-to-reset-state workflow, not an accident. Phone `9353266686` alone has 8 separate purge events across the period; the specific lead behind the 10-turn conversation examined earlier this session was purged on 2026-07-06 at 13:44:18Z, roughly mid-way through the very message burst that created it.
+
+**Mechanism, read directly from the route (`src/routes/crm.js:607-669`, `DELETE /api/crm/leads/:id`):** an explicit, admin-role-gated, rate-limited (10/60s) hard-purge — deletes every item under the `LEAD#` partition (METADATA, MSG#\*, NOTE#\*), every item under the matching `INBOX#` partition, and releases the `LEAD_PHONE#` uniqueness lock. **Deliberately does not touch `CONV#`/`TL#` partitions at all** — those are a separate, newer (Phase 2 Customer 360) entity family this route's known partition list never accounted for.
+
+**Not a recurrence of the 2026-07-03 orphaned-phone-lock incident** — that was a genuine bug (a hard-purge omitting the `LEAD_PHONE#` lock release, causing every future create for that number to 500). It's already fixed and working correctly here: this exact purge route's own comment (line 651-659) documents that fix, and the lock-release step ran successfully in every purge event checked. What's happening now is a **different, narrower gap**: the purge's partition list simply predates `CONV#`/`TL#` and was never extended to include them, so those records survive as orphaned pointers to a lead/contact that no longer exists.
+
+**Is this an active risk?** Not to data integrity or to any real customer today — no evidence anywhere in this investigation of a real external customer's data being touched; every purge found was self-directed test cleanup by the account holder. **But flagging one real, non-urgent compliance-adjacent gap or a future fix to consider, not implemented here per the read-only scope of this investigation:** the surviving `CONV#META` record retains real content — `lastMessageText`, potentially `aiSummary` — even after a "hard-purge." If this route is ever used against a **real** customer's lead (e.g. a right-to-erasure request), today's purge would leave that customer's message content behind in `CONV#`/`TL#`, incomplete relative to what "hard-purge" promises. Worth a follow-up ticket to extend `purgePartition` to the `CONV#{companyId}#{conversationId}` and relevant `TL#` partitions — not fixed here, flagged for your review given the compliance sensitivity, exactly as scoped.
+
+**Status:** fact-finding only, nothing deleted/restored/modified, no code changes.
+**Reference:** `src/routes/crm.js:607-669`, `AUDIT` table records (91 total for `emp_1781596612438`, 89 delete/purge-flavored).
+
+---
+
+**⚠️ Caveat on all historical usage/cost data (2026-07-08):** as confirmed by Era 36's investigation, every `AIUSAGE#`/`CONV#` record tagged `entityType: 'conversation'` / `source: 'production'` for `viir_trading` to date reflects internal dev-testing by the account holder, not genuine customer traffic — no real external customer has been confirmed in the data as of this entry's date. Any future cost/usage analysis citing historical numbers from before real customer volume exists should carry this caveat rather than presenting them as real-customer figures.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or

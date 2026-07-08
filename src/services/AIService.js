@@ -52,6 +52,17 @@ async function _generate({
   // sites pass 'admin_test', so real customer/employee traffic is never
   // miscounted as a test artifact (see 19_DECISION_LOG.md Era 32 addendum —
   // this is exactly the blending problem the cost audit found).
+  //
+  // Known limitation (2026-07-08, see 19_DECISION_LOG.md Era 36): 'admin_test'
+  // only distinguishes PromptTestService/testKnowledgeEntry's own compliance-
+  // gate calls. It does NOT distinguish an admin manually testing the bot via
+  // real WhatsApp messages (which calls this same generate() path with
+  // source defaulting to 'production', identical to genuine customer
+  // traffic) from an actual external customer. Era 36 found every real
+  // 'production'-tagged conversational-sales-agent record for viir_trading
+  // to date is the account holder's own test traffic, indistinguishable from
+  // a real customer by this field alone. Documented as a known gap, not
+  // designed around here.
   entityType, entityId, source = 'production',
 }) {
   const useCaseCfg = aiConfig.AI_CONFIG[useCase];
