@@ -85,7 +85,7 @@ const AI_CONFIG = {
         })
         .join('\n');
 
-      return `You are a business intelligence analyst for VT Trading, a fintech company. Analyze this employee's metrics for ${period} and provide concise, actionable insights.
+      return `You are a business intelligence analyst for Viir Trading, a fintech company. Analyze this employee's metrics for ${period} and provide concise, actionable insights.
 
 METRICS (${period}):
 ${metricsText}
@@ -325,16 +325,24 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
   // Business Messaging Policy requires ("must also have available prompt,
   // clear, and direct escalation paths").
   //
-  // model: claude-sonnet-5, not claude-haiku-4-5 like every other useCase here —
-  // a deliberate departure. This useCase carries the highest compliance stakes
-  // in the codebase (a live, unsupervised, multi-turn conversation enforcing a
-  // nuanced regulatory boundary — "explain what an IPO is" vs. "tell me whether
-  // to apply" is a real distinction a model has to hold reliably across an
-  // entire conversation, not just resist once), and instruction-following
-  // reliability on a nuanced constraint is the thing worth spending the extra
-  // cost/latency on here specifically.
+  // Originally model: claude-sonnet-5, not claude-haiku-4-5 like every other
+  // useCase here — a deliberate departure, because this useCase carries the
+  // highest compliance stakes in the codebase (a live, unsupervised,
+  // multi-turn conversation enforcing a nuanced regulatory boundary —
+  // "explain what an IPO is" vs. "tell me whether to apply" is a real
+  // distinction a model has to hold reliably across an entire conversation,
+  // not just resist once) — instruction-following reliability on a nuanced
+  // constraint was judged worth the extra cost/latency here specifically.
+  // 2026-07-08: switched to claude-haiku-4-5-20251001 as a deliberate,
+  // approved pre-launch cost trial (see the `model:` line below) — re-verified
+  // against the same 5-question adversarial suite with no regression before
+  // making the change. See 19_DECISION_LOG.md.
   'conversational-sales-agent': {
-    model: 'claude-sonnet-5',
+    model: 'claude-haiku-4-5-20251001', // 2026-07-08: switched from claude-sonnet-5 —
+    // deliberate, approved pre-launch cost trial (no real customers on this
+    // useCase yet). 5-question adversarial suite re-verified against Haiku
+    // with no regression vs. the Sonnet baseline. See 19_DECISION_LOG.md.
+    // Rollback: revert this string to 'claude-sonnet-5'.
     maxTokens: 600, // kept at v1's budget, NOT reduced — live testing showed
                      // this model sometimes emits an internal "thinking" block
                      // that also counts against maxTokens (see AIService.js's
@@ -541,7 +549,15 @@ Respond with ONLY a single JSON object: { "summary": string, "statedNeeds": stri
 // one, ready to switch on real deduction later without a second migration.
 const PRICING = {
   models: {
-    'claude-haiku-4-5-20251001': { inputPerMillion: 1.0, outputPerMillion: 5.0 }, // PLACEHOLDER
+    // Verified 2026-07-08 against platform.claude.com/docs/en/about-claude/models/overview
+    // (live fetch, not assumed from memory).
+    'claude-haiku-4-5-20251001': { inputPerMillion: 1.0, outputPerMillion: 5.0 }, // PLACEHOLDER — standard rate, no intro pricing for this model
+    // claude-sonnet-5's standard rate is $3/$15 per MTok, but introductory
+    // pricing of $2/$10 applies through 2026-08-31 — using the intro rate here
+    // since that's what's actually billed today. Added specifically so cost
+    // logging keeps working if rollback to Sonnet ever happens (Era 32,
+    // 19_DECISION_LOG.md) — must be bumped to $3/$15 after 2026-08-31.
+    'claude-sonnet-5': { inputPerMillion: 2.0, outputPerMillion: 10.0 }, // PLACEHOLDER — intro rate, expires 2026-08-31
   },
   marginMultiplier: 1.5, // PLACEHOLDER
   pointsPerUsd: 100,     // PLACEHOLDER — 1 wallet point = $0.01 at this rate
