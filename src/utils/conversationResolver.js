@@ -36,6 +36,18 @@
  * never-set field) is now the shared cross-path pointer both functions check
  * before creating a new Conversation, and race-safely claim if not yet set —
  * see _getPrimaryConversationId()/_claimPrimaryConversation() below.
+ *
+ * Era 42 correction (2026-07-08, same day): the FIRST version of this claim
+ * used `if_not_exists()` inside the SET expression, which never actually
+ * worked — every real Contact record has `primaryConversationId` explicitly
+ * initialized to `null` (not omitted) at creation, and DynamoDB's
+ * `if_not_exists()` treats an attribute holding `null` as "already exists",
+ * so it never overwrote it for anyone. The bug was invisible in isolated
+ * tests (which used a freshly-deleted, truly-absent attribute) and only
+ * surfaced against real production data — reported by the user as "still
+ * happening" after the Era 41 deploy. See _claimPrimaryConversation()'s own
+ * comment for the corrected mechanism (a real ConditionExpression, not
+ * if_not_exists()) and how it was confirmed against real DynamoDB.
  */
 
 const dynamodb            = require('../config/dynamodb');
@@ -62,27 +74,57 @@ async function _getPrimaryConversationId(companyId, contactId) {
 
 /**
  * Race-safe claim: try to write our own newly-created conversationId onto the
- * Contact's shared pointer, using the same if_not_exists() convention already
- * used for the INBOX#/LEAD# pointer writes below — but paired with
- * ReturnValues so we can tell, in the same round trip, whether OUR write
- * actually stuck or a concurrent caller's claim (from the other call stack)
- * got there first. Same loser-defers-to-winner shape as
+ * Contact's shared pointer. Same loser-defers-to-winner SHAPE as
  * CustomerIdentityService's LEAD_PHONE# lock race handling — attempt an
  * atomic conditional write, then whoever didn't win re-reads and defers to
- * whatever value actually stuck, instead of surfacing two divergent results.
+ * whatever value actually stuck.
+ *
+ * Deliberately a real ConditionExpression (can throw), NOT
+ * `if_not_exists()` inside the SET clause — a bug found in production the
+ * same day this first shipped (2026-07-08, Era 42): `ContactService.
+ * createContact()` writes `primaryConversationId: null` explicitly at
+ * creation (a predictable-item-shape convention, not an omitted field). To
+ * DynamoDB, an attribute holding `null` still "exists" — so
+ * `if_not_exists(primaryConversationId, :cv)` never overwrote it, for
+ * *either* concurrent caller, and both then fell through this function's
+ * `?? conversationId` fallback and reported "I won" with their own value.
+ * Confirmed directly: reproduced against a real DynamoDB item pre-seeded
+ * with an explicit `null` (matching every real Contact record), and
+ * confirmed the corrected mechanism below actually persists a single
+ * agreed-upon winner. The old code never once actually claimed anything —
+ * every "race" resolved as two silent, independent "wins".
  *
  * @returns {Promise<string>} the conversationId that actually won — our own,
  *   or a concurrent caller's if we lost the race.
  */
 async function _claimPrimaryConversation(companyId, contactId, conversationId) {
-  const r = await dynamodb.update({
-    TableName: table(),
-    Key: { PK: contactPK(companyId, contactId), SK: contactSK() },
-    UpdateExpression:          'SET primaryConversationId = if_not_exists(primaryConversationId, :cv)',
-    ExpressionAttributeValues: { ':cv': conversationId },
-    ReturnValues:              'UPDATED_NEW',
-  }).promise();
-  return r.Attributes?.primaryConversationId ?? conversationId;
+  const key = { PK: contactPK(companyId, contactId), SK: contactSK() };
+  try {
+    const r = await dynamodb.update({
+      TableName: table(),
+      Key: key,
+      UpdateExpression:          'SET primaryConversationId = :cv',
+      ConditionExpression:       'attribute_not_exists(primaryConversationId) OR primaryConversationId = :nullval',
+      ExpressionAttributeValues: { ':cv': conversationId, ':nullval': null },
+      ReturnValues:              'UPDATED_NEW',
+    }).promise();
+    return r.Attributes?.primaryConversationId ?? conversationId;
+  } catch (err) {
+    if (err.code !== 'ConditionalCheckFailedException') throw err;
+    // Someone else already claimed a real (non-null) conversation first —
+    // re-read to find the winner. Matches CIS's own retry-with-backoff shape
+    // for the rare case the winner's write hasn't propagated to our read yet.
+    let winner = null;
+    for (let attempt = 0; !winner && attempt < 4; attempt++) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+      const r = await dynamodb.get({ TableName: table(), Key: key }).promise();
+      winner = r.Item?.primaryConversationId ?? null;
+    }
+    // Exhausted retries with no winner found (should not happen — the
+    // ConditionalCheckFailedException itself proves a non-null value exists) —
+    // fall back to our own value rather than propagating null to the caller.
+    return winner ?? conversationId;
+  }
 }
 
 /**

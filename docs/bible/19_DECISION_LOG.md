@@ -1899,8 +1899,34 @@ A follow-up full AI-cost audit (all useCases, real 30-day DynamoDB data, in INR)
 - Real-data cleanup: fresh `CONV#viir_trading#*` count confirmed **3** post-cleanup (down from 120 immediately before deletion — all 3 remaining are the genuinely-live conversations, matched against a live-pointer set re-derived at execution time, not the stale report). Matching `TL#viir_trading#CONV#*` count is also 3 — no orphaned timeline entries left behind.
 - Full backend suite: **1371/1371 passing** (unaffected by the real-data cleanup, which only touched production DynamoDB, never test fixtures).
 
-**Status:** implemented, tested, cleaned up, documented. Held for review before commit.
+**Status:** implemented, tested, cleaned up, documented. Committed `14f84f1`, pushed, both pipelines confirmed green. **See Era 42 — the claim mechanism this Era shipped never actually worked in production; fixed there the same day.**
 **Reference:** `src/utils/conversationResolver.js`, `src/routes/crm.js`, `tests/conversationResolver.test.js`, `tests/leadPurgeConvTl.test.js`, Era 37 (the purge gap this closes), Era 36 (confirms this test data was never real customer traffic).
+
+---
+
+## Era 42 — Era 41's claim mechanism never actually worked in production; root-caused and fixed the same day (2026-07-08)
+
+**Reported by the user directly:** "still happening" after Era 41's deploy — a genuinely new first message was still stuck in a second, orphaned conversation. Did not assume the report was wrong or stale; re-verified against fresh real data before touching anything.
+
+**Confirmed with real evidence, ruling out the obvious alternatives first:**
+- Deployment/packaging mismatch: ruled out. Downloaded the actual deployed Lambda package and diffed every relevant file (`conversationResolver.js`, `entityKeys.js`, `ContactService.js`, `ConversationService.js`, `ConversationalAgentService.js`, `whatsapp.js`) against the committed source — byte-identical (line-ending differences only). The Lambda's `LastModified` (10:32:50Z) predates the reproduction event (10:41:45Z) by 9 minutes, so the new code was genuinely live.
+- A fresh real trace (same webhook request, same requestId) showed the exact Era 41 bug recurring: two `CONV#` entities created for the same contact, ~220ms apart, and — critically — **both `resolveForInbox()` and `resolveForLead()` logged the "I won the claim cleanly" message**, never the "lost the race" one. A direct, strongly-consistent read of the real Contact record showed `primaryConversationId: null` — genuinely never written by either call, despite both believing they'd won.
+
+**Root cause:** `ContactService.createContact()` initializes every Contact record with `primaryConversationId: null` **explicitly** at creation (a deliberate "predictable item shape" convention already used for every other reserved field on this entity) — not omitted. To DynamoDB, an attribute holding the literal value `null` still **exists**. `if_not_exists(primaryConversationId, :cv)` — the mechanism Era 41 shipped — only overwrites an attribute that is truly *absent*; against an attribute that "exists" with value `null`, it always keeps the existing (null) value and never writes `:cv`, for either caller. Era 41's own fallback (`r.Attributes?.primaryConversationId ?? conversationId`) then silently substituted each caller's own value whenever the returned attribute was `null` — making every single claim look like an uncontested win, forever, for every contact, without exception. The claim never once actually worked; the duplicate-conversation bug it was built to close was never actually closed.
+
+**Why the original tests didn't catch this:** every Era 41 test seeded the mocked Contact's `primaryConversationId` as either absent (`{}`/no `Item`) or via a `ReturnValues`-based mock that assumed the underlying write semantics were correct — none of them modeled the one condition that actually occurs on every real Contact record: the attribute present with an explicit `null` value. Confirmed directly against real DynamoDB (a disposable scratch key, not customer data): the old `if_not_exists()` mechanism reproduces the exact bug when the item is pre-seeded with an explicit `null` (both concurrent callers "win" with their own value; the stored value never changes), and the corrected mechanism below resolves it correctly under the same real, concurrent conditions.
+
+**Fix:** `_claimPrimaryConversation()` now uses a real `ConditionExpression` — `attribute_not_exists(primaryConversationId) OR primaryConversationId = :nullval` — instead of `if_not_exists()` inside the `SET` clause. This explicitly treats "absent" and "explicitly null" as equally claimable, and genuinely fails (`ConditionalCheckFailedException`) when a concurrent caller has already set a real (non-null) value — giving a real, catchable signal instead of a silently-wrong "success". On that exception, the loser re-reads the Contact (with a small retry-with-backoff, matching `CustomerIdentityService`'s own established shape for this exact kind of race) to find the actual winner. No migration needed for existing Contact records — the `OR primaryConversationId = :nullval` clause already treats their explicit `null` as claimable.
+
+**Validation:**
+- Re-verified the corrected mechanism against real DynamoDB (same disposable scratch key, pre-seeded with an explicit `null` exactly like a real Contact) — confirmed both concurrent callers now agree on one winner, and the value is genuinely persisted this time.
+- `tests/conversationResolver.test.js`: rewrote every Era 41 race/loser test to reflect the real (throw-based) mechanism, and added a dedicated regression test that specifically seeds `primaryConversationId: null` explicitly and asserts the `ConditionExpression`'s exact shape — a guard against silently reverting to the broken `if_not_exists()`-only version. 44 tests total in this file (up from 42), all passing.
+- Full backend suite: **1373/1373 passing**.
+
+**Not yet cleaned up, deliberately:** the specific reproduction event from this investigation (lead `866842a1-...`, phone `9901251785`) left one fresh orphaned conversation, same shape as Era 41's 117 — but this phone number is the account holder's own heavily-reused test number, and Era 41's purge extension (which checks both `LEAD#` and `INBOX#` convId pointers) will clean it up automatically the next time this lead is purged, which is expected imminently given the existing test-and-purge pattern. No manual deletion needed.
+
+**Status:** implemented, tested, documented. Held for review before commit — urgent, given this was reported as a live, user-facing bug still in production.
+**Reference:** `src/utils/conversationResolver.js` (`_claimPrimaryConversation`), `tests/conversationResolver.test.js`, Era 41 (the mechanism this corrects), Era 40/Era 36 (the standing precedent of verifying claims against real data, not assuming a prior fix holds).
 
 ---
 

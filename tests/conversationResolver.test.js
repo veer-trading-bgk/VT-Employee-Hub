@@ -302,23 +302,63 @@ describe('cross-path conversation dedup (Era 41)', () => {
     }));
   });
 
-  test('genuine concurrent race — resolveForInbox and resolveForLead fire near-simultaneously for a brand-new contact, exactly ONE Conversation survives', async () => {
+  test('Era 42 regression guard: a Contact record with primaryConversationId EXPLICITLY set to null (not absent — matching every real Contact record, since ContactService.createContact() initializes it that way) still allows a claim to succeed', async () => {
+    // This is the exact real-world condition that made the original
+    // if_not_exists()-based claim a permanent no-op in production: to
+    // DynamoDB, an attribute holding `null` still "exists". The fix uses a
+    // real ConditionExpression that explicitly treats `null` as claimable.
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === CONTACT_PK) return { promise: () => Promise.resolve({ Item: { primaryConversationId: null } }) };
+      return { promise: () => Promise.resolve({}) };
+    });
+    ConversationService.createConversation.mockResolvedValue({ conversationId: 'conv_fresh' });
+
+    let capturedParams = null;
+    dynamodb.update.mockImplementation((params) => {
+      if (params.Key.PK === CONTACT_PK && params.UpdateExpression.includes('primaryConversationId')) {
+        capturedParams = params;
+        return { promise: () => Promise.resolve({ Attributes: { primaryConversationId: 'conv_fresh' } }) };
+      }
+      return { promise: () => Promise.resolve({}) };
+    });
+
+    const result = await resolver.resolveForInbox(CID, PHONE10, { inboxPK: INBOX_PK, text: 'Hi', timestamp: '2026-07-08T09:46:33.000Z' });
+
+    expect(result).toEqual({ conversationId: 'conv_fresh' });
+    // Guards against silently reverting to the broken if_not_exists()-only shape.
+    expect(capturedParams.ConditionExpression).toMatch(/attribute_not_exists\(primaryConversationId\)/);
+    expect(capturedParams.ConditionExpression).toMatch(/primaryConversationId\s*=\s*:nullval/);
+    expect(capturedParams.ExpressionAttributeValues[':nullval']).toBeNull();
+  });
+
+  test('genuine concurrent race — resolveForInbox and resolveForLead fire near-simultaneously for a contact whose primaryConversationId is explicitly null, exactly ONE Conversation survives', async () => {
+    let claimedConvId = null;
+
     dynamodb.get.mockImplementation((params) => {
       if (params.Key.PK === LEAD_PK) return { promise: () => Promise.resolve({ Item: { leadId: 'lead_abc', name: 'Veer' } }) };
-      return { promise: () => Promise.resolve({}) }; // CONTACT#/INBOX# — nothing claimed yet, real first-ever message
+      // Matches a real Contact record: explicitly null, not absent, until claimed.
+      if (params.Key.PK === CONTACT_PK) return { promise: () => Promise.resolve({ Item: { primaryConversationId: claimedConvId } }) };
+      return { promise: () => Promise.resolve({}) };
     });
 
     let convCounter = 0;
     ConversationService.createConversation.mockImplementation(async () => ({ conversationId: `conv_${++convCounter}` }));
 
-    // Real DynamoDB if_not_exists()+ReturnValues semantics for the shared
-    // Contact pointer: whichever caller's UpdateItem actually executes first
-    // wins; every later caller reading the same in-memory value defers to it.
-    let claimedConvId = null;
+    // Real DynamoDB ConditionExpression semantics: the first UpdateItem to
+    // actually execute succeeds and sets claimedConvId; the second one's
+    // condition ('...OR primaryConversationId = :nullval') now fails, since
+    // the stored value is no longer null — it throws, exactly as real
+    // DynamoDB does, and the loser re-reads via _getPrimaryConversationId's
+    // own dynamodb.get (mocked above to reflect claimedConvId dynamically).
     dynamodb.update.mockImplementation((params) => {
       if (params.Key.PK === CONTACT_PK && params.UpdateExpression.includes('primaryConversationId')) {
-        if (!claimedConvId) claimedConvId = params.ExpressionAttributeValues[':cv'];
-        return { promise: () => Promise.resolve({ Attributes: { primaryConversationId: claimedConvId } }) };
+        if (!claimedConvId) {
+          claimedConvId = params.ExpressionAttributeValues[':cv'];
+          return { promise: () => Promise.resolve({ Attributes: { primaryConversationId: claimedConvId } }) };
+        }
+        const err = new Error('The conditional request failed');
+        err.code = 'ConditionalCheckFailedException';
+        return { promise: () => Promise.reject(err) };
       }
       return { promise: () => Promise.resolve({}) };
     });
@@ -330,21 +370,33 @@ describe('cross-path conversation dedup (Era 41)', () => {
 
     // Exactly one conversationId survives, shared by both call paths — not two.
     expect(inboxResult.conversationId).toBe(leadResult.conversationId);
+    expect(inboxResult.conversationId).toBe(claimedConvId);
     // Both paths did each create their own Conversation initially (matches the
     // real trace) — but the loser must have been discarded, leaving one live.
     expect(ConversationService.createConversation).toHaveBeenCalledTimes(2);
     expect(dynamodb.delete).toHaveBeenCalledTimes(1);
   });
 
-  test('loser path: resolveForInbox loses the claim race, discards its own Conversation, and reuses the winner\'s', async () => {
-    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) }); // no pointer set when first checked
+  test('loser path: resolveForInbox loses the claim race (ConditionalCheckFailedException), discards its own Conversation, and reuses the winner\'s', async () => {
     ConversationService.createConversation.mockResolvedValue({ conversationId: 'conv_inbox_created_then_discarded' });
 
-    // Simulate: by the time resolveForInbox's claim-write actually executes, a
-    // concurrent resolveForLead() call already won and set a DIFFERENT conversationId.
+    // First read (step 2.5, before creating): nothing claimed yet. Second read
+    // (inside the claim's catch-block retry, after losing): the winner is visible.
+    let contactGetCalls = 0;
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === CONTACT_PK) {
+        contactGetCalls++;
+        if (contactGetCalls === 1) return { promise: () => Promise.resolve({ Item: { primaryConversationId: null } }) };
+        return { promise: () => Promise.resolve({ Item: { primaryConversationId: 'conv_lead_won' } }) };
+      }
+      return { promise: () => Promise.resolve({}) }; // INBOX# CONTACT — no local convId yet
+    });
+
     dynamodb.update.mockImplementation((params) => {
       if (params.Key.PK === CONTACT_PK && params.UpdateExpression.includes('primaryConversationId')) {
-        return { promise: () => Promise.resolve({ Attributes: { primaryConversationId: 'conv_lead_won' } }) };
+        const err = new Error('The conditional request failed');
+        err.code = 'ConditionalCheckFailedException';
+        return { promise: () => Promise.reject(err) };
       }
       return { promise: () => Promise.resolve({}) };
     });
@@ -364,16 +416,25 @@ describe('cross-path conversation dedup (Era 41)', () => {
     }));
   });
 
-  test('loser path: resolveForLead loses the claim race, discards its own Conversation, and reuses the winner\'s', async () => {
+  test('loser path: resolveForLead loses the claim race (ConditionalCheckFailedException), discards its own Conversation, and reuses the winner\'s', async () => {
+    ConversationService.createConversation.mockResolvedValue({ conversationId: 'conv_lead_created_then_discarded' });
+
+    let contactGetCalls = 0;
     dynamodb.get.mockImplementation((params) => {
       if (params.Key.PK === LEAD_PK) return { promise: () => Promise.resolve({ Item: { leadId: 'lead_abc', name: 'Veer' } }) };
+      if (params.Key.PK === CONTACT_PK) {
+        contactGetCalls++;
+        if (contactGetCalls === 1) return { promise: () => Promise.resolve({ Item: { primaryConversationId: null } }) };
+        return { promise: () => Promise.resolve({ Item: { primaryConversationId: 'conv_inbox_won' } }) };
+      }
       return { promise: () => Promise.resolve({}) };
     });
-    ConversationService.createConversation.mockResolvedValue({ conversationId: 'conv_lead_created_then_discarded' });
 
     dynamodb.update.mockImplementation((params) => {
       if (params.Key.PK === CONTACT_PK && params.UpdateExpression.includes('primaryConversationId')) {
-        return { promise: () => Promise.resolve({ Attributes: { primaryConversationId: 'conv_inbox_won' } }) };
+        const err = new Error('The conditional request failed');
+        err.code = 'ConditionalCheckFailedException';
+        return { promise: () => Promise.reject(err) };
       }
       return { promise: () => Promise.resolve({}) };
     });
@@ -391,12 +452,36 @@ describe('cross-path conversation dedup (Era 41)', () => {
     }));
   });
 
-  test('discard failure is logged and swallowed — never surfaces to the caller', async () => {
-    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
-    ConversationService.createConversation.mockResolvedValue({ conversationId: 'conv_inbox_created_then_discarded' });
+  test('an unexpected (non-conditional-check) error from the claim update propagates to the outer catch, not swallowed as a false win', async () => {
+    ConversationService.createConversation.mockResolvedValue({ conversationId: 'conv_x' });
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: { primaryConversationId: null } }) });
     dynamodb.update.mockImplementation((params) => {
       if (params.Key.PK === CONTACT_PK && params.UpdateExpression.includes('primaryConversationId')) {
-        return { promise: () => Promise.resolve({ Attributes: { primaryConversationId: 'conv_lead_won' } }) };
+        return { promise: () => Promise.reject(new Error('ProvisionedThroughputExceededException')) };
+      }
+      return { promise: () => Promise.resolve({}) };
+    });
+
+    // The module-level try/catch still applies — resolves to undefined, never throws.
+    await expect(resolver.resolveForInbox(CID, PHONE10, { inboxPK: INBOX_PK })).resolves.toBeUndefined();
+  });
+
+  test('discard failure is logged and swallowed — never surfaces to the caller', async () => {
+    ConversationService.createConversation.mockResolvedValue({ conversationId: 'conv_inbox_created_then_discarded' });
+    let contactGetCalls = 0;
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK === CONTACT_PK) {
+        contactGetCalls++;
+        if (contactGetCalls === 1) return { promise: () => Promise.resolve({ Item: { primaryConversationId: null } }) };
+        return { promise: () => Promise.resolve({ Item: { primaryConversationId: 'conv_lead_won' } }) };
+      }
+      return { promise: () => Promise.resolve({}) };
+    });
+    dynamodb.update.mockImplementation((params) => {
+      if (params.Key.PK === CONTACT_PK && params.UpdateExpression.includes('primaryConversationId')) {
+        const err = new Error('The conditional request failed');
+        err.code = 'ConditionalCheckFailedException';
+        return { promise: () => Promise.reject(err) };
       }
       return { promise: () => Promise.resolve({}) };
     });
