@@ -104,13 +104,16 @@ router.get('/', authMiddleware, async (req, res, next) => {
       } while (lk2);
     }
 
-    // Dedup: if a phone already exists as a LEAD, suppress the INBOX CONTACT record for it
-    const leadPhones = new Set(leadItems.map((l) => l.phone).filter(Boolean));
+    // Dedup: if a phone already exists as a LEAD, suppress the INBOX CONTACT record for it.
+    // ADR-013 Rule 3: never compare raw phone numbers — both sides normalized via
+    // phoneNorm ?? to10Digit(l.phone), the exact fallback the ADR specifies, so two
+    // same-subscriber numbers differing only in format correctly dedupe.
+    const leadPhones = new Set(leadItems.map((l) => l.phoneNorm ?? to10Digit(l.phone)).filter(Boolean));
 
     // Merge and normalise; non-admin employees see only their assigned leads
     let contacts = [
       ...(isAdmin ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id)).map(normaliseLead),
-      ...inboxItems.filter((u) => !leadPhones.has(u.phone)).map(normaliseInbox),
+      ...inboxItems.filter((u) => !leadPhones.has(to10Digit(u.phone))).map(normaliseInbox),
     ];
 
     // Sort by most recent activity first
