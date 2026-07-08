@@ -15,6 +15,7 @@ const EmbeddingService = require('../services/EmbeddingService');
 const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign');
 const { resolveForLead } = require('../utils/conversationResolver');
 const { logAudit } = require('../utils/audit');
+const { updateLeadLastMessage } = require('../utils/updateLeadLastMessage');
 const { aiAdminConversationSchema, stripStorageMetadata } = require('../utils/validation');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -485,6 +486,10 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
  * already-human-assigned lead the webhook's own simpler GSI lookup missed) —
  * a real returning/claimed customer, correctly still not bot-eligible.
  *
+ * 2026-07-08: also stamps lastMessageAt/lastInboundAt onto a genuinely NEW
+ * lead immediately (see the updateLeadLastMessage() call below) — root cause
+ * of the "1st message invisible in inbox" bug (docs/bible/19_DECISION_LOG.md).
+ *
  * @returns {Promise<boolean>} true if the bot engaged (sent the first reply)
  */
 async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessageId }) {
@@ -506,6 +511,29 @@ async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessa
       lead = r.Item;
     }
     if (!lead || lead.assignedTo) return false; // pre-existing, already-claimed lead — not eligible
+
+    // 2026-07-08 root-cause fix (docs/bible/19_DECISION_LOG.md): _createCustomer()'s
+    // leadItem never sets lastMessageAt/lastInboundAt, so a lead created here
+    // previously stayed silently excluded from every lastMessageAt-gated read
+    // (whatsapp.js's inbox list, LeadScoringService's recency score, /my-work's
+    // urgentReplies, whatsapp.js's auto-assign eligibility) until — if ever — a
+    // SECOND message landed directly in this lead's LEAD# partition (this
+    // triggering message itself was written to INBOX#, not LEAD#, since the
+    // webhook's own GSI lookup ran before this lead existed). Stamped here,
+    // unconditionally on a genuine creation and BEFORE resolveForLead/_runTurn,
+    // so it lands even if AIService.generate() inside _runTurn fails outright
+    // (no send, so WhatsAppSendService's own self-heal never fires either).
+    // Scoped to action === 'created' only — an 'enriched' hit means CIS
+    // resolved to a pre-existing lead with its own message history maintained
+    // elsewhere, not this fix's concern. WhatsAppSendService._updateLastMessage()
+    // may still overwrite this moments later in the same request once the bot
+    // actually replies — safe regardless of exact sequencing, since both calls
+    // always SET a real, chronologically-forward timestamp (this inbound
+    // message's `timestamp` now, the reply's own later send-time `ts`
+    // afterward), so last-write-wins is always correct.
+    if (result.action === 'created') {
+      await updateLeadLastMessage(lead.PK, text, 'inbound', timestamp);
+    }
 
     const conv = await resolveForLead(companyId, lead.PK, phone10, { text, timestamp });
     if (!conv?.conversationId) return false;

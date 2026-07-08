@@ -426,6 +426,70 @@ describe('ConversationalAgentService', () => {
     expect(AIService.generate).not.toHaveBeenCalled();
   });
 
+  // ─── 2026-07-08 fix: lastMessageAt/lastInboundAt stamped on lead creation ──
+  // Root cause of "1st message invisible in inbox" (docs/bible/19_DECISION_LOG.md):
+  // _createCustomer()'s leadItem never set these fields, so a fresh lead was
+  // silently excluded from every lastMessageAt-gated read (inbox list,
+  // LeadScoringService recency score, /my-work urgentReplies, auto-assign
+  // eligibility) until — if ever — a second message landed directly in the
+  // lead's LEAD# partition. Fixed by stamping immediately after CIS creates
+  // the lead, before resolveForLead/_runTurn even run.
+  describe('lastMessageAt/lastInboundAt stamped immediately on lead creation (2026-07-08 fix)', () => {
+    function findLeadStampCall() {
+      return dynamodb.update.mock.calls.find((c) => c[0].Key?.PK === LEAD_PK
+        && c[0].Key?.SK === 'METADATA'
+        && c[0].UpdateExpression?.includes('lastMessageAt'));
+    }
+
+    test('a genuinely new lead (action: created) gets lastMessageAt/lastInboundAt stamped from the triggering message', async () => {
+      mockTurn();
+      await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hii', timestamp: 't1', waMessageId: 'wam1' });
+
+      const stampCall = findLeadStampCall();
+      expect(stampCall).toBeDefined();
+      expect(stampCall[0].ExpressionAttributeValues[':ts']).toBe('t1');
+      expect(stampCall[0].ExpressionAttributeValues[':prev']).toBe('Hii');
+      expect(stampCall[0].ExpressionAttributeValues[':dir']).toBe('inbound');
+      expect(stampCall[0].UpdateExpression).toContain('lastInboundAt');
+    });
+
+    // The "AI off" scenario: proves the stamp does not depend on the bot's own
+    // turn succeeding — a real, non-hypothetical gap the pre-fix code left
+    // open (WhatsAppSendService's self-heal only fires once sendText is
+    // actually reached, which never happens if generate() itself fails).
+    test('the stamp happens even when AIService.generate() fails outright — decoupled from the AI turn succeeding', async () => {
+      mockTurnFailure('rate_limited', 'too many calls');
+      const started = await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hii', timestamp: 't1', waMessageId: 'wam1' });
+
+      expect(started).toBe(true); // a turn was attempted
+      expect(WASendSvc.sendText).not.toHaveBeenCalled(); // the bot's own reply never went out
+      expect(findLeadStampCall()).toBeDefined(); // but the lead is still correctly stamped
+    });
+
+    test('the stamp is applied before resolveForLead/_runTurn run, not contingent on either succeeding', async () => {
+      resolveForLead.mockResolvedValue(null); // conversation resolution fails -> maybeStart bails early
+      const started = await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hii', timestamp: 't1', waMessageId: 'wam1' });
+
+      expect(started).toBe(false);
+      expect(AIService.generate).not.toHaveBeenCalled();
+      expect(findLeadStampCall()).toBeDefined(); // stamped regardless
+    });
+
+    test('an "enriched" hit (pre-existing lead, not a fresh creation) is NOT stamped by this fix', async () => {
+      CustomerIdentityService.resolveOrCreate.mockResolvedValue({
+        existed: true, leadId: 'lead_1', action: 'enriched',
+      });
+      dynamodb.get.mockImplementation((params) => {
+        if (params.Key.PK === `CONFIG#CONVAGENT#${CID}`) return resolved({ Item: { enabled: true } });
+        if (params.Key.PK === LEAD_PK) return resolved({ Item: { ...lead, assignedTo: 'emp_5' } });
+        return resolved({});
+      });
+      await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hii', timestamp: 't1', waMessageId: 'wam1' });
+
+      expect(findLeadStampCall()).toBeUndefined();
+    });
+  });
+
   test('continueTurn returns false for a lead whose conversation was never bot-started (handoffState stays human)', async () => {
     ConversationService.getConversation.mockResolvedValue({ conversationId: 'conv_2', handoffState: 'human', aiTurnCount: 0 });
     const handled = await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'hello again', timestamp: 't1' });

@@ -22,6 +22,7 @@ const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignat
 const { welcomeConfigSchema, delayedResponseConfigSchema, workingHoursConfigSchema, oooConfigSchema, branchSchema } = require('../utils/validation');
 const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
 const { logAudit } = require('../utils/audit');
+const { updateLeadLastMessage } = require('../utils/updateLeadLastMessage');
 const ConversationalAgentService = require('../services/ConversationalAgentService');
 
 const router = express.Router();
@@ -118,39 +119,6 @@ function computeRecommendedFix(cfg, token, waba) {
     ];
   }
   return [];
-}
-
-// Cache last message on lead METADATA for inbox listing
-async function updateLeadLastMessage(pk, content, direction, ts) {
-  try {
-    let expr = 'SET lastMessageAt = :ts, lastMessagePreview = :prev, lastMessageDirection = :dir';
-    const vals = { ':ts': ts, ':prev': String(content).slice(0, 100), ':dir': direction };
-    if (direction === 'inbound') {
-      expr += ', lastInboundAt = :ts';
-      // Increment unread counter — cleared when agent opens the conversation
-      expr += ', unreadCount = if_not_exists(unreadCount, :zero) + :one';
-      vals[':zero'] = 0;
-      vals[':one'] = 1;
-    }
-    await dynamodb.update({
-      TableName: TABLE,
-      Key: { PK: pk, SK: 'METADATA' },
-      UpdateExpression: expr,
-      ExpressionAttributeValues: vals,
-    }).promise();
-    // Bump company-level activity timestamp so /inbox/ping can detect new messages in O(1)
-    const cid = pk.split('#')[1]; // LEAD#companyId#leadId
-    if (cid && direction === 'inbound') {
-      await dynamodb.update({
-        TableName: TABLE,
-        Key: { PK: `ACTIVITY#${cid}`, SK: 'WA' },
-        UpdateExpression: 'SET lastActivityAt = :ts',
-        ExpressionAttributeValues: { ':ts': ts },
-      }).promise().catch(() => {});
-    }
-  } catch (e) {
-    logger.warn('updateLeadLastMessage failed', e.message);
-  }
 }
 
 // FIX 7: In-memory cache + DDB reverse-index to avoid full table scan on every webhook message.
