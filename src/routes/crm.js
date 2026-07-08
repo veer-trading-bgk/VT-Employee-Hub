@@ -194,9 +194,11 @@ router.get('/leads', authMiddleware, async (req, res, next) => {
 // ── POST /api/crm/leads ────────────────────────────────────────────────────────
 router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit(30, 60_000), async (req, res, next) => {
   try {
-    // Strip non-digits from phone before schema validation so +91/spaces/dashes are accepted
+    // Normalize phone before schema validation so +91/spaces/dashes are accepted —
+    // to10Digit() (not just a digit-strip) so a country-code-prefixed number is
+    // truncated to the exact-10-digit shape createLeadSchema.phone requires.
     const body = { ...req.body };
-    if (body.phone) body.phone = String(body.phone).replace(/\D/g, '');
+    if (body.phone) body.phone = to10Digit(body.phone);
     if (body.email === '') body.email = null;
     if (body.closureDeadline === '') body.closureDeadline = null;
     const parsed = createLeadSchema.safeParse(body);
@@ -217,15 +219,13 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
       return res.status(400).json({ error: 'Invalid stage key' });
     }
 
-    const cleanPhone = String(phone).replace(/\D/g, '');
-
     // ADR-013: identity resolution, atomic phone locking, and dedup all live in
     // CustomerIdentityService — this route no longer reimplements them inline.
     // Tags must be pre-resolved to catalog IDs before calling (CIS's documented contract).
     const resolvedTags = await resolveTagIds(companyId, tags ?? []);
 
     const result = await CIS.resolveOrCreate(companyId, {
-      phone: cleanPhone,
+      phone,
       name: name.trim(),
       email: email?.trim() ?? null,
       productInterest: productInterest ?? [],
@@ -270,7 +270,7 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
       try {
         const inboxR = await dynamodb.get({
           TableName: TABLE,
-          Key: { PK: `INBOX#${companyId}#${to10Digit(cleanPhone)}`, SK: 'CONTACT' },
+          Key: { PK: `INBOX#${companyId}#${phone}`, SK: 'CONTACT' },
         }).promise();
         if (inboxR.Item?.lastMessageAt) {
           Object.assign(patch, {
@@ -299,12 +299,12 @@ router.post('/leads', authMiddleware, checkRole(['admin', 'manager']), rateLimit
     await logAudit(req.user.id, 'crm_lead_created', item.leadId, 'success', req.ip, { name });
 
     // Link Contact entity to this lead in the background (never blocks response)
-    LeadService.linkContactToLead(companyId, item.PK, cleanPhone, name.trim()).catch(() => {});
+    LeadService.linkContactToLead(companyId, item.PK, phone, name.trim()).catch(() => {});
 
     // Fire automations
     const { runAutomations } = require('./automations');
     runAutomations(companyId, 'lead_created', {
-      leadId: item.leadId, leadPK: item.PK, phone: cleanPhone, name: name.trim(),
+      leadId: item.leadId, leadPK: item.PK, phone, name: name.trim(),
       source: item.source, stage: item.stage, tags: item.tags,
       assignedTo: item.assignedTo,
     }).catch((e) => logger.warn('automation error: ' + e.message));
