@@ -293,6 +293,11 @@ Unless otherwise noted, all entities below live in the METRICS table.
   when `leadItem.convId` is present).
 - **GSIs:** `ConvByCompany` (PK=convCompanyPK, SK=lastActivityAt), `ConvByContact`
   (PK=convContactPK, SK=lastActivityAt) — see §3.
+- **Hard-purge:** `DELETE /api/crm/leads/:id` (`crm.js`) deletes this item when the
+  purged lead's `LEAD#...METADATA.convId` pointer is present (fixed 2026-07-08,
+  Era 37 — see `19_DECISION_LOG.md`; previously left behind, see Era 36 /
+  `TECHNICAL_DEBT.md`). Leads that pre-date the `convId` pointer, or that never
+  received an inbound WhatsApp message, have no linked CONV# to delete.
 
 ### 2.10 CONTACT — unified contact identity (Phase 2 entity model)
 
@@ -956,6 +961,13 @@ All follow the same shape: `PK = CONFIG#{NAME}#{companyId}` (or the bare
   triggered the event.
 - **No GSI** — write-only append log, read path (if any exists) not found in the
   files reviewed; likely queried directly by PK for a given entity's timeline view.
+- **Hard-purge:** `DELETE /api/crm/leads/:id` (`crm.js`) deletes
+  `TL#{companyId}#LEAD#{leadId}` (always) and `TL#{companyId}#CONV#{conversationId}`
+  (when the lead has a linked conversation) as part of purging a lead (fixed
+  2026-07-08, Era 37). `TL#{companyId}#CONTACT#{contactId}` is deliberately left
+  alone — the Contact entity is not deleted by this route, so its timeline
+  (which may include fan-out entries from the purged conversation) legitimately
+  continues to exist.
 
 ---
 

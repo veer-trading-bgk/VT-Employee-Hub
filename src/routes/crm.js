@@ -8,7 +8,8 @@ const { rateLimit } = require('../middleware/rateLimiter');
 const { createLeadSchema, updateLeadSchema, createFollowupSchema } = require('../utils/validation');
 const { notifyCompany } = require('../utils/wsNotify');
 const { to10Digit } = require('../utils/phone');
-const { leadPhoneLockPK, leadPhoneLockSK } = require('../core/entityKeys');
+const { leadPhoneLockPK, leadPhoneLockSK, conversationPK, tlPK } = require('../core/entityKeys');
+const { ENTITY } = require('../events/catalog');
 const LeadService = require('../services/LeadService');
 const CIS = require('../services/CustomerIdentityService');
 const PipelineService = require('../services/PipelineService');
@@ -605,8 +606,16 @@ router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
 });
 
 // ── DELETE /api/crm/leads/:id — hard-purge: removes all DDB items for this lead ──
-// Deletes METADATA + all MSG/NOTE items under LEAD# PK, plus the INBOX# CONTACT
-// shadow record and any pre-promotion INBOX# messages for the same phone.
+// Deletes METADATA + all MSG/NOTE items under LEAD# PK, the INBOX# CONTACT shadow
+// record and any pre-promotion INBOX# messages for the same phone, the lead's own
+// TL# timeline, and — if a WhatsApp conversation was ever linked (leadItem.convId,
+// written by conversationResolver.js) — that CONV# entity and its TL# timeline too.
+// CONTACT#'s own TL# partition (TL#{cid}#CONTACT#{contactId}) is deliberately left
+// alone: the Contact entity is a separate, longer-lived identity that survives this
+// lead's deletion (this route never touches CONTACT# at all), so its timeline —
+// which may include fan-out entries from this conversation — legitimately continues
+// to exist. See docs/bible/19_DECISION_LOG.md Era 36/37 and
+// docs/phase3/TECHNICAL_DEBT.md for the incident this closes.
 router.delete('/leads/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
@@ -648,7 +657,46 @@ router.delete('/leads/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 
     // 2. Delete all items under INBOX# PK for this phone (shadow CONTACT + pre-promotion MSG#*)
     if (phone) await purgePartition(`INBOX#${companyId}#${phone}`).catch(() => {});
 
-    // 3. Release the LEAD_PHONE# uniqueness lock (a separate PK, written by
+    // 3. Delete the lead's own TL# timeline (touch_received entries, written by
+    //    CustomerIdentityService on every resolveOrCreate() call — independent of
+    //    whether a CONV# was ever created). Outcome is tracked (not just logged) so
+    //    it can be surfaced on the audit record and, if it failed, in the response.
+    const convTlPurge = { tlLead: true, conv: null, tlConv: null };
+    await purgePartition(tlPK(companyId, ENTITY.LEAD, leadId))
+      .catch((e) => {
+        convTlPurge.tlLead = false;
+        logger.warn(`crm/leads purge: TL#LEAD delete failed leadId=${leadId}: ${e.message}`);
+      });
+
+    // 4. Delete the linked CONV# entity + its TL# timeline, if a WhatsApp conversation
+    //    was ever started for this lead. convId is written onto LEAD# METADATA (alongside
+    //    contactId, via if_not_exists) by src/utils/conversationResolver.js the first time
+    //    an inbound message is resolved — leads that pre-date that pointer, or that never
+    //    received an inbound WhatsApp message, simply have no convId. That is not an error
+    //    condition: purge what exists, skip what doesn't. (conv/tlConv stay `null` — not
+    //    applicable — rather than `true`, so the audit record can distinguish "nothing to
+    //    purge" from "purge attempted and succeeded".)
+    const convId = existing.Item.convId;
+    if (convId) {
+      convTlPurge.conv = true;
+      convTlPurge.tlConv = true;
+      await purgePartition(conversationPK(companyId, convId))
+        .catch((e) => {
+          convTlPurge.conv = false;
+          logger.warn(`crm/leads purge: CONV# delete failed leadId=${leadId} convId=${convId}: ${e.message}`);
+        });
+      await purgePartition(tlPK(companyId, ENTITY.CONV, convId))
+        .catch((e) => {
+          convTlPurge.tlConv = false;
+          logger.warn(`crm/leads purge: TL#CONV delete failed leadId=${leadId} convId=${convId}: ${e.message}`);
+        });
+      logger.info(`crm/leads purge: leadId=${leadId} purged linked conversation convId=${convId}`);
+    } else {
+      logger.info(`crm/leads purge: leadId=${leadId} has no convId — skipping CONV#/TL#(CONV) purge (pre-dates conversation pointer or never messaged)`);
+    }
+    const convTlPartialFailure = Object.values(convTlPurge).some((v) => v === false);
+
+    // 5. Release the LEAD_PHONE# uniqueness lock (a separate PK, written by
     //    CustomerIdentityService._createCustomer). This was previously left
     //    behind, orphaning the lock: every future create for this number then
     //    failed its ConditionExpression and surfaced a raw "Transaction
@@ -665,8 +713,25 @@ router.delete('/leads/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 
       }).promise().catch((e) => logger.warn(`crm/leads purge: phone lock delete failed phoneNorm=${phoneNorm}: ${e.message}`));
     }
 
-    await logAudit(req.user.id, 'crm_lead_purged', leadId, 'success', req.ip, { phone });
-    res.json({ success: true });
+    await logAudit(req.user.id, 'crm_lead_purged', leadId, 'success', req.ip, {
+      phone,
+      convId: convId ?? null,
+      convTlPurge,
+    });
+
+    // LEAD#/INBOX#/the phone lock are the parts that matter most for a real
+    // right-to-erasure request and are either fully synchronous above (so any
+    // failure already threw and hit the catch block below) or always attempted.
+    // CONV#/TL# purge is best-effort by design (see step 3/4 above) — a real
+    // customer's deletion request must not be blocked by a transient failure
+    // there. Surface a partial failure in the response too, not just the audit
+    // record, so an admin retrying by hand (or scripting against this route)
+    // gets an immediate signal instead of having to cross-check CloudWatch/audit.
+    res.json(
+      convTlPartialFailure
+        ? { success: true, warning: 'Lead data was purged, but cleanup of the linked conversation/timeline records partially failed — see audit log (crm_lead_purged) for details.' }
+        : { success: true },
+    );
   } catch (err) {
     logger.error('crm/leads/:id DELETE error', err);
     next(err);
