@@ -457,11 +457,18 @@ describe('ConversationalAgentService', () => {
     // turn succeeding — a real, non-hypothetical gap the pre-fix code left
     // open (WhatsAppSendService's self-heal only fires once sendText is
     // actually reached, which never happens if generate() itself fails).
+    //
+    // 2026-07-08: `started` corrected to false — this test previously asserted
+    // the CONFIRMED BUG's exact symptom (maybeStart returning true even though
+    // no reply was sent). See the "maybeStart/continueTurn signal failure
+    // accurately" describe block below for the dedicated regression coverage;
+    // this test's own job is only to confirm the lastMessageAt stamp stays
+    // decoupled from that fix.
     test('the stamp happens even when AIService.generate() fails outright — decoupled from the AI turn succeeding', async () => {
       mockTurnFailure('rate_limited', 'too many calls');
       const started = await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hii', timestamp: 't1', waMessageId: 'wam1' });
 
-      expect(started).toBe(true); // a turn was attempted
+      expect(started).toBe(false); // no reply was sent — caller must fall back to welcome/automation
       expect(WASendSvc.sendText).not.toHaveBeenCalled(); // the bot's own reply never went out
       expect(findLeadStampCall()).toBeDefined(); // but the lead is still correctly stamped
     });
@@ -490,6 +497,76 @@ describe('ConversationalAgentService', () => {
     });
   });
 
+  // ─── 2026-07-08 fix: maybeStart/continueTurn signal failure accurately ─────
+  // Confirmed live production bug (docs/bible/19_DECISION_LOG.md): maybeStart()
+  // and continueTurn() both returned true unconditionally regardless of whether
+  // _runTurn() actually sent a reply, because _runTurn()'s `if (!result.ok)
+  // return;` branch returned void (a "success" as far as its own callers'
+  // `await _runTurn(...); return true;` was concerned) instead of signaling
+  // failure. Net effect for any company with the AI feature disabled (a normal,
+  // supported state) or hitting rate limits/provider errors: every genuine
+  // first-time contact silently got zero response at all — no AI reply
+  // (correctly, since it's disabled/failed), no welcome message, and no
+  // whatsapp_conversation_started trigger (both incorrectly suppressed by the
+  // false-positive botEngaged=true). Fixed by having _runTurn() return an
+  // honest boolean and both callers propagate it instead of hardcoding true.
+  describe('maybeStart/continueTurn signal failure accurately (2026-07-08 fix)', () => {
+    // Every result.ok:false reason AIService.generate() can return
+    // (src/services/AIService.js) — all 5 previously fell into the identical
+    // "return true regardless" bug; this proves the fix covers the whole
+    // class, not just the disabled_usecase reason confirmed live in production.
+    const FAILURE_REASONS = [
+      ['disabled_master', 'AI is disabled for this company (master switch is off).'],
+      ['disabled_usecase', 'The "conversational-sales-agent" AI feature is disabled for this company.'],
+      ['rate_limited', 'AI rate limit exceeded for this feature — try again shortly.'],
+      ['provider_error', 'upstream provider timeout'],
+      ['invalid_output', 'Model did not return valid JSON matching the required schema after a retry.'],
+    ];
+
+    test.each(FAILURE_REASONS)('maybeStart returns false when generate() fails with %s — no reply was sent, caller must fall back', async (reason, detail) => {
+      mockTurnFailure(reason, detail);
+      const started = await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hii', timestamp: 't1', waMessageId: 'wam1' });
+      expect(started).toBe(false);
+      expect(WASendSvc.sendText).not.toHaveBeenCalled();
+    });
+
+    test.each(FAILURE_REASONS)('continueTurn returns false when generate() fails with %s — no reply was sent, caller must fall back', async (reason, detail) => {
+      mockTurnFailure(reason, detail);
+      const handled = await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'hello', timestamp: 't1' });
+      expect(handled).toBe(false);
+      expect(WASendSvc.sendText).not.toHaveBeenCalled();
+    });
+
+    // The success case must NOT change — a company where the bot actually
+    // replies should still correctly suppress welcome/automation/OOO fallbacks.
+    test('maybeStart still returns true when generate() succeeds — the existing correct behavior is untouched', async () => {
+      mockTurn();
+      const started = await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hii', timestamp: 't1', waMessageId: 'wam1' });
+      expect(started).toBe(true);
+      expect(WASendSvc.sendText).toHaveBeenCalled();
+    });
+
+    test('continueTurn still returns true when generate() succeeds — the existing correct behavior is untouched', async () => {
+      mockTurn();
+      const handled = await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'hello', timestamp: 't1' });
+      expect(handled).toBe(true);
+      expect(WASendSvc.sendText).toHaveBeenCalled();
+    });
+
+    // An escalation-triggered handoff never calls AIService.generate() at all
+    // (checked first, in _runTurn) but DOES send a real reply (the handoff
+    // message) — true is still the correct signal here, unaffected by this fix.
+    test('an escalation-triggered handoff still returns true — a reply (the handoff message) was actually sent', async () => {
+      const handled = await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'I want to talk to a human agent', timestamp: 't1' });
+      expect(handled).toBe(true);
+      expect(WASendSvc.sendText).toHaveBeenCalledWith(
+        CID, { leadPK: LEAD_PK },
+        expect.stringContaining('senior relationship managers'),
+        expect.anything(),
+      );
+    });
+  });
+
   test('continueTurn returns false for a lead whose conversation was never bot-started (handoffState stays human)', async () => {
     ConversationService.getConversation.mockResolvedValue({ conversationId: 'conv_2', handoffState: 'human', aiTurnCount: 0 });
     const handled = await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'hello again', timestamp: 't1' });
@@ -504,10 +581,13 @@ describe('ConversationalAgentService', () => {
     expect(AIService.generate).not.toHaveBeenCalled();
   });
 
+  // 2026-07-08: `handled` corrected to false — see the "maybeStart/continueTurn
+  // signal failure accurately" describe block below for the confirmed-bug
+  // regression coverage across all 5 generate() failure reasons.
   test('a failed AIService.generate() call degrades gracefully — no send, no crash, no turn increment', async () => {
     mockTurnFailure('rate_limited', 'too many calls');
     const handled = await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'hello', timestamp: 't1' });
-    expect(handled).toBe(true); // the turn was consumed/attempted, even though nothing was sent
+    expect(handled).toBe(false); // nothing was sent — caller must fall back to OOO/keyword_message
     expect(WASendSvc.sendText).not.toHaveBeenCalled();
     expect(conv.aiTurnCount).toBe(0);
   });

@@ -394,11 +394,22 @@ async function _fetchKnowledgeContext(companyId, latestMessage, conversationId) 
  * Runs one AI turn: escalation check, generate, guardrail filter, send,
  * audit log, extracted-signal merge, turn increment, and (if triggered)
  * handoff. Shared by both maybeStart() and continueTurn().
+ *
+ * @returns {Promise<boolean>} true if a reply was actually sent to the
+ *   customer this turn (the escalation handoff message, or the AI's own
+ *   generated/guardrail-substituted reply) — false if generate() failed
+ *   (disabled_master, disabled_usecase, rate_limited, provider_error,
+ *   invalid_output) and nothing was sent. Callers (maybeStart/continueTurn)
+ *   propagate this so their own callers can correctly fall back to a
+ *   welcome message / automation trigger / OOO reply when the bot didn't
+ *   actually respond — see docs/bible/19_DECISION_LOG.md for the incident
+ *   this fixes: every one of these failure reasons was previously treated
+ *   as "the bot engaged," silently suppressing all of those fallbacks.
  */
 async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCount, cfg }) {
   if (isEscalationRequest(text)) {
     await _handoff(companyId, { leadPK, lead, conversationId, reason: 'escalated', turnCount, cfg });
-    return;
+    return true;
   }
 
   const [conversationHistory, preferredLanguage, conversationSettings, promptAddendum, knowledgeContext] = await Promise.all([
@@ -428,7 +439,7 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
 
   if (!result.ok) {
     logger.warn(`ConversationalAgentService: generate failed for ${leadPK}: ${result.reason} — ${result.detail}`);
-    return;
+    return false; // no reply sent — caller must fall back to welcome/automation/OOO
   }
 
   let replyText = result.data.reply;
@@ -463,6 +474,8 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
     // skip _handoff's own send so the customer doesn't get it twice.
     await _handoff(companyId, { leadPK, lead, conversationId, reason, turnCount: newTurnCount, skipHandoffMessage: guardrailTripped, cfg });
   }
+
+  return true;
 }
 
 /**
@@ -490,7 +503,11 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
  * lead immediately (see the updateLeadLastMessage() call below) — root cause
  * of the "1st message invisible in inbox" bug (docs/bible/19_DECISION_LOG.md).
  *
- * @returns {Promise<boolean>} true if the bot engaged (sent the first reply)
+ * @returns {Promise<boolean>} true only if the bot actually sent a reply this
+ *   turn (see _runTurn()'s own @returns) — false for every other reason this
+ *   contact isn't bot-eligible OR the AI turn didn't produce a sent reply, so
+ *   the webhook's welcome-message + whatsapp_conversation_started fallback
+ *   correctly still runs.
  */
 async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessageId }) {
   try {
@@ -542,8 +559,7 @@ async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessa
     if (!conv?.conversationId) return false;
 
     await ConversationService.startBotHandling(companyId, conv.conversationId);
-    await _runTurn(companyId, { leadPK: lead.PK, lead, conversationId: conv.conversationId, text, turnCount: 0, cfg });
-    return true;
+    return await _runTurn(companyId, { leadPK: lead.PK, lead, conversationId: conv.conversationId, text, turnCount: 0, cfg });
   } catch (err) {
     logger.error(`ConversationalAgentService.maybeStart failed [${companyId}/${phone10}]: ${err.message}`);
     return false;
@@ -556,7 +572,11 @@ async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessa
  * bot-handled one — including leads that were always human-handled, and ones
  * already handed off.
  *
- * @returns {Promise<boolean>} true if this message was consumed as a bot turn
+ * @returns {Promise<boolean>} true only if a reply was actually sent this
+ *   turn (see _runTurn()'s own @returns) — false for every other reason this
+ *   message wasn't consumed as a bot turn OR the AI turn didn't produce a
+ *   sent reply, so the webhook's OOO + keyword_message fallback correctly
+ *   still runs.
  */
 async function continueTurn(companyId, { leadPK, lead, phone10, text, timestamp }) {
   try {
@@ -572,8 +592,7 @@ async function continueTurn(companyId, { leadPK, lead, phone10, text, timestamp 
     const turnCount = conversation.aiTurnCount ?? 0;
     if (turnCount >= MAX_TURNS) return false; // defensive — should already be handed off by now
 
-    await _runTurn(companyId, { leadPK, lead, conversationId: conv.conversationId, text, turnCount, cfg });
-    return true;
+    return await _runTurn(companyId, { leadPK, lead, conversationId: conv.conversationId, text, turnCount, cfg });
   } catch (err) {
     logger.error(`ConversationalAgentService.continueTurn failed [${leadPK}]: ${err.message}`);
     return false;

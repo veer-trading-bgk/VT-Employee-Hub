@@ -175,3 +175,19 @@
 ---
 
 **Not transcribed here (already fully known/actioned, not part of the "84"):** the 5 Critical and 16 High findings (all match fixes already shipped across Waves 1-3 of this session), and 13 Informational findings (mostly confirmed non-issues or already-documented deliberate exceptions — available in the same source file if needed later).
+
+## _handoff()'s Send Failure Is Swallowed — False "true" on a Failed Handoff Message
+
+**Issue:** `_handoff()`'s internal `WASendSvc.sendText()` call (sending `HANDOFF_MESSAGE` on escalation) is wrapped in its own `.catch((e) => logger.warn(...))` — if the escalation handoff message itself fails to send, `_runTurn()` still returns `true`, so the caller believes a handoff message went out when it didn't. Pre-existing since Era 22 (2026-07-06), adjacent to the maybeStart()/continueTurn() signal-contract bug fixed on 2026-07-08, not part of that fix — found while enumerating every path through `_runTurn()` for that fix, but deliberately left alone (a different failure mode: `WhatsAppSendService` failing, not `AIService.generate()`).
+
+**Fix:** Needs its own deliberate fix if prioritized — likely surfacing `_handoff()`'s own send outcome back up through `_runTurn()`'s return value the same way the fixed `AIService.generate()` path now does.
+
+**Priority:** Low — narrower window than the fixed bug (WhatsApp send failing specifically on an escalation-triggered handoff, a comparatively rare trigger path vs. every first-contact message), and no confirmed live incident yet.
+
+## CONFIG#AI#{companyId} Has No Change-History / Audit Log
+
+**Issue:** `CONFIG#AI#{companyId}` (AIService's master switch + per-useCase moduleToggles) is a plain `dynamodb.put()` overwrite (`src/routes/ai.js`) with no `logAudit()` call — there's no way to reconstruct what a company's AI master/module toggles were at any point in the past. Surfaced while investigating the 2026-07-08 ConversationalAgentService incident, where it was moot only because the company in question had zero WhatsApp traffic ever.
+
+**Fix:** Would need a `logAudit()` call (or a small append-only history item) alongside the existing `dynamodb.put()` in `src/routes/ai.js`'s PUT /config route, matching how other admin-config changes in this codebase are already audited.
+
+**Priority:** Low — worth adding audit logging if this question ever needs answering under less convenient circumstances (a company with real traffic and an ambiguous incident window).
