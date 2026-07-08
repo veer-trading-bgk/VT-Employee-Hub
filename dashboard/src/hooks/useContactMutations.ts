@@ -72,19 +72,6 @@ export function useContactMutations(leadId: string) {
     onError: () => toast.error('Failed to create task'),
   });
 
-  const completeTask = useMutation({
-    mutationFn: ({ followupId, outcome }: { followupId: string; outcome: string }) =>
-      apiFetch(`/api/crm/leads/${leadId}/followup/${followupId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ done: true, outcome }),
-      }),
-    onSuccess: () => {
-      invalidateContact();
-      qc.invalidateQueries({ queryKey: ['followups', leadId] });
-    },
-    onError: () => toast.error('Failed to complete task'),
-  });
-
   const updateField = useMutation({
     mutationFn: (data: Partial<{ name: string; email: string; notes: string }>) =>
       apiFetch(`/api/crm/leads/${leadId}`, {
@@ -119,7 +106,6 @@ export function useContactMutations(leadId: string) {
     removeTag,
     addNote,
     createTask,
-    completeTask,
     updateField,
     updateCrm,
   };
