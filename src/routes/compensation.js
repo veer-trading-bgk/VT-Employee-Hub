@@ -1,5 +1,6 @@
 const express = require('express');
 const { authMiddleware, checkRole } = require('../middleware/auth');
+const { rateLimit } = require('../middleware/rateLimiter');
 const { logAudit } = require('../utils/audit');
 const { METRIC_KEYS, TARGET_DEFAULTS } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
@@ -174,7 +175,7 @@ router.get('/rates', authMiddleware, async (req, res, next) => {
 
 // ── PUT /api/compensation/rates ────────────────────────────────────────────────
 
-router.put('/rates', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.put('/rates', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { rates, bonusSlabs } = req.body;
 
@@ -212,7 +213,7 @@ router.put('/rates', authMiddleware, checkRole(['admin']), async (req, res, next
 
 // ── DELETE /api/compensation/rates ─────────────────────────────────────────────
 
-router.delete('/rates', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.delete('/rates', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     await dynamodb.delete({ TableName: TABLE, Key: ratesKey(req.user.companyId) }).promise();
     await logAudit(req.user.id, 'reset_incentive_rates', 'config', 'success', req.ip);
@@ -424,7 +425,7 @@ router.get('/payroll', authMiddleware, checkRole(['admin', 'manager']), async (r
 // ── POST /api/compensation/payroll/snapshot ────────────────────────────────────
 // Points 4 (snapshot), 9 (target achievement bonus)
 
-router.post('/payroll/snapshot', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.post('/payroll/snapshot', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const month = parseMonth(req.body.month ?? req.query.month);
 
@@ -531,7 +532,7 @@ router.post('/payroll/snapshot', authMiddleware, checkRole(['admin']), async (re
 // ── PUT /api/compensation/payroll/status ───────────────────────────────────────
 // Points 6 (workflow) + 13 (Telegram on lock)
 
-router.put('/payroll/status', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.put('/payroll/status', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { month: rawMonth, status } = req.body;
     const month = parseMonth(rawMonth);
@@ -634,7 +635,7 @@ router.get('/adjustments', authMiddleware, checkRole(['admin', 'manager']), asyn
 
 // ── POST /api/compensation/adjustments ────────────────────────────────────────
 
-router.post('/adjustments', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.post('/adjustments', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { userId, month: rawMonth, amount, reason, type } = req.body;
     const month = parseMonth(rawMonth);
@@ -674,7 +675,7 @@ router.post('/adjustments', authMiddleware, checkRole(['admin']), async (req, re
 
 // ── DELETE /api/compensation/adjustments/:id ───────────────────────────────────
 
-router.delete('/adjustments/:id', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.delete('/adjustments/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { id } = req.params;
     const month = parseMonth(req.query.month);
@@ -697,7 +698,7 @@ router.delete('/adjustments/:id', authMiddleware, checkRole(['admin']), async (r
 // ── POST /api/compensation/payroll/unlock ──────────────────────────────────────
 // Emergency admin-only unlock — reverts a locked payroll back to 'approved'
 
-router.post('/payroll/unlock', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.post('/payroll/unlock', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const month = parseMonth(req.body.month ?? req.query.month);
 

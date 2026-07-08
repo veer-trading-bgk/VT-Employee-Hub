@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const speakeasy = require('speakeasy');
 const QRCode = require('qrcode');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
+const { rateLimit } = require('../middleware/rateLimiter');
 const { queryAll } = require('../utils/db');
 const { logAudit } = require('../utils/audit');
 const { encrypt } = require('../utils/encryption');
@@ -75,7 +76,7 @@ router.get('/employees/:id', async (req, res, next) => {
 
 // ── POST /api/admin/employees ─────────────────────────────────────────────────
 
-router.post('/employees', async (req, res, next) => {
+router.post('/employees', rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { email, password, name, role, mobileNumber, panNumber, aadhaarNumber, homeAddress } = registerSchema.parse(req.body);
 
@@ -128,7 +129,7 @@ router.post('/employees', async (req, res, next) => {
 
 // ── PUT /api/admin/employees/:id ─────────────────────────────────────────────
 
-router.put('/employees/:id', async (req, res, next) => {
+router.put('/employees/:id', rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { id } = req.params;
     const updates = updateEmployeeSchema.parse(req.body);
@@ -219,7 +220,7 @@ router.put('/employees/:id', async (req, res, next) => {
 
 // ── PUT /api/admin/employees/:id/reset-password ───────────────────────────────
 
-router.put('/employees/:id/reset-password', async (req, res, next) => {
+router.put('/employees/:id/reset-password', rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { id } = req.params;
     const { newPassword } = req.body;
@@ -268,7 +269,7 @@ router.put('/employees/:id/reset-password', async (req, res, next) => {
 
 // ── DELETE /api/admin/employees/:id ── hard delete + cascade metrics ──────────
 
-router.delete('/employees/:id', async (req, res, next) => {
+router.delete('/employees/:id', rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { id } = req.params;
 
@@ -346,7 +347,7 @@ router.delete('/employees/:id', async (req, res, next) => {
 
 // ── POST /api/admin/employees/:id/setup-2fa ───────────────────────────────────
 
-router.post('/employees/:id/setup-2fa', async (req, res, next) => {
+router.post('/employees/:id/setup-2fa', rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { id } = req.params;
 
@@ -417,7 +418,7 @@ router.post('/employees/:id/setup-2fa', async (req, res, next) => {
 
 // ── DELETE /api/admin/employees/:id/2fa ───────────────────────────────────────
 
-router.delete('/employees/:id/2fa', async (req, res, next) => {
+router.delete('/employees/:id/2fa', rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { id } = req.params;
 
@@ -463,7 +464,7 @@ router.delete('/employees/:id/2fa', async (req, res, next) => {
 
 // ── PUT /api/admin/metrics/:userId/:date/:metricType ──────────────────────────
 
-router.put('/metrics/:userId/:date/:metricType', async (req, res, next) => {
+router.put('/metrics/:userId/:date/:metricType', rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { userId, date, metricType } = req.params;
     const { value, notes } = req.body;
@@ -541,7 +542,7 @@ router.get('/targets', async (req, res, next) => {
   }
 });
 
-router.put('/targets', async (req, res, next) => {
+router.put('/targets', rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { targets } = req.body;
     if (!targets || typeof targets !== 'object') {
@@ -570,7 +571,7 @@ router.put('/targets', async (req, res, next) => {
   }
 });
 
-router.delete('/targets', async (req, res, next) => {
+router.delete('/targets', rateLimit(20, 60_000), async (req, res, next) => {
   try {
     await dynamodb.delete({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
@@ -585,7 +586,7 @@ router.delete('/targets', async (req, res, next) => {
 
 // ── Points rebuild — recalculate stored TOTAL records from raw metric data ─────
 
-router.post('/points-rebuild', adminMiddleware, async (req, res, next) => {
+router.post('/points-rebuild', adminMiddleware, rateLimit(5, 60_000), async (req, res, next) => {
   try {
     const { companyId } = req.user;
 
@@ -683,7 +684,7 @@ router.get('/crm/auto-assign', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.put('/crm/auto-assign', async (req, res, next) => {
+router.put('/crm/auto-assign', rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { enabled, capacity, overflow, pools } = req.body;
     if (typeof enabled !== 'boolean') {
@@ -762,7 +763,7 @@ router.get('/employees/:id/metrics', async (req, res, next) => {
 // ── POST /api/admin/employees/bulk-status ─────────────────────────────────────
 // Bulk activate/deactivate employees
 
-router.post('/employees/bulk-status', async (req, res, next) => {
+router.post('/employees/bulk-status', rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { ids, status } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -806,7 +807,7 @@ router.post('/employees/bulk-status', async (req, res, next) => {
 // ── DELETE /api/admin/employees/bulk ─────────────────────────────────────────
 // Bulk delete employees + cascade their metrics
 
-router.delete('/employees/bulk', async (req, res, next) => {
+router.delete('/employees/bulk', rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) {

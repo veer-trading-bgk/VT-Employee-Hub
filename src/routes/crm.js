@@ -99,7 +99,7 @@ router.get('/pipeline', authMiddleware, async (req, res, next) => {
 });
 
 // ── PUT /api/crm/pipeline ──────────────────────────────────────────────────────
-router.put('/pipeline', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+router.put('/pipeline', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { stages } = req.body;
     if (!Array.isArray(stages) || stages.length === 0) {
@@ -471,7 +471,7 @@ router.put('/leads/:id', authMiddleware, rateLimit(30, 60_000), async (req, res,
 });
 
 // ── PUT /api/crm/leads/:id/assign ─────────────────────────────────────────────
-router.put('/leads/:id/assign', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.put('/leads/:id/assign', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { assignedTo, assignedToName } = req.body;
     if (!assignedTo) return res.status(400).json({ error: 'assignedTo required' });
@@ -506,7 +506,7 @@ router.put('/leads/:id/assign', authMiddleware, checkRole(['admin', 'manager']),
 });
 
 // ── PUT /api/crm/leads/:id/stage ───────────────────────────────────────────────
-router.put('/leads/:id/stage', authMiddleware, async (req, res, next) => {
+router.put('/leads/:id/stage', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { stage } = req.body;
     if (!stage) return res.status(400).json({ error: 'stage required' });
@@ -893,7 +893,7 @@ router.post('/leads/:id/followup', authMiddleware, rateLimit(30, 60_000), async 
 });
 
 // ── PUT /api/crm/followups/:date/:leadId/done ──────────────────────────────────
-router.put('/followups/:date/:leadId/done', authMiddleware, async (req, res, next) => {
+router.put('/followups/:date/:leadId/done', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     await dynamodb.update({
       TableName: TABLE,
@@ -1025,7 +1025,7 @@ router.get('/my-work', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/crm/import ──────────────────────────────────────────────────────
-router.post('/import', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+router.post('/import', authMiddleware, checkRole(['admin', 'manager']), rateLimit(5, 60_000), async (req, res, next) => {
   try {
     const { leads, options = {} } = req.body;
     const {
