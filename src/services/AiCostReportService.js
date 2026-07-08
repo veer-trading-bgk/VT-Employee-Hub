@@ -16,11 +16,23 @@
  * structural choice, not just a default: Era 36 found nearly all data to date
  * is admin_test, so there is no filter path that can accidentally recombine
  * them into one misleading total.
+ *
+ * Registered-vs-unregistered (Era 39): `source` tagging alone is NOT a
+ * reliable real-vs-test signal — some earlier live-verification scripts
+ * tagged their scratch companyIds `source: 'production'` directly instead of
+ * `admin_test`. The authoritative signal is whether the companyId has a real
+ * COMPANY_PROFILE record (EMPLOYEES table) — a scratch identity used ad hoc
+ * during testing never goes through real onboarding, so it structurally
+ * cannot appear there, regardless of what a future test script names it or
+ * how it tags `source`. Every bucket below is additionally split into
+ * registered/unregistered on this basis, same "never silently blend"
+ * principle as the source split.
  */
 
 const dynamodb = require('../config/dynamodb');
 
 function table() { return process.env.DYNAMODB_TABLE_METRICS; }
+function empTable() { return process.env.DYNAMODB_TABLE_EMPLOYEES; }
 
 // Display-only USD→INR conversion for this report. Never written to DynamoDB,
 // never affects wallet/billing math (that stays entirely in USD via
@@ -61,6 +73,23 @@ async function scanAll(params) {
   return items;
 }
 
+/**
+ * Every companyId with a real COMPANY_PROFILE record — the same query
+ * GET /api/platform/companies already runs. Anything not in this set is a
+ * scratch/test identity from a live-verification session, never a real
+ * onboarded company, regardless of naming convention or source tag.
+ */
+async function getRegisteredCompanyIds() {
+  const items = await scanAll({
+    TableName: empTable(),
+    FilterExpression: '#type = :t',
+    ExpressionAttributeNames: { '#type': 'type' },
+    ExpressionAttributeValues: { ':t': 'COMPANY_PROFILE' },
+    ProjectionExpression: 'companyId',
+  });
+  return new Set(items.map((it) => it.companyId));
+}
+
 function bucketKey(item) {
   if (item.source === 'production') return 'production';
   if (item.source === 'admin_test') return 'admin_test';
@@ -68,16 +97,31 @@ function bucketKey(item) {
 }
 
 function emptyAiBucket() {
-  return { totalCostUsd: 0, calls: 0, byCompany: {}, byUseCase: {} };
+  return {
+    totalCostUsd: 0, calls: 0,
+    registeredCostUsd: 0, registeredCalls: 0,
+    unregisteredCostUsd: 0, unregisteredCalls: 0,
+    unregisteredCompanies: new Set(),
+    byCompany: {}, byUseCase: {},
+  };
 }
 
-function addToAiBucket(bucket, item) {
+function addToAiBucket(bucket, item, isRegistered) {
   const cost = item.costUsd || 0;
   bucket.totalCostUsd += cost;
   bucket.calls += 1;
 
+  if (isRegistered) {
+    bucket.registeredCostUsd += cost;
+    bucket.registeredCalls += 1;
+  } else {
+    bucket.unregisteredCostUsd += cost;
+    bucket.unregisteredCalls += 1;
+    bucket.unregisteredCompanies.add(item.companyId || '(unknown)');
+  }
+
   const company = item.companyId || '(unknown)';
-  bucket.byCompany[company] = bucket.byCompany[company] || { costUsd: 0, calls: 0 };
+  bucket.byCompany[company] = bucket.byCompany[company] || { costUsd: 0, calls: 0, registered: isRegistered };
   bucket.byCompany[company].costUsd += cost;
   bucket.byCompany[company].calls += 1;
 
@@ -99,14 +143,20 @@ function toInr(usd) {
 
 function finalizeAiBucket(bucket) {
   const totalCostUsd = round(bucket.totalCostUsd);
+  const registeredCostUsd = round(bucket.registeredCostUsd);
+  const unregisteredCostUsd = round(bucket.unregisteredCostUsd);
   return {
-    totalCostUsd,
-    totalCostInr: toInr(totalCostUsd),
-    calls: bucket.calls,
+    // Headline number — registered companies only. See getAiCostReport doc
+    // comment / Era 39: source tagging alone isn't a reliable real-vs-test
+    // signal, registry membership is.
+    totalCostUsd, totalCostInr: toInr(totalCostUsd), calls: bucket.calls,
+    registeredCostUsd, registeredCostInr: toInr(registeredCostUsd), registeredCalls: bucket.registeredCalls,
+    unregisteredCostUsd, unregisteredCostInr: toInr(unregisteredCostUsd), unregisteredCalls: bucket.unregisteredCalls,
+    unregisteredCompanyCount: bucket.unregisteredCompanies.size,
     byCompany: Object.entries(bucket.byCompany)
       .map(([companyId, v]) => {
         const costUsd = round(v.costUsd);
-        return { companyId, calls: v.calls, costUsd, costInr: toInr(costUsd) };
+        return { companyId, calls: v.calls, costUsd, costInr: toInr(costUsd), registered: v.registered };
       })
       .sort((a, b) => b.costUsd - a.costUsd),
     byUseCase: Object.entries(bucket.byUseCase)
@@ -119,16 +169,31 @@ function finalizeAiBucket(bucket) {
 }
 
 function emptyEmbedBucket() {
-  return { totalTokens: 0, calls: 0, byCompany: {}, byInputType: {} };
+  return {
+    totalTokens: 0, calls: 0,
+    registeredTokens: 0, registeredCalls: 0,
+    unregisteredTokens: 0, unregisteredCalls: 0,
+    unregisteredCompanies: new Set(),
+    byCompany: {}, byInputType: {},
+  };
 }
 
-function addToEmbedBucket(bucket, item) {
+function addToEmbedBucket(bucket, item, isRegistered) {
   const tokens = item.tokens || 0;
   bucket.totalTokens += tokens;
   bucket.calls += 1;
 
+  if (isRegistered) {
+    bucket.registeredTokens += tokens;
+    bucket.registeredCalls += 1;
+  } else {
+    bucket.unregisteredTokens += tokens;
+    bucket.unregisteredCalls += 1;
+    bucket.unregisteredCompanies.add(item.companyId || '(unknown)');
+  }
+
   const company = item.companyId || '(unknown)';
-  bucket.byCompany[company] = bucket.byCompany[company] || { tokens: 0, calls: 0 };
+  bucket.byCompany[company] = bucket.byCompany[company] || { tokens: 0, calls: 0, registered: isRegistered };
   bucket.byCompany[company].tokens += tokens;
   bucket.byCompany[company].calls += 1;
 
@@ -140,13 +205,20 @@ function addToEmbedBucket(bucket, item) {
 
 function finalizeEmbedBucket(bucket) {
   const estimatedCostUsd = round((bucket.totalTokens / 1e6) * VOYAGE_EMBED_USD_PER_MILLION_TOKENS);
+  const registeredEstimatedCostUsd = round((bucket.registeredTokens / 1e6) * VOYAGE_EMBED_USD_PER_MILLION_TOKENS);
+  const unregisteredEstimatedCostUsd = round((bucket.unregisteredTokens / 1e6) * VOYAGE_EMBED_USD_PER_MILLION_TOKENS);
   return {
     totalTokens: bucket.totalTokens,
     estimatedCostUsd,
     estimatedCostInr: toInr(estimatedCostUsd),
     calls: bucket.calls,
+    registeredTokens: bucket.registeredTokens,
+    registeredEstimatedCostUsd, registeredEstimatedCostInr: toInr(registeredEstimatedCostUsd), registeredCalls: bucket.registeredCalls,
+    unregisteredTokens: bucket.unregisteredTokens,
+    unregisteredEstimatedCostUsd, unregisteredEstimatedCostInr: toInr(unregisteredEstimatedCostUsd), unregisteredCalls: bucket.unregisteredCalls,
+    unregisteredCompanyCount: bucket.unregisteredCompanies.size,
     byCompany: Object.entries(bucket.byCompany)
-      .map(([companyId, v]) => ({ companyId, tokens: v.tokens, calls: v.calls }))
+      .map(([companyId, v]) => ({ companyId, tokens: v.tokens, calls: v.calls, registered: v.registered }))
       .sort((a, b) => b.tokens - a.tokens),
     byInputType: Object.entries(bucket.byInputType)
       .map(([inputType, v]) => ({ inputType, tokens: v.tokens, calls: v.calls }))
@@ -179,11 +251,17 @@ async function getAiCostReport({ from, to } = {}) {
     ExpressionAttributeValues: { ':p': 'EMBEDUSAGE#', ':fromD': fromDate, ':toD': toDate },
   });
 
+  const registeredCompanyIds = await getRegisteredCompanyIds();
+
   const aiBuckets = { production: emptyAiBucket(), admin_test: emptyAiBucket(), untagged: emptyAiBucket() };
-  for (const item of aiItems) addToAiBucket(aiBuckets[bucketKey(item)], item);
+  for (const item of aiItems) {
+    addToAiBucket(aiBuckets[bucketKey(item)], item, registeredCompanyIds.has(item.companyId));
+  }
 
   const embedBucket = emptyEmbedBucket();
-  for (const item of embedItems) addToEmbedBucket(embedBucket, item);
+  for (const item of embedItems) {
+    addToEmbedBucket(embedBucket, item, registeredCompanyIds.has(item.companyId));
+  }
 
   const taggedAiItems = aiItems.filter((it) => it.entityType || it.entityId || it.source);
   const taggedDates = [...new Set(taggedAiItems.map((it) => (it.createdAt || '').slice(0, 10)).filter(Boolean))].sort();

@@ -6,6 +6,7 @@
  */
 
 process.env.DYNAMODB_TABLE_METRICS = 'business_metrics';
+process.env.DYNAMODB_TABLE_EMPLOYEES = 'employees';
 
 jest.mock('../src/config/dynamodb', () => ({ scan: jest.fn() }));
 
@@ -39,11 +40,19 @@ function embedItem(overrides = {}) {
 
 // Mimic a real Scan+FilterExpression: dynamodb.scan is mocked per-call based
 // on the FilterExpression's prefix, returning a single unpaginated page.
-function mockScanSequence(aiItems, embedItems) {
+// registeredCompanyIds defaults to ['viir_trading'] — every fixture below
+// that doesn't care about the registered/unregistered split uses that
+// companyId, so existing assertions keep working unchanged.
+function mockScanSequence(aiItems, embedItems, registeredCompanyIds = ['viir_trading']) {
   dynamodb.scan.mockImplementation((params) => {
     const isAi = params.ExpressionAttributeValues?.[':p'] === 'AIUSAGE#';
     const isEmbed = params.ExpressionAttributeValues?.[':p'] === 'EMBEDUSAGE#';
+    const isCompanyRegistry = params.ExpressionAttributeValues?.[':t'] === 'COMPANY_PROFILE';
     const isEntityLookup = params.FilterExpression.includes('entityId');
+
+    if (isCompanyRegistry) {
+      return { promise: async () => ({ Items: registeredCompanyIds.map((companyId) => ({ companyId })) }) };
+    }
 
     let items = isAi ? aiItems : isEmbed ? embedItems : [];
     if (isEntityLookup) {
@@ -105,6 +114,53 @@ describe('AiCostReportService.getAiCostReport', () => {
     ]));
     // sorted highest-cost first
     expect(byCompany[0].companyId).toBe('other_co');
+  });
+
+  test('headline (registered) cost excludes unregistered/scratch companyIds, but total still includes everything', async () => {
+    mockScanSequence([
+      aiItem({ source: 'production', companyId: 'viir_trading', costUsd: 0.01 }),
+      aiItem({ source: 'production', companyId: 'retryfix_verification_scratch', costUsd: 0.03 }),
+    ], [], ['viir_trading']); // only viir_trading is registered
+
+    const report = await AiCostReportService.getAiCostReport({ from: '2026-07-01T00:00:00.000Z', to: '2026-07-09T00:00:00.000Z' });
+    const bucket = report.bySource.production;
+
+    expect(bucket.totalCostUsd).toBeCloseTo(0.04, 6); // everything, unchanged
+    expect(bucket.registeredCostUsd).toBeCloseTo(0.01, 6); // headline — real company only
+    expect(bucket.registeredCalls).toBe(1);
+    expect(bucket.unregisteredCostUsd).toBeCloseTo(0.03, 6);
+    expect(bucket.unregisteredCalls).toBe(1);
+    expect(bucket.unregisteredCompanyCount).toBe(1);
+  });
+
+  test('byCompany rows are tagged registered/unregistered by COMPANY_PROFILE membership, not naming convention', async () => {
+    mockScanSequence([
+      aiItem({ source: 'production', companyId: 'viir_trading', costUsd: 0.01 }),
+      aiItem({ source: 'production', companyId: 'anything_not_registered', costUsd: 0.02 }),
+    ], [], ['viir_trading']);
+
+    const report = await AiCostReportService.getAiCostReport({ from: '2026-07-01T00:00:00.000Z', to: '2026-07-09T00:00:00.000Z' });
+    const byCompany = report.bySource.production.byCompany;
+
+    expect(byCompany.find((c) => c.companyId === 'viir_trading').registered).toBe(true);
+    expect(byCompany.find((c) => c.companyId === 'anything_not_registered').registered).toBe(false);
+  });
+
+  test('embeddings are split registered/unregistered the same way as AI cost', async () => {
+    mockScanSequence([], [
+      embedItem({ companyId: 'viir_trading', tokens: 1_000_000 }),
+      embedItem({ companyId: 'ragtest_scratch', tokens: 500_000 }),
+    ], ['viir_trading']);
+
+    const report = await AiCostReportService.getAiCostReport({ from: '2026-07-01T00:00:00.000Z', to: '2026-07-09T00:00:00.000Z' });
+    const embeddings = report.embeddings;
+
+    expect(embeddings.totalTokens).toBe(1_500_000);
+    expect(embeddings.registeredTokens).toBe(1_000_000);
+    expect(embeddings.unregisteredTokens).toBe(500_000);
+    expect(embeddings.unregisteredCompanyCount).toBe(1);
+    expect(embeddings.byCompany.find((c) => c.companyId === 'viir_trading').registered).toBe(true);
+    expect(embeddings.byCompany.find((c) => c.companyId === 'ragtest_scratch').registered).toBe(false);
   });
 
   test('breaks down cost per useCase within a source bucket', async () => {

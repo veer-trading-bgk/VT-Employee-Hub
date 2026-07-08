@@ -441,18 +441,32 @@ export interface PlatformCompanyDetailResponse {
 
 // ── Platform AI Costs (superadmin) ───────────────────────────────────────────
 
-export interface AiCostByCompany { companyId: string; calls: number; costUsd: number; costInr: number }
+// registered = has a real COMPANY_PROFILE record (EMPLOYEES table) — the
+// authoritative real-vs-scratch signal, not a naming convention or the
+// source tag (Era 39: some earlier verification scripts tagged scratch
+// companyIds source:'production' directly).
+export interface AiCostByCompany { companyId: string; calls: number; costUsd: number; costInr: number; registered: boolean }
 export interface AiCostByUseCase { useCase: string; calls: number; costUsd: number; costInr: number }
 
 export interface AiCostBucket {
+  // Everything in this bucket, registered + unregistered combined — only
+  // shown behind the "Show blended" debug toggle, never as the default headline.
   totalCostUsd: number;
   totalCostInr: number;
   calls: number;
+  // Headline figures — registered (real, onboarded) companies only.
+  registeredCostUsd: number;
+  registeredCostInr: number;
+  registeredCalls: number;
+  unregisteredCostUsd: number;
+  unregisteredCostInr: number;
+  unregisteredCalls: number;
+  unregisteredCompanyCount: number;
   byCompany: AiCostByCompany[];
   byUseCase: AiCostByUseCase[];
 }
 
-export interface EmbedCostByCompany { companyId: string; tokens: number; calls: number }
+export interface EmbedCostByCompany { companyId: string; tokens: number; calls: number; registered: boolean }
 export interface EmbedCostByInputType { inputType: string; tokens: number; calls: number }
 
 export interface EmbedCostBucket {
@@ -461,6 +475,15 @@ export interface EmbedCostBucket {
   estimatedCostUsd: number;
   estimatedCostInr: number;
   calls: number;
+  registeredTokens: number;
+  registeredEstimatedCostUsd: number;
+  registeredEstimatedCostInr: number;
+  registeredCalls: number;
+  unregisteredTokens: number;
+  unregisteredEstimatedCostUsd: number;
+  unregisteredEstimatedCostInr: number;
+  unregisteredCalls: number;
+  unregisteredCompanyCount: number;
   byCompany: EmbedCostByCompany[];
   byInputType: EmbedCostByInputType[];
 }

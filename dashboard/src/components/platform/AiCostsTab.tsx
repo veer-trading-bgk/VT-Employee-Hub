@@ -9,6 +9,7 @@ import { Badge } from '@/components/v3/ui/Badge';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
 import { Table, TableColumn } from '@/components/v3/ui/Table';
 import { EmptyState } from '@/components/v3/ui/EmptyState';
+import { Toggle } from '@/components/v3/ui/Toggle';
 import { cn } from '@/lib/cn';
 import { api } from '@/lib/api';
 import type {
@@ -49,11 +50,18 @@ const SOURCE_META: Record<AiCostSource, { label: string; icon: typeof ShieldChec
 };
 
 // ── Source summary cards — always all three, never blended ───────────────────
+//
+// Headline number is registered (real, onboarded) companies only — Era 39:
+// some earlier verification scripts tagged scratch companyIds
+// source:'production' directly, so source alone can't be trusted as the
+// real-vs-test signal. The unregistered subtotal is always shown alongside,
+// never hidden — "Show blended" is an explicit opt-in for debugging only.
 
-function SourceSummaryCards({ data, selected, onSelect }: {
+function SourceSummaryCards({ data, selected, onSelect, showBlended }: {
   data: PlatformAiCostsResponse;
   selected: AiCostSource;
   onSelect: (s: AiCostSource) => void;
+  showBlended: boolean;
 }) {
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -61,6 +69,9 @@ function SourceSummaryCards({ data, selected, onSelect }: {
         const meta = SOURCE_META[key];
         const bucket = data.bySource[key];
         const Icon = meta.icon;
+        const headlineInr = showBlended ? bucket.totalCostInr : bucket.registeredCostInr;
+        const headlineUsd = showBlended ? bucket.totalCostUsd : bucket.registeredCostUsd;
+        const headlineCalls = showBlended ? bucket.calls : bucket.registeredCalls;
         return (
           <Card
             key={key}
@@ -73,12 +84,24 @@ function SourceSummaryCards({ data, selected, onSelect }: {
                 <Icon className="h-3.5 w-3.5" />
                 {meta.label}
               </div>
-              <Badge variant={meta.badge}>{bucket.calls} calls</Badge>
+              <Badge variant={meta.badge}>{headlineCalls} calls</Badge>
             </div>
             <p className="mt-2 text-2xl font-bold tabular-nums text-neutral-900 dark:text-neutral-100">
-              {fmtInr(bucket.totalCostInr)}
+              {fmtInr(headlineInr)}
             </p>
-            <p className="text-xs tabular-nums text-neutral-400">{fmtUsd(bucket.totalCostUsd)}</p>
+            <p className="text-xs tabular-nums text-neutral-400">{fmtUsd(headlineUsd)}</p>
+            {!showBlended && bucket.unregisteredCalls > 0 && (
+              <p className="mt-1.5 text-[11px] text-neutral-400">
+                + {fmtInr(bucket.unregisteredCostInr)} from {bucket.unregisteredCompanyCount} unregistered/scratch{' '}
+                {bucket.unregisteredCompanyCount === 1 ? 'identity' : 'identities'}
+              </p>
+            )}
+            {showBlended && bucket.unregisteredCalls > 0 && (
+              <p className="mt-1.5 text-[11px] text-neutral-400">
+                blended — includes {bucket.unregisteredCompanyCount} unregistered/scratch{' '}
+                {bucket.unregisteredCompanyCount === 1 ? 'identity' : 'identities'}
+              </p>
+            )}
           </Card>
         );
       })}
@@ -114,7 +137,23 @@ function UseCaseBarChart({ rows }: { rows: AiCostByUseCase[] }) {
 
 function CompanyCostTable({ rows }: { rows: AiCostByCompany[] }) {
   const columns: TableColumn<AiCostByCompany>[] = [
-    { key: 'companyId', header: 'Company', cell: (r) => <span className="font-medium">{r.companyId}</span> },
+    {
+      key: 'companyId',
+      header: 'Company',
+      cell: (r) => (
+        <span className="flex items-center gap-1.5">
+          <span className="font-medium">{r.companyId}</span>
+          {!r.registered && (
+            <span
+              title="Not in COMPANY_PROFILE — unregistered/scratch identity, not a real onboarded company"
+              className="inline-flex items-center gap-1 rounded-full bg-neutral-100 px-1.5 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-800 dark:text-neutral-400"
+            >
+              <FlaskConical className="h-2.5 w-2.5" /> Unregistered
+            </span>
+          )}
+        </span>
+      ),
+    },
     { key: 'calls', header: 'Calls', cell: (r) => <span className="tabular-nums">{r.calls}</span> },
     { key: 'costInr', header: 'Cost (INR)', cell: (r) => <span className="tabular-nums font-semibold">{fmtInr(r.costInr)}</span> },
     { key: 'costUsd', header: 'Cost (USD)', cell: (r) => <span className="tabular-nums text-neutral-400">{fmtUsd(r.costUsd)}</span> },
@@ -231,6 +270,9 @@ function EntityDrilldownResult({ data }: { data: PlatformAiCostEntityResponse })
 export function AiCostsTab() {
   const [rangeDays, setRangeDays] = useState<number>(30);
   const [selectedSource, setSelectedSource] = useState<AiCostSource>('production');
+  // Off by default — headline cards show registered (real) companies only
+  // until a superadmin explicitly opts into seeing the blended debug view.
+  const [showBlended, setShowBlended] = useState(false);
 
   const { from, to } = useMemo(() => {
     const toDate = new Date();
@@ -271,27 +313,40 @@ export function AiCostsTab() {
         </p>
       </Card>
 
-      {/* Range selector */}
-      <div className="flex items-center justify-between">
+      {/* Range selector + debug-only blended toggle */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">AI Cost Report</p>
-        <div className="flex gap-1">
-          {RANGE_OPTIONS.map((opt) => (
-            <button
-              key={opt.days}
-              onClick={() => setRangeDays(opt.days)}
-              className={cn(
-                'rounded-full px-3 py-1 text-xs font-medium transition',
-                rangeDays === opt.days ? 'bg-primary-600 text-white' : 'border border-neutral-200 text-neutral-500 hover:border-neutral-400 dark:border-neutral-700',
-              )}
-            >
-              {opt.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-4">
+          <Toggle
+            size="sm"
+            label="Show blended (all identities)"
+            checked={showBlended}
+            onChange={(e) => setShowBlended(e.target.checked)}
+          />
+          <div className="flex gap-1">
+            {RANGE_OPTIONS.map((opt) => (
+              <button
+                key={opt.days}
+                onClick={() => setRangeDays(opt.days)}
+                className={cn(
+                  'rounded-full px-3 py-1 text-xs font-medium transition',
+                  rangeDays === opt.days ? 'bg-primary-600 text-white' : 'border border-neutral-200 text-neutral-500 hover:border-neutral-400 dark:border-neutral-700',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
+      {showBlended && (
+        <p className="text-xs text-neutral-400">
+          Debug view — headline figures now include unregistered/scratch identities. Turn off for the real, registered-companies-only view.
+        </p>
+      )}
 
       {/* Always all three, never blended — click to focus the tables below */}
-      <SourceSummaryCards data={data} selected={selectedSource} onSelect={setSelectedSource} />
+      <SourceSummaryCards data={data} selected={selectedSource} onSelect={setSelectedSource} showBlended={showBlended} />
 
       {/* Focused breakdown for the selected bucket */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
