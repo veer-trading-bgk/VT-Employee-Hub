@@ -8,6 +8,7 @@ import { AssignmentBridgeProvider } from "@/providers/AssignmentBridgeProvider";
 import { WebSocketProvider } from "@/contexts/WebSocketContext";
 import { Toaster } from "sonner";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
+import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -61,7 +62,7 @@ export default function RootLayout({
             <ThemeProvider>
               <AuthProvider>
                 <WebSocketProvider>
-                  {children}
+                  <ErrorBoundary>{children}</ErrorBoundary>
                   <Toaster richColors position="top-right" offset="4.5rem" />
                   <ServiceWorkerRegister />
                 </WebSocketProvider>
