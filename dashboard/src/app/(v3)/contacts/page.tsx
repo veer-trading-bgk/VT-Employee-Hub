@@ -36,6 +36,7 @@ import { TagSelector } from '@/components/tags/TagSelector';
 import { ContactTags } from '@/components/tags/ContactTags';
 import { EditableName } from '@/components/shared/EditableName';
 import { useContactMutations } from '@/hooks/useContactMutations';
+import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 import { buildContactDeleteRequest } from '@/lib/contactUrls';
@@ -256,12 +257,14 @@ function ContactsContent() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [stageFilter, setStageFilter] = useState<string>('');
 
-  const [newContactOpen, setNewContactOpen] = useState(false);
-  const [importOpen,     setImportOpen]     = useState(false);
-  const [exporting,      setExporting]      = useState(false);
-  const [bulkTagOpen,    setBulkTagOpen]    = useState(false);
+  const [newContactOpen,  setNewContactOpen]  = useState(false);
+  const [importOpen,      setImportOpen]      = useState(false);
+  const [exporting,       setExporting]       = useState(false);
+  const [bulkTagOpen,     setBulkTagOpen]     = useState(false);
+  const [bulkAssignOpen,  setBulkAssignOpen]  = useState(false);
 
   const { tags: tagCatalog } = useTagCatalog();
+  const { employees: assignableEmployees } = useEmployeesList({ enabled: bulkAssignOpen, assignableOnly: true });
   const tagLabel = useCallback(
     (id: string) => tagCatalog.find((t) => t.id === id)?.label ?? id,
     [tagCatalog],
@@ -295,50 +298,93 @@ function ContactsContent() {
     placeholderData: { contacts: [], total: 0, page: 1, pageSize: PAGE_SIZE },
   });
 
+  // Shared helper: run one bulk operation per selected contact and report a
+  // real succeeded/failed split instead of the all-or-nothing behavior
+  // Promise.all gives — a single failed item (permission, already-deleted,
+  // transient 5xx) used to sink the ENTIRE batch's success reporting and
+  // skip invalidateQueries even when most items had already succeeded.
+  async function runBulkOp<T>(items: T[], op: (item: T) => Promise<unknown>) {
+    const settled = await Promise.allSettled(items.map(op));
+    const failed = settled.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    const succeeded = settled.length - failed.length;
+    const firstReason = failed[0]
+      ? (failed[0].reason instanceof Error ? failed[0].reason.message : String(failed[0].reason))
+      : null;
+    return { succeeded, failed: failed.length, firstReason };
+  }
+
+  function reportBulkResult(action: string, succeeded: number, failed: number, firstReason: string | null) {
+    if (failed === 0) {
+      toast.success(`${action} ${succeeded} contact${succeeded !== 1 ? 's' : ''}`);
+    } else if (succeeded === 0) {
+      toast.error(`Failed to ${action.toLowerCase()} ${failed} contact${failed !== 1 ? 's' : ''}${firstReason ? `: ${firstReason}` : ''}`);
+    } else {
+      toast.error(`${action} ${succeeded} contact${succeeded !== 1 ? 's' : ''} — ${failed} failed${firstReason ? `: ${firstReason}` : ''}`);
+    }
+  }
+
   // Bulk delete — route each contact to the correct backend endpoint
   const bulkDeleteMutation = useMutation({
     mutationFn: async (ids: string[]) => {
       const allContacts = data?.contacts ?? [];
       const targets = allContacts.filter((c) => ids.includes(c.id));
-      await Promise.all(
-        targets.map((c) => {
-          const { url, method } = buildContactDeleteRequest(c);
-          return apiFetch(url, { method });
-        }),
-      );
+      return runBulkOp(targets, (c) => {
+        const { url, method } = buildContactDeleteRequest(c);
+        return apiFetch(url, { method });
+      });
     },
-    onSuccess: () => {
-      toast.success(`Deleted ${selectedIds.size} contacts`);
+    onSuccess: ({ succeeded, failed, firstReason }) => {
+      reportBulkResult('Deleted', succeeded, failed, firstReason);
       setSelectedIds(new Set());
-      qc.invalidateQueries({ queryKey: ['contacts'] });
+      if (succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
     },
-    onError: () => toast.error('Delete failed — you may not have permission to remove some contacts'),
+    onError: () => toast.error('Delete failed unexpectedly — please try again'),
   });
 
   // Bulk tag — apply one catalog tag to every selected contact
   const bulkTagMutation = useMutation({
     mutationFn: async (tagId: string) => {
       const targets = (data?.contacts ?? []).filter((c) => selectedIds.has(c.id));
-      await Promise.all(
-        targets.map((c) => {
-          const isLead = c.type === 'lead' || (c.leadId ?? null) !== null;
-          return apiFetch('/api/tags/contacts', {
-            method: 'PUT',
-            body: JSON.stringify({
-              ...(isLead ? { leadId: c.leadId ?? c.id } : { phone: c.phone }),
-              add: [tagId],
-              remove: [],
-            }),
-          });
+      return runBulkOp(targets, (c) => {
+        const isLead = c.type === 'lead' || (c.leadId ?? null) !== null;
+        return apiFetch('/api/tags/contacts', {
+          method: 'PUT',
+          body: JSON.stringify({
+            ...(isLead ? { leadId: c.leadId ?? c.id } : { phone: c.phone }),
+            add: [tagId],
+            remove: [],
+          }),
+        });
+      });
+    },
+    onSuccess: ({ succeeded, failed, firstReason }) => {
+      reportBulkResult('Tagged', succeeded, failed, firstReason);
+      if (succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
+    },
+    onError: () => toast.error('Tagging failed unexpectedly — please try again'),
+  });
+
+  // Bulk assign — only applies to CRM leads (unknown/INBOX# contacts have no
+  // assignedTo concept); non-lead selections are skipped and called out.
+  const bulkAssignMutation = useMutation({
+    mutationFn: async ({ employeeId, employeeName }: { employeeId: string; employeeName: string }) => {
+      const targets = (data?.contacts ?? []).filter((c) => selectedIds.has(c.id) && c.type === 'lead');
+      const result = await runBulkOp(targets, (c) =>
+        apiFetch(`/api/crm/leads/${c.leadId ?? c.id}/assign`, {
+          method: 'PUT',
+          body: JSON.stringify({ assignedTo: employeeId, assignedToName: employeeName }),
         }),
       );
-      return targets.length;
+      return { ...result, skippedNonLeads: selectedIds.size - targets.length };
     },
-    onSuccess: (count) => {
-      toast.success(`Tagged ${count} contact${count !== 1 ? 's' : ''}`);
-      qc.invalidateQueries({ queryKey: ['contacts'] });
+    onSuccess: ({ succeeded, failed, firstReason, skippedNonLeads }) => {
+      reportBulkResult('Assigned', succeeded, failed, firstReason);
+      if (skippedNonLeads > 0) {
+        toast.info(`${skippedNonLeads} selected contact${skippedNonLeads !== 1 ? 's are' : ' is'} not a CRM lead yet — skipped (assign only applies to leads)`);
+      }
+      if (succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
     },
-    onError: () => toast.error('Failed to tag some contacts'),
+    onError: () => toast.error('Assignment failed unexpectedly — please try again'),
   });
 
   function handleSort(key: string, dir: SortDirection) {
@@ -489,15 +535,42 @@ function ContactsContent() {
               }
               bulkActions={
                 <div className="flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    iconLeft={<UserCheck className="h-4 w-4" />}
-                    disabled={selectedIds.size === 0}
-                    onClick={() => toast.info('Bulk assign coming soon')}
-                  >
-                    Assign
-                  </Button>
+                  <div className="relative">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      iconLeft={<UserCheck className="h-4 w-4" />}
+                      disabled={selectedIds.size === 0}
+                      loading={bulkAssignMutation.isPending}
+                      onClick={() => setBulkAssignOpen((v) => !v)}
+                    >
+                      Assign
+                    </Button>
+                    {bulkAssignOpen && (
+                      <div className="absolute left-0 top-full z-20 mt-1 w-56 rounded-xl border border-neutral-200 bg-white p-2 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+                        {assignableEmployees.length === 0 ? (
+                          <p className="px-2 py-1.5 text-xs text-neutral-400">Loading employees…</p>
+                        ) : (
+                          <ul className="max-h-56 space-y-0.5 overflow-y-auto">
+                            {assignableEmployees.map((emp) => (
+                              <li key={emp.id}>
+                                <button
+                                  type="button"
+                                  className="w-full rounded-lg px-2 py-1.5 text-left text-sm text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                                  onClick={() => {
+                                    bulkAssignMutation.mutate({ employeeId: emp.id, employeeName: emp.name });
+                                    setBulkAssignOpen(false);
+                                  }}
+                                >
+                                  {emp.name}
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    )}
+                  </div>
                   <div className="relative">
                     <Button
                       size="sm"
