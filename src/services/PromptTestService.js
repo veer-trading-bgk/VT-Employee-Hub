@@ -92,6 +92,11 @@ async function testPromptAddendum(companyId, candidateText) {
         promptAddendum: candidateText,
       },
       user: AI_ACTOR,
+      // Admin compliance-test call, not a real customer turn — tagged so
+      // usage reports never blend this into real conversation cost (found
+      // as a real, uncategorized cost-attribution gap in the 2026-07-08
+      // cost audit — see 19_DECISION_LOG.md Era 32 addendum).
+      source: 'admin_test',
     });
 
     if (!result.ok) {
@@ -146,6 +151,8 @@ async function testKnowledgeEntry(companyId, candidateEntry) {
         knowledgeEntries: [{ question, answer }],
       },
       user: AI_ACTOR,
+      // Same admin-test tagging as testPromptAddendum above.
+      source: 'admin_test',
     });
 
     if (!result.ok) {

@@ -27,9 +27,9 @@ const { z } = require('zod');
  *                       kept purely as a label for anyone auditing which useCases
  *                       produce content a real customer sees.
  *   localeAware       — whether to append a "respond in {preferredLanguage}"
- *                       instruction when the caller supplies one. Both of today's use
- *                       cases produce internal, employee-facing English text, so
- *                       false for both.
+ *                       instruction when the caller supplies one. Only useCases
+ *                       generating real customer-facing prose need this; internal/
+ *                       employee-facing English-only output sets it false.
  */
 // Phase 2A / PR 1 — turns AI Administration's Conversation-tab settings into
 // prompt text, ADDITIVELY: returns '' (no extra text at all) when every field
@@ -65,68 +65,19 @@ function _buildConversationAdjustments({ persona, tone, languageRules, conversat
   return `\nADMIN-CONFIGURED ADJUSTMENTS (from AI Administration > Conversation):\n${lines.map((l) => `- ${l}`).join('\n')}\n`;
 }
 
+// 'metrics-insights' and 'team-metrics-insights' useCase entries removed
+// 2026-07-08 (Era 33, 19_DECISION_LOG.md) — deliberate product decision to
+// disconnect AI from these two features, not a bug fix. Both worked
+// correctly right up to this change; there was simply no real caller for
+// either (dashboard has zero live UI for them — see Era 33). The routes
+// (src/routes/ai.js), their tests, and the AI Administration toggle labels
+// (AISection.tsx) are all intentionally left in place, unlike the full
+// removal precedent set for ApprovalService in Era 21 — see Era 33 for why
+// this case deviates from that precedent. Removing these two entries here
+// is the actual "cut the AI service" action; POST /insights and
+// POST /team-insights now short-circuit before ever reaching
+// AIService.generate() (which throws synchronously for an unknown useCase).
 const AI_CONFIG = {
-  'metrics-insights': {
-    model: 'claude-haiku-4-5-20251001',
-    maxTokens: 512,
-    promptVersion: 'v1',
-    outputMode: 'text',
-    customerFacing: false,
-    localeAware: false,
-    rateLimit: { limit: 20, windowMs: 60_000 },
-    promptTemplate: (context) => {
-      const { metrics, period, userRole } = context;
-      const metricsText = Object.entries(metrics)
-        .map(([key, m]) => {
-          const actual = Number(m.actual) || 0;
-          const target = Number(m.target) || 0;
-          const pct = target > 0 ? Math.round((actual / target) * 100) : 0;
-          return `  - ${key.replace(/[^a-zA-Z0-9_-]/g, '').toUpperCase()}: ${actual} / ${target} (${pct}%)`;
-        })
-        .join('\n');
-
-      return `You are a business intelligence analyst for Viir Trading, a fintech company. Analyze this employee's metrics for ${period} and provide concise, actionable insights.
-
-METRICS (${period}):
-${metricsText}
-
-USER ROLE: ${userRole}
-
-Provide 3–5 specific bullet-point insights (max 200 words total) covering:
-• Overall performance vs targets
-• What's working well
-• What needs improvement
-• Specific recommended actions for this ${userRole}
-
-Be direct, professional, and data-driven. No generic advice.`;
-    },
-  },
-
-  'team-metrics-insights': {
-    model: 'claude-haiku-4-5-20251001',
-    maxTokens: 400,
-    promptVersion: 'v1',
-    outputMode: 'text',
-    customerFacing: false,
-    localeAware: false,
-    rateLimit: { limit: 20, windowMs: 60_000 },
-    promptTemplate: (context) => {
-      const { teamMetrics, topPerformers, atRisk } = context;
-      return `You are analyzing a fintech sales team at VT Trading.
-
-TEAM PERFORMANCE:
-${JSON.stringify(teamMetrics, null, 2)}
-
-TOP PERFORMERS: ${topPerformers.join(', ') || 'N/A'}
-AT RISK (below 70%): ${atRisk.join(', ') || 'None'}
-
-Provide 3 actionable bullet points (max 150 words):
-• Team health assessment
-• Key recommendations for manager
-• Specific support needed for at-risk employees`;
-    },
-  },
-
   // AI Inbox — classifies an inbound WhatsApp message's intent so agents/queues
   // can triage faster. customerFacing: false — this only labels the conversation
   // internally, it never drafts or sends anything a customer sees, so it never

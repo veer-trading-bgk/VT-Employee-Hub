@@ -1,8 +1,6 @@
 const express = require('express');
 const { authMiddleware, checkRole } = require('../middleware/auth');
-const logger = require('../config/logger');
 const dynamodb = require('../config/dynamodb');
-const AIService = require('../services/AIService');
 const WalletService = require('../services/WalletService');
 const { aiConfigSchema } = require('../utils/validation');
 
@@ -34,72 +32,34 @@ function sendAIError(res, result) {
   }
 }
 
+// 2026-07-08 (Era 33, 19_DECISION_LOG.md) — AI deliberately disconnected
+// from this route by product decision, NOT a bug: 'metrics-insights' had no
+// real caller anywhere in the dashboard (confirmed before this change) and
+// was correctly generating real insights right up until this edit. The
+// route, this handler, and the frontend toggle label all stay in place —
+// only the AI_CONFIG entry (the actual connection point) was removed.
+// Deliberately short-circuits here rather than calling AIService.generate()
+// with a useCase that no longer exists, which would throw synchronously.
 // POST /api/ai/insights
-router.post('/insights', authMiddleware, async (req, res, next) => {
-  try {
-    const { metrics, period = 'today' } = req.body;
-    if (!metrics || typeof metrics !== 'object') {
-      return res.status(400).json({ error: 'metrics object required' });
-    }
-
-    // Derive role from the verified JWT — never trust client-supplied role strings
-    const userRole = ALLOWED_ROLES.includes(req.user.role) ? req.user.role : 'employee';
-
-    const result = await AIService.generate({
-      useCase: 'metrics-insights',
-      companyId: req.user.companyId,
-      context: { metrics, period, userRole },
-      user: req.user,
-    });
-
-    if (!result.ok) return sendAIError(res, result);
-
-    res.json({
-      insights: result.data,
-      generatedAt: new Date().toISOString(),
-      model: result.usage.model,
-    });
-  } catch (error) {
-    logger.error('AI insights error', error);
-    next(error);
-  }
+router.post('/insights', authMiddleware, async (req, res) => {
+  return res.status(410).json({
+    error: 'AI insights is disabled',
+    reason: 'deliberately disabled, not a bug',
+  });
 });
 
+// 2026-07-08 (Era 33, 19_DECISION_LOG.md) — same deliberate disconnect as
+// POST /insights above, not a bug: 'team-metrics-insights' had no real
+// caller anywhere in the dashboard and was working correctly right up
+// until this edit. Route/handler/toggle label all stay in place — only the
+// AI_CONFIG entry was removed. Short-circuits before ever reaching
+// AIService.generate() with a now-unknown useCase.
 // POST /api/ai/team-insights  (admin/manager only)
-router.post('/team-insights', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
-  try {
-    const { teamMetrics, topPerformers = [], atRisk = [] } = req.body;
-    if (!teamMetrics || typeof teamMetrics !== 'object') {
-      return res.status(400).json({ error: 'teamMetrics object required' });
-    }
-
-    // Sanitise performer lists — accept only strings, strip anything non-printable
-    const sanitise = (arr) =>
-      (Array.isArray(arr) ? arr : [])
-        .filter((v) => typeof v === 'string')
-        .map((v) => v.replace(/[^\w\s@.-]/g, '').slice(0, 100))
-        .slice(0, 20);
-
-    const safeTop = sanitise(topPerformers);
-    const safeAtRisk = sanitise(atRisk);
-
-    const result = await AIService.generate({
-      useCase: 'team-metrics-insights',
-      companyId: req.user.companyId,
-      context: { teamMetrics, topPerformers: safeTop, atRisk: safeAtRisk },
-      user: req.user,
-    });
-
-    if (!result.ok) return sendAIError(res, result);
-
-    res.json({
-      insights: result.data,
-      generatedAt: new Date().toISOString(),
-    });
-  } catch (error) {
-    logger.error('AI team-insights error', error);
-    next(error);
-  }
+router.post('/team-insights', authMiddleware, checkRole(['admin', 'manager']), async (req, res) => {
+  return res.status(410).json({
+    error: 'AI team insights is disabled',
+    reason: 'deliberately disabled, not a bug',
+  });
 });
 
 // ── Settings > AI tab: master switch + per-useCase module toggles ─────────────

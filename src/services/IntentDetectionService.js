@@ -40,6 +40,8 @@ async function _classify(companyId, conversationId, text) {
     companyId,
     context: { message: text },
     user: SYSTEM_USER,
+    entityType: 'conversation',
+    entityId: conversationId,
   });
   if (!result.ok) return null; // disabled/rate-limited/provider error — silently skip
 

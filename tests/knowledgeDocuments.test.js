@@ -245,6 +245,7 @@ describe('PUT /api/knowledge-documents/:documentId/publish', () => {
 
     expect(EmbeddingService.embed).toHaveBeenCalledWith({
       texts: ['Some genuine reference content about our products.'], companyId: CID, inputType: 'document',
+      entityType: 'document', entityId: 'd1',
     });
     expect(deleteChunksForDocument).toHaveBeenCalledWith(CID, 'd1');
     expect(createChunks).toHaveBeenCalledWith(CID, 'd1', ['Some genuine reference content about our products.'], [[0.1, 0.2, 0.3]]);

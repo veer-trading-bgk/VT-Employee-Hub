@@ -1,12 +1,14 @@
 'use strict';
 
 /**
- * ai.js route migration — POST /insights and POST /team-insights now call
- * AIService.generate() instead of fetching Anthropic directly (ADR-015 Rule 1
- * migration target #1/#2). Same direct-handler-invocation technique as
- * whatsappWelcomeButtons.test.js: no HTTP, no auth, AIService/dynamodb/
- * WalletService mocked. The exact { insights, generatedAt, model } response
- * shape is asserted to prove InsightsPanel.tsx needs zero changes.
+ * ai.js — POST /insights and POST /team-insights were migrated onto
+ * AIService.generate() (ADR-015) and later, deliberately, disconnected from
+ * AI entirely (2026-07-08, Era 33, 19_DECISION_LOG.md — a product decision,
+ * not a bug: neither had a real caller anywhere in the dashboard). The
+ * routes stay mounted and now return an explicit 410 rather than ever
+ * reaching AIService.generate() with a useCase removed from AI_CONFIG. Same
+ * direct-handler-invocation technique as whatsappWelcomeButtons.test.js: no
+ * HTTP, no auth, AIService/dynamodb/WalletService mocked.
  */
 
 jest.mock('../src/config/dynamodb', () => ({
@@ -42,117 +44,54 @@ function mockRes() {
 
 const USER = { id: 'emp_1', name: 'Test User', role: 'admin', companyId: 'comp_test' };
 
-describe('POST /api/ai/insights — migrated to AIService', () => {
+describe('POST /api/ai/insights — deliberately disconnected from AI (Era 33)', () => {
   const handler = getRouteHandler(aiRouter, '/insights', 'post');
   beforeEach(() => jest.clearAllMocks());
 
-  test('calls AIService.generate with useCase metrics-insights, companyId, and structured context', async () => {
-    AIService.generate.mockResolvedValue({
-      ok: true, data: 'Great job this week.', usage: { model: 'claude-haiku-4-5-20251001' },
+  test('returns 410 with an explicit disabled reason, for any request shape — never calls AIService', async () => {
+    const res = mockRes();
+    await handler({ user: USER, body: { metrics: { kyc: { actual: 5, target: 10 } }, period: 'week' } }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(res.json).toHaveBeenCalledWith({
+      error: 'AI insights is disabled',
+      reason: 'deliberately disabled, not a bug',
     });
-    const req = { user: USER, body: { metrics: { kyc: { actual: 5, target: 10 } }, period: 'week' } };
-    const res = mockRes();
-    await handler(req, res, jest.fn());
-
-    expect(AIService.generate).toHaveBeenCalledWith(expect.objectContaining({
-      useCase: 'metrics-insights',
-      companyId: 'comp_test',
-      context: expect.objectContaining({ metrics: { kyc: { actual: 5, target: 10 } }, period: 'week', userRole: 'admin' }),
-      user: USER,
-    }));
-  });
-
-  test('preserves the exact { insights, generatedAt, model } response shape — zero frontend change', async () => {
-    AIService.generate.mockResolvedValue({
-      ok: true, data: 'Great job this week.', usage: { model: 'claude-haiku-4-5-20251001' },
-    });
-    const req = { user: USER, body: { metrics: { kyc: { actual: 5, target: 10 } } } };
-    const res = mockRes();
-    await handler(req, res, jest.fn());
-
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
-      insights: 'Great job this week.',
-      model: 'claude-haiku-4-5-20251001',
-      generatedAt: expect.any(String),
-    }));
-  });
-
-  test('coerces an unrecognised role to "employee" before it reaches context (unchanged RBAC-adjacent behavior)', async () => {
-    AIService.generate.mockResolvedValue({ ok: true, data: 'x', usage: { model: 'm' } });
-    const req = { user: { ...USER, role: 'intern' }, body: { metrics: {} } };
-    await handler(req, mockRes(), jest.fn());
-    expect(AIService.generate).toHaveBeenCalledWith(expect.objectContaining({
-      context: expect.objectContaining({ userRole: 'employee' }),
-    }));
-  });
-
-  test('400s without calling AIService when metrics is missing', async () => {
-    const res = mockRes();
-    await handler({ user: USER, body: {} }, res, jest.fn());
-    expect(res.status).toHaveBeenCalledWith(400);
     expect(AIService.generate).not.toHaveBeenCalled();
   });
 
-  test('maps disabled_master to 503 (matches the old "not configured" behavior)', async () => {
-    AIService.generate.mockResolvedValue({ ok: false, reason: 'disabled_master', detail: 'AI is disabled for this company.' });
+  test('still returns 410 even with no body at all — proves this is a hard short-circuit, not a validation branch', async () => {
     const res = mockRes();
-    await handler({ user: USER, body: { metrics: {} } }, res, jest.fn());
-    expect(res.status).toHaveBeenCalledWith(503);
-  });
-
-  test('maps rate_limited to 429', async () => {
-    AIService.generate.mockResolvedValue({ ok: false, reason: 'rate_limited', detail: 'slow down' });
-    const res = mockRes();
-    await handler({ user: USER, body: { metrics: {} } }, res, jest.fn());
-    expect(res.status).toHaveBeenCalledWith(429);
-  });
-
-  test('maps provider_error to 502 (matches the old "temporarily unavailable" behavior)', async () => {
-    AIService.generate.mockResolvedValue({ ok: false, reason: 'provider_error', detail: 'boom' });
-    const res = mockRes();
-    await handler({ user: USER, body: { metrics: {} } }, res, jest.fn());
-    expect(res.status).toHaveBeenCalledWith(502);
+    await handler({ user: USER, body: {} }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(AIService.generate).not.toHaveBeenCalled();
   });
 });
 
-describe('POST /api/ai/team-insights — migrated to AIService', () => {
+describe('POST /api/ai/team-insights — deliberately disconnected from AI (Era 33)', () => {
   const handler = getRouteHandler(aiRouter, '/team-insights', 'post');
   beforeEach(() => jest.clearAllMocks());
 
-  test('sanitises performer arrays before passing them into context (unchanged input-hygiene behavior)', async () => {
-    AIService.generate.mockResolvedValue({ ok: true, data: 'x', usage: { model: 'm' } });
-    const req = {
-      user: USER,
-      body: {
-        teamMetrics: { kyc: 5 },
-        topPerformers: ['Ravi<script>', 42, 'Priya'],
-        atRisk: ['Amit@corp.com'],
-      },
-    };
-    await handler(req, mockRes(), jest.fn());
-    expect(AIService.generate).toHaveBeenCalledWith(expect.objectContaining({
-      useCase: 'team-metrics-insights',
-      companyId: 'comp_test',
-      context: expect.objectContaining({
-        teamMetrics: { kyc: 5 },
-        topPerformers: ['Raviscript', 'Priya'],
-        atRisk: ['Amit@corp.com'],
-      }),
-    }));
-  });
-
-  test('400s without calling AIService when teamMetrics is missing', async () => {
+  test('returns 410 with an explicit disabled reason, for any request shape — never calls AIService', async () => {
     const res = mockRes();
-    await handler({ user: USER, body: {} }, res, jest.fn());
-    expect(res.status).toHaveBeenCalledWith(400);
+    await handler({
+      user: USER,
+      body: { teamMetrics: { kyc: 5 }, topPerformers: ['Ravi'], atRisk: ['Amit'] },
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(res.json).toHaveBeenCalledWith({
+      error: 'AI team insights is disabled',
+      reason: 'deliberately disabled, not a bug',
+    });
     expect(AIService.generate).not.toHaveBeenCalled();
   });
 
-  test('preserves the { insights, generatedAt } response shape', async () => {
-    AIService.generate.mockResolvedValue({ ok: true, data: 'Team is healthy.', usage: { model: 'm' } });
+  test('still returns 410 even with no body at all', async () => {
     const res = mockRes();
-    await handler({ user: USER, body: { teamMetrics: {} } }, res, jest.fn());
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ insights: 'Team is healthy.', generatedAt: expect.any(String) }));
+    await handler({ user: USER, body: {} }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(410);
+    expect(AIService.generate).not.toHaveBeenCalled();
   });
 });
 

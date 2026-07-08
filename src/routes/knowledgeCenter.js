@@ -51,9 +51,10 @@ const KNOWLEDGE_TEST_RATE_LIMIT = rateLimit(30, 60 * 60_000);
 // concern, not a safety one. Returns null on failure — the entry still
 // publishes with activeEmbedding: null, reachable via KnowledgeService's
 // keyword fallback until a retry (e.g. the backfill script) fills it in.
-async function computeEmbeddingOrNull(companyId, question, answer) {
+async function computeEmbeddingOrNull(companyId, question, answer, entryId) {
   const result = await EmbeddingService.embed({
     texts: [`${question}\n${answer}`], companyId, inputType: 'document',
+    entityType: 'document', entityId: entryId,
   });
   if (!result.ok) {
     logger.error(`knowledgeCenter: embedding computation failed for ${companyId} — publishing without one (falls back to keyword matching until retried): ${result.reason}`);
@@ -164,7 +165,7 @@ router.post('/:entryId/publish', KNOWLEDGE_TEST_RATE_LIMIT, async (req, res, nex
 
     const newVersion = (r.Item.activeVersion ?? 0) + 1;
     const now = new Date().toISOString();
-    const embedding = await computeEmbeddingOrNull(companyId, candidate.question, candidate.answer);
+    const embedding = await computeEmbeddingOrNull(companyId, candidate.question, candidate.answer, entryId);
 
     await dynamodb.put({
       TableName: TABLE,
@@ -229,7 +230,7 @@ router.post('/:entryId/versions/:version/restore', KNOWLEDGE_TEST_RATE_LIMIT, as
 
     const newVersion = (current.Item.activeVersion ?? 0) + 1;
     const now = new Date().toISOString();
-    const embedding = await computeEmbeddingOrNull(companyId, candidate.question, candidate.answer);
+    const embedding = await computeEmbeddingOrNull(companyId, candidate.question, candidate.answer, entryId);
 
     await dynamodb.put({
       TableName: TABLE,

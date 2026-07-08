@@ -228,6 +228,7 @@ describe('POST /api/knowledge/:entryId/publish', () => {
 
     expect(EmbeddingService.embed).toHaveBeenCalledWith({
       texts: ['What are your fees?\nNo fee.'], companyId: CID, inputType: 'document',
+      entityType: 'document', entityId: 'e1',
     });
     expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
       Item: expect.objectContaining({ embedding: [0.1, 0.2, 0.3] }),
@@ -317,7 +318,10 @@ describe('POST /api/knowledge/:entryId/versions/:version/restore', () => {
 
     await handler({ user: USER, ip: '1.1.1.1', params: { entryId: 'e1', version: '1' } }, mockRes(), jest.fn());
 
-    expect(EmbeddingService.embed).toHaveBeenCalledWith({ texts: ['old q\nold answer'], companyId: CID, inputType: 'document' });
+    expect(EmbeddingService.embed).toHaveBeenCalledWith({
+      texts: ['old q\nold answer'], companyId: CID, inputType: 'document',
+      entityType: 'document', entityId: 'e1',
+    });
     expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({ Item: expect.objectContaining({ embedding: [0.4, 0.5, 0.6] }) }));
     expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({ ExpressionAttributeValues: expect.objectContaining({ ':em': [0.4, 0.5, 0.6] }) }));
   });

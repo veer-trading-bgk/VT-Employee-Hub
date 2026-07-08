@@ -8,14 +8,18 @@
  * mocks AIService itself instead (see tests/ai.routes.test.js), the same way
  * AutomationEngine.test.js mocks WhatsAppSendService.
  *
- * The two real useCases in src/config/aiConfig.js (metrics-insights,
- * team-metrics-insights) are both text-mode and non-customerFacing — they can't
- * exercise the json-mode/locale/allowFields machinery. So this file mocks
- * aiConfig.js with synthetic test-only useCase entries built specifically to
- * exercise every branch of AIService's own orchestration logic. The real prompt
- * text/shape for the two production useCases is instead proven by
- * tests/ai.routes.test.js (migration-fidelity) and the one real Anthropic smoke
- * test run manually alongside this suite.
+ * No real useCase in src/config/aiConfig.js exercises every branch of
+ * AIService's own orchestration logic on its own (json-mode, locale-aware,
+ * allowFields redaction opt-out, etc. each live on different useCases). So
+ * this file mocks aiConfig.js with synthetic test-only useCase entries built
+ * specifically to exercise each branch directly, rather than relying on
+ * incidental coverage from whichever real useCases happen to combine them.
+ *
+ * (Originally written when metrics-insights/team-metrics-insights were
+ * AIService's only two real useCases and both were text-mode/non-locale —
+ * both were later removed from AI_CONFIG, 2026-07-08, Era 33: deliberately
+ * disconnected from AI, not deleted as files/routes. See
+ * tests/aiRoutes.test.js for their current disabled-response behavior.)
  */
 
 jest.mock('../src/config/dynamodb', () => ({
@@ -403,6 +407,73 @@ describe('generate — multi-turn conversation history', () => {
     await AIService.generate({ useCase: 'text-usecase', companyId: CID, user: USER });
     const body = JSON.parse(global.fetch.mock.calls[0][1].body);
     expect(body.messages).toHaveLength(1);
+  });
+});
+
+// 2026-07-08 — cost-audit Part 5: entityType/entityId/source/attempts are
+// pure additive metadata on the AIUSAGE# record. No migration, no schema
+// change to existing records — a caller that doesn't pass them (i.e. every
+// caller written before this change) must write a byte-identical Item shape
+// to what existed before, proving old records stay readable/valid with no
+// backfill required.
+describe('generate — usage-attribution fields (entityType/entityId/source/attempts)', () => {
+  test('omitting entityType/entityId writes the same Item shape as before this change — no migration needed', async () => {
+    await AIService.generate({ useCase: 'text-usecase', companyId: CID, user: USER });
+    const item = dynamodb.put.mock.calls[0][0].Item;
+    expect(item).not.toHaveProperty('entityType');
+    expect(item).not.toHaveProperty('entityId');
+    // source and attempts are always written (not conditional) — source
+    // defaults to 'production', attempts is a real observed value, never
+    // inferred after the fact.
+    expect(item.source).toBe('production');
+    expect(item.attempts).toBe(1);
+  });
+
+  test('entityType/entityId are written through untouched when a caller supplies them', async () => {
+    await AIService.generate({
+      useCase: 'text-usecase', companyId: CID, user: USER,
+      entityType: 'conversation', entityId: 'conv_123',
+    });
+    const item = dynamodb.put.mock.calls[0][0].Item;
+    expect(item.entityType).toBe('conversation');
+    expect(item.entityId).toBe('conv_123');
+  });
+
+  test('source defaults to "production" when not passed, and passes through "admin_test" when a caller does', async () => {
+    await AIService.generate({ useCase: 'text-usecase', companyId: CID, user: USER });
+    expect(dynamodb.put.mock.calls[0][0].Item.source).toBe('production');
+
+    dynamodb.put.mockClear();
+    await AIService.generate({ useCase: 'text-usecase', companyId: CID, user: USER, source: 'admin_test' });
+    expect(dynamodb.put.mock.calls[0][0].Item.source).toBe('admin_test');
+  });
+
+  test('attempts is 1 for text mode (no retry loop exists for it)', async () => {
+    await AIService.generate({ useCase: 'text-usecase', companyId: CID, user: USER });
+    expect(dynamodb.put.mock.calls[0][0].Item.attempts).toBe(1);
+  });
+
+  test('attempts is 1 for json mode when the first try is already valid', async () => {
+    mockAIConfig = { 'json-usecase': jsonUseCase() };
+    global.fetch.mockResolvedValue(anthropicOk(JSON.stringify({ reply: 'hi', confidence: 0.9 })));
+    await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
+    expect(dynamodb.put.mock.calls[0][0].Item.attempts).toBe(1);
+  });
+
+  test('attempts is 2 for json mode when the corrective retry was needed — the real observed outcome, not inferred from token counts', async () => {
+    mockAIConfig = { 'json-usecase': jsonUseCase() };
+    global.fetch
+      .mockResolvedValueOnce(anthropicOk('not json at all'))
+      .mockResolvedValueOnce(anthropicOk(JSON.stringify({ reply: 'hi', confidence: 0.9 })));
+    await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
+    expect(dynamodb.put.mock.calls[0][0].Item.attempts).toBe(2);
+  });
+
+  test('attempts is 2 when both json retries are exhausted (invalid_output)', async () => {
+    mockAIConfig = { 'json-usecase': jsonUseCase() };
+    global.fetch.mockResolvedValue(anthropicOk('still not json'));
+    await AIService.generate({ useCase: 'json-usecase', companyId: CID, user: USER });
+    expect(dynamodb.put.mock.calls[0][0].Item.attempts).toBe(2);
   });
 });
 

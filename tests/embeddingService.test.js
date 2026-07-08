@@ -115,4 +115,29 @@ describe('EmbeddingService.embed', () => {
     expect(result.ok).toBe(true);
     expect(result.data.embeddings).toEqual([[0.1, 0.2]]);
   });
+
+  // 2026-07-08 — cost-audit Part 5: entityType/entityId are pure additive
+  // metadata on the EMBEDUSAGE# record. No migration — a caller that omits
+  // them (every caller written before this change) must write a
+  // byte-identical Item shape to what existed before.
+  describe('usage-attribution fields (entityType/entityId)', () => {
+    test('omitting entityType/entityId writes the same Item shape as before this change — no migration needed', async () => {
+      mockVoyageResponse([[0.1, 0.2]]);
+      await embed({ texts: ['x'], companyId: CID, inputType: 'query' });
+      const item = dynamodb.put.mock.calls[0][0].Item;
+      expect(item).not.toHaveProperty('entityType');
+      expect(item).not.toHaveProperty('entityId');
+    });
+
+    test('entityType/entityId are written through untouched when a caller supplies them', async () => {
+      mockVoyageResponse([[0.1, 0.2]]);
+      await embed({
+        texts: ['x'], companyId: CID, inputType: 'document',
+        entityType: 'document', entityId: 'entry_1',
+      });
+      const item = dynamodb.put.mock.calls[0][0].Item;
+      expect(item.entityType).toBe('document');
+      expect(item.entityId).toBe('entry_1');
+    });
+  });
 });

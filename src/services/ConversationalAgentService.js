@@ -253,13 +253,15 @@ async function _applyExtractedSignals(companyId, leadPK, lead, data) {
   }).promise();
 }
 
-async function _writeHandoffSummary(companyId, leadPK, lead, reason, turnCount) {
+async function _writeHandoffSummary(companyId, leadPK, lead, reason, turnCount, conversationId) {
   const transcript = await _fetchTranscriptText(companyId, leadPK);
   const result = await AIService.generate({
     useCase: 'conversation-handoff-summary',
     companyId,
     context: { transcript, handoffReason: reason },
     user: AI_ACTOR,
+    entityType: 'conversation',
+    entityId: conversationId,
   });
 
   const now = new Date().toISOString();
@@ -334,7 +336,7 @@ async function _handoff(companyId, { leadPK, lead, conversationId, reason, turnC
   }
   await ConversationService.handoffToHuman(companyId, conversationId);
   if (cfg.summaryEnabled !== false) {
-    await _writeHandoffSummary(companyId, leadPK, lead, reason, turnCount);
+    await _writeHandoffSummary(companyId, leadPK, lead, reason, turnCount, conversationId);
   }
   if (cfg.crmAutoTransferEnabled !== false) {
     await _assignAtHandoff(companyId, leadPK);
@@ -354,7 +356,7 @@ async function _handoff(companyId, { leadPK, lead, conversationId, reason, turnC
 // A chunk-side failure (list or rank) degrades to an empty documentExcerpts
 // for this turn rather than failing the whole conversation — entries'
 // own failure handling (inside getMatchingEntries) is untouched.
-async function _fetchKnowledgeContext(companyId, latestMessage) {
+async function _fetchKnowledgeContext(companyId, latestMessage, conversationId) {
   if (!latestMessage) return { knowledgeEntries: [], documentExcerpts: [] };
 
   const [entries, chunks] = await Promise.all([
@@ -369,7 +371,10 @@ async function _fetchKnowledgeContext(companyId, latestMessage) {
 
   let queryVector = null;
   if (needsVector) {
-    const embedResult = await EmbeddingService.embed({ texts: [latestMessage], companyId, inputType: 'query' });
+    const embedResult = await EmbeddingService.embed({
+      texts: [latestMessage], companyId, inputType: 'query',
+      entityType: 'conversation', entityId: conversationId,
+    });
     queryVector = embedResult.ok ? embedResult.data.embeddings[0] : null;
   }
 
@@ -400,7 +405,7 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
     _fetchPreferredLanguage(companyId, lead),
     _fetchConversationSettings(companyId),
     _fetchPromptAddendum(companyId),
-    _fetchKnowledgeContext(companyId, text),
+    _fetchKnowledgeContext(companyId, text, conversationId),
   ]);
 
   const result = await AIService.generate({
@@ -416,6 +421,8 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
     conversationHistory,
     user: AI_ACTOR,
     assigneeId: lead.assignedTo ?? undefined,
+    entityType: 'conversation',
+    entityId: conversationId,
   });
 
   if (!result.ok) {

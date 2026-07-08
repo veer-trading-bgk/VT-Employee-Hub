@@ -42,7 +42,18 @@ function generate(params) {
   return _generate(params);
 }
 
-async function _generate({ useCase, companyId, context = {}, user, conversationHistory = [], assigneeId }) {
+async function _generate({
+  useCase, companyId, context = {}, user, conversationHistory = [], assigneeId,
+  // Usage-attribution fields, all optional (2026-07-08, cost-audit Part 5) —
+  // pure additive metadata on the AIUSAGE# record, never read by generate()'s
+  // own logic. entityType/entityId let a future dashboard group cost by
+  // conversation/employee/team/etc. instead of just useCase+date. source
+  // defaults to 'production'; only PromptTestService's compliance-test call
+  // sites pass 'admin_test', so real customer/employee traffic is never
+  // miscounted as a test artifact (see 19_DECISION_LOG.md Era 32 addendum —
+  // this is exactly the blending problem the cost audit found).
+  entityType, entityId, source = 'production',
+}) {
   const useCaseCfg = aiConfig.AI_CONFIG[useCase];
 
   // 1. Master switch, then module switch — read fresh every call, no caching, so
@@ -107,6 +118,7 @@ async function _generate({ useCase, companyId, context = {}, user, conversationH
   let outputTokens;
   let data;
   let jsonFailed = false;
+  let attempts;
   try {
     if (useCaseCfg.outputMode === 'json') {
       const jsonResult = await _generateJsonWithRetry({
@@ -114,6 +126,7 @@ async function _generate({ useCase, companyId, context = {}, user, conversationH
       });
       inputTokens = jsonResult.inputTokens;
       outputTokens = jsonResult.outputTokens;
+      attempts = jsonResult.attempts;
       if (jsonResult.ok) data = jsonResult.data;
       else jsonFailed = true;
     } else {
@@ -121,6 +134,7 @@ async function _generate({ useCase, companyId, context = {}, user, conversationH
       inputTokens = res.usage?.input_tokens ?? 0;
       outputTokens = res.usage?.output_tokens ?? 0;
       data = _extractText(res);
+      attempts = 1; // text mode has no retry loop — always exactly one call
     }
   } catch (err) {
     return { ok: false, reason: 'provider_error', detail: err.message };
@@ -133,6 +147,7 @@ async function _generate({ useCase, companyId, context = {}, user, conversationH
   await _logUsage({
     companyId, useCase, promptVersion: useCaseCfg.promptVersion, model: useCaseCfg.model,
     inputTokens, outputTokens, costUsd, walletPoints, userId: user.id, overQuota,
+    entityType, entityId, source, attempts,
   });
 
   if (jsonFailed) {
@@ -206,7 +221,13 @@ function _tryParseJson(text) {
 
 const JSON_RETRY_CORRECTION = 'That was not valid JSON matching the required schema. Respond again with ONLY a single valid JSON object — no prose, no markdown fences.';
 
-/** Up to 2 total attempts: the original call, and one corrective retry on invalid output. */
+/**
+ * Up to 2 total attempts: the original call, and one corrective retry on
+ * invalid output. `attempts` (1 or 2) is the real observed retry outcome —
+ * not inferred later from token counts — so a future dashboard can measure
+ * actual retry rate per useCase directly instead of guessing from a doubled
+ * output-token total.
+ */
 async function _generateJsonWithRetry({ model, maxTokens, messages, schema }) {
   let workingMessages = messages;
   let cumulativeInput = 0;
@@ -222,7 +243,7 @@ async function _generateJsonWithRetry({ model, maxTokens, messages, schema }) {
     if (parsed !== undefined) {
       const validation = schema.safeParse(parsed);
       if (validation.success) {
-        return { ok: true, data: validation.data, inputTokens: cumulativeInput, outputTokens: cumulativeOutput };
+        return { ok: true, data: validation.data, inputTokens: cumulativeInput, outputTokens: cumulativeOutput, attempts: attempt + 1 };
       }
     }
 
@@ -233,7 +254,7 @@ async function _generateJsonWithRetry({ model, maxTokens, messages, schema }) {
     ];
   }
 
-  return { ok: false, inputTokens: cumulativeInput, outputTokens: cumulativeOutput };
+  return { ok: false, inputTokens: cumulativeInput, outputTokens: cumulativeOutput, attempts: 2 };
 }
 
 function _computeCost({ model, inputTokens, outputTokens }) {
@@ -245,7 +266,10 @@ function _computeCost({ model, inputTokens, outputTokens }) {
   return { costUsd, walletPoints };
 }
 
-async function _logUsage({ companyId, useCase, promptVersion, model, inputTokens, outputTokens, costUsd, walletPoints, userId, overQuota }) {
+async function _logUsage({
+  companyId, useCase, promptVersion, model, inputTokens, outputTokens, costUsd, walletPoints, userId, overQuota,
+  entityType, entityId, source, attempts,
+}) {
   const now = new Date().toISOString();
   const date = now.slice(0, 10);
   try {
@@ -255,7 +279,13 @@ async function _logUsage({ companyId, useCase, promptVersion, model, inputTokens
         PK: `AIUSAGE#${companyId}#${date}`,
         SK: `${now}#${useCase}`,
         companyId, useCase, promptVersion, model, inputTokens, outputTokens, costUsd, walletPoints, userId, overQuota,
-        createdAt: now,
+        createdAt: now, source, attempts,
+        // Optional, additive (2026-07-08) — omitted entirely rather than
+        // written as null/undefined when a caller doesn't have one, so
+        // every pre-existing record shape and every caller that hasn't been
+        // updated yet stays byte-identical to before this change.
+        ...(entityType ? { entityType } : {}),
+        ...(entityId ? { entityId } : {}),
       },
     }).promise();
   } catch (err) {

@@ -149,7 +149,10 @@ router.put('/:documentId/publish', async (req, res, next) => {
       .filter((r) => r.flagged)
       .map(({ chunkIndex, text }) => ({ chunkIndex, text }));
 
-    const embedResult = await EmbeddingService.embed({ texts: chunks, companyId, inputType: 'document' });
+    const embedResult = await EmbeddingService.embed({
+      texts: chunks, companyId, inputType: 'document',
+      entityType: 'document', entityId: documentId,
+    });
     if (!embedResult.ok) {
       await logAudit(req.user.id, 'knowledge_document_publish', companyId, 'blocked', req.ip, { documentId, reason: embedResult.reason }, companyId);
       return res.status(422).json({ error: 'Could not generate embeddings for this document — try again.' });

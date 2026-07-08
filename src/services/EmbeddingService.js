@@ -23,7 +23,7 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
  * gracefully (fall back to keyword matching) rather than crash a turn.
  */
 
-async function _logUsage(companyId, { tokens, inputType, textCount }) {
+async function _logUsage(companyId, { tokens, inputType, textCount, entityType, entityId }) {
   const now = new Date().toISOString();
   const date = now.slice(0, 10);
   try {
@@ -32,6 +32,11 @@ async function _logUsage(companyId, { tokens, inputType, textCount }) {
       Item: {
         PK: `EMBEDUSAGE#${companyId}#${date}`, SK: now,
         companyId, date, tokens, inputType, textCount, model: EMBEDDING_CONFIG.model,
+        // Optional, additive (2026-07-08, cost-audit Part 5) — omitted
+        // entirely when a caller doesn't have one, same "never write
+        // undefined into an item" stance as AIService's own _logUsage.
+        ...(entityType ? { entityType } : {}),
+        ...(entityId ? { entityId } : {}),
       },
     }).promise();
   } catch (err) {
@@ -43,15 +48,15 @@ async function _logUsage(companyId, { tokens, inputType, textCount }) {
   }
 }
 
-function embed({ texts, companyId, inputType }) {
+function embed({ texts, companyId, inputType, entityType, entityId }) {
   if (!companyId) throw new Error('EmbeddingService.embed(): companyId is required');
   if (!inputType || (inputType !== 'query' && inputType !== 'document')) {
     throw new Error('EmbeddingService.embed(): inputType must be "query" or "document"');
   }
-  return _embed({ texts, companyId, inputType });
+  return _embed({ texts, companyId, inputType, entityType, entityId });
 }
 
-async function _embed({ texts, companyId, inputType }) {
+async function _embed({ texts, companyId, inputType, entityType, entityId }) {
   if (!texts || texts.length === 0) return { ok: true, data: { embeddings: [] } };
 
   try {
@@ -70,6 +75,7 @@ async function _embed({ texts, companyId, inputType }) {
 
     await _logUsage(companyId, {
       tokens: response.data.usage?.total_tokens ?? null, inputType, textCount: texts.length,
+      entityType, entityId,
     });
 
     return { ok: true, data: { embeddings } };

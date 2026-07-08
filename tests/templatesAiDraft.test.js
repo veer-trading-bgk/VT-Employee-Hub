@@ -83,6 +83,8 @@ describe('POST /api/whatsapp/templates/ai-draft', () => {
       companyId: 'comp_test',
       context: { description: 'A renewal reminder', language: 'hi' },
       user: USER,
+      entityType: 'admin_action',
+      entityId: 'emp_1',
     });
   });
 

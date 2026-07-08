@@ -17,8 +17,12 @@ interface AIConfigResponse {
 // exist today. A future useCase needs a label added here alongside its config
 // entry, the same way NodePalette.tsx's EXTRA_META needs an entry per node type.
 const MODULES: Array<{ useCase: string; label: string; description: string }> = [
-  { useCase: 'metrics-insights', label: 'My Metrics Insights', description: 'AI analysis of an employee’s own performance metrics' },
-  { useCase: 'team-metrics-insights', label: 'Team Metrics Insights', description: 'AI analysis of team-wide performance, for admins and managers' },
+  // 2026-07-08 (Era 33, 19_DECISION_LOG.md): AI deliberately disconnected —
+  // this toggle still saves, but no longer does anything (the useCase entry
+  // was removed from aiConfig.js's AI_CONFIG). Kept visible rather than
+  // removed; description says so plainly rather than silently going inert.
+  { useCase: 'metrics-insights', label: 'My Metrics Insights', description: 'Currently unavailable — AI disconnected from this feature.' },
+  { useCase: 'team-metrics-insights', label: 'Team Metrics Insights', description: 'Currently unavailable — AI disconnected from this feature.' },
   { useCase: 'inbox-intent-detection', label: 'Inbox Intent Detection', description: 'Classifies each new WhatsApp conversation’s likely intent (interested, complaint, KYC query, etc.)' },
   { useCase: 'template-creation', label: 'AI-Assisted Template Creation', description: 'Drafts a Meta-compliant WhatsApp template from a plain-language description, for an admin to review before submitting' },
   { useCase: 'inbox-template-suggestion', label: 'AI Auto-Reply in Chat', description: 'When an agent clicks "Send AI reply," the AI picks an approved template and sends it to the customer immediately — there is no review step before it reaches them. Enabling this means unreviewed AI-generated messages will go out under this company’s WhatsApp identity.' },

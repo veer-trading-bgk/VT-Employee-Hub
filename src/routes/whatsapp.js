@@ -2819,6 +2819,8 @@ router.post('/templates/ai-draft', authMiddleware, checkRole(['admin']), rateLim
       companyId: req.user.companyId,
       context: { description: description.trim(), language: language ?? 'en' },
       user: req.user,
+      entityType: 'admin_action',
+      entityId: req.user.id,
     });
 
     if (!result.ok) return sendAIError(res, result);
@@ -2981,6 +2983,12 @@ router.post('/inbox/suggest-reply', authMiddleware, rateLimit(30, 60_000), async
       conversationHistory,
       user: req.user,
       assigneeId: req.user.id,
+      // Note: this route operates on the lead/inbox contact key (contact.pk),
+      // not the separate Customer 360 CONV# conversationId — no conversationId
+      // is tracked at this call site, so the contact key is the best real
+      // identifier available for grouping this suggestion's cost later.
+      entityType: 'conversation',
+      entityId: contact.pk,
     });
 
     if (!result.ok) return sendAIError(res, result);
