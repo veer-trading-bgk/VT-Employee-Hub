@@ -6,6 +6,7 @@ const logger    = require('../config/logger');
 const WASendSvc = require('./WhatsAppSendService');
 const PipelineService = require('./PipelineService');
 const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
+const { to10Digit } = require('../utils/phone');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -476,8 +477,13 @@ class AutomationEngine {
         Limit: 100,
       }).promise();
 
+      // ADR-013 Rule 3: never compare raw phone numbers. The real inbound webhook
+      // path always passes a normalized phone10 here, and automations.js's
+      // inbound_webhook trigger now normalizes at the source too — but this
+      // comparison is the only reader of awaitReply.phone, so re-normalizing here
+      // as well is a cheap defense-in-depth against any future writer regression.
       const candidates = Items.filter((item) =>
-        item.awaitReply?.phone === phone10 &&
+        to10Digit(item.awaitReply?.phone) === phone10 &&
         (item.awaitReply.expectedButtonIds ?? []).includes(buttonId),
       );
 

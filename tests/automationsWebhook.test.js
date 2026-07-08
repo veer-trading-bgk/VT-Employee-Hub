@@ -174,6 +174,29 @@ describe('POST /api/automations/webhook/:companyId/:workflowId/:token', () => {
     expect(res.status).toHaveBeenCalledWith(200);
   });
 
+  test('Fix 3 (Wave 1 audit): a 12-digit +91-prefixed phone is truncated to 10 digits before reaching CIS and the workflow context', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: activeWorkflow() }) });
+    CIS.resolveOrCreate.mockResolvedValue({
+      existed: false, leadId: 'lead_4', action: 'created', interactionId: 'int_4',
+      lead: { leadId: 'lead_4', PK: `LEAD#${CID}#lead_4`, name: 'Priya', stage: 'new', tags: [], assignedTo: null },
+    });
+    const res = mockRes();
+
+    await handleInboundWebhook(mockReq({ body: { phone: '919876543210', name: 'Priya' } }), res, jest.fn());
+
+    expect(CIS.resolveOrCreate).toHaveBeenCalledWith(
+      CID,
+      expect.objectContaining({ phone: '9876543210' }),
+      { createdBy: 'inbound_webhook' },
+    );
+    expect(AutomationEngine.runWorkflowDirect).toHaveBeenCalledWith(
+      CID,
+      expect.objectContaining({ id: WF_ID }),
+      expect.objectContaining({ phone: '9876543210' }),
+    );
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
   test('DUPLICATES ARE NOT REJECTED — unlike forms.js\'s public submit route, an existing contact still fires the workflow, no 409', async () => {
     dynamodb.get
       .mockReturnValueOnce({ promise: () => Promise.resolve({ Item: activeWorkflow() }) })

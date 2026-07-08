@@ -10,6 +10,7 @@ const logger   = require('../config/logger');
 const AutomationEngine = require('../services/AutomationEngine');
 const CIS      = require('../services/CustomerIdentityService');
 const { leadPK } = require('../core/entityKeys');
+const { to10Digit } = require('../utils/phone');
 
 const router = express.Router();
 const TABLE  = process.env.DYNAMODB_TABLE_METRICS;
@@ -461,7 +462,11 @@ async function handleInboundWebhook(req, res, next) {
 
     const { phone, name, email } = req.body ?? {};
     if (!phone) return res.status(400).json({ error: 'phone is required' });
-    const cleanPhone = String(phone).replace(/\D/g, '');
+    // to10Digit() (not just a digit-strip) so a country-code-prefixed submission is
+    // truncated before it ever reaches context.phone / awaitReply.phone downstream —
+    // AutomationEngine.resumeOnButtonReply() only ever sees the true 10-digit phone10
+    // from a real button-tap reply, so this must match that shape from the start.
+    const cleanPhone = to10Digit(phone);
     if (cleanPhone.length < 7) return res.status(400).json({ error: 'Invalid phone number' });
 
     // ADR-013: identity resolution goes through CIS, same as every other lead-creating

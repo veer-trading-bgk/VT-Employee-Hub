@@ -1349,3 +1349,44 @@ describe('AutomationEngine — _matchesKeywordConfig() unit cases', () => {
     expect(engine._matchesKeywordConfig({ matchMode: 'exact', keywords: ['yes'] }, '  yes  ')).toBe(true);
   });
 });
+
+describe('AutomationEngine — resumeOnButtonReply() phone matching (Fix 3, Wave 1 audit)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  test('defense-in-depth: matches a candidate whose stored awaitReply.phone is a raw, un-normalized 12-digit value against the real 10-digit phone10', async () => {
+    const item = {
+      PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-07-08T00:00:00.000Z#exec_1',
+      executionId: 'exec_1', workflowId: 'wf_1', nodeId: 'n_1',
+      awaitReply: { phone: `91${'9876543210'}`, expectedButtonIds: ['btn1'] },
+    };
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [item] }) });
+    dynamodb.delete.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: { nodes: [{ id: 'n_1', type: 'send_buttons' }] } }) });
+    const resumeSpy = jest.spyOn(engine, 'resumeExecution').mockResolvedValue(undefined);
+
+    await engine.resumeOnButtonReply(CID, '9876543210', 'btn1');
+
+    expect(dynamodb.delete).toHaveBeenCalledWith(expect.objectContaining({ Key: { PK: item.PK, SK: item.SK } }));
+    expect(resumeSpy).toHaveBeenCalledWith(CID, item, 'btn1');
+    resumeSpy.mockRestore();
+  });
+
+  test('does not match a candidate for a different phone number', async () => {
+    const item = {
+      PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-07-08T00:00:00.000Z#exec_2',
+      executionId: 'exec_2', workflowId: 'wf_1', nodeId: 'n_1',
+      awaitReply: { phone: '9111111111', expectedButtonIds: ['btn1'] },
+    };
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [item] }) });
+    const resumeSpy = jest.spyOn(engine, 'resumeExecution').mockResolvedValue(undefined);
+
+    await engine.resumeOnButtonReply(CID, '9876543210', 'btn1');
+
+    expect(dynamodb.delete).not.toHaveBeenCalled();
+    expect(resumeSpy).not.toHaveBeenCalled();
+    resumeSpy.mockRestore();
+  });
+});
