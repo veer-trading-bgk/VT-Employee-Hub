@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { Drawer, DrawerFooter } from '@/components/v3/ui/Drawer';
 import { Button } from '@/components/v3/ui/Button';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, ApiClientError } from '@/lib/api';
 import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/cn';
 
@@ -85,11 +85,25 @@ interface Detected {
   fileName: string;
 }
 
+interface ImportRowError {
+  row:    number;
+  phone:  string;
+  reason: string;
+}
+
 interface ImportResult {
-  imported:   number;
-  duplicates: number;
-  errors:     number;
-  errorPhones: string[];
+  imported:    number;
+  overwritten: number;
+  duplicates:  number;
+  errors:      ImportRowError[];
+}
+
+interface ImportApiResponse {
+  success:     boolean;
+  imported:    number;
+  overwritten: number;
+  skipped:     number;
+  errors:      ImportRowError[];
 }
 
 export interface ImportContactsDrawerProps {
@@ -169,6 +183,13 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
     if (file) processFile(file);
   }, []);
 
+  // Uses the real bulk-import endpoint (one request handles the whole batch
+  // server-side) instead of firing one POST /api/crm/leads per row — that
+  // per-row approach blew straight through that endpoint's 30-req/min rate
+  // limit on anything over ~30 rows, miscounting rate-limited rows as
+  // generic "errors" with no reason ever surfaced to the user.
+  const CHUNK = 2000; // matches the backend's own per-request cap
+
   async function startImport() {
     if (!detected) return;
     const { rows, colPhone, colName, colEmail } = detected;
@@ -179,36 +200,44 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
     setStep('importing');
     abortRef.current = false;
 
-    const res: ImportResult = { imported: 0, duplicates: 0, errors: 0, errorPhones: [] };
+    const leads = validRows.map((row) => {
+      const phone = row[colPhone].trim();
+      return {
+        name:  colName  ? (row[colName]?.trim()  || phone) : phone,
+        phone,
+        email: colEmail ? (row[colEmail]?.trim() || null)  : null,
+      };
+    });
 
-    const BATCH = 5;
-    for (let i = 0; i < validRows.length; i += BATCH) {
+    const res: ImportResult = { imported: 0, overwritten: 0, duplicates: 0, errors: [] };
+
+    for (let i = 0; i < leads.length; i += CHUNK) {
       if (abortRef.current) break;
-      await Promise.all(
-        validRows.slice(i, i + BATCH).map(async (row) => {
-          const phone = row[colPhone].trim();
-          const name  = colName  ? (row[colName]?.trim()  || phone) : phone;
-          const email = colEmail ? (row[colEmail]?.trim() || null)  : null;
-          try {
-            await apiFetch('/api/crm/leads', {
-              method: 'POST',
-              body: JSON.stringify({ name, phone, email, source: 'import' }),
-            });
-            res.imported++;
-          } catch (err: any) {
-            const is409 = err?.status === 409 || String(err?.message ?? '').includes('409');
-            if (is409) { res.duplicates++; }
-            else        { res.errors++; if (res.errorPhones.length < 5) res.errorPhones.push(phone); }
-          }
-        }),
-      );
-      setProgress(Math.min(i + BATCH, validRows.length));
-      if (i + BATCH < validRows.length) await new Promise((r) => setTimeout(r, 150));
+      try {
+        const chunk = leads.slice(i, i + CHUNK);
+        const r = await apiFetch<ImportApiResponse>('/api/crm/import', {
+          method: 'POST',
+          body: JSON.stringify({ leads: chunk, options: { duplicateAction: 'skip' } }),
+        });
+        res.imported    += r.imported;
+        res.overwritten += r.overwritten;
+        res.duplicates  += r.skipped;
+        res.errors.push(...r.errors.map((e) => ({ ...e, row: e.row + i })));
+      } catch (err: unknown) {
+        // The whole chunk request itself failed (network/5xx) — every row in
+        // it is unaccounted for; report each with the real error message
+        // rather than silently dropping them.
+        const message = err instanceof ApiClientError || err instanceof Error ? err.message : 'Request failed';
+        leads.slice(i, i + CHUNK).forEach((l, j) => {
+          res.errors.push({ row: i + j + 2, phone: l.phone, reason: message });
+        });
+      }
+      setProgress(Math.min(i + CHUNK, leads.length));
     }
 
     setResult(res);
     setStep('done');
-    if (res.imported > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
+    if (res.imported > 0 || res.overwritten > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -409,7 +438,7 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
           </div>
 
           <p className="rounded-lg bg-neutral-50 px-4 py-3 text-sm text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
-            All contacts will be created with source <strong>CSV</strong> and auto-assigned by your round-robin rules.
+            All contacts will be created with source <strong>CSV</strong> and assigned to you.
             Duplicate phone numbers will be skipped automatically.
           </p>
         </div>
@@ -457,6 +486,18 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
               </div>
             </div>
 
+            {/* Overwritten */}
+            {result.overwritten > 0 && (
+              <div className="flex items-center gap-4 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-4 dark:border-neutral-700 dark:bg-neutral-900">
+                <CheckCircle2 className="h-6 w-6 flex-shrink-0 text-neutral-500" />
+                <div>
+                  <p className="font-semibold text-neutral-700 dark:text-neutral-300">
+                    {result.overwritten} existing contact{result.overwritten !== 1 ? 's' : ''} updated
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Duplicates */}
             {result.duplicates > 0 && (
               <div className="flex items-center gap-4 rounded-xl border border-warning-100 bg-warning-50 px-4 py-4">
@@ -470,21 +511,25 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
               </div>
             )}
 
-            {/* Errors */}
-            {result.errors > 0 && (
-              <div className="flex items-center gap-4 rounded-xl border border-error-100 bg-error-50 px-4 py-4">
-                <XCircle className="h-6 w-6 flex-shrink-0 text-error-600" />
-                <div>
+            {/* Errors — real per-row reasons, not just a bare phone list */}
+            {result.errors.length > 0 && (
+              <div className="flex gap-4 rounded-xl border border-error-100 bg-error-50 px-4 py-4">
+                <XCircle className="mt-0.5 h-6 w-6 flex-shrink-0 text-error-600" />
+                <div className="min-w-0 flex-1">
                   <p className="font-semibold text-error-700">
-                    {result.errors} row{result.errors !== 1 ? 's' : ''} failed
+                    {result.errors.length} row{result.errors.length !== 1 ? 's' : ''} failed
                   </p>
-                  {result.errorPhones.length > 0 && (
-                    <p className="mt-0.5 font-mono text-xs text-error-600">
-                      {result.errorPhones.join(', ')}
-                      {result.errors > result.errorPhones.length
-                        ? ` + ${result.errors - result.errorPhones.length} more`
-                        : ''}
-                    </p>
+                  <ul className="mt-1.5 max-h-40 space-y-1 overflow-y-auto">
+                    {result.errors.slice(0, 20).map((e, i) => (
+                      <li key={i} className="text-xs text-error-600">
+                        <span className="font-mono">{e.phone || `row ${e.row}`}</span>
+                        {' — '}
+                        {e.reason}
+                      </li>
+                    ))}
+                  </ul>
+                  {result.errors.length > 20 && (
+                    <p className="mt-1 text-xs text-error-600">+ {result.errors.length - 20} more</p>
                   )}
                 </div>
               </div>
@@ -500,7 +545,7 @@ export function ImportContactsDrawer({ open, onClose }: ImportContactsDrawerProp
             <div className="mt-1.5 flex justify-between text-sm">
               <span className="text-neutral-500">Success rate</span>
               <span className="font-medium text-neutral-800 dark:text-neutral-200">
-                {total > 0 ? Math.round(((result.imported + result.duplicates) / total) * 100) : 0}%
+                {total > 0 ? Math.round(((result.imported + result.overwritten + result.duplicates) / total) * 100) : 0}%
               </span>
             </div>
           </div>
