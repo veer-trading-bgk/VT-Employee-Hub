@@ -477,6 +477,38 @@ describe('generate — usage-attribution fields (entityType/entityId/source/atte
   });
 });
 
+// 2026-07-08, Era 40 — closes the exact gap Era 32's addendum warned about:
+// a record logged with costUsd: 0 because PRICING.models had no entry for
+// its model is otherwise indistinguishable from a genuinely free/zero-cost
+// call. Snapshotting the rate actually used at write time lets a future
+// reader (AiCostReportService.effectiveCost()) recompute historical cost
+// without depending on PRICING.models never having changed since.
+describe('generate — rate snapshot (inputRatePerMillion/outputRatePerMillion)', () => {
+  test('snapshots the exact per-million rate used, from PRICING.models for this useCase\'s model', async () => {
+    await AIService.generate({ useCase: 'text-usecase', companyId: CID, user: USER });
+    const item = dynamodb.put.mock.calls[0][0].Item;
+    // test-model's mocked PRICING.models entry is { inputPerMillion: 1, outputPerMillion: 2 }
+    expect(item.inputRatePerMillion).toBe(1);
+    expect(item.outputRatePerMillion).toBe(2);
+  });
+
+  test('omits the rate-snapshot fields entirely when the model has no PRICING.models entry — same additive-omission style as entityType/entityId', async () => {
+    mockAIConfig = {
+      'unpriced-usecase': {
+        model: 'model-with-no-pricing-entry', maxTokens: 100, promptVersion: 'v1', outputMode: 'text',
+        customerFacing: false, localeAware: false,
+        rateLimit: { limit: 5, windowMs: 60_000 },
+        promptTemplate: (ctx) => `PROMPT:${JSON.stringify(ctx)}`,
+      },
+    };
+    await AIService.generate({ useCase: 'unpriced-usecase', companyId: CID, user: USER });
+    const item = dynamodb.put.mock.calls[0][0].Item;
+    expect(item).not.toHaveProperty('inputRatePerMillion');
+    expect(item).not.toHaveProperty('outputRatePerMillion');
+    expect(item.costUsd).toBe(0); // the exact historical gap this closes visibility into
+  });
+});
+
 describe('generate — no send capability (hard boundary)', () => {
   test('AIService.js has no require() dependency on WhatsAppSendService', () => {
     const src = require('fs').readFileSync(`${__dirname}/../src/services/AIService.js`, 'utf8');

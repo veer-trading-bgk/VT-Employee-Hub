@@ -27,9 +27,23 @@
  * how it tags `source`. Every bucket below is additionally split into
  * registered/unregistered on this basis, same "never silently blend"
  * principle as the source split.
+ *
+ * Historical-cost recompute fallback (Era 40): every `AIUSAGE#` record's
+ * cost is read via effectiveCost(), never `item.costUsd` directly. Before
+ * 2026-07-08, `PRICING.models` had no `claude-sonnet-5` entry, so every
+ * `conversational-sales-agent` call made on Sonnet logged `costUsd: 0` —
+ * confirmed a real ~21x undercount for date ranges spanning that gap.
+ * effectiveCost() prefers a real logged cost, then a rate snapshotted onto
+ * the record itself at write time (`inputRatePerMillion`/
+ * `outputRatePerMillion`, added the same day), and only falls back to
+ * *current* `PRICING.models` for records old enough to predate the snapshot
+ * field entirely — so this fallback is a one-time historical-gap patch, not
+ * an ongoing mechanism that could silently reprice a record after a future
+ * rate change (e.g. Sonnet 5's intro pricing expiring 2026-08-31).
  */
 
 const dynamodb = require('../config/dynamodb');
+const { PRICING } = require('../config/aiConfig');
 
 function table() { return process.env.DYNAMODB_TABLE_METRICS; }
 function empTable() { return process.env.DYNAMODB_TABLE_EMPLOYEES; }
@@ -90,6 +104,41 @@ async function getRegisteredCompanyIds() {
   return new Set(items.map((it) => it.companyId));
 }
 
+/**
+ * The cost to attribute to one AIUSAGE# record. Never read item.costUsd
+ * directly elsewhere in this file — always go through this function.
+ *
+ * Precedence:
+ *   1. A real logged costUsd always wins — never recomputed over.
+ *   2. A rate snapshotted on the record itself at write time
+ *      (inputRatePerMillion/outputRatePerMillion, Era 40) — preferred over
+ *      current PRICING.models specifically so a record's own historical
+ *      rate can never drift just because pricing changed since it was
+ *      logged (e.g. an intro rate expiring).
+ *   3. Current PRICING.models, only reached by records old enough to
+ *      predate the rate-snapshot field entirely — the exact pre-2026-07-08
+ *      claude-sonnet-5 gap this fallback exists for.
+ *   4. Nothing computable (no snapshot, model not in current PRICING, or no
+ *      token counts) — falls back to whatever costUsd is stored (0), never
+ *      throws.
+ */
+function effectiveCost(item) {
+  if (item.costUsd) return item.costUsd;
+
+  if (item.inputRatePerMillion != null && item.outputRatePerMillion != null) {
+    return _recompute(item, item.inputRatePerMillion, item.outputRatePerMillion);
+  }
+
+  const rates = PRICING.models[item.model];
+  if (!rates) return item.costUsd || 0;
+  return _recompute(item, rates.inputPerMillion, rates.outputPerMillion);
+}
+
+function _recompute(item, inputRatePerMillion, outputRatePerMillion) {
+  const raw = ((item.inputTokens || 0) / 1e6) * inputRatePerMillion + ((item.outputTokens || 0) / 1e6) * outputRatePerMillion;
+  return raw * PRICING.marginMultiplier;
+}
+
 function bucketKey(item) {
   if (item.source === 'production') return 'production';
   if (item.source === 'admin_test') return 'admin_test';
@@ -107,7 +156,7 @@ function emptyAiBucket() {
 }
 
 function addToAiBucket(bucket, item, isRegistered) {
-  const cost = item.costUsd || 0;
+  const cost = effectiveCost(item);
   bucket.totalCostUsd += cost;
   bucket.calls += 1;
 
@@ -309,7 +358,7 @@ async function getEntityCostDetail(entityId) {
   ]);
 
   const sortedAi = [...aiItems].sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
-  const totalAiCostUsd = round(aiItems.reduce((sum, it) => sum + (it.costUsd || 0), 0));
+  const totalAiCostUsd = round(aiItems.reduce((sum, it) => sum + effectiveCost(it), 0));
   const totalEmbedTokens = embedItems.reduce((sum, it) => sum + (it.tokens || 0), 0);
   const estimatedEmbedCostUsd = round((totalEmbedTokens / 1e6) * VOYAGE_EMBED_USD_PER_MILLION_TOKENS);
 
@@ -317,7 +366,7 @@ async function getEntityCostDetail(entityId) {
     entityId,
     usdToInrRate: USD_TO_INR_RATE,
     aiUsage: sortedAi.map((it) => {
-      const costUsd = round(it.costUsd || 0);
+      const costUsd = round(effectiveCost(it));
       return {
         useCase: it.useCase ?? null,
         model: it.model ?? null,
@@ -353,6 +402,7 @@ async function getEntityCostDetail(entityId) {
 module.exports = {
   getAiCostReport,
   getEntityCostDetail,
+  effectiveCost,
   USD_TO_INR_RATE,
   VOYAGE_EMBED_USD_PER_MILLION_TOKENS,
 };

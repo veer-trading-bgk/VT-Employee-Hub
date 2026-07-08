@@ -607,16 +607,44 @@ All follow the same shape: `PK = CONFIG#{NAME}#{companyId}` (or the bare
 
 - **PK:** `AIUSAGE#{companyId}#{date}` (date = `YYYY-MM-DD`)
 - **SK:** `{ISO-timestamp}#{useCase}`
-- **Fields:** `companyId, useCase, promptVersion, model, inputTokens, outputTokens, costUsd, walletPoints, userId, overQuota (bool), createdAt`
+- **Fields:** `companyId, useCase, promptVersion, model, inputTokens, outputTokens, costUsd, walletPoints, userId, overQuota (bool), createdAt, source ('production'|'admin_test'), attempts (1|2)`,
+  plus optional/additive `entityType, entityId` (2026-07-08, cost-audit Part A —
+  omitted entirely, not written as `null`, when a caller doesn't supply them),
+  plus optional/additive `inputRatePerMillion, outputRatePerMillion` (2026-07-08,
+  Era 40 — see below).
 - **Represents:** Real usage data logged for every `AIService.generate()` call
   that reached the provider, regardless of outcome (written even when JSON-mode
   output ultimately failed validation, since real tokens were still spent).
   `costUsd`/`walletPoints` are computed from `src/config/aiConfig.js`'s
-  `PRICING` block — **placeholder values, flagged pre-launch TODO**, not yet
-  verified against Anthropic's real current pricing.
+  `PRICING` block (`marginMultiplier`/`pointsPerUsd` are still flagged
+  **PLACEHOLDER**; per-model rates in `PRICING.models` are real, verified live
+  against Anthropic's docs as of Era 32, 2026-07-08).
+- **Rate snapshot (`inputRatePerMillion`/`outputRatePerMillion`, Era 40):** the
+  exact `PRICING.models[model]` rate used to compute this specific record's
+  `costUsd`, captured at write time by `AIService._computeCost()`/`_logUsage()`.
+  Omitted (not written as `null`/`0`) whenever `PRICING.models` had no entry for
+  the model at write time — the exact condition that caused the historical gap
+  below, so its continued absence stays a meaningful signal rather than being
+  masked by a default value. Exists so a future rate change (e.g. Sonnet 5's
+  intro pricing expiring 2026-08-31) can never retroactively reprice an old
+  record if its cost is ever recomputed — see `AiCostReportService.effectiveCost()`.
+- **Known historical gap (pre-2026-07-08):** every `conversational-sales-agent`
+  call made while that useCase ran on `claude-sonnet-5` (before Era 32's
+  `PRICING.models` fix) logged `costUsd: 0` — there was no rate to compute it
+  with. These records also predate the rate-snapshot fields above, so they
+  cannot be corrected from their own data alone. `AiCostReportService.
+  effectiveCost()` (Era 40) recomputes these specific records live, from
+  `inputTokens`/`outputTokens` and *current* `PRICING.models`, rather than
+  trusting the stored `0` — confirmed a ~21x undercount before this fix. The
+  raw stored records themselves were **not** rewritten (append-only ledger,
+  same as every other correction in this table); the correction is applied at
+  read time only.
 - **Owner:** `AIService._logUsage()` — write failures are logged and swallowed,
   never surfaced to the caller (a logging failure must not break an otherwise-
   successful AI response).
+- **Readers:** `AIService` (writer only), `AiCostReportService.js` (Platform
+  module's AI Costs report — always via `effectiveCost()`, never a direct
+  `item.costUsd` read; see Era 38/39/40).
 - **Note:** crossing `PRICING.freeCallsPerMonth` (a separate `ai_quota#{companyId}`
   counter in `DYNAMODB_TABLE_AUDIT`, via `rateLimiter.js`'s `atomicIncrement()`)
   sets `overQuota: true` on the log record and logs an info line — it does

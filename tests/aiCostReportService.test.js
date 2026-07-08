@@ -202,6 +202,62 @@ describe('AiCostReportService.getAiCostReport', () => {
     const days = (new Date(to) - new Date(from)) / 86_400_000;
     expect(days).toBeCloseTo(30, 0);
   });
+
+  test('Era 40: a historical costUsd:0 record (pre-PRICING-gap-fix, no rate snapshot) is recomputed into the bucket total, not silently zeroed', async () => {
+    mockScanSequence([
+      // Simulates a real pre-2026-07-08 conversational-sales-agent record —
+      // logged costUsd: 0 because PRICING.models had no claude-sonnet-5 entry
+      // yet, no inputRatePerMillion/outputRatePerMillion (predates that field).
+      aiItem({
+        source: 'production', model: 'claude-sonnet-5', useCase: 'conversational-sales-agent',
+        costUsd: 0, inputTokens: 1_000_000, outputTokens: 1_000_000,
+      }),
+    ], []);
+    const report = await AiCostReportService.getAiCostReport({ from: '2026-07-01T00:00:00.000Z', to: '2026-07-09T00:00:00.000Z' });
+    // live PRICING.models['claude-sonnet-5'] is $2/$10 per MTok, marginMultiplier 1.5
+    expect(report.bySource.production.totalCostUsd).toBeCloseTo(18, 6);
+    expect(report.bySource.production.totalCostUsd).not.toBe(0);
+  });
+});
+
+describe('AiCostReportService.effectiveCost', () => {
+  test('a real logged costUsd is used as-is, never recomputed', () => {
+    const item = { costUsd: 0.05, model: 'claude-haiku-4-5-20251001', inputTokens: 999_999_999, outputTokens: 999_999_999 };
+    expect(AiCostReportService.effectiveCost(item)).toBe(0.05);
+  });
+
+  test('costUsd:0 with real tokens and a model present in current PRICING.models recomputes correctly', () => {
+    const item = { costUsd: 0, model: 'claude-haiku-4-5-20251001', inputTokens: 1_000_000, outputTokens: 1_000_000 };
+    // haiku is $1/$5 per MTok, marginMultiplier 1.5 -> (1*1 + 1*5) * 1.5 = 9
+    expect(AiCostReportService.effectiveCost(item)).toBeCloseTo(9, 6);
+  });
+
+  test('costUsd:0 with a model NOT in PRICING.models falls back to 0 — does not crash', () => {
+    const item = { costUsd: 0, model: 'some-unknown-model-xyz', inputTokens: 1000, outputTokens: 1000 };
+    expect(() => AiCostReportService.effectiveCost(item)).not.toThrow();
+    expect(AiCostReportService.effectiveCost(item)).toBe(0);
+  });
+
+  test('a snapshotted rate on the record wins over current PRICING.models, even when they now differ — proven by comparison, not just presence', () => {
+    const withSnapshot = {
+      costUsd: 0,
+      model: 'claude-sonnet-5', // live PRICING.models['claude-sonnet-5'] is currently $2/$10
+      inputTokens: 1_000_000, outputTokens: 1_000_000,
+      inputRatePerMillion: 3, outputRatePerMillion: 15, // simulates an OLD, since-changed rate
+    };
+    const snapshotBasedCost = AiCostReportService.effectiveCost(withSnapshot);
+    // snapshot rate: (1*3 + 1*15) * 1.5 = 27
+    expect(snapshotBasedCost).toBeCloseTo(27, 6);
+
+    // Same record, but as it would look if it predated the snapshot field —
+    // proves the live-PRICING fallback really would give a DIFFERENT answer.
+    const withoutSnapshot = { ...withSnapshot, inputRatePerMillion: undefined, outputRatePerMillion: undefined };
+    const liveFallbackCost = AiCostReportService.effectiveCost(withoutSnapshot);
+    // live rate: (1*2 + 1*10) * 1.5 = 18
+    expect(liveFallbackCost).toBeCloseTo(18, 6);
+
+    expect(snapshotBasedCost).not.toBeCloseTo(liveFallbackCost, 6);
+  });
 });
 
 describe('AiCostReportService.getEntityCostDetail', () => {

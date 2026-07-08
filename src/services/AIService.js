@@ -154,11 +154,11 @@ async function _generate({
   // 7. Usage tracking — logged whenever real tokens were spent, regardless of
   //    whether JSON validation ultimately succeeded (the model call itself
   //    happened either way). Never blocks or throws on a logging failure.
-  const { costUsd, walletPoints } = _computeCost({ model: useCaseCfg.model, inputTokens, outputTokens });
+  const { costUsd, walletPoints, inputRatePerMillion, outputRatePerMillion } = _computeCost({ model: useCaseCfg.model, inputTokens, outputTokens });
   await _logUsage({
     companyId, useCase, promptVersion: useCaseCfg.promptVersion, model: useCaseCfg.model,
     inputTokens, outputTokens, costUsd, walletPoints, userId: user.id, overQuota,
-    entityType, entityId, source, attempts,
+    entityType, entityId, source, attempts, inputRatePerMillion, outputRatePerMillion,
   });
 
   if (jsonFailed) {
@@ -270,16 +270,19 @@ async function _generateJsonWithRetry({ model, maxTokens, messages, schema }) {
 
 function _computeCost({ model, inputTokens, outputTokens }) {
   const rates = aiConfig.PRICING.models[model];
-  if (!rates) return { costUsd: 0, walletPoints: 0 };
+  if (!rates) return { costUsd: 0, walletPoints: 0, inputRatePerMillion: null, outputRatePerMillion: null };
   const rawCost = (inputTokens / 1e6) * rates.inputPerMillion + (outputTokens / 1e6) * rates.outputPerMillion;
   const costUsd = rawCost * aiConfig.PRICING.marginMultiplier;
   const walletPoints = Math.ceil(costUsd * aiConfig.PRICING.pointsPerUsd);
-  return { costUsd, walletPoints };
+  // Snapshot the exact rate used, so a future PRICING.models change (e.g. an
+  // intro-rate expiry) can never silently reprice this specific historical
+  // record if anyone recomputes cost from it later (Era 40, 19_DECISION_LOG.md).
+  return { costUsd, walletPoints, inputRatePerMillion: rates.inputPerMillion, outputRatePerMillion: rates.outputPerMillion };
 }
 
 async function _logUsage({
   companyId, useCase, promptVersion, model, inputTokens, outputTokens, costUsd, walletPoints, userId, overQuota,
-  entityType, entityId, source, attempts,
+  entityType, entityId, source, attempts, inputRatePerMillion, outputRatePerMillion,
 }) {
   const now = new Date().toISOString();
   const date = now.slice(0, 10);
@@ -297,6 +300,12 @@ async function _logUsage({
         // updated yet stays byte-identical to before this change.
         ...(entityType ? { entityType } : {}),
         ...(entityId ? { entityId } : {}),
+        // Rate snapshot (2026-07-08, Era 40) — omitted when PRICING had no
+        // entry for this model at write time (costUsd is 0 in that case
+        // too), so a genuine historical pricing-gap record stays
+        // distinguishable from a normal, correctly-priced call.
+        ...(inputRatePerMillion != null ? { inputRatePerMillion } : {}),
+        ...(outputRatePerMillion != null ? { outputRatePerMillion } : {}),
       },
     }).promise();
   } catch (err) {
