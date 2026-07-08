@@ -11,7 +11,7 @@ import { Skeleton } from '@/components/v3/ui/Skeleton';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role } from '@/types/v3';
+import { canAssignOwner } from '@/lib/permissions';
 import { toast } from 'sonner';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -568,8 +568,12 @@ function AdminAttendanceView() {
 
 export default function AttendancePage() {
   const { user } = useAuth();
-  const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const isAdmin = ['owner', 'admin', 'manager'].includes(v3Role);
+  // Raw role, not v3Role — v3Role collapses 'manager' and 'team_lead' into one
+  // bucket, which would wrongly show AdminAttendanceView (incl. leave approve/
+  // reject) to team_lead: GET /leave/admin and PUT /leave/:userId/:leaveId are
+  // both checkRole(['admin','manager']), the exact scope canAssignOwner already
+  // encodes — team_lead would see a broken admin view, its own fetch 403ing.
+  const isAdmin = canAssignOwner(user?.role);
 
   return (
     <div className="flex h-full flex-col">
