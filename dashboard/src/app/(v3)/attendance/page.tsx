@@ -229,13 +229,15 @@ function EmployeeAttendanceView() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['my-attendance', month],
-    queryFn: () => apiFetch<MyAttendanceResponse>(`/api/attendance/me?month=${month}`),
+    queryFn: () => apiFetch<MyAttendanceResponse>(`/api/attendance/${user!.id}?month=${month}`),
+    enabled: !!user?.id,
     staleTime: 2 * 60_000,
   });
 
   const { data: leavesData } = useQuery({
     queryKey: ['my-leaves'],
-    queryFn: () => apiFetch<{ success: boolean; leaves: LeaveRequest[] }>('/api/attendance/leave/my'),
+    queryFn: () => apiFetch<{ success: boolean; leaves: LeaveRequest[] }>('/api/attendance/leave'),
+    enabled: !!user?.id,
     staleTime: 60_000,
   });
 
