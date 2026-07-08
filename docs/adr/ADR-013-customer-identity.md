@@ -12,7 +12,7 @@ APForce receives customers through multiple independent entry points.  As of the
 
 | Entry Point | File | Phone Normalisation | Dedup Method | Gap |
 |---|---|---|---|---|
-| Manual lead (CRM) | `crm.js:211` | `to10Digit()` ✓ | GSI query before insert | — |
+| Manual lead (CRM) | `crm.js:211` | `to10Digit()` ✓ | `CIS.resolveOrCreate()` ✓ | — (fully compliant, see Status Update below) |
 | Form submission | `forms.js:115` | `to10Digit()` ✓ | GSI query before insert | — |
 | Meta Lead Ads webhook | `forms.js:224` | `to10Digit()` ✓ | GSI query before insert | — |
 | CSV / bulk import | `crm.js:841` | `to10Digit()` ✓ | In-memory scan + map | **Not GSI — race window** |
@@ -25,7 +25,7 @@ APForce receives customers through multiple independent entry points.  As of the
 
 Additional inconsistencies found:
 
-- `contacts.js` deduplicates INBOX# records against LEAD# using **raw phone strings** (`l.phone`), not `phoneNorm` — a bug when numbers differ only in formatting.
+- ~~`contacts.js` deduplicates INBOX# records against LEAD# using **raw phone strings** (`l.phone`), not `phoneNorm` — a bug when numbers differ only in formatting.~~ **Fixed 2026-07-08** — see Status Update below Migration Required.
 - The Phase 2 `ContactService` normalises to **E.164** (`+91XXXXXXXXXX`) while every other path normalises to **10-digit** (`XXXXXXXXXX`).  Two formats coexist with no explicit mapping rule.
 - CSV import scans all company leads into memory before checking for duplicates, bypassing the GSI and creating a race window for concurrent imports.
 
@@ -122,6 +122,30 @@ The following changes must be made before this ADR is fully enforced.  Until eac
 | 5 | Public partner API | Not yet built | Same as CTWA |
 
 Items 1–3 are bug fixes.  Items 4–5 are future-proofing rules.
+
+### Status Update (2026-07-08 — Wave 1 audit fixes)
+
+- **Manual lead (CRM), `crm.js:211`** — the entry-points table above described this
+  row as already compliant (`to10Digit()` ✓, no gap) as of this ADR's original
+  authoring date, but the live code at the time did not match: `POST /leads`
+  digit-stripped `body.phone` with an ad-hoc `String(...).replace(/\D/g, '')`
+  and never truncated to 10 digits, so a country-code-prefixed number 400'd
+  against `createLeadSchema`'s exact-10-digit regex before ever reaching CIS.
+  Separately, this route's CIS migration itself (Rule 2) had already landed in
+  a prior, unrelated commit (`1b89521a`) — there was no direct `dynamodb.put`
+  left to remove. Both halves are now resolved: the strip uses `to10Digit()`
+  (commit `734a031`), and the route has called `CIS.resolveOrCreate()` since
+  `1b89521a`. **This entry point is now fully compliant with Rules 1–3.**
+
+- **Item 3, `contacts.js` raw phone dedup** — **closed** (commit `2ae59ee`).
+  Correction to this table's own framing: it (and the audit that cited it)
+  described only half the bug. The required fix — `l.phoneNorm ?? to10Digit(l.phone)`
+  — was applied to the `leadPhones` Set construction, but the *consumption*
+  side of the same comparison (`leadPhones.has(u.phone)`, checking an INBOX#
+  record's raw phone against that set) also needed `to10Digit()`. Normalizing
+  only one side of a `Set.has()` comparison leaves it just as broken — the fix
+  would have been a no-op without also normalizing `u.phone` at the point of
+  comparison. Both sides are now normalized.
 
 ---
 
