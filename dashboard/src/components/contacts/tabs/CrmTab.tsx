@@ -9,6 +9,8 @@ import type { PipelineStage } from '@/contexts/Customer360Context';
 import { useContactMutations } from '@/hooks/useContactMutations';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
 import { useEmployeesList } from '@/hooks/useEmployeesList';
+import { useAuth } from '@/context/AuthContext';
+import { canAssignOwner } from '@/lib/permissions';
 import { TagSelector } from '@/components/tags/TagSelector';
 import { TagBadge } from '@/components/tags/TagBadge';
 import type { Tag } from '@/components/tags/TagBadge';
@@ -172,6 +174,13 @@ function CrmPanel() {
     useContactMutations(leadId);
   const qc = useQueryClient();
 
+  // Raw role, not v3Role — matches PUT /api/crm/leads/:id/assign's
+  // checkRole(['admin','manager']) exactly (see canAssignOwner's own doc
+  // comment). Same reference pattern as Contacts list's OwnerSelect and
+  // Inbox's canEditOwner.
+  const { user } = useAuth();
+  const canEditOwner = canAssignOwner(user?.role);
+
   // ── Queries (served from cache in most cases) ─────────────────────────
   // Canonical employees list (shared cache key with OwnerSelect/ContactTags
   // elsewhere) — includes admin/superadmin, unlike this tab's own former
@@ -330,7 +339,7 @@ function CrmPanel() {
           }
         >
           <div className="space-y-4">
-            {/* Stage + Assign row (always interactive) */}
+            {/* Stage (always interactive) + Assign (admin/manager/superadmin only) row */}
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
@@ -352,23 +361,32 @@ function CrmPanel() {
                 <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
                   Assigned To
                 </label>
-                <select
-                  value={contact.assignedTo}
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    if (!id) return;
-                    const name = employees.find((em) => em.id === id)?.name ?? null;
-                    reassign.mutate({ id, name });
-                  }}
-                  disabled={reassign.isPending}
-                  className={`${selectCls} w-full`}
-                  aria-label="Assigned employee"
-                >
-                  <option value="">— Unassigned —</option>
-                  {employees.map((e) => (
-                    <option key={e.id} value={e.id}>{e.name}</option>
-                  ))}
-                </select>
+                {canEditOwner ? (
+                  <select
+                    value={contact.assignedTo}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      if (!id) return;
+                      const name = employees.find((em) => em.id === id)?.name ?? null;
+                      reassign.mutate({ id, name });
+                    }}
+                    disabled={reassign.isPending}
+                    className={`${selectCls} w-full`}
+                    aria-label="Assigned employee"
+                  >
+                    <option value="">— Unassigned —</option>
+                    {employees.map((e) => (
+                      <option key={e.id} value={e.id}>{e.name}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div
+                    className={`${selectCls} w-full bg-slate-50 dark:bg-slate-900/40`}
+                    aria-label="Assigned employee (read-only)"
+                  >
+                    {employees.find((em) => em.id === contact.assignedTo)?.name ?? '— Unassigned —'}
+                  </div>
+                )}
               </div>
             </div>
 

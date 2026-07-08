@@ -11,7 +11,6 @@ import { Skeleton } from '@/components/v3/ui/Skeleton';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role } from '@/types/v3';
 import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import { getMetricConfig, formatMetricValue } from '@/lib/metrics.config';
 import { toast } from 'sonner';
@@ -323,7 +322,7 @@ function EmployeeCompensationView() {
 
 // ── Admin payroll view ────────────────────────────────────────────────────────
 
-function AdminCompensationView() {
+function AdminCompensationView({ canMutate }: { canMutate: boolean }) {
   const qc = useQueryClient();
   const { metrics, getMetricConfig } = useMetricsConfig();
   const [month, setMonth]       = useState(currentMonthStr());
@@ -470,12 +469,14 @@ function AdminCompensationView() {
             {payrollData?.fromSnapshot && <span className="text-xs text-neutral-400">Snapshot</span>}
           </div>
           <div className="flex items-center gap-2">
-            {!isLocked && <Button size="sm" variant="secondary" onClick={openEditor}>Edit Rates</Button>}
+            {!isLocked && canMutate && <Button size="sm" variant="secondary" onClick={openEditor}>Edit Rates</Button>}
             <Button size="sm" variant="ghost" iconLeft={<Download className="h-3.5 w-3.5" />} onClick={exportCSV} disabled={filtered.length === 0}>CSV</Button>
           </div>
         </div>
 
-        {/* Workflow strip */}
+        {/* Workflow strip — status steps are read-only (visible to manager too);
+            the action buttons are all checkRole(['admin']) on the backend, so
+            they're gated to canMutate only. */}
         {payroll.length > 0 && (
           <div className="flex flex-wrap items-center gap-3 border-t border-neutral-100 px-4 py-3 dark:border-neutral-800">
             <div className="flex items-center gap-2 text-xs">
@@ -488,38 +489,41 @@ function AdminCompensationView() {
                 </span>
               ))}
             </div>
-            <div className="ml-auto flex gap-2">
-              {status === 'draft' && (
-                <Button size="sm" loading={snapshotMut.isPending} onClick={() => snapshotMut.mutate()}>Create Snapshot</Button>
-              )}
-              {status === 'reviewing' && (
-                <>
-                  <Button size="sm" variant="secondary" loading={statusMut.isPending} onClick={() => statusMut.mutate('draft')}>Revert</Button>
-                  <Button size="sm" loading={statusMut.isPending} onClick={() => statusMut.mutate('approved')}>Approve</Button>
-                </>
-              )}
-              {status === 'approved' && (
-                <>
-                  <Button size="sm" variant="secondary" loading={statusMut.isPending} onClick={() => statusMut.mutate('reviewing')}>Revert</Button>
-                  <Button size="sm" variant="danger" iconLeft={<Lock className="h-3.5 w-3.5" />} loading={statusMut.isPending}
-                    onClick={() => { if (confirm(`Lock payroll for ${month}? This notifies all employees via Telegram.`)) statusMut.mutate('locked'); }}>
-                    Lock & Notify
+            {canMutate && (
+              <div className="ml-auto flex gap-2">
+                {status === 'draft' && (
+                  <Button size="sm" loading={snapshotMut.isPending} onClick={() => snapshotMut.mutate()}>Create Snapshot</Button>
+                )}
+                {status === 'reviewing' && (
+                  <>
+                    <Button size="sm" variant="secondary" loading={statusMut.isPending} onClick={() => statusMut.mutate('draft')}>Revert</Button>
+                    <Button size="sm" loading={statusMut.isPending} onClick={() => statusMut.mutate('approved')}>Approve</Button>
+                  </>
+                )}
+                {status === 'approved' && (
+                  <>
+                    <Button size="sm" variant="secondary" loading={statusMut.isPending} onClick={() => statusMut.mutate('reviewing')}>Revert</Button>
+                    <Button size="sm" variant="danger" iconLeft={<Lock className="h-3.5 w-3.5" />} loading={statusMut.isPending}
+                      onClick={() => { if (confirm(`Lock payroll for ${month}? This notifies all employees via Telegram.`)) statusMut.mutate('locked'); }}>
+                      Lock & Notify
+                    </Button>
+                  </>
+                )}
+                {status === 'locked' && (
+                  <Button size="sm" variant="secondary" iconLeft={<Unlock className="h-3.5 w-3.5" />} loading={unlockMut.isPending}
+                    onClick={() => { if (confirm(`Unlock payroll for ${month}?`)) unlockMut.mutate(); }}>
+                    Unlock
                   </Button>
-                </>
-              )}
-              {status === 'locked' && (
-                <Button size="sm" variant="secondary" iconLeft={<Unlock className="h-3.5 w-3.5" />} loading={unlockMut.isPending}
-                  onClick={() => { if (confirm(`Unlock payroll for ${month}?`)) unlockMut.mutate(); }}>
-                  Unlock
-                </Button>
-              )}
-            </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </Card>
 
-      {/* Rate editor */}
-      {editRates && (
+      {/* Rate editor — only reachable via the Edit Rates button above, which is
+          already canMutate-gated, but gated here too as defense in depth. */}
+      {canMutate && editRates && (
         <Card>
           <div className="mb-4 flex items-center justify-between">
             <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Edit Incentive Rates</p>
@@ -602,11 +606,13 @@ function AdminCompensationView() {
         <Card noPadding>
           <div className="flex items-center justify-between border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
             <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Manual Adjustments</p>
-            <Button size="sm" variant="secondary" onClick={() => setShowAdj((v) => !v)}>
-              {showAdj ? 'Cancel' : '+ Add Adjustment'}
-            </Button>
+            {canMutate && (
+              <Button size="sm" variant="secondary" onClick={() => setShowAdj((v) => !v)}>
+                {showAdj ? 'Cancel' : '+ Add Adjustment'}
+              </Button>
+            )}
           </div>
-          {showAdj && (
+          {canMutate && showAdj && (
             <div className="border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
                 <select value={adjUserId} onChange={(e) => setAdjUserId(e.target.value)}
@@ -647,7 +653,9 @@ function AdminCompensationView() {
                     <span className={cn('text-sm font-semibold tabular-nums', isPos ? 'text-success-600' : 'text-error-500')}>
                       {isPos ? '+' : '−'}{fmt(adj.amount)}
                     </span>
-                    <button onClick={() => delAdjMut.mutate(adj.SK)} className="text-xs text-error-400 hover:text-error-600">✕</button>
+                    {canMutate && (
+                      <button onClick={() => delAdjMut.mutate(adj.SK)} className="text-xs text-error-400 hover:text-error-600">✕</button>
+                    )}
                   </li>
                 );
               })}
@@ -762,8 +770,19 @@ function AdminCompensationView() {
 
 export default function CompensationPage() {
   const { user } = useAuth();
-  const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const isAdmin = ['owner', 'admin', 'manager'].includes(v3Role);
+  const role = user?.role;
+  // Raw role, not v3Role — v3Role collapses 'manager' and 'team_lead' into one
+  // bucket, which would wrongly grant team_lead the same payroll-table access
+  // as manager. GET /api/compensation/payroll and GET /adjustments are both
+  // checkRole(['admin', 'manager']) (+ superadmin bypass) — team_lead is not
+  // in that list, so team_lead must fall through to the personal comp view,
+  // same as agent/telecaller/intern.
+  const canViewPayroll   = role === 'admin' || role === 'manager' || role === 'superadmin';
+  // The 5 mutating actions inside the payroll view (Edit Rates, Create
+  // Snapshot, Lock & Notify, Unlock, Add Adjustment — plus Delete Rates/
+  // Delete Adjustment, same gate) are all checkRole(['admin']) only —
+  // manager gets read access to the table, not these actions.
+  const canMutatePayroll = role === 'admin' || role === 'superadmin';
 
   return (
     <div className="flex h-full flex-col">
@@ -773,7 +792,7 @@ export default function CompensationPage() {
       </div>
       <div className="scrollbar-thin flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-4xl">
-          {isAdmin ? <AdminCompensationView /> : <EmployeeCompensationView />}
+          {canViewPayroll ? <AdminCompensationView canMutate={canMutatePayroll} /> : <EmployeeCompensationView />}
         </div>
       </div>
     </div>

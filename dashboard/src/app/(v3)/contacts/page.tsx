@@ -25,6 +25,7 @@ import { apiFetch } from '@/lib/api';
 import type { Contact } from '@/types/v3';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role } from '@/types/v3';
+import { canAssignOwner } from '@/lib/permissions';
 import { toast } from 'sonner';
 import Link from 'next/link';
 import { format } from 'date-fns';
@@ -277,7 +278,12 @@ function ContactsContent() {
   const STAGE_OPTIONS = pipelineStages.map((s) => ({ value: s.key, label: s.label }));
 
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const canCreate    = ['owner', 'admin', 'manager', 'sales'].includes(v3Role);
+  // Raw role, not v3Role — matches POST /api/crm/leads's checkRole(['admin','manager'])
+  // exactly (same gate canAssignOwner already encodes for the equivalent Inbox/CrmTab
+  // assign controls). v3Role would wrongly include 'sales' (agent/telecaller, backend
+  // rejects them) and wrongly include team_lead in its shared 'manager' bucket
+  // (backend rejects team_lead too — only raw manager is allowed).
+  const canCreate    = canAssignOwner(user?.role);
   const canImport    = ['owner', 'admin', 'manager'].includes(v3Role);
   const canEditOwner = ['owner', 'admin'].includes(v3Role);
 

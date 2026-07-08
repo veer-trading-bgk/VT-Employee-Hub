@@ -63,7 +63,7 @@ test.describe.skip('ProtectedRoute — real component, real browser', () => {
     await expect(page.getByTestId('protected-content')).not.toBeVisible();
   });
 
-  test('manager with allowedRoles=["admin","manager"] gets in — the exact mechanism letting a manager into /metric-target, /analytics, /campaigns', async ({ page }) => {
+  test('manager with allowedRoles=["admin","manager"] gets in — the exact mechanism letting a manager into /analytics, /campaigns', async ({ page }) => {
     await page.goto('/proute-verify-temp?case=manager_allowed_admin_manager');
     await expect(page.getByTestId('protected-content')).toBeVisible();
     await expect(page).toHaveURL(/proute-verify-temp/);

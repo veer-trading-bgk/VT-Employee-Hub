@@ -31,6 +31,7 @@ import type { Contact, Stage } from '@/types/v3';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role } from '@/types/v3';
+import { canAssignOwner } from '@/lib/permissions';
 import { toast } from 'sonner';
 import { format, subDays, differenceInDays, isToday, isYesterday } from 'date-fns';
 
@@ -1111,7 +1112,12 @@ export default function SalesPage() {
 
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   const isAdmin  = ['owner', 'admin'].includes(v3Role);
-  const canCreate = ['owner', 'admin', 'manager', 'sales'].includes(v3Role);
+  // Raw role, not v3Role — matches POST /api/crm/leads's checkRole(['admin','manager'])
+  // exactly (same gate canAssignOwner already encodes for the equivalent Inbox/CrmTab
+  // assign controls). v3Role would wrongly include 'sales' (agent/telecaller, backend
+  // rejects them) and wrongly include team_lead in its shared 'manager' bucket
+  // (backend rejects team_lead too — only raw manager is allowed).
+  const canCreate = canAssignOwner(user?.role);
 
   // ── Pipeline stages (dynamic, single shared owner of ['pipeline-stages']) ──
 

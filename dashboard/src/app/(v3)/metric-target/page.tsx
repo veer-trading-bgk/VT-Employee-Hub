@@ -253,12 +253,18 @@ function MetricTargetPageInner() {
   );
 }
 
-// Admin/manager — nav already hides this (V3Sidebar's roles: ['owner','admin','manager']),
-// but that was nav-hiding only, not real route enforcement (Phase 2A audit,
-// 2026-07-06). See docs/bible/19_DECISION_LOG.md's Era 24 entry.
+// Admin only — every backend action this page depends on (GET/PUT/DELETE
+// /api/admin/targets, POST /api/admin/points-rebuild) lives in admin.js,
+// gated by adminMiddleware (raw role admin OR superadmin ONLY — see
+// src/middleware/auth.js). 'manager' was previously allowed here, matching
+// only V3Sidebar's nav-hiding list (['owner','admin','manager']), which was
+// never real route enforcement (Phase 2A audit, 2026-07-06) — a manager's
+// initial fetch itself 403'd. superadmin bypasses ProtectedRoute's own gate
+// unconditionally (see that component), matching adminMiddleware's bypass.
+// See docs/bible/19_DECISION_LOG.md's Era 24 entry.
 export default function MetricTargetPage() {
   return (
-    <ProtectedRoute allowedRoles={['admin', 'manager']}>
+    <ProtectedRoute allowedRoles={['admin']}>
       <MetricTargetPageInner />
     </ProtectedRoute>
   );

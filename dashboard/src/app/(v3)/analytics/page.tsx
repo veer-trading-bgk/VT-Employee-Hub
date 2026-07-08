@@ -263,7 +263,11 @@ function TeamTab() {
   const [rejectId, setRejectId] = useState<string | null>(null);
   const [rejectNote, setRejectNote] = useState('');
 
-  const canVerify = ['admin', 'manager', 'team_lead'].includes(user?.role ?? '');
+  // Raw role, matching backend exactly: GET /api/metrics/pending and
+  // POST /api/metrics/verify are both checkRole(['admin', 'manager']) (+ the
+  // universal superadmin bypass in checkRole itself) — team_lead is not in
+  // either list and previously saw this queue, then got a 403 on Approve/Reject.
+  const canVerify = ['admin', 'manager'].includes(user?.role ?? '');
 
   const { data: lbData, isLoading: lbLoading } = useQuery<LeaderboardResponse>({
     queryKey: ['analytics-leaderboard'],
