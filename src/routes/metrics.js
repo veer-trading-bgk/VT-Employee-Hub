@@ -2,6 +2,7 @@ const express = require('express');
 const { addMetricSchema } = require('../utils/validation');
 const { logAudit } = require('../utils/audit');
 const { authMiddleware, adminMiddleware, checkRole } = require('../middleware/auth');
+const { rateLimit } = require('../middleware/rateLimiter');
 const { METRIC_CONFIG, TARGET_DEFAULTS, METRIC_KEYS, toDailyTargets, toMonthlyTargets, calcPoints, buildCustomWeights } = require('../config/metricsConfig');
 const dynamodb = require('../config/dynamodb');
 const { queryAll } = require('../utils/db');
@@ -51,13 +52,66 @@ async function checkLocked(userId, sk) {
   return { locked: vs === 'approved' || vs === 'rejected', status: vs, item: result.Item };
 }
 
+// ── Shared: resolve which employee a metrics request should act on ───────────
+// Self by default (no behavior change for the vast majority of callers). The
+// frontend's "Team Entry" tab (entry/page.tsx, gated to v3Role owner/admin/manager
+// — which maps to raw roles superadmin/admin/manager/team_lead via toV3Role())
+// sends an explicit userId to act on another employee's record instead. These
+// routes never read it, so the write/read silently targeted the caller's own
+// record no matter what — this closes that gap using the exact role/team/tenant
+// checks POST /add-for-member already applies (lines 946-975 below), so the two
+// proxy-entry paths stay consistent instead of drifting.
+async function resolveTargetUserId(req) {
+  const requestedUserId = req.body?.userId ?? req.query?.userId;
+  if (!requestedUserId || requestedUserId === req.user.id) {
+    // targetEmployee: null signals "self" — callers fall back to req.user.email/name.
+    return { userId: req.user.id, targetEmployee: null, error: null };
+  }
+
+  // Only roles that can reach the frontend's Team Entry tab may target another
+  // employee at all — superadmin bypasses every checkRole() elsewhere in this
+  // codebase, so it bypasses here too, consistent with that convention.
+  const CAN_ACT_FOR_OTHERS = new Set(['admin', 'manager', 'team_lead']);
+  if (req.user.role !== 'superadmin' && !CAN_ACT_FOR_OTHERS.has(req.user.role)) {
+    return { userId: null, targetEmployee: null, error: { status: 403, message: 'Not authorized to act on another employee\'s metrics' } };
+  }
+
+  const targetResult = await dynamodb.get({
+    TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+    Key: { id: requestedUserId },
+  }).promise();
+  const target = targetResult.Item;
+  if (!target) {
+    return { userId: null, targetEmployee: null, error: { status: 404, message: 'Employee not found' } };
+  }
+
+  // Cross-tenant guard — mirrors admin.js's inline pattern (e.g. line 65).
+  if (req.user.role !== 'superadmin' && target.companyId !== req.user.companyId) {
+    return { userId: null, targetEmployee: null, error: { status: 403, message: 'Access denied' } };
+  }
+
+  // team_lead is scoped to their own team; manager/admin/superadmin are not —
+  // mirrors POST /add-for-member's existing team_lead-only restriction exactly.
+  if (req.user.role === 'team_lead' && target.teamLeadId !== req.user.id) {
+    return { userId: null, targetEmployee: null, error: { status: 403, message: 'This employee is not assigned to your team' } };
+  }
+
+  return { userId: requestedUserId, targetEmployee: target, error: null };
+}
+
 // ── Add metric (any authenticated user) ──────────────────────────────────────
 
-router.post('/add', async (req, res, next) => {
+router.post('/add', rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { metric_type, value, date, notes } = addMetricSchema.parse(req.body);
-    const userId = req.user.id;
+    const { userId, targetEmployee, error: targetError } = await resolveTargetUserId(req);
+    if (targetError) return res.status(targetError.status).json({ error: targetError.message });
     const metricDate = date ? new Date(date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
+    // Proxy entry (Team Entry) attributes the record to the target employee, not the actor —
+    // same convention POST /add-for-member already uses for these exact fields.
+    const entryEmail = targetEmployee?.email ?? req.user.email;
+    const entryName = targetEmployee?.name || targetEmployee?.email || req.user.name || req.user.email || '';
+    const entryCompanyId = targetEmployee?.companyId ?? req.user.companyId;
 
     // 409 if record is already approved/rejected
     const { locked, status: lockedStatus } = await checkLocked(userId, `${metricDate}#${metric_type}`);
@@ -70,10 +124,10 @@ router.post('/add', async (req, res, next) => {
     }
 
     if (value > 100 && metric_type === 'kyc') {
-      await logAudit(userId, 'suspicious_metric_entry', metric_type, 'flagged', req.ip, { value });
+      await logAudit(req.user.id, 'suspicious_metric_entry', metric_type, 'flagged', req.ip, { value, targetUserId: userId });
       await bot.sendMessage(
         process.env.TELEGRAM_ADMIN_CHAT_ID,
-        `⚠️ Suspicious Metric Entry\n\nUser: ${req.user.email}\nMetric: ${metric_type}\nValue: ${value}\nIP: ${req.ip}\n\nPlease verify this entry.`
+        `⚠️ Suspicious Metric Entry\n\nUser: ${entryEmail}\nMetric: ${metric_type}\nValue: ${value}\nIP: ${req.ip}\n\nPlease verify this entry.`
       );
     }
 
@@ -92,7 +146,7 @@ router.post('/add', async (req, res, next) => {
       ', ipAddress = :ip',
       ', notes = :notes',
     ];
-    if (req.user.companyId) addSetClauses.push(', companyId = if_not_exists(companyId, :__cid)');
+    if (entryCompanyId) addSetClauses.push(', companyId = if_not_exists(companyId, :__cid)');
     await dynamodb.update({
       TableName: process.env.DYNAMODB_TABLE_METRICS,
       Key: { PK: userId, SK: `${metricDate}#${metric_type}` },
@@ -102,17 +156,17 @@ router.post('/add', async (req, res, next) => {
         ':inc': value,
         ':mid': metricId,
         ':uid': userId,
-        ':em': req.user.email,
-        ':nm': req.user.name || req.user.email || '',
+        ':em': entryEmail,
+        ':nm': entryName,
         ':mt': metric_type,
         ':dt': metricDate,
         ':ea': new Date().toISOString(),
-        ':ef': 'web',
+        ':ef': targetEmployee ? 'proxy' : 'web',
         ':vf': false,
         ':vs': 'pending',
         ':ip': req.ip,
         ':notes': notes || '',
-        ...(req.user.companyId && { ':__cid': req.user.companyId }),
+        ...(entryCompanyId && { ':__cid': entryCompanyId }),
       },
     }).promise();
 
@@ -122,7 +176,7 @@ router.post('/add', async (req, res, next) => {
     }).promise();
     const totalValue = updated.Item?.value ?? value;
 
-    await logAudit(userId, 'metric_added', `${metric_type}+${value}=${totalValue}`, 'success', req.ip);
+    await logAudit(req.user.id, 'metric_added', `${metric_type}+${value}=${totalValue}`, 'success', req.ip, targetEmployee ? { targetUserId: userId } : {});
     logger.info(`Metric added: ${metric_type}+${value}=${totalValue} for user ${userId}`);
 
     res.json({
@@ -130,7 +184,7 @@ router.post('/add', async (req, res, next) => {
       message: `${metric_type} updated: +${value} (total today: ${totalValue})`,
       data: { metric_type, value, total: totalValue, date: metricDate },
     });
-    notifyCompany(req.user.companyId, {
+    notifyCompany(entryCompanyId, {
       event: 'metric_added',
       userId,
       metric_type,
@@ -145,7 +199,7 @@ router.post('/add', async (req, res, next) => {
 
 // ── Correct today's value (SET, not ADD) ─────────────────────────────────────
 
-router.put('/set', async (req, res, next) => {
+router.put('/set', rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { metric_type, value } = req.body;
     const today = new Date().toISOString().split('T')[0];
@@ -157,7 +211,9 @@ router.put('/set', async (req, res, next) => {
       return res.status(400).json({ error: 'value must be a non-negative number' });
     }
 
-    const userId = req.user.id;
+    const { userId, targetEmployee, error: targetError } = await resolveTargetUserId(req);
+    if (targetError) return res.status(targetError.status).json({ error: targetError.message });
+    const entryEmail = targetEmployee?.email ?? req.user.email;
 
     // 409 if record is already approved/rejected
     const { locked, status: lockedStatus } = await checkLocked(userId, `${today}#${metric_type}`);
@@ -188,18 +244,18 @@ router.put('/set', async (req, res, next) => {
         ExpressionAttributeValues: {
           ':v': v,
           ':ca': new Date().toISOString(),
-          ':cf': 'web_correction',
+          ':cf': targetEmployee ? 'proxy_correction' : 'web_correction',
           ':vs': 'pending',
           ':vf': false,
           ':mt': metric_type,
           ':dt': today,
           ':uid': userId,
-          ':em': req.user.email,
+          ':em': entryEmail,
         },
       }).promise();
     }
 
-    await logAudit(userId, 'metric_corrected', `${metric_type}=${v}`, 'success', req.ip);
+    await logAudit(req.user.id, 'metric_corrected', `${metric_type}=${v}`, 'success', req.ip, targetEmployee ? { targetUserId: userId } : {});
     res.json({ success: true, data: { metric_type, value: v, date: today } });
   } catch (error) {
     next(error);
@@ -210,10 +266,14 @@ router.put('/set', async (req, res, next) => {
 // Creates a new record: SK = date#metric_type#CORR#N
 // Parent must be approved or rejected — cannot correct a pending record.
 
-router.post('/correction', async (req, res, next) => {
+router.post('/correction', rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { metric_type, value, date, notes } = addMetricSchema.parse(req.body);
-    const userId = req.user.id;
+    const { userId, targetEmployee, error: targetError } = await resolveTargetUserId(req);
+    if (targetError) return res.status(targetError.status).json({ error: targetError.message });
+    const entryEmail = targetEmployee?.email ?? req.user.email;
+    const entryName = targetEmployee?.name || targetEmployee?.email || req.user.name || req.user.email || '';
+    const entryCompanyId = targetEmployee?.companyId ?? req.user.companyId;
     const metricDate = date ? new Date(date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
     const parentSK = `${metricDate}#${metric_type}`;
 
@@ -251,8 +311,8 @@ router.post('/correction', async (req, res, next) => {
         SK: corrSK,
         metricId: `${userId}#${corrSK}`,
         userId,
-        email: req.user.email,
-        name: req.user.name || req.user.email || '',
+        email: entryEmail,
+        name: entryName,
         metric_type,
         value,
         date: metricDate,
@@ -265,13 +325,13 @@ router.post('/correction', async (req, res, next) => {
         enteredAt: now,
         createdAt: now,
         submittedAt: now,
-        enteredFrom: 'web_correction',
+        enteredFrom: targetEmployee ? 'proxy_correction' : 'web_correction',
         ipAddress: req.ip,
-        ...(req.user.companyId && { companyId: req.user.companyId }),
+        ...(entryCompanyId && { companyId: entryCompanyId }),
       },
     }).promise();
 
-    await logAudit(userId, 'correction_added', `${metric_type}+${value} corr#${correctionNumber}`, 'success', req.ip);
+    await logAudit(req.user.id, 'correction_added', `${metric_type}+${value} corr#${correctionNumber}`, 'success', req.ip, targetEmployee ? { targetUserId: userId } : {});
     logger.info(`Correction #${correctionNumber} added: ${metric_type}+${value} for user ${userId}`);
 
     res.json({
@@ -288,7 +348,9 @@ router.post('/correction', async (req, res, next) => {
 
 router.get('/my', async (req, res, next) => {
   try {
-    const userId = req.user.id;
+    const { userId, targetEmployee, error: targetError } = await resolveTargetUserId(req);
+    if (targetError) return res.status(targetError.status).json({ error: targetError.message });
+    const entryCompanyId = targetEmployee?.companyId ?? req.user.companyId;
     const daysBack = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 365);
     const startDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
@@ -298,7 +360,7 @@ router.get('/my', async (req, res, next) => {
         KeyConditionExpression: 'PK = :userId AND SK > :date',
         ExpressionAttributeValues: { ':userId': userId, ':date': startDate },
       }).promise(),
-      fetchTargetConfig(req.user.companyId),
+      fetchTargetConfig(entryCompanyId),
     ]);
 
     const targets = toDailyTargets(targetCfg);
@@ -324,7 +386,7 @@ router.get('/my', async (req, res, next) => {
       }
     });
 
-    await logAudit(userId, 'view_own_metrics', 'metrics_list', 'success', req.ip);
+    await logAudit(req.user.id, 'view_own_metrics', 'metrics_list', 'success', req.ip, targetEmployee ? { targetUserId: userId } : {});
 
     res.json({
       success: true,
@@ -452,7 +514,7 @@ router.get('/team-summary', checkRole(['admin', 'manager']), async (req, res, ne
 
 // ── Bulk-entry (admin/manager) ────────────────────────────────────────────────
 
-router.post('/bulk-entry', checkRole(['admin', 'manager']), async (req, res, next) => {
+router.post('/bulk-entry', checkRole(['admin', 'manager']), rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const { entries = [] } = req.body;
     if (!Array.isArray(entries) || entries.length === 0) {
@@ -531,7 +593,7 @@ router.get('/config', authMiddleware, async (req, res, next) => {
   }
 });
 
-router.put('/config/:metricKey', adminMiddleware, async (req, res, next) => {
+router.put('/config/:metricKey', adminMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { metricKey } = req.params;
     const { companyId } = req.user;
@@ -573,7 +635,7 @@ router.put('/config/:metricKey', adminMiddleware, async (req, res, next) => {
   }
 });
 
-router.delete('/config/:metricKey', adminMiddleware, async (req, res, next) => {
+router.delete('/config/:metricKey', adminMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { metricKey } = req.params;
     const { companyId } = req.user;
@@ -655,7 +717,7 @@ function resolveMetricKey(body) {
 
 // ── Verify metric (body-based) ────────────────────────────────────────────────
 
-router.post('/verify', checkRole(['admin', 'manager']), async (req, res, next) => {
+router.post('/verify', checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { approved, notes } = req.body;
     const key = resolveMetricKey(req.body);
@@ -710,7 +772,7 @@ router.post('/verify', checkRole(['admin', 'manager']), async (req, res, next) =
 
 // ── Dismiss (delete) an orphaned pending metric ───────────────────────────────
 
-router.post('/pending/dismiss', checkRole(['admin', 'manager']), async (req, res, next) => {
+router.post('/pending/dismiss', checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const key = resolveMetricKey(req.body);
     if (!key) return res.status(400).json({ error: 'pk+sk or metricId required' });
@@ -741,7 +803,7 @@ router.post('/pending/dismiss', checkRole(['admin', 'manager']), async (req, res
 
 // ── Verify metric (path param, admin only) ────────────────────────────────────
 
-router.post('/verify/:metricId', adminMiddleware, async (req, res, next) => {
+router.post('/verify/:metricId', adminMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { metricId } = req.params;
     const { approved, notes } = req.body;
@@ -943,7 +1005,7 @@ router.get('/my-team', checkRole(['team_lead']), async (req, res, next) => {
 
 // ── Proxy metric entry — TL adds for their team / manager adds for any performer ──
 
-router.post('/add-for-member', checkRole(['team_lead', 'manager', 'admin']), async (req, res, next) => {
+router.post('/add-for-member', checkRole(['team_lead', 'manager', 'admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { targetUserId, metric_type, value, date, notes } = req.body;
     if (!targetUserId) return res.status(400).json({ error: 'targetUserId required' });
