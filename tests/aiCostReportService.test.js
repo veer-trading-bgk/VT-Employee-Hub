@@ -1,0 +1,184 @@
+'use strict';
+
+/**
+ * AiCostReportService — cross-tenant AI cost aggregation for the Platform
+ * module's AI Costs tab (docs/bible/19_DECISION_LOG.md Era 38).
+ */
+
+process.env.DYNAMODB_TABLE_METRICS = 'business_metrics';
+
+jest.mock('../src/config/dynamodb', () => ({ scan: jest.fn() }));
+
+const dynamodb = require('../src/config/dynamodb');
+const AiCostReportService = require('../src/services/AiCostReportService');
+
+function aiItem(overrides = {}) {
+  return {
+    PK: `AIUSAGE#${overrides.companyId ?? 'viir_trading'}#2026-07-08`,
+    SK: '2026-07-08T06:45:48.992Z#inbox-intent-detection',
+    companyId: 'viir_trading',
+    useCase: 'inbox-intent-detection',
+    model: 'claude-haiku-4-5-20251001',
+    costUsd: 0.001,
+    createdAt: '2026-07-08T06:45:48.992Z',
+    ...overrides,
+  };
+}
+
+function embedItem(overrides = {}) {
+  return {
+    PK: `EMBEDUSAGE#${overrides.companyId ?? 'viir_trading'}#2026-07-08`,
+    SK: '2026-07-08T06:45:48.665Z',
+    companyId: 'viir_trading',
+    inputType: 'query',
+    tokens: 100,
+    date: '2026-07-08',
+    ...overrides,
+  };
+}
+
+// Mimic a real Scan+FilterExpression: dynamodb.scan is mocked per-call based
+// on the FilterExpression's prefix, returning a single unpaginated page.
+function mockScanSequence(aiItems, embedItems) {
+  dynamodb.scan.mockImplementation((params) => {
+    const isAi = params.ExpressionAttributeValues?.[':p'] === 'AIUSAGE#';
+    const isEmbed = params.ExpressionAttributeValues?.[':p'] === 'EMBEDUSAGE#';
+    const isEntityLookup = params.FilterExpression.includes('entityId');
+
+    let items = isAi ? aiItems : isEmbed ? embedItems : [];
+    if (isEntityLookup) {
+      const eid = params.ExpressionAttributeValues[':eid'];
+      items = items.filter((it) => it.entityId === eid);
+    } else {
+      // date-range filters — apply the same BETWEEN semantics as real DynamoDB
+      if (params.ExpressionAttributeValues[':from']) {
+        const { ':from': from, ':to': to } = params.ExpressionAttributeValues;
+        items = items.filter((it) => it.createdAt >= from && it.createdAt <= to);
+      }
+      if (params.ExpressionAttributeValues[':fromD']) {
+        const { ':fromD': fromD, ':toD': toD } = params.ExpressionAttributeValues;
+        items = items.filter((it) => it.date >= fromD && it.date <= toD);
+      }
+    }
+    return { promise: async () => ({ Items: items }) };
+  });
+}
+
+describe('AiCostReportService.getAiCostReport', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('separates production/admin_test/untagged into distinct buckets — never blended', async () => {
+    mockScanSequence([
+      aiItem({ source: 'production', costUsd: 0.01 }),
+      aiItem({ source: 'production', costUsd: 0.02 }),
+      aiItem({ source: 'admin_test', costUsd: 0.05 }),
+      aiItem({ costUsd: 0.10 }), // untagged — no source field at all
+    ], []);
+
+    const report = await AiCostReportService.getAiCostReport({ from: '2026-07-01T00:00:00.000Z', to: '2026-07-09T00:00:00.000Z' });
+
+    expect(report.bySource.production.totalCostUsd).toBeCloseTo(0.03, 6);
+    expect(report.bySource.production.calls).toBe(2);
+    expect(report.bySource.admin_test.totalCostUsd).toBeCloseTo(0.05, 6);
+    expect(report.bySource.admin_test.calls).toBe(1);
+    expect(report.bySource.untagged.totalCostUsd).toBeCloseTo(0.10, 6);
+    expect(report.bySource.untagged.calls).toBe(1);
+  });
+
+  test('computes INR using the named USD_TO_INR_RATE constant', async () => {
+    mockScanSequence([aiItem({ source: 'production', costUsd: 1 })], []);
+    const report = await AiCostReportService.getAiCostReport({ from: '2026-07-01T00:00:00.000Z', to: '2026-07-09T00:00:00.000Z' });
+    expect(report.usdToInrRate).toBe(AiCostReportService.USD_TO_INR_RATE);
+    expect(report.bySource.production.totalCostInr).toBeCloseTo(AiCostReportService.USD_TO_INR_RATE, 6);
+  });
+
+  test('breaks down cost per company within a source bucket', async () => {
+    mockScanSequence([
+      aiItem({ source: 'production', companyId: 'viir_trading', costUsd: 0.01 }),
+      aiItem({ source: 'production', companyId: 'other_co', costUsd: 0.02 }),
+    ], []);
+    const report = await AiCostReportService.getAiCostReport({ from: '2026-07-01T00:00:00.000Z', to: '2026-07-09T00:00:00.000Z' });
+    const byCompany = report.bySource.production.byCompany;
+    expect(byCompany).toEqual(expect.arrayContaining([
+      expect.objectContaining({ companyId: 'viir_trading', costUsd: 0.01 }),
+      expect.objectContaining({ companyId: 'other_co', costUsd: 0.02 }),
+    ]));
+    // sorted highest-cost first
+    expect(byCompany[0].companyId).toBe('other_co');
+  });
+
+  test('breaks down cost per useCase within a source bucket', async () => {
+    mockScanSequence([
+      aiItem({ source: 'production', useCase: 'conversational-sales-agent', costUsd: 0.03 }),
+      aiItem({ source: 'production', useCase: 'conversation-handoff-summary', costUsd: 0.01 }),
+    ], []);
+    const report = await AiCostReportService.getAiCostReport({ from: '2026-07-01T00:00:00.000Z', to: '2026-07-09T00:00:00.000Z' });
+    const byUseCase = report.bySource.production.byUseCase;
+    expect(byUseCase.find((u) => u.useCase === 'conversational-sales-agent').costUsd).toBe(0.03);
+    expect(byUseCase.find((u) => u.useCase === 'conversation-handoff-summary').costUsd).toBe(0.01);
+  });
+
+  test('reports embeddings as a token-based estimate, separate from AI cost', async () => {
+    mockScanSequence([], [embedItem({ tokens: 1_000_000 })]);
+    const report = await AiCostReportService.getAiCostReport({ from: '2026-07-01T00:00:00.000Z', to: '2026-07-09T00:00:00.000Z' });
+    expect(report.embeddings.totalTokens).toBe(1_000_000);
+    expect(report.embeddings.estimatedCostUsd).toBeCloseTo(AiCostReportService.VOYAGE_EMBED_USD_PER_MILLION_TOKENS, 6);
+    expect(report.embeddings.note).toMatch(/estimate/i);
+  });
+
+  test('reports how much tagged data actually exists — the low-data-state signal', async () => {
+    mockScanSequence([
+      aiItem({ source: 'production', createdAt: '2026-07-08T06:00:00.000Z' }),
+      aiItem({ createdAt: '2026-07-04T06:00:00.000Z' }), // untagged, no entityType/entityId/source
+    ], []);
+    const report = await AiCostReportService.getAiCostReport({ from: '2026-07-01T00:00:00.000Z', to: '2026-07-09T00:00:00.000Z' });
+    expect(report.meta.totalAiUsageRecordsInRange).toBe(2);
+    expect(report.meta.taggedAiUsageRecordsInRange).toBe(1);
+    expect(report.meta.daysOfTaggedData).toBe(1);
+    expect(report.meta.taggedDataDates).toEqual(['2026-07-08']);
+  });
+
+  test('defaults to a 30-day range when none is given', async () => {
+    mockScanSequence([], []);
+    await AiCostReportService.getAiCostReport({});
+    const call = dynamodb.scan.mock.calls.find((c) => c[0].ExpressionAttributeValues[':p'] === 'AIUSAGE#');
+    const { ':from': from, ':to': to } = call[0].ExpressionAttributeValues;
+    const days = (new Date(to) - new Date(from)) / 86_400_000;
+    expect(days).toBeCloseTo(30, 0);
+  });
+});
+
+describe('AiCostReportService.getEntityCostDetail', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('returns only records matching the given entityId, across sources', async () => {
+    mockScanSequence([
+      aiItem({ entityId: 'conv_target', source: 'production', costUsd: 0.02 }),
+      aiItem({ entityId: 'conv_other', source: 'production', costUsd: 0.5 }),
+    ], [
+      embedItem({ entityId: 'conv_target', tokens: 500 }),
+      embedItem({ entityId: 'conv_other', tokens: 999 }),
+    ]);
+
+    const detail = await AiCostReportService.getEntityCostDetail('conv_target');
+
+    expect(detail.aiUsage).toHaveLength(1);
+    expect(detail.aiUsage[0].costUsd).toBe(0.02);
+    expect(detail.embedUsage).toHaveLength(1);
+    expect(detail.embedUsage[0].tokens).toBe(500);
+    expect(detail.totals.aiCostUsd).toBe(0.02);
+    expect(detail.totals.embedTokens).toBe(500);
+  });
+
+  test('throws when entityId is missing', async () => {
+    await expect(AiCostReportService.getEntityCostDetail()).rejects.toThrow('entityId is required');
+  });
+
+  test('returns zeroed totals, not an error, when nothing matches', async () => {
+    mockScanSequence([], []);
+    const detail = await AiCostReportService.getEntityCostDetail('conv_nonexistent');
+    expect(detail.aiUsage).toEqual([]);
+    expect(detail.totals.aiCostUsd).toBe(0);
+    expect(detail.totals.aiCalls).toBe(0);
+  });
+});

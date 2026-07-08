@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck, Building2, Activity, Search, ChevronRight } from 'lucide-react';
+import { ShieldCheck, Building2, Activity, Search, ChevronRight, IndianRupee } from 'lucide-react';
 import Link from 'next/link';
 import { Card } from '@/components/v3/ui/Card';
 import { Badge } from '@/components/v3/ui/Badge';
@@ -12,6 +12,7 @@ import { api, apiFetch } from '@/lib/api';
 import type { PlatformCompany } from '@/lib/api';
 import { toast } from 'sonner';
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
+import { AiCostsTab } from '@/components/platform/AiCostsTab';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -261,7 +262,7 @@ function HealthTab() {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-type PlatformTab = 'overview' | 'companies' | 'health';
+type PlatformTab = 'overview' | 'companies' | 'ai-costs' | 'health';
 
 function PlatformPageInner() {
   const [tab, setTab] = useState<PlatformTab>('overview');
@@ -269,6 +270,7 @@ function PlatformPageInner() {
   const TABS: { id: PlatformTab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview',  label: 'Overview',  icon: <ShieldCheck className="h-4 w-4" /> },
     { id: 'companies', label: 'Companies', icon: <Building2 className="h-4 w-4" /> },
+    { id: 'ai-costs',  label: 'AI Costs',  icon: <IndianRupee className="h-4 w-4" /> },
     { id: 'health',    label: 'Health',    icon: <Activity className="h-4 w-4" /> },
   ];
 
@@ -299,6 +301,7 @@ function PlatformPageInner() {
         <div className="mx-auto max-w-5xl">
           {tab === 'overview'  && <OverviewTab />}
           {tab === 'companies' && <CompaniesTab />}
+          {tab === 'ai-costs'  && <AiCostsTab />}
           {tab === 'health'    && <HealthTab />}
         </div>
       </div>

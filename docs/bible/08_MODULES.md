@@ -272,7 +272,7 @@ Endpoint-level detail confirmed by direct read/grep; full line-by-line audit not
 | `audit.js` | Security/audit log viewer — logs, suspicious activity, login history, exports | `GET /logs`, `/suspicious`, `/logins`, `/security-report`, `/export` | `adminMiddleware` on every route |
 | `companies.js` | Company profile, trial status, onboarding checklist, data export | `GET/PUT /profile`, `GET /trial`, `GET /onboarding`, `GET /export` | Mix of bare + `adminMiddleware` |
 | `compensation.js` (~29KB) | Payroll: rate config, calculation, history, payroll snapshots, lock/unlock, adjustments | `GET/PUT/DELETE /rates`, `GET /calculate/:userId`, `GET /history/:userId`, `GET /payroll`, `POST /payroll/snapshot`, `PUT /payroll/status`, `GET/POST/DELETE /adjustments`, `POST /payroll/unlock` | `authMiddleware` + `checkRole(['admin'])` on writes |
-| `platform.js` | **Superadmin-only** cross-tenant console — list/inspect/suspend companies, platform-wide stats | `GET /companies`, `GET/PUT /companies/:companyId`, `POST /companies/:companyId/unsuspend`, `GET /stats` | `authMiddleware` + `platformAdminMiddleware` (superadmin only) |
+| `platform.js` | **Superadmin-only** cross-tenant console — list/inspect/suspend companies, platform-wide stats, cross-tenant AI cost report (2026-07-08, Era 38 — `AiCostReportService`, Scan-with-filter over AIUSAGE#/EMBEDUSAGE#, not a GSI, at current ~430-item scale) | `GET /companies`, `GET/PUT /companies/:companyId`, `POST /companies/:companyId/unsuspend`, `GET /stats`, `GET /ai-costs`, `GET /ai-costs/entity/:entityId` | `authMiddleware` + `platformAdminMiddleware` (superadmin only) |
 | `tags.js` | Tag catalog CRUD, contact-tag assignment (catalog storage delegated to `TagService`) | `GET/POST /`, `PUT /contacts`, `PUT/DELETE /:id` | `authMiddleware`, `checkRole` varies (`admin`/`manager`/`superadmin`) |
 | `points.js` | Gamification point awards, leaderboard, personal point history | `POST /award`, `GET /leaderboard`, `GET /my` | `authMiddleware` on all |
 | `badges.js` | Achievement badge lookup and eligibility check | `GET /user/:userId`, `POST /check` | `authMiddleware` on both. `logAudit` is imported (line 3) but never called anywhere in the file — dead import. |
@@ -962,7 +962,7 @@ full detail only for the context/provider files that own shared state.
 | `home/` | Logged-in landing dashboard |
 | `inbox/` | Current WhatsApp inbox workspace (see finding below) |
 | `metric-target/` | Per-metric daily/monthly target + point-weight config |
-| `platform/` | Superadmin tenant console |
+| `platform/` | Superadmin tenant console — Overview/Companies/**AI Costs**/Health tabs (AI Costs added 2026-07-08, Era 38: `components/platform/AiCostsTab.tsx`, not a new top-level nav item) |
 | `sales/` | CRM pipeline board + follow-up task list |
 | `settings/` | Tabbed settings (profile/company/users/WhatsApp/security/billing/etc.) |
 | `templates/` | Standalone templates page (slimmer duplicate entry point to the same components also embedded in `campaigns/`) |

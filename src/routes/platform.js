@@ -4,6 +4,7 @@ const { logAudit } = require('../utils/audit');
 const dynamodb = require('../config/dynamodb');
 const bot = require('../config/telegram');
 const logger = require('../config/logger');
+const AiCostReportService = require('../services/AiCostReportService');
 
 const router = express.Router();
 
@@ -225,6 +226,35 @@ router.get('/stats', async (req, res, next) => {
     };
 
     res.json({ success: true, stats, generatedAt: new Date().toISOString() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── GET /api/platform/ai-costs ──────────────────────────────────────────────
+// Cross-tenant AI cost report (docs/bible/19_DECISION_LOG.md Era 38).
+// Query params: from, to (ISO timestamps, both optional — default last 30 days).
+// production/admin_test/untagged are always three separate buckets — never
+// blended into one total (Era 36's finding: most data to date is admin_test).
+
+router.get('/ai-costs', async (req, res, next) => {
+  try {
+    const { from, to } = req.query;
+    const report = await AiCostReportService.getAiCostReport({ from, to });
+    res.json({ success: true, ...report });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── GET /api/platform/ai-costs/entity/:entityId ────────────────────────────
+// Drill-down: every AIUSAGE#/EMBEDUSAGE# record tied to one entityId
+// (typically a conversationId) — no date range, no company scoping.
+
+router.get('/ai-costs/entity/:entityId', async (req, res, next) => {
+  try {
+    const detail = await AiCostReportService.getEntityCostDetail(req.params.entityId);
+    res.json({ success: true, ...detail });
   } catch (error) {
     next(error);
   }

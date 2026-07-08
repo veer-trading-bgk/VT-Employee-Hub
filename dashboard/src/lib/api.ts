@@ -278,6 +278,17 @@ export const api = {
       { method: 'POST', retries: 0 }
     ),
 
+  platformAiCosts: (params?: { from?: string; to?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set('from', params.from);
+    if (params?.to) qs.set('to', params.to);
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return apiFetch<PlatformAiCostsResponse>(`/api/platform/ai-costs${suffix}`);
+  },
+
+  platformAiCostEntity: (entityId: string) =>
+    apiFetch<PlatformAiCostEntityResponse>(`/api/platform/ai-costs/entity/${encodeURIComponent(entityId)}`),
+
   companyOnboarding: () =>
     apiFetch<OnboardingResponse>('/api/companies/onboarding'),
 
@@ -426,6 +437,86 @@ export interface PlatformCompanyDetailResponse {
   success: boolean;
   company: PlatformCompany & Record<string, unknown>;
   stats: { employeeCount: number; leadCount: number };
+}
+
+// ── Platform AI Costs (superadmin) ───────────────────────────────────────────
+
+export interface AiCostByCompany { companyId: string; calls: number; costUsd: number; costInr: number }
+export interface AiCostByUseCase { useCase: string; calls: number; costUsd: number; costInr: number }
+
+export interface AiCostBucket {
+  totalCostUsd: number;
+  totalCostInr: number;
+  calls: number;
+  byCompany: AiCostByCompany[];
+  byUseCase: AiCostByUseCase[];
+}
+
+export interface EmbedCostByCompany { companyId: string; tokens: number; calls: number }
+export interface EmbedCostByInputType { inputType: string; tokens: number; calls: number }
+
+export interface EmbedCostBucket {
+  note: string;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  estimatedCostInr: number;
+  calls: number;
+  byCompany: EmbedCostByCompany[];
+  byInputType: EmbedCostByInputType[];
+}
+
+export type AiCostSource = 'production' | 'admin_test' | 'untagged';
+
+export interface PlatformAiCostsResponse {
+  success: boolean;
+  range: { from: string; to: string };
+  usdToInrRate: number;
+  meta: {
+    totalAiUsageRecordsInRange: number;
+    taggedAiUsageRecordsInRange: number;
+    taggedDataDates: string[];
+    daysOfTaggedData: number;
+  };
+  bySource: Record<AiCostSource, AiCostBucket>;
+  embeddings: EmbedCostBucket;
+}
+
+export interface AiCostEntityRecord {
+  useCase: string | null;
+  model: string | null;
+  source: AiCostSource | null;
+  companyId: string | null;
+  costUsd: number;
+  costInr: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  attempts: number | null;
+  createdAt: string | null;
+}
+
+export interface EmbedEntityRecord {
+  model: string | null;
+  inputType: string | null;
+  companyId: string | null;
+  tokens: number;
+  timestamp: string | null;
+}
+
+export interface PlatformAiCostEntityResponse {
+  success: boolean;
+  entityId: string;
+  usdToInrRate: number;
+  aiUsage: AiCostEntityRecord[];
+  embedUsage: EmbedEntityRecord[];
+  totals: {
+    aiCalls: number;
+    aiCostUsd: number;
+    aiCostInr: number;
+    embedCalls: number;
+    embedTokens: number;
+    embedEstimatedCostUsd: number;
+    embedEstimatedCostInr: number;
+  };
 }
 
 export interface OnboardingStep {
