@@ -377,17 +377,19 @@ router.post('/manual-connect', authMiddleware, checkRole(['admin']), async (req,
       return res.status(400).json({ error: 'accessToken and phoneNumberId are required' });
     }
 
-    // Fetch phone number details from Meta.
-    // whatsapp_business_account is included to auto-detect the real WABA ID and avoid the
-    // phoneNumberId-stored-as-wabaId bug that breaks template submission.
+    // Fetch phone number details from Meta. whatsapp_business_account used to be
+    // requested here to auto-detect the WABA ID, but it's not a field Meta's Graph
+    // API actually supports on the phone number node -- requesting it throws
+    // "(#100) Tried accessing nonexisting field" and fails the whole call (found
+    // 2026-07-09 debugging a live reconnect failure). The settings form already
+    // requires an explicit wabaId (page.tsx), and Path 2 below auto-discovers one
+    // when it's absent, so this field was pure redundancy blocking every connect.
     let phoneNumber = null;
-    let derivedWabaId = null;
     try {
       const verifyRes = await axios.get(`${GRAPH}/${phoneNumberId.trim()}`, {
-        params: { fields: 'display_phone_number,verified_name,id,whatsapp_business_account', access_token: accessToken.trim() },
+        params: { fields: 'display_phone_number,verified_name,id', access_token: accessToken.trim() },
       });
       phoneNumber = verifyRes.data?.display_phone_number ?? null;
-      derivedWabaId = verifyRes.data?.whatsapp_business_account?.id ?? null;
     } catch (e) {
       // Never log e.config/e.request here — they carry the raw access_token in
       // the request params. Only e.response.data (Meta's own error body) and
@@ -400,10 +402,10 @@ router.post('/manual-connect', authMiddleware, checkRole(['admin']), async (req,
       return res.status(400).json({ error: 'Invalid credentials — Meta rejected the token or phone number ID', rawError });
     }
 
-    // Resolve: explicit entry takes precedence over auto-detected
-    let wabaId = explicitWabaId?.trim() || derivedWabaId;
+    // Resolve: explicit entry takes precedence; Path 2 below auto-discovers if absent
+    let wabaId = explicitWabaId?.trim() || null;
 
-    // Path 2: /me/whatsapp_business_accounts fallback if phone node didn't yield WABA ID
+    // Path 2: /me/whatsapp_business_accounts auto-discovery if no explicit WABA ID given
     if (!wabaId || wabaId === phoneNumberId.trim()) {
       try {
         const meRes = await axios.get(`${GRAPH}/me`, {
@@ -567,9 +569,11 @@ router.put('/config', authMiddleware, checkRole(['admin']), async (req, res, nex
 });
 
 // ── POST /api/whatsapp/connection/probe — pre-flight: validate token + auto-discover WABA ID ──
-// Read-only (no DynamoDB writes). Two discovery paths:
-//   1. GET /{phoneNumberId}?fields=...,whatsapp_business_account  (requires whatsapp_business_management)
-//   2. GET /me?fields=...,whatsapp_business_accounts{...}         (same scope, different graph path)
+// Read-only (no DynamoDB writes). Verifies the phone node, then discovers the WABA ID via
+// GET /me?fields=...,whatsapp_business_accounts{...} (requires whatsapp_business_management).
+// (A prior "phone node whatsapp_business_account" discovery path was removed 2026-07-09 --
+// Meta's Graph API doesn't support that field on the phone number node; requesting it threw
+// "(#100) Tried accessing nonexisting field" and failed the whole call. See TECHNICAL_DEBT.md.)
 // Returns { autoDiscovered, wabaId, phoneNumber, verifiedName, reason, rawError, requiresManualWabaId }
 router.post('/connection/probe', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
@@ -580,13 +584,13 @@ router.post('/connection/probe', authMiddleware, checkRole(['admin']), async (re
     const pid = phoneNumberId.trim();
     const token = accessToken.trim();
 
-    // ── Path 1: phone node with whatsapp_business_account traversal ───────────
+    // ── Path 1: verify the phone node is reachable with this token ────────────
     let phoneData = null;
     let phoneError = null;
     try {
       const r = await axios.get(`${GRAPH}/${pid}`, {
         params: {
-          fields: 'id,display_phone_number,verified_name,code_verification_status,quality_rating,whatsapp_business_account',
+          fields: 'id,display_phone_number,verified_name,code_verification_status,quality_rating',
           access_token: token,
         },
         timeout: 10000,
@@ -606,23 +610,7 @@ router.post('/connection/probe', authMiddleware, checkRole(['admin']), async (re
       });
     }
 
-    const derivedWabaId = phoneData?.whatsapp_business_account?.id ?? null;
-    if (derivedWabaId && derivedWabaId !== pid) {
-      return res.json({
-        phoneValid: true,
-        autoDiscovered: true,
-        discoveryMethod: 'phone_node',
-        wabaId: derivedWabaId,
-        phoneNumber: phoneData.display_phone_number ?? null,
-        verifiedName: phoneData.verified_name ?? null,
-        qualityRating: phoneData.quality_rating ?? null,
-        reason: null,
-        rawError: null,
-        requiresManualWabaId: false,
-      });
-    }
-
-    // ── Path 2: /me/whatsapp_business_accounts (same scope, alternative graph path) ─
+    // ── Path 2: /me/whatsapp_business_accounts — the only supported discovery path ─
     let meWabaId = null;
     let meError = null;
     try {
@@ -657,15 +645,11 @@ router.post('/connection/probe', authMiddleware, checkRole(['admin']), async (re
       });
     }
 
-    // ── Both paths failed — diagnose why ──────────────────────────────────────
-    const wabaFieldPresent = 'whatsapp_business_account' in (phoneData ?? {});
+    // ── Discovery failed — diagnose why ───────────────────────────────────────
     let reason, rawError;
-    if (!wabaFieldPresent && meError) {
+    if (meError) {
       reason = 'Your access token does not have the whatsapp_business_management permission. This permission is required to manage templates. You can (1) grant it to your System User in Meta Business Suite → System Users → Edit → Add Permissions, then regenerate the token; or (2) enter your WABA ID manually below — find it in Meta Business Suite → WhatsApp Accounts (the 15–16 digit number, different from the Phone Number ID in API Setup).';
       rawError = { code: 'MISSING_PERMISSION', missingPermission: 'whatsapp_business_management', phoneNodeResponse: phoneData, meApiError: meError };
-    } else if (derivedWabaId === pid) {
-      reason = 'Meta returned the Phone Number ID as the WABA ID — these are different objects. This indicates a token or account configuration issue. Enter your correct WABA ID manually below.';
-      rawError = { code: 'WABA_ID_EQUALS_PHONE_ID', phoneNumberId: pid, returnedWabaId: derivedWabaId };
     } else {
       reason = 'Could not determine WABA ID automatically. Enter it manually below — find it in Meta Business Suite → WhatsApp Accounts.';
       rawError = { phoneData, meError };
@@ -714,17 +698,21 @@ router.post('/connection/repair', authMiddleware, checkRole(['admin']), async (r
       return res.json({ success: true, oldWabaId, newWabaId: explicitWabaId, method: 'manual', message: 'WABA ID manually corrected. Template submission will now use the correct ID.' });
     }
 
-    // ── Path B1: phone node with whatsapp_business_account traversal ──────────
+    // ── Path B1: verify the phone node is reachable, refresh its display data ──
+    // whatsapp_business_account used to be requested here for WABA-ID auto-discovery,
+    // but Meta's Graph API doesn't support it as a field on the phone number node --
+    // requesting it threw "(#100) Tried accessing nonexisting field" and failed the
+    // whole call before Path B2 ever ran (found 2026-07-09). Path B2 below is now the
+    // sole auto-discovery path. See TECHNICAL_DEBT.md.
     let newWabaId = null;
     let phoneNumber = cfg.phoneNumber;
     let phoneData = null;
     try {
       const verifyRes = await axios.get(`${getGraphUrl(cfg)}/${cfg.phoneNumberId}`, {
-        params: { fields: 'display_phone_number,verified_name,id,whatsapp_business_account', access_token: cfg.accessToken },
+        params: { fields: 'display_phone_number,verified_name,id', access_token: cfg.accessToken },
         timeout: 10000,
       });
       phoneData = verifyRes.data;
-      newWabaId = phoneData?.whatsapp_business_account?.id ?? null;
       phoneNumber = phoneData?.display_phone_number ?? phoneNumber;
     } catch (e) {
       // Never log e.config/e.request — they carry the raw access_token in
@@ -737,7 +725,7 @@ router.post('/connection/repair', authMiddleware, checkRole(['admin']), async (r
       return res.status(400).json({ error: 'Failed to reach Meta API — check that the stored access token is still valid.', requiresManualWabaId: true, rawError });
     }
 
-    // ── Path B2: /me/whatsapp_business_accounts fallback ─────────────────────
+    // ── Path B2: /me/whatsapp_business_accounts — the only supported discovery path ─
     if (!newWabaId || newWabaId === cfg.phoneNumberId) {
       try {
         const meRes = await axios.get(`${getGraphUrl(cfg)}/me`, {

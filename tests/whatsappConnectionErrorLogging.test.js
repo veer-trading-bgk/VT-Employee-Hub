@@ -1,15 +1,26 @@
 'use strict';
 
 /**
- * Regression tests for the 2026-07-09 fix (docs/phase3/TECHNICAL_DEBT.md):
- * manual-connect, PUT /config, and the WABA OAuth callback all silently
- * swallowed Meta's real error on a failed credential check -- either no
- * logging at all, or a logger.error(msg, err.response.data) call that
- * rendered as "[object Object]" in CloudWatch because logger.js only
- * extracts .message from real Error instances. Fixed to surface Meta's
- * real error (JSON.stringify'd, redacted of the access token) in both a
- * server-side log line and (for the JSON API routes) a rawError field in
- * the response, matching /connection/probe's existing convention.
+ * Regression tests for two 2026-07-09 fixes (docs/phase3/TECHNICAL_DEBT.md):
+ *
+ * 1. manual-connect, PUT /config, and the WABA OAuth callback all silently
+ *    swallowed Meta's real error on a failed credential check -- either no
+ *    logging at all, or a logger.error(msg, err.response.data) call that
+ *    rendered as "[object Object]" in CloudWatch because logger.js only
+ *    extracts .message from real Error instances. Fixed to surface Meta's
+ *    real error (JSON.stringify'd, redacted of the access token) in both a
+ *    server-side log line and (for the JSON API routes) a rawError field in
+ *    the response, matching /connection/probe's existing convention.
+ *
+ * 2. manual-connect, connection/probe, and connection/repair all requested
+ *    a "whatsapp_business_account" field on the phone number node to
+ *    auto-detect the WABA ID. Meta's Graph API doesn't support that field
+ *    there -- it threw "(#100) Tried accessing nonexisting field" and
+ *    failed the WHOLE phone-node call, blocking every reconnect attempt.
+ *    The settings form already requires an explicit wabaId, and all three
+ *    routes already had a working /me/whatsapp_business_accounts fallback,
+ *    so the field was removed; auto-discovery now goes through that
+ *    fallback only.
  *
  * No prior tests existed for any of these routes -- confirmed by repo
  * search before writing these. Same direct-handler-invocation technique as
@@ -73,10 +84,29 @@ describe('POST /api/whatsapp/manual-connect', () => {
     expect(logger.error).not.toHaveBeenCalled();
   });
 
-  test('a valid token+phoneNumberId still connects successfully (regression)', async () => {
-    axios.get.mockResolvedValueOnce({
-      data: { display_phone_number: '+91 90000 00000', whatsapp_business_account: { id: 'waba_123' } },
-    });
+  test('a valid token+phoneNumberId+explicit wabaId still connects successfully (regression)', async () => {
+    // The settings form always sends an explicit wabaId (page.tsx requires it), so this
+    // is the real-world request shape -- manual-connect no longer derives the WABA ID from
+    // the phone node's whatsapp_business_account field (removed 2026-07-09; Meta's Graph API
+    // doesn't support it there, see TECHNICAL_DEBT.md), only from this explicit value or the
+    // /me fallback below.
+    axios.get.mockResolvedValueOnce({ data: { display_phone_number: '+91 90000 00000' } });
+    dynamodb.put.mockReturnValue(resolved({}));
+    const handler = getRouteHandler(whatsappRouter, '/manual-connect', 'post');
+    const res = mockRes();
+    await handler({ body: { accessToken: FAKE_TOKEN, phoneNumberId: 'pid_123', wabaId: 'waba_123' }, user: USER }, res, jest.fn());
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+
+    const [, params] = axios.get.mock.calls[0];
+    expect(params.params.fields).not.toContain('whatsapp_business_account');
+  });
+
+  test('a valid token+phoneNumberId with no explicit wabaId still auto-discovers via /me (regression)', async () => {
+    axios.get
+      .mockResolvedValueOnce({ data: { display_phone_number: '+91 90000 00000' } })
+      .mockResolvedValueOnce({
+        data: { whatsapp_business_accounts: { data: [{ id: 'waba_123', phone_numbers: { data: [{ id: 'pid_123' }] } }] } },
+      });
     dynamodb.put.mockReturnValue(resolved({}));
     const handler = getRouteHandler(whatsappRouter, '/manual-connect', 'post');
     const res = mockRes();
@@ -104,6 +134,55 @@ describe('POST /api/whatsapp/manual-connect', () => {
     // The token must never appear in either logged argument.
     expect(logMessage).not.toContain(FAKE_TOKEN);
     expect(logDetail).not.toContain(FAKE_TOKEN);
+  });
+});
+
+describe('POST /api/whatsapp/connection/probe — WABA ID auto-discovery', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('phone-node lookup never requests the unsupported whatsapp_business_account field', async () => {
+    axios.get
+      .mockResolvedValueOnce({ data: { display_phone_number: '+91 90000 00000' } })
+      .mockRejectedValueOnce({ response: { status: 400, data: META_ERROR } });
+    const handler = getRouteHandler(whatsappRouter, '/connection/probe', 'post');
+    const res = mockRes();
+    await handler({ body: { accessToken: FAKE_TOKEN, phoneNumberId: 'pid_123' } }, res, jest.fn());
+
+    const [, params] = axios.get.mock.calls[0];
+    expect(params.params.fields).not.toContain('whatsapp_business_account');
+  });
+
+  test('phone node reachable + /me finds a matching WABA — genuine autoDiscovered success', async () => {
+    // Before the 2026-07-09 fix, this exact scenario was unreachable: the phone-node call
+    // above would have thrown "(#100) Tried accessing nonexisting field" and returned
+    // phoneValid:false before ever reaching /me. This proves the real bug is fixed, not
+    // just worked around.
+    axios.get
+      .mockResolvedValueOnce({ data: { id: 'pid_123', display_phone_number: '+91 90000 00000', verified_name: 'Acme Corp' } })
+      .mockResolvedValueOnce({
+        data: { whatsapp_business_accounts: { data: [{ id: 'waba_123', phone_numbers: { data: [{ id: 'pid_123' }] } }] } },
+      });
+    const handler = getRouteHandler(whatsappRouter, '/connection/probe', 'post');
+    const res = mockRes();
+    await handler({ body: { accessToken: FAKE_TOKEN, phoneNumberId: 'pid_123' } }, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      phoneValid: true, autoDiscovered: true, discoveryMethod: 'user_waba_list', wabaId: 'waba_123',
+    }));
+  });
+
+  test('phone node reachable but /me lacks permission — surfaces the MISSING_PERMISSION reason', async () => {
+    axios.get
+      .mockResolvedValueOnce({ data: { id: 'pid_123', display_phone_number: '+91 90000 00000' } })
+      .mockRejectedValueOnce({ response: { status: 400, data: META_ERROR } });
+    const handler = getRouteHandler(whatsappRouter, '/connection/probe', 'post');
+    const res = mockRes();
+    await handler({ body: { accessToken: FAKE_TOKEN, phoneNumberId: 'pid_123' } }, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      phoneValid: true, autoDiscovered: false, requiresManualWabaId: true,
+      rawError: expect.objectContaining({ code: 'MISSING_PERMISSION' }),
+    }));
   });
 });
 
@@ -155,6 +234,25 @@ describe('POST /api/whatsapp/connection/repair — phone-node lookup failure', (
     expect(logDetail).toContain('OAuthException');
     expect(logMessage).not.toContain(FAKE_TOKEN);
     expect(logDetail).not.toContain(FAKE_TOKEN);
+  });
+
+  test('phone-node lookup never requests the unsupported whatsapp_business_account field, and Path B2 still auto-repairs', async () => {
+    dynamodb.get.mockReturnValue(resolved({
+      Item: { companyId: 'acme', accessToken: FAKE_TOKEN, phoneNumberId: 'pid_123', wabaId: 'pid_123' },
+    }));
+    dynamodb.update.mockReturnValue(resolved({}));
+    axios.get
+      .mockResolvedValueOnce({ data: { display_phone_number: '+91 90000 00000' } })
+      .mockResolvedValueOnce({
+        data: { whatsapp_business_accounts: { data: [{ id: 'waba_123', phone_numbers: { data: [{ id: 'pid_123' }] } }] } },
+      });
+    const handler = getRouteHandler(whatsappRouter, '/connection/repair', 'post');
+    const res = mockRes();
+    await handler({ body: {}, user: USER }, res, jest.fn());
+
+    const [, params] = axios.get.mock.calls[0];
+    expect(params.params.fields).not.toContain('whatsapp_business_account');
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, method: 'auto', newWabaId: 'waba_123' }));
   });
 });
 
