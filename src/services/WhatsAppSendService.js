@@ -396,8 +396,18 @@ class WhatsAppSendService {
     const msgSK   = `MSG#${ts}#${wamid ?? Date.now()}`;
     const preview = interactive?.body?.text ?? '[Interactive]';
 
+    // interactiveType/interactiveAction persist the actual buttons/list-rows
+    // sent to Meta (interactive.action, e.g. { buttons: [...] } or
+    // { button, sections: [{ rows }] }) -- previously only body.text was
+    // stored, so the Inbox had no way to show what was actually sent beyond
+    // the message body (found 2026-07-09, docs/phase3/TECHNICAL_DEBT.md).
+    // Purely additive: `content` is unchanged, existing readers of it
+    // (last-message preview, ConversationService, older stored records with
+    // neither new field) are unaffected.
     await this._storeMessage(contact.pk, msgSK, {
       direction: 'outbound', content: preview, type: 'interactive',
+      interactiveType: interactive?.type ?? null,
+      interactiveAction: interactive?.action ?? null,
       sentBy: user.id, sentByName: user.name ?? null,
       timestamp: ts, waMessageId: wamid, msgStatus: 'sent',
     });

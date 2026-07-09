@@ -6,7 +6,7 @@ import Link from 'next/link';
 import {
   MessageSquare, Search, Send, MoreHorizontal, Phone,
   CheckCheck, Check, Clock, AlertCircle, X, ChevronLeft,
-  FileText, Download, ZoomIn,
+  FileText, Download, ZoomIn, MapPin,
   Loader2, ChevronDown, Lock, AlertTriangle,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -72,12 +72,43 @@ const INTENT_LABEL: Record<string, string> = {
   other:             'Other',
 };
 
+// Buttons/list-rows an outbound interactive message actually carried — see
+// WhatsAppSendService.js's sendInteractive(), which mirrors interactive.action
+// (the exact object sent to Meta) verbatim into interactiveAction. Absent on
+// any message sent before 2026-07-09 (docs/phase3/TECHNICAL_DEBT.md) — those
+// records predate this field and must render via body text alone, not crash.
+interface InteractiveButton {
+  type: 'reply';
+  reply: { id: string; title: string };
+}
+interface InteractiveListRow {
+  id: string;
+  title: string;
+  description?: string;
+}
+interface InteractiveAction {
+  buttons?: InteractiveButton[];
+  button?: string; // the list's own "open" button label, e.g. "View Options"
+  sections?: { rows?: InteractiveListRow[] }[];
+  name?: string; // 'cta_url' for a single URL CTA button
+  parameters?: { display_text?: string; url?: string };
+}
+
+// Present when type === 'location' — see WhatsAppSendService.js's
+// sendLocation(), which stores this verbatim alongside the message.
+interface MessageLocation {
+  latitude: number;
+  longitude: number;
+  name?: string | null;
+  address?: string | null;
+}
+
 interface WaMessage {
   SK: string;
   direction: 'inbound' | 'outbound';
   content: string;
   timestamp: string;
-  type?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'template' | 'flow_response' | 'button_reply' | 'interactive';
+  type?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'template' | 'flow_response' | 'button_reply' | 'list_reply' | 'interactive' | 'location';
   s3Key?: string;
   mediaId?: string;
   mediaUrl?: string;
@@ -89,6 +120,11 @@ interface WaMessage {
   // Present when type === 'flow_response' — a completed WhatsApp Flow answer
   flowName?: string | null;
   flowFields?: FlowFieldItem[];
+  // Present when type === 'interactive' on a message sent after 2026-07-09
+  interactiveType?: string | null;
+  interactiveAction?: InteractiveAction | null;
+  // Present when type === 'location'
+  location?: MessageLocation | null;
 }
 
 interface InternalNoteItem {
@@ -629,6 +665,75 @@ function TemplateBubble({ message, isOut }: { message: WaMessage; isOut: boolean
   );
 }
 
+// ── Interactive action preview — buttons/list rows a sent message actually
+// carried (WhatsAppSendService.js's sendInteractive() persists this verbatim
+// as message.interactiveAction since 2026-07-09). A message sent before that
+// fix has no interactiveAction at all — callers must only render this when
+// the field is present; the body-text <p> above it already covers that case.
+
+function InteractiveActionPreview({ action, isOut }: { action: InteractiveAction; isOut: boolean }) {
+  if (action.buttons && action.buttons.length > 0) {
+    return (
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {action.buttons.map((b) => (
+          <span
+            key={b.reply?.id ?? b.reply?.title}
+            className={cn(
+              'rounded-full border px-2.5 py-1 text-xs font-medium',
+              isOut ? 'border-white/40 text-white' : 'border-neutral-300 text-neutral-700 dark:border-neutral-600 dark:text-neutral-300',
+            )}
+          >
+            {b.reply?.title}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  if (action.sections && action.sections.length > 0) {
+    const rows = action.sections.flatMap((s) => s.rows ?? []);
+    return (
+      <div className={cn('mt-2 space-y-1 border-t pt-2', isOut ? 'border-white/20' : 'border-neutral-200 dark:border-neutral-700')}>
+        {action.button && (
+          <p className={cn('text-[10px] font-semibold uppercase tracking-wide', isOut ? 'text-white/60' : 'text-neutral-400')}>
+            {action.button}
+          </p>
+        )}
+        {rows.map((row) => (
+          <div
+            key={row.id}
+            className={cn('rounded-lg px-2 py-1.5', isOut ? 'bg-white/10' : 'bg-neutral-100 dark:bg-neutral-700/40')}
+          >
+            <p className="text-xs font-medium">{row.title}</p>
+            {row.description && (
+              <p className={cn('mt-0.5 text-[11px]', isOut ? 'text-white/70' : 'text-neutral-500')}>
+                {row.description}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (action.name === 'cta_url' && action.parameters?.display_text) {
+    return (
+      <div className="mt-2">
+        <span
+          className={cn(
+            'inline-flex items-center gap-1 rounded-lg border px-3 py-1.5 text-xs font-medium',
+            isOut ? 'border-white/40 text-white' : 'border-neutral-300 text-neutral-700 dark:border-neutral-600 dark:text-neutral-300',
+          )}
+        >
+          🔗 {action.parameters.display_text}
+        </span>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 // ── Flow response bubble — completed WhatsApp Flow answer, structured ─────────
 
 function FlowResponseFields({ fields, isOut }: { fields: FlowFieldItem[]; isOut: boolean }) {
@@ -649,7 +754,13 @@ function FlowResponseFields({ fields, isOut }: { fields: FlowFieldItem[]; isOut:
 // ── Message Bubble ────────────────────────────────────────────────────────────
 
 // Content is a backend-generated placeholder — suppress it when media renders
-const PLACEHOLDER_RE = /^\[(image|video|audio|document|sticker|voice|Broadcast:)/i;
+// Location: added 2026-07-09 (docs/phase3/TECHNICAL_DEBT.md) -- caught by the
+// real-browser verification harness for the location rendering fix: a
+// location-typed message with no message.location (the dedicated branch
+// above falls through for it) was rendering "[Location: X]" TWICE, once as
+// this placeholder and once via the showText paragraph below, since this
+// regex never recognised the "[Location:" prefix as one it already handles.
+const PLACEHOLDER_RE = /^\[(image|video|audio|document|sticker|voice|Broadcast:|Location:)/i;
 
 function MessageBubble({ message }: { message: WaMessage }) {
   const isOut = message.direction === 'outbound';
@@ -712,6 +823,9 @@ function MessageBubble({ message }: { message: WaMessage }) {
           )}
         >
           <p className="whitespace-pre-wrap break-words">{message.content}</p>
+          {message.interactiveAction && (
+            <InteractiveActionPreview action={message.interactiveAction} isOut={isOut} />
+          )}
           <div className={cn('mt-0.5 flex items-center gap-1', isOut ? 'justify-end' : 'justify-start')}>
             <span className={cn('text-[9px]', isOut ? 'text-white/70' : 'text-neutral-400')}>
               {msgTime(message.timestamp)}
@@ -723,10 +837,60 @@ function MessageBubble({ message }: { message: WaMessage }) {
     );
   }
 
-  // button_reply is a plain readable message (the tapped button's title) —
-  // excluded here so it renders as normal text, not the "media unavailable"
-  // italic placeholder style the isMedia branch below is meant for.
-  const isMedia = !!(message.type && message.type !== 'text' && message.type !== 'button_reply');
+  // Location messages carry structured lat/lng/name/address — see
+  // WhatsAppSendService.js's sendLocation(). Only takes this branch when
+  // message.location is actually present; a location-typed message without
+  // it (shouldn't happen post-fix, but defensive for any malformed record)
+  // falls through to the generic placeholder below instead of crashing.
+  if (message.type === 'location' && message.location) {
+    const { latitude, longitude, name, address } = message.location;
+    const mapUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+    return (
+      <div className={cn('mb-1.5 flex', isOut ? 'justify-end' : 'justify-start')}>
+        <div
+          className={cn(
+            'max-w-[75%] rounded-2xl px-3 py-2.5 text-sm shadow-sm',
+            isOut
+              ? 'bg-primary-600 text-white rounded-br-sm'
+              : 'bg-white text-neutral-900 border border-neutral-200 rounded-bl-sm dark:bg-neutral-800 dark:text-neutral-100 dark:border-neutral-700',
+          )}
+        >
+          <div className={cn('mb-1 flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide', isOut ? 'text-white/60' : 'text-neutral-400')}>
+            <MapPin className="h-2.5 w-2.5" aria-hidden />
+            Location
+          </div>
+          {name && <p className="font-medium break-words">{name}</p>}
+          {address && (
+            <p className={cn('whitespace-pre-wrap break-words text-xs', isOut ? 'text-white/80' : 'text-neutral-600 dark:text-neutral-300')}>
+              {address}
+            </p>
+          )}
+          <a
+            href={mapUrl}
+            target="_blank"
+            rel="noreferrer"
+            className={cn('mt-1 inline-block text-xs underline underline-offset-2', isOut ? 'text-white/90' : 'text-primary-600 dark:text-primary-400')}
+          >
+            View on map
+          </a>
+          <div className={cn('mt-1 flex items-center gap-1', isOut ? 'justify-end' : 'justify-start')}>
+            <span className={cn('text-[9px]', isOut ? 'text-white/70' : 'text-neutral-400')}>
+              {msgTime(message.timestamp)}
+            </span>
+            {isOut && <DeliveryIcon status={message.msgStatus} />}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // button_reply/list_reply are plain readable messages (the tapped
+  // button/row's title) — excluded here so they render as normal text, not
+  // the "media unavailable" italic placeholder style the isMedia branch
+  // below is meant for. list_reply was missing from this exclusion until
+  // 2026-07-09 (docs/phase3/TECHNICAL_DEBT.md) — a tapped list reply rendered
+  // in the italic placeholder style instead of as plain text.
+  const isMedia = !!(message.type && message.type !== 'text' && message.type !== 'button_reply' && message.type !== 'list_reply');
   const hasMediaSource = !!(message.s3Key || message.mediaId || message.mediaUrl);
   const showText = message.content && !(isMedia && PLACEHOLDER_RE.test(message.content));
 
@@ -746,7 +910,7 @@ function MessageBubble({ message }: { message: WaMessage }) {
           </div>
         )}
         {isMedia && !hasMediaSource && (
-          <p className={cn('text-xs italic', isOut ? 'text-white/70' : 'text-neutral-400')}>
+          <p className={cn('text-xs italic whitespace-pre-wrap break-words', isOut ? 'text-white/70' : 'text-neutral-400')}>
             {message.content || `[${message.type ?? 'media'}]`}
           </p>
         )}

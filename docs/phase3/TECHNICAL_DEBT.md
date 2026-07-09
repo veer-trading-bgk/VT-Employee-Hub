@@ -270,3 +270,11 @@
 **Fix:** Not done. Same registry, single-value output shape instead of an array — would need a small `resolveTemplateValue(value, ctx, fallback)` helper alongside `resolveTemplateParams()`, since the header case has one extra fallback rung (the template's own example header text) that the body-params array shape doesn't need.
 
 **Priority:** Low — cosmetic duplication (2 sites, ~4 lines each), not a live bug; flagged so it doesn't get lost, next candidate whenever either site is touched again.
+
+## Branch Record's name/address Fields Look Swapped (Settings Data-Entry, Not Rendering)
+
+**Issue:** Found 2026-07-09 while auditing/fixing Inbox location-message rendering. A real `CONFIG#BRANCH#viir_trading` record sent as a test location today has `name: "Angel One Ltd, sector no34, 1st main 2nd cross navanagar"` (a full street address) and `address: "Bagalkot"` (just a city) — the two fields read as if their content was entered into the wrong inputs in Settings → Branches. `branchSchema` (`src/utils/validation.js:166-171`) itself is fine — `name` and `address` are both free-text strings with no validation that would catch this, it's a values-look-swapped issue in what was actually typed, not a schema or send-path bug. Backend (`WhatsAppSendService.js`'s `sendLocation()`) and the new Inbox location renderer both pass `name`/`address` through exactly as stored — neither field is misrouted in code.
+
+**Fix:** Not done — this is a one-record Settings data-entry correction (re-edit the branch in Settings → Branches with the fields in the right inputs), not a code fix. Worth a glance at the Branches editor UI to confirm its `name`/`address` inputs are clearly labeled, since this happened at least once.
+
+**Priority:** Low — cosmetic, one branch record, self-correctable in Settings; not blocking the location-rendering fix itself.
