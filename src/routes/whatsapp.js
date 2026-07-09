@@ -359,7 +359,12 @@ router.get('/auth/callback', async (req, res) => {
     logger.info(`WABA connected for company ${companyId}: ${phoneNumber}`);
     res.send(popupHtml(true, `Connected: ${phoneNumber ?? 'WhatsApp Business'}`));
   } catch (err) {
-    logger.error('WABA OAuth callback error', err?.response?.data ?? err.message);
+    // logger.error only extracts .message from Error instances — passing
+    // err.response.data (a plain object) straight through renders as
+    // "[object Object]" in CloudWatch. JSON.stringify it so the actual Meta
+    // error is readable. Never logs err.config/err.request (carry the raw
+    // access_token in the request params) — only response.data/message.
+    logger.error('WABA OAuth callback error', JSON.stringify(err?.response?.data ?? { message: err.message }));
     res.send(popupHtml(false, 'Connection failed — check app credentials'));
   }
 });
@@ -384,7 +389,15 @@ router.post('/manual-connect', authMiddleware, checkRole(['admin']), async (req,
       phoneNumber = verifyRes.data?.display_phone_number ?? null;
       derivedWabaId = verifyRes.data?.whatsapp_business_account?.id ?? null;
     } catch (e) {
-      return res.status(400).json({ error: 'Invalid credentials — Meta rejected the token or phone number ID' });
+      // Never log e.config/e.request here — they carry the raw access_token in
+      // the request params. Only e.response.data (Meta's own error body) and
+      // e.response.status are safe; neither ever echoes the token back.
+      const rawError = e.response?.data ?? { message: e.message };
+      logger.error(
+        `manual-connect: Meta rejected the phone-node lookup for phoneNumberId=${phoneNumberId.trim()} (status ${e.response?.status ?? 'n/a'})`,
+        JSON.stringify(rawError),
+      );
+      return res.status(400).json({ error: 'Invalid credentials — Meta rejected the token or phone number ID', rawError });
     }
 
     // Resolve: explicit entry takes precedence over auto-detected
@@ -508,8 +521,15 @@ router.put('/config', authMiddleware, checkRole(['admin']), async (req, res, nex
           params: { fields: 'id', access_token: resolvedToken },
           timeout: 10000,
         });
-      } catch {
-        return res.status(400).json({ error: 'Could not verify credentials with Meta — check that the Phone Number ID and Access Token are correct and valid.' });
+      } catch (e) {
+        // Never log e.config/e.request — they carry the raw access_token in
+        // the request params. Only e.response.data/status are safe.
+        const rawError = e.response?.data ?? { message: e.message };
+        logger.error(
+          `PUT /config: Meta rejected credential verification for phoneNumberId=${phoneNumberId} (status ${e.response?.status ?? 'n/a'})`,
+          JSON.stringify(rawError),
+        );
+        return res.status(400).json({ error: 'Could not verify credentials with Meta — check that the Phone Number ID and Access Token are correct and valid.', rawError });
       }
     }
 
@@ -707,7 +727,14 @@ router.post('/connection/repair', authMiddleware, checkRole(['admin']), async (r
       newWabaId = phoneData?.whatsapp_business_account?.id ?? null;
       phoneNumber = phoneData?.display_phone_number ?? phoneNumber;
     } catch (e) {
-      return res.status(400).json({ error: 'Failed to reach Meta API — check that the stored access token is still valid.', requiresManualWabaId: true });
+      // Never log e.config/e.request — they carry the raw access_token in
+      // the request params. Only e.response.data/status are safe.
+      const rawError = e.response?.data ?? { message: e.message };
+      logger.error(
+        `connection/repair: Meta rejected the phone-node lookup for phoneNumberId=${cfg.phoneNumberId} (status ${e.response?.status ?? 'n/a'})`,
+        JSON.stringify(rawError),
+      );
+      return res.status(400).json({ error: 'Failed to reach Meta API — check that the stored access token is still valid.', requiresManualWabaId: true, rawError });
     }
 
     // ── Path B2: /me/whatsapp_business_accounts fallback ─────────────────────
