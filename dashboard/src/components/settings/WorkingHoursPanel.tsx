@@ -102,6 +102,12 @@ function WorkingHoursForm({ initialHours, initialOOO }: { initialHours: HoursCon
     },
   });
 
+  const saveButton = (
+    <Button size="sm" loading={saveMut.isPending} disabled={!dirty} onClick={() => saveMut.mutate()}>
+      Save Working Hours
+    </Button>
+  );
+
   return (
     <Card className="mt-4">
       <div className="flex items-center justify-between">
@@ -185,11 +191,20 @@ function WorkingHoursForm({ initialHours, initialOOO }: { initialHours: HoursCon
             )}
           </div>
 
-          <div className="flex justify-end">
-            <Button size="sm" loading={saveMut.isPending} disabled={!dirty} onClick={() => saveMut.mutate()}>
-              Save Working Hours
-            </Button>
-          </div>
+          <div className="flex justify-end">{saveButton}</div>
+        </div>
+      )}
+
+      {/* Save must stay reachable even when the settings panel above is
+          collapsed/hidden — most importantly right after flipping the master
+          `hours.enabled` toggle off, which hides that whole block (including
+          the nested OOO editor). Without this, an OFF toggle can never
+          actually be persisted (see 2026-07-09 investigation). The nested
+          OOO-only toggle doesn't need this fix — its Save button is this
+          same shared button, unaffected by `ooo.enabled`. */}
+      {dirty && !(hours.enabled && expanded) && (
+        <div className="mt-4 flex justify-end border-t border-neutral-100 pt-4 dark:border-neutral-800">
+          {saveButton}
         </div>
       )}
     </Card>

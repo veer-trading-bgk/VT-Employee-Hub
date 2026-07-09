@@ -8,6 +8,14 @@
 
 **Priority:** Medium — must be resolved before the table reaches ~10,000+ records to avoid query performance degradation and excessive read costs from filtering noise out of GSI results.
 
+## PDF Extraction Test Fails Inside Jest Only — Not a Production Bug
+
+**Issue:** `tests/documentExtraction.test.js`'s `'PDF: extracts heading and body text'` test fails (`result.ok` is `false`) when run under Jest — confirmed pre-existing as of at least Era 42 (commit `12a9405`), not introduced by any later change. The same `extractText()` call against the same real fixture (`tests/fixtures/sample.pdf`) succeeds when run in a plain Node script outside Jest — verified deterministically, 3/3 runs, correct extracted blocks (`"Fees & Charges"`, the real body text). Isolated specifically to the PDF path: the DOCX/PPTX/XLSX fixture tests in the same file all pass. Root cause traced to `documentExtraction.js`'s PDF branch, which loads `officeParser`'s PDF support (`pdfjs-dist`) via a `file://` URL worker (`PDF_WORKER_SRC`) — that worker load evidently behaves differently under Jest's sandboxed module/VM environment than under a bare `node` process, though the exact mechanism (module registry, `globalThis` differences, worker-thread interaction with Jest's own worker-based test runner, or something else in that family) has not been pinned down further.
+
+**Fix:** Not yet root-caused past the above. Needs investigation into either mocking/stubbing the `pdfjs-dist` worker load specifically for the Jest environment, or an alternative test strategy for the PDF extraction path that doesn't depend on Jest's VM sandbox correctly handling a `file://` worker.
+
+**Priority:** Low — real PDF extraction works correctly in production (Lambda runs as a real Node process, not inside Jest), so this is a test-suite gap, not a production bug. But it means the PDF extraction path currently has no passing automated test coverage — worth knowing before assuming a green CI run means every extraction path is verified.
+
 ## ~~Incomplete Hard-Purge — CONV#/TL# Not Cleaned Up~~ — FIXED 2026-07-08
 
 **Issue (as of 2026-07-07):** `DELETE /api/crm/leads/:id` (`crm.js:607-669`) purged the `LEAD#`/`INBOX#` partitions and released the phone-uniqueness lock, but never touched `CONV#`/`TL#` — a separate, newer (Phase 2 Customer 360) entity family this route's partition list was never extended to cover. A "hard purge" left conversation content behind (`CONV#META`'s `lastMessageText`, potentially `aiSummary`) in orphaned records pointing at a lead that no longer existed.
@@ -191,3 +199,11 @@
 **Fix:** Would need a `logAudit()` call (or a small append-only history item) alongside the existing `dynamodb.put()` in `src/routes/ai.js`'s PUT /config route, matching how other admin-config changes in this codebase are already audited.
 
 **Priority:** Low — worth adding audit logging if this question ever needs answering under less convenient circumstances (a company with real traffic and an ambiguous incident window).
+
+## welcomeConfigSchema Doesn't Exempt Disabled Configs From Content Validation
+
+**Issue:** `welcomeConfigSchema`'s `.superRefine()` (`src/utils/validation.js`) requires non-empty `buttons`+`bodyText` whenever `messageType` is `reply_buttons`, and non-empty `ctaButtons`+`bodyText` whenever `messageType` is `cta_buttons` — regardless of the record's `enabled` flag. Surfaced 2026-07-09 while fixing the Welcome Message/Working Hours toggle-visibility bug in `WelcomeMessagePanel.tsx`/`WorkingHoursPanel.tsx` (Save button was unreachable after toggling off; now fixed). So: an admin disabling Welcome Message while its `reply_buttons`/`cta_buttons` content is mid-edit-and-cleared (buttons removed, bodyText emptied, but not yet switched back to `messageType: 'template'`) still gets a 400 on save, even though the record being saved is `enabled: false` and would never actually be sent. Not caused by the toggle-visibility fix — pre-existing in the schema, just adjacent to it.
+
+**Fix:** Not yet scoped. Likely fix is scoping the `.superRefine()` checks to only fire when `data.enabled` is true, so a disabled config can be saved in any partially-edited content state.
+
+**Priority:** Low — narrow window (only hit while actively mid-editing button/CTA content and disabling in the same unsaved session), and the failure mode is a clear 400 with a validation message, not silent data loss.
