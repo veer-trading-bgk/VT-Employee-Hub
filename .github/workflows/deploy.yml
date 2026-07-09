@@ -5,9 +5,58 @@ on:
     branches: [main]
 
 jobs:
+  # Path-based change detection (2026-07-09) — decides which of the 3 jobs
+  # below actually need to run for this push. Uses dorny/paths-filter rather
+  # than a native on.push.paths trigger: on.push.paths can only gate whether
+  # the ENTIRE workflow fires, not which jobs run within one triggered run —
+  # and this workflow needs 3 independently-conditioned jobs sharing one
+  # push event (a docs-only push must still evaluate to "run nothing", not
+  # "don't trigger the workflow at all", so a run still appears in the Actions
+  # tab showing exactly what was skipped and why).
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      backend:   ${{ steps.filter.outputs.backend }}
+      dashboard: ${{ steps.filter.outputs.dashboard }}
+      e2e:       ${{ steps.filter.outputs.e2e }}
+      workflow:  ${{ steps.filter.outputs.workflow }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'src/**'
+              - 'package.json'
+              - 'package-lock.json'
+            dashboard:
+              - 'dashboard/**'
+            # E2E exercises the real API against a live URL, so it also needs
+            # to run when backend routes/services change, not just when the
+            # dashboard does — backend-only utils/config tweaks don't reach
+            # any route surface E2E would catch, so they're deliberately
+            # excluded here even though they match `backend` above.
+            e2e:
+              - 'dashboard/**'
+              - 'src/routes/**'
+              - 'src/services/**'
+            # A CI config change should prove the full pipeline still works —
+            # ORed into every job's `if` below, forcing all 3 to run
+            # regardless of what else did or didn't change.
+            workflow:
+              - '.github/**'
+          # No `docs` filter is needed: docs/** and root-level *.md files
+          # don't match any pattern above, so a docs-only push naturally
+          # leaves backend/dashboard/e2e/workflow all `false` and every job
+          # below skips — that's the "no jobs run" case, not a separate rule.
+
   deploy-backend:
     name: Backend → AWS Lambda
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.backend == 'true' || needs.changes.outputs.workflow == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -118,7 +167,19 @@ jobs:
   e2e:
     name: E2E Tests (Playwright)
     runs-on: ubuntu-latest
-    needs: [deploy-backend]
+    needs: [changes, deploy-backend]
+    # always() makes GitHub actually evaluate this expression instead of
+    # auto-skipping because deploy-backend didn't run — the explicit
+    # result-check right after is what makes that safe: this still runs when
+    # deploy-backend was cleanly skipped (dashboard-only push, still needs
+    # E2E per the `e2e` filter above), but correctly stays skipped if
+    # deploy-backend genuinely failed. "Skipped" here reads as skipped in the
+    # Actions UI, never as a failed check — no required-status-check on main
+    # depends on this passing (continue-on-error: true below, unchanged).
+    if: |
+      always() &&
+      (needs.changes.outputs.e2e == 'true' || needs.changes.outputs.workflow == 'true') &&
+      (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
     continue-on-error: true
     defaults:
       run:
@@ -159,7 +220,14 @@ jobs:
   deploy-dashboard:
     name: Dashboard → Vercel
     runs-on: ubuntu-latest
-    needs: [deploy-backend]
+    needs: [changes, deploy-backend]
+    # Same skipped-equals-success pattern as e2e above — runs on a
+    # dashboard-only push (deploy-backend cleanly skipped) but stays skipped
+    # if deploy-backend genuinely failed.
+    if: |
+      always() &&
+      (needs.changes.outputs.dashboard == 'true' || needs.changes.outputs.workflow == 'true') &&
+      (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
