@@ -17,6 +17,7 @@ import {
 import { Customer360Provider, useCustomer360 } from '@/contexts/Customer360Context';
 import { ContactTabPanel } from '@/components/contacts/ContactTabPanel';
 import { ContactTags } from '@/components/tags/ContactTags';
+import { CustomerJourneyBar } from '@/components/contacts/CustomerJourneyBar';
 import { Avatar } from '@/components/v3/ui/Avatar';
 import { Badge } from '@/components/v3/ui/Badge';
 import { Button } from '@/components/v3/ui/Button';
@@ -88,7 +89,7 @@ function UnknownContactView({ contactId }: { contactId: string }) {
 function Contact360Shell({ contactId }: { contactId: string }) {
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { contact, stageObj, isLoading, refresh } = useCustomer360();
+  const { contact, stages, stageObj, isLoading, refresh } = useCustomer360();
 
   const [activeTab, setActiveTab] = useState<TabId>(resolveTab(searchParams.get('tab')));
 
@@ -153,41 +154,51 @@ function Contact360Shell({ contactId }: { contactId: string }) {
       </div>
 
       {/* Contact header */}
-      <div className="flex items-center gap-4 border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950">
-        <Avatar name={contact.name} size={48} />
-        <div className="min-w-0 flex-1">
-          <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-            {contact.name}
-          </h1>
-          <div className="flex flex-wrap items-center gap-3 mt-0.5">
-            <span className="text-sm text-neutral-500">{contact.phone}</span>
-            <Badge style={{ backgroundColor: stageColor + '20', color: stageColor }}>
-              {stageLabel}
-            </Badge>
-            {contact.assignedToName && (
-              <span className="text-xs text-neutral-400">
-                Owner: {contact.assignedToName}
-              </span>
-            )}
+      <div className="border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950">
+        <div className="flex items-center gap-4">
+          <Avatar name={contact.name} size={48} />
+          <div className="min-w-0 flex-1">
+            <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+              {contact.name}
+            </h1>
+            <div className="flex flex-wrap items-center gap-3 mt-0.5">
+              <span className="text-sm text-neutral-500">{contact.phone}</span>
+              <Badge style={{ backgroundColor: stageColor + '20', color: stageColor }}>
+                {stageLabel}
+              </Badge>
+              {contact.assignedToName && (
+                <span className="text-xs text-neutral-400">
+                  Owner: {contact.assignedToName}
+                </span>
+              )}
+            </div>
+            {/* Always visible regardless of active tab — CrmTab also has its own
+                tag editor for the deal-context view, this is the quick-access one. */}
+            <div className="mt-1.5">
+              <ContactTags
+                tagIds={contact.tags ?? []}
+                leadId={contact.leadId}
+                phone={contact.phone}
+                onMutated={refresh}
+              />
+            </div>
           </div>
-          {/* Always visible regardless of active tab — CrmTab also has its own
-              tag editor for the deal-context view, this is the quick-access one. */}
-          <div className="mt-1.5">
-            <ContactTags
-              tagIds={contact.tags ?? []}
-              leadId={contact.leadId}
-              phone={contact.phone}
-              onMutated={refresh}
-            />
+          <div className="flex items-center gap-2 shrink-0">
+            <Link href={`/communications?contactId=${contactId}`}>
+              <Button variant="secondary" size="sm" iconLeft={<MessageSquare className="h-4 w-4" />}>
+                Message
+              </Button>
+            </Link>
+            <Button variant="ghost" size="sm" iconLeft={<MoreHorizontal className="h-4 w-4" />} aria-label="More actions" />
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <Link href={`/communications?contactId=${contactId}`}>
-            <Button variant="secondary" size="sm" iconLeft={<MessageSquare className="h-4 w-4" />}>
-              Message
-            </Button>
-          </Link>
-          <Button variant="ghost" size="sm" iconLeft={<MoreHorizontal className="h-4 w-4" />} aria-label="More actions" />
+
+        {/* Customer Journey Bar — ported 2026-07-09 from the orphaned
+            ContactHeader.tsx (docs/phase3/TECHNICAL_DEBT.md); real,
+            documented functionality (docs/v3/08_CUSTOMER360_VISION.md's
+            header mockup) that had no live home until now. */}
+        <div className="mt-3">
+          <CustomerJourneyBar contact={contact} stages={stages} />
         </div>
       </div>
 

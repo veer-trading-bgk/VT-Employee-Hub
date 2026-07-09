@@ -1,4 +1,5 @@
 import type { ContactDetail } from './types';
+import type { PipelineStage } from '@/hooks/usePipelineStages';
 
 export type JourneyStepId =
   | 'source'
@@ -24,17 +25,63 @@ type ContactForJourney = Pick<
   'stage' | 'createdAt' | 'messageCount' | 'milestones'
 >;
 
-// Stages considered to be at or past "Proposal" in the pipeline
-const PROPOSAL_STAGES = new Set(['proposal', 'negotiation', 'won', 'closed', 'converted']);
-const WON_STAGES = new Set(['won', 'closed', 'converted']);
+/**
+ * 2026-07-09 port (docs/phase3/TECHNICAL_DEBT.md): the original Proposal/Won
+ * detection matched `contact.stage` against a hardcoded name Set
+ * (`proposal`, `negotiation`, `won`, `closed`, `converted`) — none of which
+ * exist in the actual pipeline (`PipelineService.DEFAULT_STAGES`: new_lead,
+ * contacted, interested, kyc_done, demat_done, lost). Proposal/Won could
+ * never become reachable for any company on the default pipeline, and a
+ * company with a genuinely custom pipeline wouldn't necessarily use those
+ * names either — a stage-name Set can never track an arbitrary, per-company
+ * ordered list.
+ *
+ * Fixed to be ORDER-aware instead of name-aware, reusing the exact
+ * `positiveStages`/`maxOrder` convention `LeadScoringService._stagePoints()`
+ * already established for "how far along the pipeline is this lead," so the
+ * two don't drift into two different definitions of pipeline progress:
+ * "lost" is excluded from the ordering (its `order` is highest but means
+ * nothing about progress), Won = the current stage IS the highest-order
+ * non-lost stage, Proposal = the current stage is at or past the
+ * second-highest order. A lost lead never counts as having reached Proposal
+ * or Won, regardless of which stage it was in before being marked lost —
+ * this codebase has no signal for "how far had it gotten," and crediting
+ * progress for a dead deal would overstate it.
+ */
+function pipelineProgress(stage: string, stages: PipelineStage[]): { reachedProposal: boolean; reachedWon: boolean } {
+  if (!stage || stage === 'lost') return { reachedProposal: false, reachedWon: false };
 
-function normalise(s: string): string {
-  return s.toLowerCase().replace(/[\s\-_]/g, '');
+  const positiveStages = stages.filter((s) => s.key !== 'lost');
+  if (positiveStages.length === 0) return { reachedProposal: false, reachedWon: false };
+
+  const maxOrder = Math.max(...positiveStages.map((s) => s.order));
+  const current = positiveStages.find((s) => s.key === stage);
+  if (!current) return { reachedProposal: false, reachedWon: false };
+
+  return {
+    reachedProposal: current.order >= maxOrder - 1,
+    reachedWon: current.order >= maxOrder,
+  };
 }
 
-// Pure function — no React dependencies, fully testable
-export function inferJourney(contact: ContactForJourney): JourneyStep[] {
+/**
+ * Pure function — no React dependencies, fully testable.
+ *
+ * `stages` is the company's real pipeline (`usePipelineStages()` /
+ * `useCustomer360().stages`) — required so Proposal/Won can be computed
+ * against actual stage order instead of a stale hardcoded name list (see
+ * `pipelineProgress()`'s own comment).
+ *
+ * Meeting/Retention/Referral read `contact.milestones`, a field marked
+ * "Reserved — Phase 2 Customer Journey" in `lib/contacts/types.ts` — no
+ * backend write path sets it yet (confirmed by repo-wide grep during this
+ * port). Those three steps will show `state: 'future'` for every contact
+ * until that phase ships; this is accurate (nothing has been recorded), not
+ * a bug, and is out of scope for this frontend-only port.
+ */
+export function inferJourney(contact: ContactForJourney, stages: PipelineStage[]): JourneyStep[] {
   const stage = contact.stage ?? '';
+  const { reachedProposal, reachedWon } = pipelineProgress(stage, stages);
 
   // Ordered completion flags — true means the step has been reached
   const flags: boolean[] = [
@@ -42,8 +89,8 @@ export function inferJourney(contact: ContactForJourney): JourneyStep[] {
     (contact.messageCount ?? 0) > 0,                        // conversation
     !!stage,                                                 // lead — has a CRM stage
     !!contact.milestones?.meeting,                          // meeting
-    PROPOSAL_STAGES.has(normalise(stage)),                   // proposal
-    WON_STAGES.has(normalise(stage)),                        // won
+    reachedProposal,                                         // proposal
+    reachedWon,                                              // won
     !!contact.milestones?.retention,                        // retention
     !!contact.milestones?.referral,                         // referral
   ];

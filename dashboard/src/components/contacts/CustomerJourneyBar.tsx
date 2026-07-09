@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { inferJourney } from '@/lib/contacts/journeyInference';
 import type { ContactDetail } from '@/lib/contacts/types';
+import type { PipelineStage } from '@/hooks/usePipelineStages';
 
 type ContactForJourney = Pick<ContactDetail, 'stage' | 'createdAt' | 'messageCount' | 'milestones'>;
 
@@ -15,10 +16,22 @@ function fmtDate(iso?: string): string | null {
 
 interface CustomerJourneyBarProps {
   contact: ContactForJourney;
+  stages: PipelineStage[];
 }
 
-export function CustomerJourneyBar({ contact }: CustomerJourneyBarProps) {
-  const steps = inferJourney(contact);
+/**
+ * Ported 2026-07-09 from the orphaned ContactHeader.tsx (docs/phase3/
+ * TECHNICAL_DEBT.md) into the live Customer 360 header
+ * (app/(v3)/contacts/[contactId]/page.tsx) — real, documented functionality
+ * (docs/v3/08_CUSTOMER360_VISION.md's header mockup shows this exact
+ * 8-step bar) that had zero importers anywhere. Recolored from the
+ * orphaned file's slate-* palette to neutral-*, matching the live page's
+ * actual current convention (docs/v3/10_DESIGN_SYSTEM.md documents slate-*
+ * as canonical, but the shipped V3 page uses neutral-* throughout — matching
+ * the page this component now actually lives in, not the stale doc).
+ */
+export function CustomerJourneyBar({ contact, stages }: CustomerJourneyBarProps) {
+  const steps = inferJourney(contact, stages);
   const [tooltip, setTooltip] = useState<number | null>(null);
 
   return (
@@ -36,12 +49,12 @@ export function CustomerJourneyBar({ contact }: CustomerJourneyBarProps) {
                 onBlur={() => setTooltip(null)}
                 aria-label={`${step.label}: ${step.state}`}
                 className={[
-                  'flex h-5 w-5 items-center justify-center rounded-full border-2 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-1',
+                  'flex h-5 w-5 items-center justify-center rounded-full border-2 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-1',
                   step.state === 'complete'
-                    ? 'border-indigo-500 bg-indigo-500 dark:border-indigo-400 dark:bg-indigo-400'
+                    ? 'border-primary-600 bg-primary-600 dark:border-primary-400 dark:bg-primary-400'
                     : step.state === 'active'
-                    ? 'border-indigo-500 bg-white dark:border-indigo-400 dark:bg-slate-900'
-                    : 'border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-900',
+                    ? 'border-primary-600 bg-white dark:border-primary-400 dark:bg-neutral-900'
+                    : 'border-neutral-300 bg-white dark:border-neutral-600 dark:bg-neutral-900',
                 ].join(' ')}
               >
                 {step.state === 'complete' && (
@@ -60,7 +73,7 @@ export function CustomerJourneyBar({ contact }: CustomerJourneyBarProps) {
                 )}
                 {step.state === 'active' && (
                   <span
-                    className="h-2 w-2 rounded-full bg-indigo-500 dark:bg-indigo-400"
+                    className="h-2 w-2 rounded-full bg-primary-600 dark:bg-primary-400"
                     aria-hidden="true"
                   />
                 )}
@@ -70,8 +83,8 @@ export function CustomerJourneyBar({ contact }: CustomerJourneyBarProps) {
                 className={[
                   'mt-0.5 whitespace-nowrap text-[9px] font-medium leading-tight',
                   step.state === 'future'
-                    ? 'text-slate-400 dark:text-slate-600'
-                    : 'text-slate-600 dark:text-slate-300',
+                    ? 'text-neutral-400 dark:text-neutral-600'
+                    : 'text-neutral-600 dark:text-neutral-300',
                 ].join(' ')}
               >
                 {step.label}
@@ -81,7 +94,7 @@ export function CustomerJourneyBar({ contact }: CustomerJourneyBarProps) {
               {tooltip === i && (
                 <div
                   role="tooltip"
-                  className="absolute bottom-full left-1/2 z-20 mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-2.5 py-1.5 text-[10px] leading-snug text-white shadow-lg dark:bg-slate-700"
+                  className="absolute bottom-full left-1/2 z-20 mb-2 -translate-x-1/2 whitespace-nowrap rounded-lg bg-neutral-900 px-2.5 py-1.5 text-[10px] leading-snug text-white shadow-lg dark:bg-neutral-700"
                 >
                   <strong>{step.label}</strong>
                   {step.date && (
@@ -101,8 +114,8 @@ export function CustomerJourneyBar({ contact }: CustomerJourneyBarProps) {
                 className={[
                   'mb-4 h-[2px] w-3 flex-shrink-0 sm:w-4',
                   steps[i].state !== 'future' && steps[i + 1].state !== 'future'
-                    ? 'bg-indigo-300 dark:bg-indigo-700'
-                    : 'bg-slate-200 dark:bg-slate-700',
+                    ? 'bg-primary-300 dark:bg-primary-700'
+                    : 'bg-neutral-200 dark:bg-neutral-700',
                 ].join(' ')}
               />
             )}
