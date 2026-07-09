@@ -198,6 +198,37 @@ router.get('/export', authMiddleware, rateLimit(5, 60_000), async (req, res, nex
   }
 });
 
+// ── GET /api/contacts/all ─────────────────────────────────────────────────────
+// Same fetch+merge+filter as GET / and GET /export (fetchFilteredContacts,
+// shared not duplicated) — every matching row, unpaginated, in one response.
+// Exists for views that need the *complete* set to render correctly (Sales
+// Kanban board: grouping by stage, plus its KPI/List/Team sub-views, all
+// fed from one query) rather than a page at a time. Deliberately a separate
+// route from GET /export, not a shared one with a loosened limit: export is
+// a human-triggered, deliberate one-off action (rate-limited tight on
+// purpose, Track A2), while this is a normal page-load/tab-switch fetch —
+// same call frequency as GET / itself, so it gets GET /'s policy (no
+// explicit rate limit) rather than export's.
+//
+// Track A3 (2026-07-09, docs/phase3/TECHNICAL_DEBT.md): added because
+// sales/page.tsx was calling GET /?pageSize=500 expecting everything back in
+// one page, but GET / hard-caps pageSize at 100 — silently truncating any
+// company past 100 leads (confirmed live: viir_trading had 114 leads, 14
+// invisible on the board/list/team views and undercounted in every KPI).
+// Looping GET / client-side page-by-page was considered and rejected: each
+// page would re-run fetchFilteredContacts()'s full GSI query + admin scan +
+// dedup + sort + filter from scratch, reintroducing the exact
+// O(pages x company-size) cost A2 just removed from CSV export.
+router.get('/all', authMiddleware, async (req, res, next) => {
+  try {
+    const { q = '', source = '', stage = '', tag = '' } = req.query;
+    const contacts = await fetchFilteredContacts(req, { q, source, stage, tag });
+    res.json({ success: true, contacts, total: contacts.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── DELETE /api/contacts/unknown/:phone — hard-purge all INBOX# items for this phone ──
 // Deletes the CONTACT record + all MSG#* items under the INBOX# PK.
 router.delete('/unknown/:phone', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), async (req, res, next) => {

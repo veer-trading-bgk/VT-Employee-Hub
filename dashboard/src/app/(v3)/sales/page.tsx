@@ -334,7 +334,7 @@ function KanbanColumn({
   const pct = totalContacts > 0 ? Math.round((contacts.length / totalContacts) * 100) : 0;
 
   return (
-    <div className="flex w-[252px] shrink-0 flex-col" ref={setNodeRef}>
+    <div className="flex min-h-0 w-[252px] shrink-0 flex-col" ref={setNodeRef}>
       <div
         className="rounded-t-xl border border-b-0 border-neutral-200 bg-white px-3 py-3 dark:border-neutral-800 dark:bg-neutral-950"
         style={{ borderTop: `3px solid ${stage.color}` }}
@@ -352,8 +352,14 @@ function KanbanColumn({
         </div>
       </div>
 
+      {/* min-h-0 + overflow-y-auto so THIS list scrolls once it exceeds the
+          column's stretched height, instead of growing unbounded and forcing
+          the whole page (including the header/KPI/filter bar above) to scroll —
+          Track A3, docs/phase3/TECHNICAL_DEBT.md. The droppable ref stays on
+          the outer column div above, so drag-and-drop hit-testing is against
+          that unscrolled bounding box, unaffected by this inner scroll. */}
       <div className={cn(
-        'flex-1 rounded-b-xl border border-neutral-200 bg-neutral-50/80 p-2 space-y-2 min-h-[200px]',
+        'flex-1 min-h-[200px] overflow-y-auto rounded-b-xl border border-neutral-200 bg-neutral-50/80 p-2 space-y-2',
         'transition-colors duration-150',
         isOver
           ? 'bg-primary-50 border-primary-300 dark:bg-primary-900/15 dark:border-primary-700'
@@ -1125,10 +1131,17 @@ export default function SalesPage() {
 
   // ── Queries ───────────────────────────────────────────────────────────────
 
+  // GET /api/contacts/all — every matching contact in one response, not the
+  // paginated GET / route: this board (plus its KPI/List/Team sub-views) needs
+  // the complete set to group by stage correctly. GET /?pageSize=500 used to be
+  // called here expecting everything back, but the backend hard-caps pageSize
+  // at 100 — silently truncating any company past 100 leads (Track A3,
+  // docs/phase3/TECHNICAL_DEBT.md; confirmed live at 114 leads for viir_trading,
+  // 14 of them invisible on the old pattern).
   const { data: contacts = [], isLoading } = useQuery<Contact[]>({
     queryKey: ['sales-contacts'],
     queryFn: async () => {
-      const data = await apiFetch<{ contacts: Contact[] }>('/api/contacts?pageSize=500');
+      const data = await apiFetch<{ contacts: Contact[] }>('/api/contacts/all');
       return data.contacts ?? [];
     },
     staleTime: 30_000,
