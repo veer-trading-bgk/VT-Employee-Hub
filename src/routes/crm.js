@@ -407,7 +407,7 @@ router.put('/leads/:id', authMiddleware, rateLimit(30, 60_000), async (req, res,
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    const allowed = ['name', 'phone', 'email', 'productInterest', 'source', 'notes', 'closureDeadline', 'tags'];
+    const allowed = ['name', 'phone', 'email', 'productInterest', 'source', 'notes', 'closureDeadline', 'tags', 'expectedValue', 'probability'];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];

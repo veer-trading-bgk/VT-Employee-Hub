@@ -256,6 +256,16 @@ const updateLeadSchema = z.object({
   notes: z.string().max(2000).optional(),
   closureDeadline: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
   tags: z.array(z.string().max(100)).max(20).optional(),
+  // Found missing entirely 2026-07-09 (docs/phase3/TECHNICAL_DEBT.md) —
+  // CrmTab.tsx's "Expected Value"/"Win Probability" save 400'd on every
+  // attempt since this schema never had these fields at all. Currency
+  // amount, no documented upper bound (LeadScoringService._valuePoints()
+  // bands at 10k/50k/100k but never caps); probability is a 0-100 percent,
+  // matching CrmTab.tsx's own `min="0" max="100"` number input exactly —
+  // not a 0-1 fraction. Both nullable: the frontend sends `null` explicitly
+  // to clear either field, not just omits them.
+  expectedValue: z.number().min(0).nullable().optional(),
+  probability: z.number().min(0).max(100).nullable().optional(),
 }).strict();
 
 const createFollowupSchema = z.object({
