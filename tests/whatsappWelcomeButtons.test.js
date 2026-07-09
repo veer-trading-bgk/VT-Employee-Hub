@@ -214,6 +214,32 @@ describe('GET /api/whatsapp/welcome-config — backward compatible default', () 
       config: expect.objectContaining({ enabled: false, messageType: 'template', buttons: [], ctaButtons: [] }),
     }));
   });
+
+  // welcomeConfigSchema is not .strict(), so this route never 400'd the way
+  // hours-config/ooo-config/delayed-response-config did (see
+  // workingHoursConfig.test.js's 2026-07-09 incident tests) — but it had the
+  // identical raw-Item GET leak, so covering it here for consistency now that
+  // stripStorageMetadata() has been applied across all four config routes.
+  test('strips DynamoDB storage metadata from a previously-saved config', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({
+        Item: {
+          PK: 'CONFIG#WELCOME#acme', SK: 'CURRENT', companyId: 'acme', updatedAt: '2026-07-08T16:27:14.855Z',
+          enabled: true, messageType: 'reply_buttons', templateName: '', language: 'en',
+          bodyText: 'Hi there!', buttons: [{ id: 'b1', title: 'Hi', followUp: { type: 'none' } }], ctaButtons: [],
+        },
+      }),
+    });
+    const handler = getRouteHandler(whatsappRouter, '/welcome-config', 'get');
+    const res = mockRes();
+    await handler({ user: { companyId: 'acme' } }, res, jest.fn());
+    const { config } = res.json.mock.calls[0][0];
+    expect(config).not.toHaveProperty('PK');
+    expect(config).not.toHaveProperty('SK');
+    expect(config).not.toHaveProperty('companyId');
+    expect(config).not.toHaveProperty('updatedAt');
+    expect(config.enabled).toBe(true);
+  });
 });
 
 describe('inbound button_reply parsing', () => {

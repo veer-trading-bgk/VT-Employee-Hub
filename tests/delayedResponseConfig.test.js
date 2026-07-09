@@ -119,4 +119,58 @@ describe('GET /api/whatsapp/delayed-response-config', () => {
       config: expect.objectContaining({ enabled: true, delayAmount: 20 }),
     }));
   });
+
+  // Same 2026-07-09 incident as hours-config/ooo-config (see
+  // workingHoursConfig.test.js) — delayedResponseConfigSchema is also
+  // .strict() and this route had the same raw-Item GET leak. No company had
+  // hit it live yet (no CONFIG#DELAYED_RESPONSE# record existed for the
+  // reporting company at diagnosis time), so this is a synthetic
+  // second-save shape, not a reproduction of a live incident.
+  test('GET strips DynamoDB storage metadata from a previously-saved config', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({
+        Item: {
+          PK: 'CONFIG#DELAYED_RESPONSE#acme', SK: 'CURRENT', companyId: 'acme', updatedAt: '2026-07-08T00:00:00.000Z',
+          enabled: true, delayAmount: 10, delayUnit: 'minutes', messageText: 'Sorry for the delay',
+        },
+      }),
+    });
+    const handler = getRouteHandler(whatsappRouter, '/delayed-response-config', 'get');
+    const res = mockRes();
+    await handler({ user: { companyId: 'acme' } }, res, jest.fn());
+    const { config } = res.json.mock.calls[0][0];
+    expect(config).not.toHaveProperty('PK');
+    expect(config).not.toHaveProperty('SK');
+    expect(config).not.toHaveProperty('companyId');
+    expect(config).not.toHaveProperty('updatedAt');
+    expect(delayedResponseConfigSchema.safeParse(config).success).toBe(true);
+  });
+
+  test('full round trip: toggle a previously-saved config off, save succeeds, refresh confirms still off', async () => {
+    const storedItem = {
+      PK: 'CONFIG#DELAYED_RESPONSE#acme', SK: 'CURRENT', companyId: 'acme', updatedAt: '2026-07-08T00:00:00.000Z',
+      enabled: true, delayAmount: 10, delayUnit: 'minutes', messageText: 'Sorry for the delay',
+    };
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: storedItem }) });
+    const getHandler = getRouteHandler(whatsappRouter, '/delayed-response-config', 'get');
+    const getRes = mockRes();
+    await getHandler({ user: { companyId: 'acme' } }, getRes, jest.fn());
+    const fetchedConfig = getRes.json.mock.calls[0][0].config;
+
+    const toggledOff = { ...fetchedConfig, enabled: false };
+
+    let putItem = null;
+    dynamodb.put.mockImplementation((args) => { putItem = args.Item; return { promise: () => Promise.resolve({}) }; });
+    const putHandler = getRouteHandler(whatsappRouter, '/delayed-response-config', 'put');
+    const putRes = mockRes();
+    await putHandler({ body: toggledOff, user: { companyId: 'acme' } }, putRes, jest.fn());
+    expect(putRes.status).not.toHaveBeenCalledWith(400);
+    expect(putRes.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    expect(putItem.enabled).toBe(false);
+
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: putItem }) });
+    const refreshRes = mockRes();
+    await getHandler({ user: { companyId: 'acme' } }, refreshRes, jest.fn());
+    expect(refreshRes.json.mock.calls[0][0].config.enabled).toBe(false);
+  });
 });

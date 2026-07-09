@@ -11,6 +11,15 @@ const { DOCUMENT_ALLOWED_MIME } = require('./documentConstants');
 // storage-only fields before validating a raw read against a .strict()
 // business schema; the schema still correctly rejects any OTHER genuinely
 // unexpected field.
+//
+// 2026-07-09: the same gap resurfaced in whatsapp.js's welcomeConfigSchema/
+// workingHoursConfigSchema/oooConfigSchema/delayedResponseConfigSchema GET
+// routes — the original 2026-07-07 fix was applied to aiAdmin.js/
+// ConversationalAgentService.js only, never swept to other files using this
+// same "raw dynamodb.get().Item handed back as a GET response, later
+// round-tripped into a .strict() PUT" shape. Now applied to all four routes
+// in whatsapp.js (see TECHNICAL_DEBT.md), but a repo-wide check for other
+// .strict()-schema consumers with the same pattern has not been done.
 const STORAGE_METADATA_KEYS = ['PK', 'SK', 'companyId', 'updatedAt', 'updatedBy'];
 function stripStorageMetadata(item) {
   const rest = { ...(item ?? {}) };

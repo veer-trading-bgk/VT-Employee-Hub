@@ -19,7 +19,7 @@ const WASendSvc            = require('../services/WhatsAppSendService');
 const TagService           = require('../services/TagService');
 const ContactService       = require('../services/ContactService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
-const { welcomeConfigSchema, delayedResponseConfigSchema, workingHoursConfigSchema, oooConfigSchema, branchSchema } = require('../utils/validation');
+const { welcomeConfigSchema, delayedResponseConfigSchema, workingHoursConfigSchema, oooConfigSchema, branchSchema, stripStorageMetadata } = require('../utils/validation');
 const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
 const { logAudit } = require('../utils/audit');
 const { updateLeadLastMessage } = require('../utils/updateLeadLastMessage');
@@ -3180,14 +3180,15 @@ router.get('/welcome-config', authMiddleware, checkRole(['admin']), async (req, 
       TableName: TABLE,
       Key: { PK: `CONFIG#WELCOME#${req.user.companyId}`, SK: 'CURRENT' },
     }).promise();
+    // stripStorageMetadata() before parse — raw DynamoDB items carry PK/SK/
+    // companyId/updatedAt, which welcomeConfigSchema.parse() would otherwise
+    // see as literal config fields. Also replaces the old backward-compat
+    // default: every schema field already has its own .default(), so
+    // parse({}) on a missing Item naturally falls through to template-only
+    // (messageType/bodyText/buttons/ctaButtons empty), same result as before.
     res.json({
       success: true,
-      // Backward-compatible default — pre-existing configs written before
-      // messageType/bodyText/buttons/ctaButtons existed are template-only.
-      config: result.Item ?? {
-        enabled: false, messageType: 'template', templateName: '', language: 'en',
-        bodyText: '', buttons: [], ctaButtons: [],
-      },
+      config: welcomeConfigSchema.parse(stripStorageMetadata(result.Item)),
     });
   } catch (err) { next(err); }
 });
@@ -3263,9 +3264,10 @@ router.get('/delayed-response-config', authMiddleware, checkRole(['admin']), asy
       TableName: TABLE,
       Key: { PK: `CONFIG#DELAYED_RESPONSE#${req.user.companyId}`, SK: 'CURRENT' },
     }).promise();
+    // stripStorageMetadata() before parse — see /welcome-config's identical comment.
     res.json({
       success: true,
-      config: result.Item ?? { enabled: false, delayAmount: 5, delayUnit: 'minutes', messageText: '' },
+      config: delayedResponseConfigSchema.parse(stripStorageMetadata(result.Item)),
     });
   } catch (err) { next(err); }
 });
@@ -3300,7 +3302,12 @@ router.get('/hours-config', authMiddleware, checkRole(['admin']), async (req, re
       TableName: TABLE,
       Key: { PK: `CONFIG#HOURS#${req.user.companyId}`, SK: 'CURRENT' },
     }).promise();
-    res.json({ success: true, config: result.Item ?? workingHoursConfigSchema.parse({}) });
+    // stripStorageMetadata() before parse — see /welcome-config's identical comment.
+    // Previously this was `result.Item ?? workingHoursConfigSchema.parse({})`,
+    // which returned the raw (unstripped) Item on every subsequent GET once a
+    // real save existed — the PK/SK/companyId/updatedAt it carried then rode
+    // along into the next PUT's body and .strict() rejected them.
+    res.json({ success: true, config: workingHoursConfigSchema.parse(stripStorageMetadata(result.Item)) });
   } catch (err) { next(err); }
 });
 
@@ -3333,7 +3340,8 @@ router.get('/ooo-config', authMiddleware, checkRole(['admin']), async (req, res,
       TableName: TABLE,
       Key: { PK: `CONFIG#OOO#${req.user.companyId}`, SK: 'CURRENT' },
     }).promise();
-    res.json({ success: true, config: result.Item ?? { enabled: false, messageText: '' } });
+    // stripStorageMetadata() before parse — see /welcome-config's identical comment.
+    res.json({ success: true, config: oooConfigSchema.parse(stripStorageMetadata(result.Item)) });
   } catch (err) { next(err); }
 });
 
