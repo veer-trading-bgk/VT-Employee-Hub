@@ -72,6 +72,24 @@ describe('scheduleIfEnabled()', () => {
     }));
   });
 
+  // 2026-07-09 Phase 2 (docs/phase3/TECHNICAL_DEBT.md, FIX 2): source is
+  // persisted onto the wait item at schedule time so resume() — which may
+  // fire minutes/hours later, long after the original webhook request ended
+  // — can still resolve {{source}} without a second DB lookup.
+  test('persists source onto the wait item for resume() to read back later', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: { enabled: true, messageText: 'hi, {{source}}', delayAmount: 5, delayUnit: 'minutes' } }) });
+    dynamodb.query.mockReturnValue(queryResult([]));
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    await DelayedResponseService.scheduleIfEnabled(CID, { phone: PHONE, leadPK: LEAD_PK, name: 'Ravi', source: 'website' });
+
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({
+        delayedResponse: expect.objectContaining({ source: 'website' }),
+      }),
+    }));
+  });
+
   test('schedules resumeAt delayAmount minutes/hours in the future per config', async () => {
     const before = Date.now();
     dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: { enabled: true, messageText: 'hi', delayAmount: 2, delayUnit: 'hours' } }) });
@@ -180,5 +198,18 @@ describe('resume()', () => {
     await DelayedResponseService.resume(CID, { delayedResponse: { phone: null, messageText: 'hi' } });
     await DelayedResponseService.resume(CID, { delayedResponse: { phone: PHONE, messageText: '' } });
     expect(WASendSvc.sendText).not.toHaveBeenCalled();
+  });
+
+  test('resolves {{source}} from the value persisted on the wait item at schedule time', async () => {
+    WASendSvc.sendText.mockResolvedValue({ wamid: 'wamid.src' });
+    const item = { delayedResponse: { phone: PHONE, leadPK: LEAD_PK, name: 'Ravi', source: 'referral', messageText: 'Hi {{name}}, thanks for reaching out via {{source}}' } };
+
+    await DelayedResponseService.resume(CID, item);
+
+    expect(WASendSvc.sendText).toHaveBeenCalledWith(
+      CID, expect.any(Object),
+      'Hi Ravi, thanks for reaching out via a referral',
+      expect.any(Object),
+    );
   });
 });

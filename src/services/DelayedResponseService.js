@@ -58,9 +58,9 @@ async function _findPending(companyId, phone) {
  * shouldn't queue 3 delayed responses). Fire-and-forget: never throws.
  *
  * @param {string} companyId
- * @param {object} target  { phone, leadPK?, inboxPK?, name? }
+ * @param {object} target  { phone, leadPK?, inboxPK?, name?, source? }
  */
-async function scheduleIfEnabled(companyId, { phone, leadPK, inboxPK, name }) {
+async function scheduleIfEnabled(companyId, { phone, leadPK, inboxPK, name, source }) {
   try {
     const cfg = await _getConfig(companyId);
     if (!cfg?.enabled || !cfg.messageText) return;
@@ -78,7 +78,7 @@ async function scheduleIfEnabled(companyId, { phone, leadPK, inboxPK, name }) {
         companyId,
         delayedResponse: {
           phone, leadPK: leadPK ?? null, inboxPK: inboxPK ?? null, name: name ?? null,
-          messageText: cfg.messageText,
+          source: source ?? null, messageText: cfg.messageText,
         },
         createdAt: new Date().toISOString(),
       },
@@ -117,11 +117,11 @@ async function cancelPending(companyId, phone) {
  * with waitType: 'delayed_response' — sends the configured message.
  */
 async function resume(companyId, item) {
-  const { phone, leadPK, name, messageText } = item.delayedResponse ?? {};
+  const { phone, leadPK, name, source, messageText } = item.delayedResponse ?? {};
   if (!phone || !messageText) return;
 
   const target = leadPK ? { resolvedContact: { pk: leadPK, phone, isLead: true } } : { phone };
-  const resolvedText = resolveWelcomeVariables(messageText, { name, phone });
+  const resolvedText = resolveWelcomeVariables(messageText, { name, phone, source });
   await WASendSvc.sendText(companyId, target, resolvedText, SYSTEM_USER);
 }
 

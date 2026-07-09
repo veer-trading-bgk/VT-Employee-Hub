@@ -56,6 +56,22 @@ describe('delayedResponseConfigSchema', () => {
   test('rejects an unknown delayUnit', () => {
     expect(delayedResponseConfigSchema.safeParse({ delayUnit: 'days' }).success).toBe(false);
   });
+
+  // 2026-07-09 Phase 2 of the welcome-message {{1}} incident audit
+  // (docs/phase3/TECHNICAL_DEBT.md, Q4): Delayed Response shares
+  // resolveWelcomeVariables() with the welcome message, so it shares the
+  // same save-time validation gap.
+  test('rejects messageText containing an unsupported {{1}} token', () => {
+    const r = delayedResponseConfigSchema.safeParse({ messageText: 'Still there, {{1}}?' });
+    expect(r.success).toBe(false);
+    expect(r.error.issues.some((i) => i.path.join('.') === 'messageText' && /Unknown variable \{\{1\}\}/.test(i.message))).toBe(true);
+  });
+
+  test('accepts messageText using all 3 supported tokens, including the new {{source}}', () => {
+    expect(delayedResponseConfigSchema.safeParse({
+      messageText: 'Hi {{name}}, thanks for reaching out via {{source}} — call {{phone}} back if urgent.',
+    }).success).toBe(true);
+  });
 });
 
 describe('PUT /api/whatsapp/delayed-response-config', () => {

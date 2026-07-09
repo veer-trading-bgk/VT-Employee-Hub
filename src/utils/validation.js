@@ -1,5 +1,27 @@
 const { z } = require('zod');
 const { DOCUMENT_ALLOWED_MIME } = require('./documentConstants');
+const { findUnsupportedTokens, SUPPORTED_VARS } = require('./welcomeVariables');
+
+// 2026-07-09: the {{1}} welcome-message incident (docs/phase3/TECHNICAL_DEBT.md)
+// wasn't a missing-substitution bug — welcomeVariables.js already substitutes
+// {{name}}/{{phone}}/{{source}} correctly. The actual gap was that nothing
+// caught an admin typing Meta's real-template {{1}} syntax into a free-text
+// field that only recognises those tokens, so it shipped to a real customer
+// literally unsubstituted. This rejects any {{...}} token outside
+// welcomeVariables.js's own SUPPORTED_VARS at save time, across every config
+// that reuses resolveWelcomeVariables() on its message body (Q4 of that audit
+// confirmed welcome/OOO/Delayed Response all share the same mechanism —
+// workingHoursConfigSchema has no message field, so it's not in this list).
+function unsupportedTokenIssue(ctx, path, text) {
+  const unknown = findUnsupportedTokens(text);
+  if (unknown.length === 0) return;
+  const supported = Object.keys(SUPPORTED_VARS).join(', ');
+  const plural = unknown.length > 1 ? 's' : '';
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom, path,
+    message: `Unknown variable${plural} ${unknown.join(', ')} — supported: ${supported}`,
+  });
+}
 
 // Production incident, 2026-07-07: a .strict() schema rejects ANY unrecognized
 // key, including DynamoDB's own storage/audit metadata (PK, SK, companyId,
@@ -130,7 +152,7 @@ const delayedResponseConfigSchema = z.object({
   delayAmount: z.number().int().min(1).max(1440).default(5),
   delayUnit: z.enum(['minutes', 'hours']).default('minutes'),
   messageText: z.string().max(1024).optional().default(''),
-}).strict();
+}).strict().superRefine((data, ctx) => unsupportedTokenIssue(ctx, ['messageText'], data.messageText));
 
 // Working Hours (CONFIG#HOURS) + Out of Office (CONFIG#OOO) — Item 2.
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -158,7 +180,7 @@ const workingHoursConfigSchema = z.object({
 const oooConfigSchema = z.object({
   enabled: z.boolean().default(false),
   messageText: z.string().max(1024).optional().default(''),
-}).strict();
+}).strict().superRefine((data, ctx) => unsupportedTokenIssue(ctx, ['messageText'], data.messageText));
 
 // CONFIG#BRANCH# — multi-office branch directory (Item 1c). Used by the Send
 // Location canvas node's dropdown and the Inbox composer's "Send Location"
@@ -349,6 +371,7 @@ const welcomeConfigSchema = z.object({
     if (!data.bodyText.trim()) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['bodyText'], message: 'bodyText is required when messageType is reply_buttons' });
     }
+    unsupportedTokenIssue(ctx, ['bodyText'], data.bodyText);
   }
   if (data.messageType === 'cta_buttons') {
     if (data.buttons.length > 0) {
@@ -360,6 +383,7 @@ const welcomeConfigSchema = z.object({
     if (!data.bodyText.trim()) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['bodyText'], message: 'bodyText is required when messageType is cta_buttons' });
     }
+    unsupportedTokenIssue(ctx, ['bodyText'], data.bodyText);
   }
   if (data.messageType === 'template' && (data.buttons.length > 0 || data.ctaButtons.length > 0)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['messageType'], message: 'buttons/ctaButtons must be empty when messageType is template' });

@@ -150,6 +150,23 @@ describe('sendOOO()', () => {
     }));
   });
 
+  // 2026-07-09 Phase 2 (docs/phase3/TECHNICAL_DEBT.md, FIX 2/Q4): OOO shares
+  // resolveWelcomeVariables() with the welcome message, so {{source}} works
+  // identically here.
+  test('resolves {{source}} via ctx.source, same registry as the welcome message', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: { enabled: true, messageText: "We're closed — thanks for reaching out via {{source}}." } }) });
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    WASendSvc.sendText.mockResolvedValue({ waMessageId: 'wamid.src' });
+
+    await WorkingHoursService.sendOOO(CID, { leadPK: 'LEAD#comp_test#lead1', phone: '9876543210', name: 'Ravi', source: 'facebook' });
+
+    expect(WASendSvc.sendText).toHaveBeenCalledWith(
+      CID, expect.any(Object),
+      "We're closed — thanks for reaching out via Facebook.",
+      expect.any(Object),
+    );
+  });
+
   test('records lastOOOSentAt on INBOX# CONTACT for an unknown contact', async () => {
     dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: { enabled: true, messageText: 'hi' } }) });
     dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });

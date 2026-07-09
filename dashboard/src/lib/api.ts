@@ -11,6 +11,24 @@ export class ApiClientError extends Error {
   }
 }
 
+// Zod-backed config PUT routes (welcome-config, ooo-config, hours-config,
+// delayed-response-config, ...) all return the same 400 shape on validation
+// failure: { error: 'Validation failed', details: ZodIssue[] }. The generic
+// "error" string alone hides the actually-useful message (e.g. "Unknown
+// variable {{1}} — supported: {{name}}, {{phone}}, {{source}}") inside
+// `details[0].message`. Prefers that first issue's message when present,
+// falling back to the generic error/exception message otherwise — used by
+// every settings panel's save-mutation onError instead of each duplicating
+// this same details[0]-vs-error extraction.
+export function apiErrorMessage(e: unknown, fallback: string): string {
+  if (!(e instanceof ApiClientError)) return fallback;
+  const details = e.body?.details;
+  const firstDetailMessage = Array.isArray(details) && details.length > 0
+    ? (details[0] as { message?: string })?.message
+    : undefined;
+  return firstDetailMessage ?? (e.body?.error as string | undefined) ?? e.message ?? fallback;
+}
+
 // In-memory token — set on login, cleared on logout.
 // Used as Bearer header so auth works even when cross-origin cookies are blocked.
 let _memToken: string | null = null;

@@ -159,6 +159,41 @@ describe('welcomeConfigSchema — mutual exclusivity and platform limits', () =>
       enabled: true, messageType: 'cta_buttons', ctaButtons: [{ type: 'url', text: 'A', value: 'https://a.com' }],
     }).success).toBe(false);
   });
+
+  // 2026-07-09 Phase 2 of the {{1}} incident audit (docs/phase3/TECHNICAL_DEBT.md):
+  // the substitution engine was always correct — nothing caught an admin typing
+  // Meta's real-template {{1}} syntax into this free-text field before Save.
+  test('rejects reply_buttons bodyText containing an unsupported {{1}} token, with a clear message', () => {
+    const r = welcomeConfigSchema.safeParse({
+      enabled: true, messageType: 'reply_buttons', bodyText: "Hi {{1}} 👋",
+      buttons: [{ id: '1', title: 'A' }],
+    });
+    expect(r.success).toBe(false);
+    expect(r.error.issues.some((i) => i.path.join('.') === 'bodyText' && /Unknown variable \{\{1\}\}/.test(i.message))).toBe(true);
+  });
+
+  test('rejects cta_buttons bodyText containing an unsupported token', () => {
+    const r = welcomeConfigSchema.safeParse({
+      enabled: true, messageType: 'cta_buttons', bodyText: 'Use code {{promo}}',
+      ctaButtons: [{ type: 'url', text: 'A', value: 'https://a.com' }],
+    });
+    expect(r.success).toBe(false);
+    expect(r.error.issues.some((i) => i.path.join('.') === 'bodyText')).toBe(true);
+  });
+
+  test('accepts reply_buttons bodyText using all 3 supported tokens, including the new {{source}}', () => {
+    const r = welcomeConfigSchema.safeParse({
+      enabled: true, messageType: 'reply_buttons', bodyText: 'Hi {{name}}, via {{source}}, re {{phone}}',
+      buttons: [{ id: '1', title: 'A' }],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  test('template messageType is unaffected by token validation — bodyText is unused there', () => {
+    expect(welcomeConfigSchema.safeParse({
+      enabled: true, messageType: 'template', templateName: 'hello_world', bodyText: '{{1}} unused anyway',
+    }).success).toBe(true);
+  });
 });
 
 describe('PUT /api/whatsapp/welcome-config', () => {
@@ -396,6 +431,19 @@ describe('sendWelcomeMessage — {{name}}/{{phone}} substitution (fix for the un
     // {{1}} is not a supported token — left exactly as authored (visible
     // leftover placeholder is a safer failure than a silent, wrong guess).
     expect(interactive.body.text).toBe("Hi {{1}} 👋\n\nYou're connected with Viir Trading");
+  });
+
+  test('{{source}} resolves to a human-readable label, defaulting to "whatsapp" since this is the sole channel welcome messages fire on', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w4b' });
+    const cfg = {
+      messageType: 'reply_buttons', bodyText: 'Thanks for reaching out via {{source}}!',
+      buttons: [{ id: 'b1', title: 'OK' }],
+    };
+    // No 6th argument — exercises the source='whatsapp' default.
+    await whatsappRouter.sendWelcomeMessage('acme', '9876543210', cfg, { id: 'system' }, 'Priya');
+
+    const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(interactive.body.text).toBe('Thanks for reaching out via WhatsApp!');
   });
 
   test('{{phone}} always resolves (the send target is always known, no fallback needed)', async () => {

@@ -76,6 +76,21 @@ describe('oooConfigSchema', () => {
     expect(r.success).toBe(true);
     expect(r.data).toEqual({ enabled: false, messageText: '' });
   });
+
+  // 2026-07-09 Phase 2 of the welcome-message {{1}} incident audit
+  // (docs/phase3/TECHNICAL_DEBT.md, Q4): OOO shares resolveWelcomeVariables()
+  // with the welcome message, so it shares the same save-time validation gap.
+  test('rejects messageText containing an unsupported {{1}} token', () => {
+    const r = oooConfigSchema.safeParse({ enabled: true, messageText: "We're closed, {{1}}." });
+    expect(r.success).toBe(false);
+    expect(r.error.issues.some((i) => i.path.join('.') === 'messageText' && /Unknown variable \{\{1\}\}/.test(i.message))).toBe(true);
+  });
+
+  test('accepts messageText using all 3 supported tokens, including the new {{source}}', () => {
+    expect(oooConfigSchema.safeParse({
+      enabled: true, messageText: "Hi {{name}}, we're closed — reached via {{source}}, ring {{phone}} tomorrow.",
+    }).success).toBe(true);
+  });
 });
 
 describe('PUT/GET /api/whatsapp/hours-config', () => {

@@ -7,6 +7,7 @@ const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 const WASendSvc = require('../services/WhatsAppSendService');
 const TagService = require('../services/TagService');
+const { resolveTemplateParams } = require('../utils/welcomeVariables');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -440,11 +441,7 @@ async function _launchCampaign(companyId, campaignId, { reviewCount = null, acto
     await Promise.allSettled(leads.map(async (lead) => {
       try {
         if (!lead.phone) { failed++; return; }
-        const params = (campaign.variableValues ?? []).map((v) => {
-          if (v === '{{name}}')  return lead.name  ?? '';
-          if (v === '{{phone}}') return lead.phone ?? '';
-          return String(v);
-        });
+        const params = resolveTemplateParams(campaign.variableValues, { name: lead.name, phone: lead.phone, source: lead.source });
         const resolvedHeader = !hasHdrVar ? null
           : campaign.headerVariableValue === '{{name}}'  ? (lead.name  ?? '')
           : campaign.headerVariableValue === '{{phone}}' ? (lead.phone ?? '')

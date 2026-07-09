@@ -20,7 +20,7 @@ const TagService           = require('../services/TagService');
 const ContactService       = require('../services/ContactService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
 const { welcomeConfigSchema, delayedResponseConfigSchema, workingHoursConfigSchema, oooConfigSchema, branchSchema, stripStorageMetadata } = require('../utils/validation');
-const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
+const { resolveWelcomeVariables, resolveTemplateParams } = require('../utils/welcomeVariables');
 const { logAudit } = require('../utils/audit');
 const { updateLeadLastMessage } = require('../utils/updateLeadLastMessage');
 const ConversationalAgentService = require('../services/ConversationalAgentService');
@@ -1157,16 +1157,19 @@ function parseListReply(msg) {
 // single URL CTA button (untrackable — see isButtonReply's comment).
 //
 // waName (optional): the contact's WhatsApp profile name, if Meta sent one
-// on this webhook. Used only to resolve {{name}}/{{phone}} in the free-text
-// reply_buttons/cta_buttons bodyText — see utils/welcomeVariables.js. The
-// templateName branch does NOT need this: real Meta templates substitute
+// on this webhook. Used only to resolve {{name}}/{{phone}}/{{source}} in the
+// free-text reply_buttons/cta_buttons bodyText — see utils/welcomeVariables.js.
+// The templateName branch does NOT need this: real Meta templates substitute
 // {{n}} server-side via sendTemplate()'s own variables array, an entirely
 // different, already-correct mechanism.
-async function sendWelcomeMessage(companyId, phone10, cfg, systemUser, waName = null) {
+// source: always 'whatsapp' in practice — this function is only ever reached
+// from the inbound-WhatsApp-webhook first-contact branch (see its one call
+// site below), which is the sole channel welcome messages fire on.
+async function sendWelcomeMessage(companyId, phone10, cfg, systemUser, waName = null, source = 'whatsapp') {
   if (cfg.messageType === 'reply_buttons' && cfg.bodyText && (cfg.buttons ?? []).length > 0) {
     const interactive = {
       type: 'button',
-      body: { text: resolveWelcomeVariables(cfg.bodyText, { name: waName, phone: phone10 }) },
+      body: { text: resolveWelcomeVariables(cfg.bodyText, { name: waName, phone: phone10, source }) },
       action: { buttons: cfg.buttons.map((b) => ({ type: 'reply', reply: { id: b.id, title: b.title } })) },
     };
     return WASendSvc.sendInteractive(companyId, { phone: phone10 }, interactive, systemUser);
@@ -1175,7 +1178,7 @@ async function sendWelcomeMessage(companyId, phone10, cfg, systemUser, waName = 
     const cta = cfg.ctaButtons[0]; // schema caps ctaButtons at 1 — see validation.js comment
     const interactive = {
       type: 'cta_url',
-      body: { text: resolveWelcomeVariables(cfg.bodyText, { name: waName, phone: phone10 }) },
+      body: { text: resolveWelcomeVariables(cfg.bodyText, { name: waName, phone: phone10, source }) },
       action: { name: 'cta_url', parameters: { display_text: cta.text, url: cta.value } },
     };
     return WASendSvc.sendInteractive(companyId, { phone: phone10 }, interactive, systemUser);
@@ -1608,7 +1611,7 @@ router.post('/webhook', async (req, res) => {
           // AutomationEngine's AUTO_WAIT# timer infra; no-ops if disabled or
           // already pending (see DelayedResponseService.scheduleIfEnabled).
           require('../services/DelayedResponseService')
-            .scheduleIfEnabled(webhookCompanyId, { phone: phone10, leadPK: lead.PK, name: lead.name })
+            .scheduleIfEnabled(webhookCompanyId, { phone: phone10, leadPK: lead.PK, name: lead.name, source: lead.source })
             .catch(() => {});
           // Autonomous AI conversation (2026-07-06, Era 22) — continues an
           // already-bot-active conversation (no-ops for every other lead: a
@@ -1635,7 +1638,7 @@ router.post('/webhook', async (req, res) => {
             try {
               const WorkingHoursService = require('../services/WorkingHoursService');
               if (await WorkingHoursService.shouldSendOOO(webhookCompanyId, { leadPK: lead.PK })) {
-                await WorkingHoursService.sendOOO(webhookCompanyId, { leadPK: lead.PK, phone: phone10, name: lead.name });
+                await WorkingHoursService.sendOOO(webhookCompanyId, { leadPK: lead.PK, phone: phone10, name: lead.name, source: lead.source });
               }
             } catch (e) { logger.warn('OOO message failed: ' + e.message); }
           }
@@ -1748,7 +1751,7 @@ router.post('/webhook', async (req, res) => {
             .catch(() => {});
           // "Delayed Response Message" (Item 3) — see the lead-path comment above.
           require('../services/DelayedResponseService')
-            .scheduleIfEnabled(companyId, { phone: phone10, inboxPK: PK, name: waName })
+            .scheduleIfEnabled(companyId, { phone: phone10, inboxPK: PK, name: waName, source: 'whatsapp' })
             .catch(() => {});
           // Autonomous AI conversation (2026-07-06, Era 22) — the ONLY entry
           // point that starts one, and only on a genuinely first-ever message.
@@ -1811,7 +1814,7 @@ router.post('/webhook', async (req, res) => {
           try {
             const WorkingHoursService = require('../services/WorkingHoursService');
             if (await WorkingHoursService.shouldSendOOO(companyId, { inboxPK: PK })) {
-              await WorkingHoursService.sendOOO(companyId, { inboxPK: PK, phone: phone10, name: waName });
+              await WorkingHoursService.sendOOO(companyId, { inboxPK: PK, phone: phone10, name: waName, source: 'whatsapp' });
               oooSent = true;
             }
           } catch (e) { logger.warn('OOO message failed: ' + e.message); }
@@ -1827,7 +1830,7 @@ router.post('/webhook', async (req, res) => {
           try {
             const wc = await dynamodb.get({ TableName: TABLE, Key: { PK: `CONFIG#WELCOME#${companyId}`, SK: 'CURRENT' } }).promise();
             if (wc.Item?.enabled) {
-              const sent = await sendWelcomeMessage(companyId, phone10, wc.Item, { id: 'system', role: 'admin', name: 'System' }, waName);
+              const sent = await sendWelcomeMessage(companyId, phone10, wc.Item, { id: 'system', role: 'admin', name: 'System' }, waName, 'whatsapp');
               if (sent) logger.info(`Welcome message (${wc.Item.messageType ?? 'template'}) sent to ${phone10} for company ${companyId}`);
             }
           } catch (e) { logger.warn('Welcome message failed: ' + e.message); }
@@ -3122,11 +3125,7 @@ router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateL
           failed++;
           return;
         }
-        const params = (variableValues ?? []).map((v) => {
-          if (v === '{{name}}') return lead.name ?? '';
-          if (v === '{{phone}}') return lead.phone ?? '';
-          return String(v);
-        });
+        const params = resolveTemplateParams(variableValues, { name: lead.name, phone: lead.phone, source: lead.source });
         const resolvedHeader = !bcastHasHdrVar ? null
           : headerVariableValue === '{{name}}' ? (lead.name ?? '')
           : headerVariableValue === '{{phone}}' ? (lead.phone ?? '')

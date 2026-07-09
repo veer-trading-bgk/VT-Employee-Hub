@@ -103,11 +103,11 @@ async function shouldSendOOO(companyId, target) {
  * re-check.
  *
  * @param {string} companyId
- * @param {object} target  { leadPK?, inboxPK?, phone, name? }
+ * @param {object} target  { leadPK?, inboxPK?, phone, name?, source? }
  */
-async function sendOOO(companyId, { leadPK, inboxPK, phone, name }) {
+async function sendOOO(companyId, { leadPK, inboxPK, phone, name, source }) {
   const oooCfg = await _getOOOConfig(companyId);
-  const resolvedText = resolveWelcomeVariables(oooCfg.messageText, { name, phone });
+  const resolvedText = resolveWelcomeVariables(oooCfg.messageText, { name, phone, source });
   const sendTarget = leadPK ? { resolvedContact: { pk: leadPK, phone, isLead: true } } : { phone };
 
   await WASendSvc.sendText(companyId, sendTarget, resolvedText, SYSTEM_USER);

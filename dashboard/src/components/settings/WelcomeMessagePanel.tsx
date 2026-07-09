@@ -8,7 +8,7 @@ import { Badge } from '@/components/v3/ui/Badge';
 import { Button } from '@/components/v3/ui/Button';
 import { Toggle } from '@/components/v3/ui/Toggle';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
-import { apiFetch, ApiClientError } from '@/lib/api';
+import { apiFetch, apiErrorMessage } from '@/lib/api';
 import { toast } from 'sonner';
 import { ButtonListEditor, type ReplyButtonValue, type CtaButtonValue } from '@/components/shared/ButtonListEditor';
 
@@ -115,8 +115,7 @@ function WelcomeMessageForm({ initialConfig }: { initialConfig: WelcomeConfig | 
       // manual-save failure, which should leave the form exactly as the
       // admin left it so they can just retry (see 2026-07-09 investigation).
       if (variables.isToggleAutoSave) setForm((prev) => ({ ...prev, enabled: !variables.config.enabled }));
-      const msg = e instanceof ApiClientError ? (e.body?.error as string | undefined) ?? e.message : 'Failed to save welcome message';
-      toast.error(msg);
+      toast.error(apiErrorMessage(e, 'Failed to save welcome message'));
     },
   });
 
@@ -221,7 +220,7 @@ function WelcomeMessageForm({ initialConfig }: { initialConfig: WelcomeConfig | 
                   className={inputCls}
                 />
                 <p className="mt-1 text-xs text-neutral-500">
-                  Supported variables: {'{{name}}'}, {'{{phone}}'}. Other {'{{...}}'} patterns (e.g. from a Meta template) are sent as literal text — they are not substituted here.
+                  Supported variables: {'{{name}}'}, {'{{phone}}'}, {'{{source}}'}. Any other {'{{...}}'} pattern (e.g. from a Meta template) will be rejected on Save — it would otherwise be sent as literal text to the customer.
                 </p>
               </div>
               {form.messageType === 'reply_buttons' ? (

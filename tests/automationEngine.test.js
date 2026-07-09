@@ -189,6 +189,29 @@ describe('AutomationEngine — send_template failures surface Meta\'s real rejec
     expect(ExpressionAttributeValues[':st']).toBe('completed');
     expect(ExpressionAttributeValues[':steps'][0].status).toBe('completed');
   });
+
+  // 2026-07-09 Phase 2 (docs/phase3/TECHNICAL_DEBT.md): unifies this ternary
+  // with the free-text substitution registry (welcomeVariables.js) and adds
+  // {{source}}. A literal (non-token) variable value must still pass through
+  // as-is — an admin can type a fixed constant into a template slot.
+  test('{{source}} resolves via ctx.source, and a literal non-token value passes through unresolved', async () => {
+    WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.src1' });
+    const workflow = { id: 'wf1', name: 'testing', steps: [], actions: [] };
+    const steps = [{ id: 's1', type: 'send_template', config: { templateName: 'welcomemessage', variables: ['{{source}}', 'FIXED'] } }];
+    const execItem = {
+      PK: `AUTO_EXEC#${CID}`, SK: 'EXEC#2026-01-01T00:00:00.000Z#exec4b',
+      steps: [{ stepId: 's1', type: 'send_template', status: 'pending' }],
+      startedAt: new Date().toISOString(),
+    };
+
+    await engine._runSteps(CID, workflow, steps, execItem, { leadPK: LEAD_PK, phone: '9000000000', name: 'Real Name', source: 'website' }, 0);
+
+    expect(WASendSvc.sendTemplate).toHaveBeenCalledWith(
+      CID, expect.any(Object), { templateName: 'welcomemessage', language: 'en' },
+      ['our website', 'FIXED'],
+      expect.any(Object), expect.any(Object),
+    );
+  });
 });
 
 describe('AutomationEngine — send_buttons action', () => {
@@ -269,6 +292,20 @@ describe('AutomationEngine — send_buttons action', () => {
     expect(WASendSvc.sendInteractive).toHaveBeenCalledWith(
       CID, expect.any(Object),
       expect.objectContaining({ body: { text: 'Hi there!' } }),
+      expect.any(Object),
+    );
+  });
+
+  test('{{source}} resolves via ctx.source, same registry as the welcome message', async () => {
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.src2' });
+    await engine._runAction(
+      CID,
+      { type: 'send_buttons', config: { messageType: 'reply_buttons', bodyText: 'Hi {{name}}, via {{source}}', buttons: [{ id: 'b1', title: 'Ok' }] } },
+      { leadPK: LEAD_PK, phone: '9000000000', name: 'Priya', source: 'referral' },
+    );
+    expect(WASendSvc.sendInteractive).toHaveBeenCalledWith(
+      CID, expect.any(Object),
+      expect.objectContaining({ body: { text: 'Hi Priya, via a referral' } }),
       expect.any(Object),
     );
   });

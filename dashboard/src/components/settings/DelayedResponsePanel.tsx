@@ -8,7 +8,7 @@ import { Badge } from '@/components/v3/ui/Badge';
 import { Button } from '@/components/v3/ui/Button';
 import { Toggle } from '@/components/v3/ui/Toggle';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
-import { apiFetch, ApiClientError } from '@/lib/api';
+import { apiFetch, apiErrorMessage } from '@/lib/api';
 import { toast } from 'sonner';
 
 type DelayUnit = 'minutes' | 'hours';
@@ -80,8 +80,7 @@ function DelayedResponseForm({ initialConfig }: { initialConfig: DelayedResponse
       // manual-save failure, which should leave the form exactly as the
       // admin left it so they can just retry (see 2026-07-09 investigation).
       if (variables.isToggleAutoSave) setForm((prev) => ({ ...prev, enabled: !variables.config.enabled }));
-      const msg = e instanceof ApiClientError ? (e.body?.error as string | undefined) ?? e.message : 'Failed to save delayed response';
-      toast.error(msg);
+      toast.error(apiErrorMessage(e, 'Failed to save delayed response'));
     },
   });
 
@@ -172,7 +171,7 @@ function DelayedResponseForm({ initialConfig }: { initialConfig: DelayedResponse
               placeholder="Thanks for reaching out — we'll get back to you shortly, {{name}}!"
               className={inputCls}
             />
-            <p className="mt-1 text-xs text-neutral-500">Supported variables: {'{{name}}'}, {'{{phone}}'}.</p>
+            <p className="mt-1 text-xs text-neutral-500">Supported variables: {'{{name}}'}, {'{{phone}}'}, {'{{source}}'}. Any other {'{{...}}'} pattern will be rejected on Save.</p>
           </div>
 
           <div className="flex justify-end">{saveButton}</div>

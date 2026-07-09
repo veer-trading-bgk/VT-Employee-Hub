@@ -69,6 +69,7 @@ const dynamodb = require('../src/config/dynamodb');
 const WASendSvc = require('../src/services/WhatsAppSendService');
 const AutomationEngine = require('../src/services/AutomationEngine');
 const ConversationalAgentService = require('../src/services/ConversationalAgentService');
+const DelayedResponseService = require('../src/services/DelayedResponseService');
 const whatsappRouter = require('../src/routes/whatsapp');
 
 function getRouteHandler(router, path, method) {
@@ -134,6 +135,12 @@ describe('POST /api/whatsapp/webhook — unknown-contact branch: botEngaged gate
     expect(AutomationEngine.fireTrigger).toHaveBeenCalledWith(
       CID, 'whatsapp_conversation_started',
       expect.objectContaining({ phone: PHONE10, source: 'whatsapp' }),
+    );
+    // 2026-07-09 Phase 2 (docs/phase3/TECHNICAL_DEBT.md, FIX 2): confirms the
+    // real webhook handler — not just DelayedResponseService's own unit tests
+    // — actually threads source: 'whatsapp' through on this branch.
+    expect(DelayedResponseService.scheduleIfEnabled).toHaveBeenCalledWith(
+      CID, expect.objectContaining({ phone: PHONE10, source: 'whatsapp' }),
     );
   });
 

@@ -5,7 +5,7 @@ const dynamodb  = require('../config/dynamodb');
 const logger    = require('../config/logger');
 const WASendSvc = require('./WhatsAppSendService');
 const PipelineService = require('./PipelineService');
-const { resolveWelcomeVariables } = require('../utils/welcomeVariables');
+const { resolveWelcomeVariables, resolveTemplateParams } = require('../utils/welcomeVariables');
 const { to10Digit } = require('../utils/phone');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -522,18 +522,14 @@ class AutomationEngine {
 
   // ── Action executor ──────────────────────────────────────────────────────
   async _runAction(companyId, step, ctx) {
-    const { leadPK, phone, name, leadId, assignedTo } = ctx;
+    const { leadPK, phone, name, leadId, assignedTo, source } = ctx;
     const now = new Date().toISOString();
 
     switch (step.type) {
       case 'send_template': {
         const { templateName, language = 'en', variables = [] } = step.config ?? {};
         if (!templateName || !phone) throw new Error('send_template: templateName and phone required');
-        const params = variables.map((v) => {
-          if (v === '{{name}}')  return name  ?? '';
-          if (v === '{{phone}}') return phone ?? '';
-          return String(v);
-        });
+        const params = resolveTemplateParams(variables, { name, phone, source });
         const target = leadPK
           ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
           : { phone };
@@ -559,7 +555,7 @@ class AutomationEngine {
         const target = leadPK
           ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
           : { phone };
-        const resolvedText = resolveWelcomeVariables(bodyText, { name, phone });
+        const resolvedText = resolveWelcomeVariables(bodyText, { name, phone, source });
 
         let interactive;
         if (messageType === 'cta_buttons') {
@@ -663,7 +659,7 @@ class AutomationEngine {
         const target = leadPK
           ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
           : { phone };
-        const resolvedText = resolveWelcomeVariables(bodyText, { name, phone });
+        const resolvedText = resolveWelcomeVariables(bodyText, { name, phone, source });
         const interactive = {
           type: 'list',
           body: { text: resolvedText },

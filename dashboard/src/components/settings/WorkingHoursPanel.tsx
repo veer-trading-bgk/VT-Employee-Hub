@@ -8,7 +8,7 @@ import { Badge } from '@/components/v3/ui/Badge';
 import { Button } from '@/components/v3/ui/Button';
 import { Toggle } from '@/components/v3/ui/Toggle';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
-import { apiFetch, ApiClientError } from '@/lib/api';
+import { apiFetch, apiErrorMessage } from '@/lib/api';
 import { toast } from 'sonner';
 
 interface DaySchedule { closed: boolean; open: string; close: string; }
@@ -122,8 +122,7 @@ function WorkingHoursForm({ initialHours, initialOOO }: { initialHours: HoursCon
       // investigation).
       if (variables.revertTarget === 'hours') setHours((prev) => ({ ...prev, enabled: !variables.hours.enabled }));
       if (variables.revertTarget === 'ooo') setOoo((prev) => ({ ...prev, enabled: !variables.ooo.enabled }));
-      const msg = e instanceof ApiClientError ? (e.body?.error as string | undefined) ?? e.message : 'Failed to save working hours';
-      toast.error(msg);
+      toast.error(apiErrorMessage(e, 'Failed to save working hours'));
     },
   });
 
@@ -251,7 +250,7 @@ function WorkingHoursForm({ initialHours, initialOOO }: { initialHours: HoursCon
                   placeholder="We're currently closed, {{name}} — we'll get back to you when we reopen."
                   className={inputCls}
                 />
-                <p className="mt-1 text-xs text-neutral-500">Supported variables: {'{{name}}'}, {'{{phone}}'}.</p>
+                <p className="mt-1 text-xs text-neutral-500">Supported variables: {'{{name}}'}, {'{{phone}}'}, {'{{source}}'}. Any other {'{{...}}'} pattern will be rejected on Save.</p>
               </>
             )}
           </div>
