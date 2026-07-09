@@ -125,6 +125,11 @@ interface WaMessage {
   interactiveAction?: InteractiveAction | null;
   // Present when type === 'location'
   location?: MessageLocation | null;
+  // Present when type === 'template' on a message sent after 2026-07-09 AND
+  // the template had a real BODY component — see WhatsAppSendService.js's
+  // sendTemplate(). null for the name-only send path (Automation/welcome/
+  // broadcast — no component definitions available) or older records.
+  resolvedBody?: string | null;
 }
 
 interface InternalNoteItem {
@@ -644,7 +649,15 @@ function TemplateBubble({ message, isOut }: { message: WaMessage; isOut: boolean
         <FileText className="h-2.5 w-2.5" aria-hidden />
         {headerLabel}
       </div>
-      {tpl?.bodyPreview ? (
+      {message.resolvedBody ? (
+        // The real text this specific customer received (their name, their
+        // order number, etc. already substituted in) — strictly more
+        // accurate than tpl.bodyPreview's generic unsubstituted template
+        // text below, which is the best available for records sent before
+        // 2026-07-09 or via the name-only send path. See
+        // WhatsAppSendService.js's sendTemplate()/_resolveTemplateBody().
+        <p className="whitespace-pre-wrap break-words">{message.resolvedBody}</p>
+      ) : tpl?.bodyPreview ? (
         <p className="whitespace-pre-wrap break-words">{tpl.bodyPreview}</p>
       ) : displayName ? (
         <p className={cn('text-xs', isOut ? 'text-white/80' : 'text-neutral-600 dark:text-neutral-300')}>

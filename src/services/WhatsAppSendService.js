@@ -92,6 +92,27 @@ class WhatsAppSendService {
   }
 
   /**
+   * Substitutes an already-resolved params array into a template's raw BODY
+   * component text (Meta's own {{1}}/{{2}}/... syntax) — the exact text this
+   * customer actually received, not just the generic unsubstituted template.
+   * A {{n}} with no corresponding param (index out of range) is left as-is
+   * rather than blanked, same "visible leftover placeholder is safer than a
+   * silent wrong guess" reasoning as welcomeVariables.js's unsupported-token
+   * handling. Returns null when there's no BODY component with text — the
+   * name-only {templateName, language} send path always hits this
+   * (components: [] — see sendTemplate()), and any real template whose BODY
+   * component is missing .text for some reason.
+   */
+  _resolveTemplateBody(components, bodyParams) {
+    const bodyComp = (components ?? []).find((c) => c.type === 'BODY' && c.text);
+    if (!bodyComp) return null;
+    return bodyComp.text.replace(/\{\{(\d+)\}\}/g, (match, n) => {
+      const idx = parseInt(n, 10) - 1;
+      return bodyParams[idx] ?? match;
+    });
+  }
+
+  /**
    * Cancels any pending "Delayed Response Message" wait for this contact —
    * called from all 4 send methods after a successful outbound send. Only
    * fires for a real human agent (user.id !== 'system'); a system-initiated
@@ -343,8 +364,21 @@ class WhatsAppSendService {
     const msgSK   = `MSG#${ts}#${wamid ?? Date.now()}`;
     const content = options.content ?? `[Template: ${tmpl.name}]`;
 
+    // resolvedBody is the actual text this customer received — the template's
+    // real BODY component with {{n}} substituted from bodyParams, not just a
+    // "[Template: name]" label. null when unavailable (the name-only
+    // {templateName, language} path never has real component definitions —
+    // see `components: []` above — and any template whose BODY component
+    // lacks a .text). Deliberately a separate field from `content`, which
+    // keeps its exact existing meaning (options.content's Automation/
+    // Broadcast/Campaign tag, or the placeholder) unchanged — content is what
+    // TemplateBubble's category-label regex parses; overloading it with real
+    // prose would silently break that. Found + fixed 2026-07-09
+    // (docs/phase3/TECHNICAL_DEBT.md).
+    const resolvedBody = this._resolveTemplateBody(tmpl.components, bodyParams);
+
     await this._storeMessage(contact.pk, msgSK, {
-      direction: 'outbound', content, type: 'template',
+      direction: 'outbound', content, type: 'template', resolvedBody,
       sentBy: user.id, sentByName: user.name ?? null,
       // Include templateId only when we resolved from DDB (we have the ID)
       ...(typeof templateRef === 'string' && { templateId: templateRef }),

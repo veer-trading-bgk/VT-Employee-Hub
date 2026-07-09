@@ -79,3 +79,39 @@ test.describe.skip('MessageBubble — real component, real browser (2026-07-09 I
     await expect(mapLink).toHaveAttribute('href', /16\.157609273858615,75\.66587920581715/);
   });
 });
+
+/**
+ * TEMPORARY — Fix 3 (template resolvedBody), same audit, same harness
+ * technique, run as a separate pass (the harness page's CASES were swapped
+ * to template-only fixtures for this proof — see its own header comment for
+ * why these don't share a page with the Fix 1+2/4 cases above). Proves
+ * TemplateBubble now prefers message.resolvedBody (the real, customer-
+ * specific substituted text) over its existing tpl.bodyPreview cache-lookup
+ * fallback, and that the existing fallback chain (cache lookup, then
+ * content-regex displayName) is completely unaffected for records without
+ * resolvedBody — both the pre-fix case and the name-only-send-path case.
+ */
+test.describe.skip('MessageBubble — TemplateBubble resolvedBody (2026-07-09 Fix 3)', () => {
+  test('resolvedBody present: renders the real substituted text, not a placeholder or the generic cached preview', async ({ page }) => {
+    await page.goto('/msgbubble-verify-temp');
+    const c = page.getByTestId('case-template_resolved');
+    await expect(c.getByText('Hi Priya', { exact: false })).toBeVisible();
+    await expect(c.getByText('You ac has been activated and code is V46045', { exact: false })).toBeVisible();
+  });
+
+  test('no resolvedBody, no cache match (pre-fix record): falls back to the existing content-regex displayName, unchanged', async ({ page }) => {
+    await page.goto('/msgbubble-verify-temp');
+    const c = page.getByTestId('case-template_old_no_cache');
+    // "hello" alone would also match the "Broadcast · hello" header label —
+    // exact:true targets the body paragraph specifically (its full text is
+    // just "hello", the header's is not).
+    await expect(c.getByText('hello', { exact: true })).toBeVisible();
+    await expect(c.getByText('Broadcast · hello')).toBeVisible();
+  });
+
+  test('no resolvedBody, but templateId matches a cached template: still shows tpl.bodyPreview exactly as before this fix', async ({ page }) => {
+    await page.goto('/msgbubble-verify-temp');
+    const c = page.getByTestId('case-template_no_resolved_with_cache');
+    await expect(c.getByText('Generic unsubstituted hello, {{1}}!')).toBeVisible();
+  });
+});
