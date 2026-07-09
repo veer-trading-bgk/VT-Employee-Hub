@@ -278,3 +278,19 @@
 **Fix:** Not done — this is a one-record Settings data-entry correction (re-edit the branch in Settings → Branches with the fields in the right inputs), not a code fix. Worth a glance at the Branches editor UI to confirm its `name`/`address` inputs are clearly labeled, since this happened at least once.
 
 **Priority:** Low — cosmetic, one branch record, self-correctable in Settings; not blocking the location-rendering fix itself.
+
+## Contacts Bulk Import — 2000-Contact Batches May Approach the 30s Lambda Timeout
+
+**Issue:** Found 2026-07-09 diagnosing the "~30 contacts" import failure report (Track A2). That specific bug was already fixed (`95063cd`, 2026-07-08) — confirmed empirically via a real 123-contact import completing in 6746ms with zero errors. But `POST /api/crm/import`'s server-side cap is 2000 leads per request (`crm.js`), processed synchronously within one Lambda invocation (`Promise.allSettled` fan-out, no chunking/throttling at the DynamoDB level, each new lead doing several sequential round-trips via `CIS.resolveOrCreate()`). Linearly extrapolating from the real 123-contact/6.7s trace, a full 2000-contact import could land in the range of a minute or more — which would exceed the Lambda's configured 30s timeout (`Timeout: 30`, reconfirmed live via `aws lambda get-function-configuration`).
+
+**Fix:** Not done — no evidence anyone has actually imported anywhere near 2000 contacts in one batch yet (this is extrapolation, not an observed failure). If/when real imports approach that scale, revisit with an async job pattern: accept the upload, return immediately with a job id, process in the background (e.g. via the existing `AUTO_WAIT#`-style claim/sweep infrastructure `AutomationEngine.js` already has, or a dedicated job-status record), and have the frontend poll for completion instead of holding one synchronous request open for the whole batch.
+
+**Priority:** Low — theoretical risk based on extrapolation, not a reproduced failure. Revisit if usage patterns approach the 2000-contact ceiling.
+
+## Contacts RBAC: "team_lead sees team" Is Documented But Not Implemented
+
+**Issue:** Found 2026-07-09 while extracting `contacts.js`'s `GET /` fetch+merge+filter logic into a shared helper for the new `GET /api/contacts/export` route. `docs/v3/09_PERMISSION_MATRIX.md` documents `team_lead` as seeing "Team" contacts and being able to "Export team contacts" (lines 43, 114-117, 134-136) — but `contacts.js`'s actual RBAC check is binary: `isAdmin ? sees every contact : sees only contacts where assignedTo === req.user.id`. There is no "team" tier at all in this route — `team_lead` currently falls into the same "own assigned leads only" bucket as `agent`/`telecaller`/`intern`. Separately, `docs/bible/19_DECISION_LOG.md`'s entry #18 (2026-07-09, DL-021 superseding DL-005) documents `team_lead` as having **zero** access to `crm.js` specifically — a different file from `contacts.js`, so that finding doesn't directly resolve this one, but it confirms `team_lead`'s real backend scope is inconsistently documented across these two files. Both the export route added today and the existing paginated route deliberately preserve current behavior (own-only) rather than inventing new team-scoping logic that doesn't exist yet — this is a documentation/implementation gap, not something introduced by today's change.
+
+**Fix:** Not done — needs a real decision (implement "team" scoping to match the permission matrix's documented intent, or correct the permission matrix to match actual `own`-only behavior) before either doc or code should be touched. Out of scope for an export-performance fix.
+
+**Priority:** Medium — RBAC documentation/implementation mismatches are exactly the bug class `19_DECISION_LOG.md` entry #18 already flagged as a recurring problem this week (Wave 2's "entire class of RBAC bugs"); worth a deliberate look, not a drive-by fix.

@@ -1025,7 +1025,13 @@ router.get('/my-work', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/crm/import ──────────────────────────────────────────────────────
-router.post('/import', authMiddleware, checkRole(['admin', 'manager']), rateLimit(5, 60_000), async (req, res, next) => {
+// rateLimit bumped 5 -> 15/60s on 2026-07-09 (docs/phase3/TECHNICAL_DEBT.md):
+// the 5/60s figure was sized back when the frontend fired one request per CSV
+// row (fixed in 95063cd) — now one request covers a whole import (<=2000
+// leads), so 5/60s was only ever going to bite legitimate rapid re-attempts,
+// not real per-row abuse. 15/60s stays a real ceiling while giving room for
+// a few retries/re-uploads in quick succession.
+router.post('/import', authMiddleware, checkRole(['admin', 'manager']), rateLimit(15, 60_000), async (req, res, next) => {
   try {
     const { leads, options = {} } = req.body;
     const {

@@ -63,87 +63,108 @@ function normaliseInbox(u) {
   };
 }
 
+// ── Shared fetch+merge+filter — GSI query for LEAD#s, scan for INBOX#s (admin
+// only), dedup, RBAC scope, sort, then q/source/stage/tag filter. Extracted
+// 2026-07-09 (docs/phase3/TECHNICAL_DEBT.md) so the full-export route below
+// can reuse it instead of duplicating it — this is also the exact block the
+// old N-page export loop was re-running from scratch on every single page,
+// an O(pages × company-size) cost for what should be one fetch.
+// Returns every matching contact, unsliced/unpaginated — callers slice or
+// return the whole array as their own route needs.
+async function fetchFilteredContacts(req, { q = '', source = '', stage = '', tag = '' } = {}) {
+  const companyId = req.user.companyId;
+  const isAdmin = req.user.role === 'admin';
+
+  // GSI query for LEAD# METADATA records — O(company-size) not O(table-size)
+  const leadItems = [];
+  let lk1;
+  do {
+    const r = await dynamodb.query({
+      TableName: TABLE,
+      IndexName: 'leadsByCompany',
+      KeyConditionExpression: 'companyId = :cid',
+      FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
+      ExpressionAttributeValues: { ':cid': companyId, ':meta': 'METADATA' },
+      ...(lk1 && { ExclusiveStartKey: lk1 }),
+    }).promise();
+    leadItems.push(...(r.Items ?? []));
+    lk1 = r.LastEvaluatedKey;
+  } while (lk1);
+
+  // Full scan of INBOX# CONTACT records — only admin sees unknown contacts
+  const inboxItems = [];
+  if (isAdmin) {
+    let lk2;
+    do {
+      const r = await dynamodb.scan({
+        TableName: TABLE,
+        FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk',
+        ExpressionAttributeValues: { ':prefix': `INBOX#${companyId}#`, ':sk': 'CONTACT' },
+        ...(lk2 && { ExclusiveStartKey: lk2 }),
+      }).promise();
+      inboxItems.push(...(r.Items ?? []));
+      lk2 = r.LastEvaluatedKey;
+    } while (lk2);
+  }
+
+  // Dedup: if a phone already exists as a LEAD, suppress the INBOX CONTACT record for it.
+  // ADR-013 Rule 3: never compare raw phone numbers — both sides normalized via
+  // phoneNorm ?? to10Digit(l.phone), the exact fallback the ADR specifies, so two
+  // same-subscriber numbers differing only in format correctly dedupe.
+  const leadPhones = new Set(leadItems.map((l) => l.phoneNorm ?? to10Digit(l.phone)).filter(Boolean));
+
+  // Merge and normalise; non-admin employees see only their assigned leads.
+  // NOTE (2026-07-09): this is admin-sees-all vs non-admin-sees-own-only —
+  // there is no "team_lead sees team" tier here despite that being the
+  // documented intent in docs/v3/09_PERMISSION_MATRIX.md (lines 43/114-117/
+  // 134-136). team_lead currently falls into the non-admin branch and sees
+  // only their own assigned leads, same as any other non-admin role. Not
+  // changed here — this route's RBAC behavior is being preserved exactly as
+  // it already is, not redesigned; see TECHNICAL_DEBT.md for the full note.
+  let contacts = [
+    ...(isAdmin ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id)).map(normaliseLead),
+    ...inboxItems.filter((u) => !leadPhones.has(to10Digit(u.phone))).map(normaliseInbox),
+  ];
+
+  // Sort by most recent activity first
+  contacts.sort((a, b) => {
+    const tA = a.lastMessageAt ?? a.createdAt ?? '';
+    const tB = b.lastMessageAt ?? b.createdAt ?? '';
+    return tB < tA ? -1 : tB > tA ? 1 : 0;
+  });
+
+  // Text search: name, phone, email
+  if (q) {
+    const ql = q.toLowerCase();
+    contacts = contacts.filter((c) =>
+      (c.displayName).toLowerCase().includes(ql) ||
+      (c.phone).includes(q) ||
+      (c.email ?? '').toLowerCase().includes(ql)
+    );
+  }
+
+  // Source filter
+  if (source) contacts = contacts.filter((c) => c.source === source);
+
+  // Stage filter
+  if (stage) contacts = contacts.filter((c) => c.stage === stage);
+
+  // Tag filter — ID/label tolerant matching via TagService (legacy text-label tags)
+  if (tag) {
+    const accept = await TagService.expandTagFilter(companyId, [tag]);
+    contacts = contacts.filter((c) => TagService.matchesTagFilter(c.tags, accept));
+  }
+
+  return contacts;
+}
+
 // ── GET /api/contacts ─────────────────────────────────────────────────────────
 // Returns a unified, paginated list of all contacts (LEAD# + INBOX#).
 // Query params: q, source, stage, page (1-based), pageSize (max 100)
 router.get('/', authMiddleware, async (req, res, next) => {
   try {
-    const companyId = req.user.companyId;
-    const isAdmin = req.user.role === 'admin';
     const { q = '', source = '', stage = '', tag = '', page = '1', pageSize = '50' } = req.query;
-
-    // GSI query for LEAD# METADATA records — O(company-size) not O(table-size)
-    const leadItems = [];
-    let lk1;
-    do {
-      const r = await dynamodb.query({
-        TableName: TABLE,
-        IndexName: 'leadsByCompany',
-        KeyConditionExpression: 'companyId = :cid',
-        FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
-        ExpressionAttributeValues: { ':cid': companyId, ':meta': 'METADATA' },
-        ...(lk1 && { ExclusiveStartKey: lk1 }),
-      }).promise();
-      leadItems.push(...(r.Items ?? []));
-      lk1 = r.LastEvaluatedKey;
-    } while (lk1);
-
-    // Full scan of INBOX# CONTACT records — only admin sees unknown contacts
-    const inboxItems = [];
-    if (isAdmin) {
-      let lk2;
-      do {
-        const r = await dynamodb.scan({
-          TableName: TABLE,
-          FilterExpression: 'begins_with(PK, :prefix) AND SK = :sk',
-          ExpressionAttributeValues: { ':prefix': `INBOX#${companyId}#`, ':sk': 'CONTACT' },
-          ...(lk2 && { ExclusiveStartKey: lk2 }),
-        }).promise();
-        inboxItems.push(...(r.Items ?? []));
-        lk2 = r.LastEvaluatedKey;
-      } while (lk2);
-    }
-
-    // Dedup: if a phone already exists as a LEAD, suppress the INBOX CONTACT record for it.
-    // ADR-013 Rule 3: never compare raw phone numbers — both sides normalized via
-    // phoneNorm ?? to10Digit(l.phone), the exact fallback the ADR specifies, so two
-    // same-subscriber numbers differing only in format correctly dedupe.
-    const leadPhones = new Set(leadItems.map((l) => l.phoneNorm ?? to10Digit(l.phone)).filter(Boolean));
-
-    // Merge and normalise; non-admin employees see only their assigned leads
-    let contacts = [
-      ...(isAdmin ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id)).map(normaliseLead),
-      ...inboxItems.filter((u) => !leadPhones.has(to10Digit(u.phone))).map(normaliseInbox),
-    ];
-
-    // Sort by most recent activity first
-    contacts.sort((a, b) => {
-      const tA = a.lastMessageAt ?? a.createdAt ?? '';
-      const tB = b.lastMessageAt ?? b.createdAt ?? '';
-      return tB < tA ? -1 : tB > tA ? 1 : 0;
-    });
-
-    // Text search: name, phone, email
-    if (q) {
-      const ql = q.toLowerCase();
-      contacts = contacts.filter((c) =>
-        (c.displayName).toLowerCase().includes(ql) ||
-        (c.phone).includes(q) ||
-        (c.email ?? '').toLowerCase().includes(ql)
-      );
-    }
-
-    // Source filter
-    if (source) contacts = contacts.filter((c) => c.source === source);
-
-    // Stage filter
-    if (stage) contacts = contacts.filter((c) => c.stage === stage);
-
-    // Tag filter — ID/label tolerant matching via TagService (legacy text-label tags)
-    if (tag) {
-      const accept = await TagService.expandTagFilter(companyId, [tag]);
-      contacts = contacts.filter((c) => TagService.matchesTagFilter(c.tags, accept));
-    }
+    const contacts = await fetchFilteredContacts(req, { q, source, stage, tag });
 
     const total = contacts.length;
     const pg = Math.max(1, parseInt(page, 10));
@@ -152,6 +173,26 @@ router.get('/', authMiddleware, async (req, res, next) => {
     const sliced = contacts.slice((pg - 1) * ps, pg * ps);
 
     res.json({ success: true, contacts: sliced, total, page: pg, pageSize: ps, pages });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /api/contacts/export ──────────────────────────────────────────────────
+// Same fetch+merge+filter as GET / above (fetchFilteredContacts, shared not
+// duplicated), but returns every matching row in one response instead of a
+// page. Replaces exportAllCSV()'s old N-page loop, which re-ran that entire
+// company-wide fetch+sort+filter on every page just to return a 100-row
+// slice — O(pages x company-size) instead of one fetch (found + fixed
+// 2026-07-09, docs/phase3/TECHNICAL_DEBT.md). Rate-limited tighter than the
+// paginated route: it's a heavier single query, and one call already returns
+// everything, so there's no legitimate reason to call it repeatedly in a
+// short window.
+router.get('/export', authMiddleware, rateLimit(5, 60_000), async (req, res, next) => {
+  try {
+    const { q = '', source = '', stage = '', tag = '' } = req.query;
+    const contacts = await fetchFilteredContacts(req, { q, source, stage, tag });
+    res.json({ success: true, contacts, total: contacts.length });
   } catch (err) {
     next(err);
   }

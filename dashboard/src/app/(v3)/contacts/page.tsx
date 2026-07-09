@@ -50,6 +50,11 @@ interface ContactsResponse {
   pageSize: number;
 }
 
+interface ContactsExportResponse {
+  contacts: Contact[];
+  total: number;
+}
+
 const PAGE_SIZE = 50;
 
 // ── CSV export ─────────────────────────────────────────────────────────────────
@@ -94,31 +99,25 @@ function exportSelected(contacts: Contact[], tagLabel: (id: string) => string, s
   toast.success(`Exported ${contacts.length} selected contact${contacts.length !== 1 ? 's' : ''}`);
 }
 
-// Full export — paginates through API to collect all contacts matching current filters
+// Full export — one call to the dedicated export endpoint (GET /api/contacts/
+// export), which reuses the exact same fetch+merge+filter as the paginated
+// list route but returns every matching row unsliced. Previously paginated
+// through GET /api/contacts itself (PAGE=100), which re-ran that entire
+// company-wide fetch+sort+filter from scratch on every single page just to
+// return a 100-row slice — O(pages x company-size) instead of one fetch
+// (found + fixed 2026-07-09, docs/phase3/TECHNICAL_DEBT.md).
 async function exportAllCSV(
   search: string,
   stageFilter: string,
   tagLabel: (id: string) => string,
   stageLabel: (key: string) => string,
 ): Promise<void> {
-  const PAGE = 100;
-  const rows: Contact[] = [];
-  let page = 1;
-  let total = Infinity;
-
-  while (rows.length < total) {
-    const params = new URLSearchParams({
-      ...(search      && { q: search }),
-      ...(stageFilter && { stage: stageFilter }),
-      page:     String(page),
-      pageSize: String(PAGE),
-    });
-    const res = await apiFetch<ContactsResponse>(`/api/contacts?${params}`);
-    rows.push(...res.contacts);
-    total = res.total;
-    if (res.contacts.length < PAGE) break;
-    page++;
-  }
+  const params = new URLSearchParams({
+    ...(search      && { q: search }),
+    ...(stageFilter && { stage: stageFilter }),
+  });
+  const res = await apiFetch<ContactsExportResponse>(`/api/contacts/export?${params}`);
+  const rows = res.contacts;
 
   if (rows.length === 0) { toast.info('No contacts to export'); return; }
   triggerDownload(buildCSV(rows, tagLabel, stageLabel), `contacts_${format(new Date(), 'yyyy-MM-dd')}.csv`);
