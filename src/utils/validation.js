@@ -18,8 +18,19 @@ const { DOCUMENT_ALLOWED_MIME } = require('./documentConstants');
 // ConversationalAgentService.js only, never swept to other files using this
 // same "raw dynamodb.get().Item handed back as a GET response, later
 // round-tripped into a .strict() PUT" shape. Now applied to all four routes
-// in whatsapp.js (see TECHNICAL_DEBT.md), but a repo-wide check for other
-// .strict()-schema consumers with the same pattern has not been done.
+// in whatsapp.js (see TECHNICAL_DEBT.md).
+//
+// 2026-07-09 (same day): repo-wide sweep completed — every .strict() schema
+// in this file traced to its GET/POST/PUT routes and every frontend consumer
+// checked. No further round-trip-into-.strict() instances found (each
+// remaining GET either already cherry-picks fields, or its frontend consumer
+// never spreads a fetched entity into a PUT/POST body). Three routes DID
+// still leak raw items with no round-trip risk (knowledgeCenter.js,
+// knowledgeDocuments.js, whatsapp.js's /branches) — stripped anyway, same
+// reasoning as welcomeConfigSchema. See TECHNICAL_DEBT.md for the full
+// per-schema breakdown and two unrelated findings surfaced along the way
+// (updateEmployeeSchema's employees-table leak, not fixed; updateLeadSchema
+// missing expectedValue/probability entirely — a separate, live bug).
 const STORAGE_METADATA_KEYS = ['PK', 'SK', 'companyId', 'updatedAt', 'updatedBy'];
 function stripStorageMetadata(item) {
   const rest = { ...(item ?? {}) };

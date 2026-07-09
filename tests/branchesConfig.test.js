@@ -66,6 +66,24 @@ describe('GET /api/whatsapp/branches', () => {
       success: true, branches: expect.arrayContaining([expect.objectContaining({ branchId: 'b1' })]),
     }));
   });
+
+  // 2026-07-09 repo-wide sweep (docs/phase3/TECHNICAL_DEBT.md) — GET returned
+  // raw DynamoDB items; no round-trip risk (BranchesPanel.tsx always builds
+  // its PUT/POST body from explicit form fields), so this never 400'd, but
+  // no reason to leak PK/SK/companyId either.
+  test('strips DynamoDB storage metadata from every listed branch', async () => {
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [
+      { PK: 'CONFIG#BRANCH#acme', SK: 'BRANCH#b1', companyId: 'acme', branchId: 'b1', name: 'HQ', latitude: 1, longitude: 2 },
+    ] }) });
+    const handler = getRouteHandler(whatsappRouter, '/branches', 'get');
+    const res = mockRes();
+    await handler({ user: USER }, res, jest.fn());
+    const [{ branches }] = res.json.mock.calls[0];
+    expect(branches[0]).not.toHaveProperty('PK');
+    expect(branches[0]).not.toHaveProperty('SK');
+    expect(branches[0]).not.toHaveProperty('companyId');
+    expect(branches[0].branchId).toBe('b1');
+  });
 });
 
 describe('POST /api/whatsapp/branches', () => {
@@ -94,6 +112,19 @@ describe('POST /api/whatsapp/branches', () => {
     }));
     expect(res.status).toHaveBeenCalledWith(201);
   });
+
+  test('the created-branch response strips DynamoDB storage metadata', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(whatsappRouter, '/branches', 'post');
+    const res = mockRes();
+    await handler({ body: { name: 'HQ Office', address: '1 MG Road', latitude: 12.97, longitude: 77.59 }, user: USER }, res, jest.fn());
+
+    const [{ branch }] = res.json.mock.calls[0];
+    expect(branch).not.toHaveProperty('PK');
+    expect(branch).not.toHaveProperty('SK');
+    expect(branch).not.toHaveProperty('companyId');
+    expect(branch.name).toBe('HQ Office');
+  });
 });
 
 describe('PUT /api/whatsapp/branches/:branchId', () => {
@@ -117,6 +148,22 @@ describe('PUT /api/whatsapp/branches/:branchId', () => {
       Item: expect.objectContaining({ branchId: 'b1', name: 'Renamed HQ' }),
     }));
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+  });
+
+  test('the updated-branch response strips DynamoDB storage metadata', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({
+      Item: { PK: 'CONFIG#BRANCH#acme', SK: 'BRANCH#b1', companyId: 'acme', branchId: 'b1', name: 'HQ' },
+    }) });
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(whatsappRouter, '/branches/:branchId', 'put');
+    const res = mockRes();
+    await handler({ params: { branchId: 'b1' }, body: { name: 'Renamed HQ', latitude: 1, longitude: 2 }, user: USER }, res, jest.fn());
+
+    const [{ branch }] = res.json.mock.calls[0];
+    expect(branch).not.toHaveProperty('PK');
+    expect(branch).not.toHaveProperty('SK');
+    expect(branch).not.toHaveProperty('companyId');
+    expect(branch.name).toBe('Renamed HQ');
   });
 });
 

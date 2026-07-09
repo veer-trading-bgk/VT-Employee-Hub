@@ -3381,7 +3381,12 @@ router.get('/branches', authMiddleware, async (req, res, next) => {
       KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
       ExpressionAttributeValues: { ':pk': branchPK(req.user.companyId), ':sk': 'BRANCH#' },
     }).promise();
-    const branches = (result.Items ?? []).sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''));
+    // stripStorageMetadata() — BranchesPanel.tsx always constructs its
+    // PUT/POST body from explicit form fields, never by spreading a fetched
+    // branch (see docs/phase3/TECHNICAL_DEBT.md's repo-wide sweep), so this
+    // was never at 400 risk — but no reason to hand PK/SK/companyId to the
+    // client either.
+    const branches = (result.Items ?? []).map(stripStorageMetadata).sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''));
     res.json({ success: true, branches });
   } catch (err) { next(err); }
 });
@@ -3403,7 +3408,7 @@ router.post('/branches', authMiddleware, checkRole(['admin']), rateLimit(20, 60_
       createdAt: now, updatedAt: now,
     };
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();
-    res.status(201).json({ success: true, branch: item });
+    res.status(201).json({ success: true, branch: stripStorageMetadata(item) });
   } catch (err) { next(err); }
 });
 
@@ -3426,7 +3431,7 @@ router.put('/branches/:branchId', authMiddleware, checkRole(['admin']), rateLimi
       updatedAt: new Date().toISOString(),
     };
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();
-    res.json({ success: true, branch: item });
+    res.json({ success: true, branch: stripStorageMetadata(item) });
   } catch (err) { next(err); }
 });
 

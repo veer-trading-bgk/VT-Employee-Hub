@@ -7,7 +7,7 @@ const { rateLimit } = require('../middleware/rateLimiter');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 const { logAudit } = require('../utils/audit');
-const { knowledgeEntryDraftSchema } = require('../utils/validation');
+const { knowledgeEntryDraftSchema, stripStorageMetadata } = require('../utils/validation');
 const { entryKey, versionKey, listEntries } = require('../services/KnowledgeService');
 const { testKnowledgeEntry } = require('../services/PromptTestService');
 const EmbeddingService = require('../services/EmbeddingService');
@@ -66,7 +66,13 @@ async function computeEmbeddingOrNull(companyId, question, answer, entryId) {
 router.get('/', async (req, res, next) => {
   try {
     const entries = await listEntries(req.user.companyId);
-    res.json({ entries });
+    // stripStorageMetadata() — listEntries() returns raw DynamoDB items
+    // (PK/SK/companyId/updatedBy). No round-trip risk here today (the
+    // frontend always constructs PUT/POST bodies from explicit field values,
+    // never by spreading a fetched entry — see docs/phase3/TECHNICAL_DEBT.md's
+    // repo-wide sweep), but there's no reason to hand internal storage keys
+    // to the client either.
+    res.json({ entries: entries.map(stripStorageMetadata) });
   } catch (err) { next(err); }
 });
 
@@ -93,7 +99,7 @@ router.post('/', async (req, res, next) => {
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();
 
     await logAudit(req.user.id, 'knowledge_entry_create', companyId, 'success', req.ip, { entryId }, companyId);
-    res.status(201).json(item);
+    res.status(201).json(stripStorageMetadata(item));
   } catch (err) { next(err); }
 });
 

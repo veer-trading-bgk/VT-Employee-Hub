@@ -63,6 +63,27 @@ describe('GET /api/knowledge', () => {
     }));
     expect(res.json).toHaveBeenCalledWith({ entries: [{ entryId: 'e1' }, { entryId: 'e2' }] });
   });
+
+  // 2026-07-09 repo-wide sweep (docs/phase3/TECHNICAL_DEBT.md) — listEntries()
+  // returns raw DynamoDB items; this route never round-trips them into a
+  // .strict() PUT (see knowledgeEntryDraftSchema's tests below), so it never
+  // 400'd, but there's no reason to leak PK/SK/companyId/updatedBy either.
+  test('strips DynamoDB storage metadata from every listed entry', async () => {
+    dynamodb.query.mockReturnValue(resolved({
+      Items: [{
+        PK: `KNOWLEDGE#${CID}`, SK: 'ENTRY#e1', companyId: CID, updatedBy: 'emp_1',
+        entryId: 'e1', draftQuestion: 'q', draftTriggers: ['t'], draftAnswer: 'a',
+      }],
+    }));
+    const res = mockRes();
+    await handler({ user: USER }, res, jest.fn());
+    const [{ entries }] = res.json.mock.calls[0];
+    expect(entries[0]).not.toHaveProperty('PK');
+    expect(entries[0]).not.toHaveProperty('SK');
+    expect(entries[0]).not.toHaveProperty('companyId');
+    expect(entries[0]).not.toHaveProperty('updatedBy');
+    expect(entries[0].entryId).toBe('e1');
+  });
 });
 
 describe('POST /api/knowledge', () => {
@@ -92,6 +113,20 @@ describe('POST /api/knowledge', () => {
     await handler({ user: USER, body: { question: 'q', triggers: [], answer: 'a' } }, res, jest.fn());
     expect(res.status).toHaveBeenCalledWith(400);
     expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('the created-entry response strips DynamoDB storage metadata', async () => {
+    dynamodb.put.mockReturnValue(resolved({}));
+    const res = mockRes();
+    await handler({
+      user: USER, ip: '1.1.1.1',
+      body: { question: 'What are your fees?', triggers: ['fees'], answer: 'No fee.' },
+    }, res, jest.fn());
+    const [returned] = res.json.mock.calls[0];
+    expect(returned).not.toHaveProperty('PK');
+    expect(returned).not.toHaveProperty('SK');
+    expect(returned).not.toHaveProperty('companyId');
+    expect(returned.entryId).toBeDefined();
   });
 });
 

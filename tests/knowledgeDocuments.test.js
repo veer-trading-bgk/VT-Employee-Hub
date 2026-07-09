@@ -88,6 +88,23 @@ describe('GET /api/knowledge-documents', () => {
     }));
     expect(res.json).toHaveBeenCalledWith({ documents: [{ documentId: 'd1' }] });
   });
+
+  // 2026-07-09 repo-wide sweep (docs/phase3/TECHNICAL_DEBT.md) — listDocuments()
+  // returns raw DynamoDB items; no round-trip risk (updateDocumentMeta()
+  // always sends a fresh {filename, category} body), so this never 400'd,
+  // but no reason to leak PK/SK/companyId either.
+  test('strips DynamoDB storage metadata from every listed document', async () => {
+    dynamodb.query.mockReturnValue(resolved({
+      Items: [{ PK: `KNOWLEDGE_DOCUMENTS#${CID}`, SK: 'DOC#d1', companyId: CID, documentId: 'd1', filename: 'x.pdf' }],
+    }));
+    const res = mockRes();
+    await handler({ user: USER }, res, jest.fn());
+    const [{ documents }] = res.json.mock.calls[0];
+    expect(documents[0]).not.toHaveProperty('PK');
+    expect(documents[0]).not.toHaveProperty('SK');
+    expect(documents[0]).not.toHaveProperty('companyId');
+    expect(documents[0].documentId).toBe('d1');
+  });
 });
 
 describe('GET /api/knowledge-documents/upload-url', () => {
@@ -184,6 +201,20 @@ describe('POST /api/knowledge-documents (finalize)', () => {
       }),
     }));
     expect(res.status).toHaveBeenCalledWith(201);
+  });
+
+  test('the finalize response strips DynamoDB storage metadata', async () => {
+    mockS3.headObject.mockReturnValue(resolved({ ContentLength: 12345 }));
+    mockS3.getObject.mockReturnValue(resolved({ Body: pdfBuffer() }));
+    dynamodb.put.mockReturnValue(resolved({}));
+    const res = mockRes();
+    await handler({ user: USER, ip: '1.1.1.1', body: validBody() }, res, jest.fn());
+
+    const [returned] = res.json.mock.calls[0];
+    expect(returned).not.toHaveProperty('PK');
+    expect(returned).not.toHaveProperty('SK');
+    expect(returned).not.toHaveProperty('companyId');
+    expect(returned.documentId).toBe(validBody().documentId);
   });
 });
 

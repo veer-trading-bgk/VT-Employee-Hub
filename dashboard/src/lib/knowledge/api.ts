@@ -28,7 +28,6 @@ export interface KnowledgeEntry {
   archived: boolean;
   lastTestResult: TestResult | null;
   createdAt: string;
-  updatedAt: string;
 }
 
 export interface KnowledgeEntryVersion {

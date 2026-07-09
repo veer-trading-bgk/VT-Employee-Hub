@@ -5,7 +5,7 @@ const express = require('express');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimiter');
 const { logAudit } = require('../utils/audit');
-const { knowledgeDocumentMetaSchema } = require('../utils/validation');
+const { knowledgeDocumentMetaSchema, stripStorageMetadata } = require('../utils/validation');
 const { DOCUMENT_ALLOWED_MIME, MAX_DOCUMENT_SIZE_BYTES, MAX_CHUNKS_PER_DOCUMENT } = require('../utils/documentConstants');
 const {
   listDocuments, getDocument, getUploadUrl, validateUploadedObject, createDocument,
@@ -44,7 +44,12 @@ const UPLOAD_RATE_LIMIT = rateLimit(20, 60 * 60_000);
 router.get('/', async (req, res, next) => {
   try {
     const documents = await listDocuments(req.user.companyId);
-    res.json({ documents });
+    // stripStorageMetadata() — listDocuments() returns raw DynamoDB items
+    // (PK/SK/companyId/updatedAt). No round-trip risk (updateDocumentMeta()
+    // always sends a fresh {filename, category} body, never a fetched
+    // document — see docs/phase3/TECHNICAL_DEBT.md's repo-wide sweep), but
+    // no reason to hand internal storage keys to the client either.
+    res.json({ documents: documents.map(stripStorageMetadata) });
   } catch (err) { next(err); }
 });
 
@@ -90,7 +95,7 @@ router.post('/', UPLOAD_RATE_LIMIT, async (req, res, next) => {
     });
 
     await logAudit(req.user.id, 'knowledge_document_upload', companyId, 'success', req.ip, { documentId }, companyId);
-    res.status(201).json(doc);
+    res.status(201).json(stripStorageMetadata(doc));
   } catch (err) { next(err); }
 });
 
