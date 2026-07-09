@@ -85,10 +85,29 @@ function WorkingHoursForm({ initialHours, initialOOO }: { initialHours: HoursCon
     setDirty(true);
   }
 
+  // Takes both configs to save explicitly (both routes are PUT on every
+  // save regardless of which toggle changed), plus which toggle (if any)
+  // triggered this as an auto-save — needed so onError knows whether/which
+  // toggle to revert, versus a manual-save failure that should leave the
+  // form alone so the admin can retry. The explicit configs (rather than
+  // reading `hours`/`ooo` from this closure) also avoid racing React's
+  // state batching: the handlers below call setHours/setOoo + mutate in the
+  // same call, so the closure's state could still be the pre-flip value.
   const saveMut = useMutation({
-    mutationFn: async () => {
-      await apiFetch('/api/whatsapp/hours-config', { method: 'PUT', body: JSON.stringify(hours) });
-      await apiFetch('/api/whatsapp/ooo-config', { method: 'PUT', body: JSON.stringify(ooo) });
+    // Writes the toggle's own config LAST when this is an auto-save
+    // (revertTarget set), so onError's revert is always accurate: if the
+    // last write throws, nothing new was persisted for that field, so
+    // reverting it is correct; if it succeeds, the whole call succeeds and
+    // onError never runs. Without this ordering, a hours-toggle auto-save
+    // that successfully wrote hours-config but then failed on the
+    // unrelated (unchanged) ooo-config write would revert the toggle
+    // locally even though the server-side value it cared about was really
+    // saved — a real, if narrow, false-negative window this ordering closes.
+    mutationFn: async ({ hours: h, ooo: o, revertTarget }: { hours: HoursConfig; ooo: OOOConfig; revertTarget?: 'hours' | 'ooo' }) => {
+      const putHours = () => apiFetch('/api/whatsapp/hours-config', { method: 'PUT', body: JSON.stringify(h) });
+      const putOoo = () => apiFetch('/api/whatsapp/ooo-config', { method: 'PUT', body: JSON.stringify(o) });
+      if (revertTarget === 'hours') { await putOoo(); await putHours(); }
+      else { await putHours(); await putOoo(); }
     },
     onSuccess: () => {
       toast.success('Working hours saved');
@@ -96,14 +115,50 @@ function WorkingHoursForm({ initialHours, initialOOO }: { initialHours: HoursCon
       qc.invalidateQueries({ queryKey: ['hours-config'] });
       qc.invalidateQueries({ queryKey: ['ooo-config'] });
     },
-    onError: (e: unknown) => {
+    onError: (e: unknown, variables) => {
+      // Revert whichever toggle triggered its own auto-save failing —
+      // never on a manual-save failure (no revertTarget), which should
+      // leave the form exactly as the admin left it (see 2026-07-09
+      // investigation).
+      if (variables.revertTarget === 'hours') setHours((prev) => ({ ...prev, enabled: !variables.hours.enabled }));
+      if (variables.revertTarget === 'ooo') setOoo((prev) => ({ ...prev, enabled: !variables.ooo.enabled }));
       const msg = e instanceof ApiClientError ? (e.body?.error as string | undefined) ?? e.message : 'Failed to save working hours';
       toast.error(msg);
     },
   });
 
+  // Auto-saves ONLY the master toggle, immediately on flip. If other fields
+  // are already mid-edit (dirty), don't silently commit them alongside the
+  // toggle; fold the flip into that same pending change and let the
+  // existing manual-Save flow cover everything together, unchanged.
+  function handleHoursToggleChange(checked: boolean) {
+    if (dirty) {
+      setHours((prev) => ({ ...prev, enabled: checked }));
+      setDirty(true);
+      return;
+    }
+    const nextHours = { ...hours, enabled: checked };
+    setHours(nextHours);
+    saveMut.mutate({ hours: nextHours, ooo, revertTarget: 'hours' });
+  }
+
+  // Same treatment for the nested Out of Office toggle — it turned out to
+  // fit the pattern cleanly (both PUTs already fire together on every save
+  // regardless of which config changed, so there's no partial-payload
+  // wrinkle here).
+  function handleOooToggleChange(checked: boolean) {
+    if (dirty) {
+      setOoo((prev) => ({ ...prev, enabled: checked }));
+      setDirty(true);
+      return;
+    }
+    const nextOoo = { ...ooo, enabled: checked };
+    setOoo(nextOoo);
+    saveMut.mutate({ hours, ooo: nextOoo, revertTarget: 'ooo' });
+  }
+
   const saveButton = (
-    <Button size="sm" loading={saveMut.isPending} disabled={!dirty} onClick={() => saveMut.mutate()}>
+    <Button size="sm" loading={saveMut.isPending} disabled={!dirty} onClick={() => saveMut.mutate({ hours, ooo })}>
       Save Working Hours
     </Button>
   );
@@ -124,7 +179,12 @@ function WorkingHoursForm({ initialHours, initialOOO }: { initialHours: HoursCon
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <Toggle checked={hours.enabled} onChange={(e) => { setHours((p) => ({ ...p, enabled: e.target.checked })); setDirty(true); }} aria-label="Enable working hours" />
+          <Toggle
+            checked={hours.enabled}
+            disabled={saveMut.isPending}
+            onChange={(e) => handleHoursToggleChange(e.target.checked)}
+            aria-label="Enable working hours"
+          />
           {hours.enabled && (
             <button
               type="button"
@@ -175,7 +235,12 @@ function WorkingHoursForm({ initialHours, initialOOO }: { initialHours: HoursCon
           <div className="border-t border-neutral-100 pt-4 dark:border-neutral-800">
             <div className="mb-2 flex items-center justify-between">
               <label className="text-xs font-medium text-neutral-500">Out of Office message</label>
-              <Toggle checked={ooo.enabled} onChange={(e) => { setOoo((p) => ({ ...p, enabled: e.target.checked })); setDirty(true); }} aria-label="Enable out of office message" />
+              <Toggle
+                checked={ooo.enabled}
+                disabled={saveMut.isPending}
+                onChange={(e) => handleOooToggleChange(e.target.checked)}
+                aria-label="Enable out of office message"
+              />
             </div>
             {ooo.enabled && (
               <>
@@ -195,13 +260,12 @@ function WorkingHoursForm({ initialHours, initialOOO }: { initialHours: HoursCon
         </div>
       )}
 
-      {/* Save must stay reachable even when the settings panel above is
-          collapsed/hidden — most importantly right after flipping the master
-          `hours.enabled` toggle off, which hides that whole block (including
-          the nested OOO editor). Without this, an OFF toggle can never
-          actually be persisted (see 2026-07-09 investigation). The nested
-          OOO-only toggle doesn't need this fix — its Save button is this
-          same shared button, unaffected by `ooo.enabled`. */}
+      {/* Fallback for CONTENT edits only now — both toggles auto-save
+          themselves on flip (see handleHoursToggleChange/handleOooToggleChange
+          above) and no longer need a reachable Save button of their own.
+          This still covers schedule/timezone/message-text edits, and the
+          rare case where a toggle got folded into an already-dirty pending
+          change instead of auto-saving (see those handlers' comments). */}
       {dirty && !(hours.enabled && expanded) && (
         <div className="mt-4 flex justify-end border-t border-neutral-100 pt-4 dark:border-neutral-800">
           {saveButton}

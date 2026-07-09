@@ -95,21 +95,48 @@ function WelcomeMessageForm({ initialConfig }: { initialConfig: WelcomeConfig | 
     setDirty(true);
   }
 
+  // Takes the config to save explicitly, plus a flag marking whether this
+  // call came from the toggle's auto-save path — needed so onError knows
+  // whether to revert the toggle (auto-save) or leave the form alone so the
+  // admin can retry (manual Save). The explicit config (rather than reading
+  // `form` from this closure) also avoids racing React's state batching:
+  // handleToggleChange calls setForm + mutate in the same handler, so the
+  // closure's `form` could still be the pre-flip value at that point.
   const saveMut = useMutation({
-    mutationFn: () => apiFetch('/api/whatsapp/welcome-config', { method: 'PUT', body: JSON.stringify(form) }),
+    mutationFn: ({ config }: { config: WelcomeConfig; isToggleAutoSave?: boolean }) =>
+      apiFetch('/api/whatsapp/welcome-config', { method: 'PUT', body: JSON.stringify(config) }),
     onSuccess: () => {
       toast.success('Welcome message saved');
       setDirty(false);
       qc.invalidateQueries({ queryKey: ['welcome-config'] });
     },
-    onError: (e: unknown) => {
+    onError: (e: unknown, variables) => {
+      // Revert the toggle only for its own auto-save failing — never on a
+      // manual-save failure, which should leave the form exactly as the
+      // admin left it so they can just retry (see 2026-07-09 investigation).
+      if (variables.isToggleAutoSave) setForm((prev) => ({ ...prev, enabled: !variables.config.enabled }));
       const msg = e instanceof ApiClientError ? (e.body?.error as string | undefined) ?? e.message : 'Failed to save welcome message';
       toast.error(msg);
     },
   });
 
+  // Auto-saves ONLY the master toggle, immediately on flip — no separate
+  // Save click for turning Welcome Message on/off. If other fields are
+  // already mid-edit (dirty), don't silently commit them alongside the
+  // toggle; fold the flip into that same pending change instead and let the
+  // existing manual-Save flow cover both together, unchanged from before.
+  function handleToggleChange(checked: boolean) {
+    if (dirty) {
+      update('enabled', checked);
+      return;
+    }
+    const next = { ...form, enabled: checked };
+    setForm(next);
+    saveMut.mutate({ config: next, isToggleAutoSave: true });
+  }
+
   const saveButton = (
-    <Button size="sm" loading={saveMut.isPending} disabled={!dirty} onClick={() => saveMut.mutate()}>
+    <Button size="sm" loading={saveMut.isPending} disabled={!dirty} onClick={() => saveMut.mutate({ config: form })}>
       Save Welcome Message
     </Button>
   );
@@ -130,7 +157,12 @@ function WelcomeMessageForm({ initialConfig }: { initialConfig: WelcomeConfig | 
           </div>
         </div>
         <div className="flex items-center gap-1">
-          <Toggle checked={form.enabled} onChange={(e) => update('enabled', e.target.checked)} aria-label="Enable welcome message" />
+          <Toggle
+            checked={form.enabled}
+            disabled={saveMut.isPending}
+            onChange={(e) => handleToggleChange(e.target.checked)}
+            aria-label="Enable welcome message"
+          />
           {form.enabled && (
             <button
               type="button"
@@ -204,10 +236,12 @@ function WelcomeMessageForm({ initialConfig }: { initialConfig: WelcomeConfig | 
         </div>
       )}
 
-      {/* Save must stay reachable even when the settings panel above is
-          collapsed/hidden — most importantly right after flipping `enabled`
-          off, which hides that whole block. Without this, an OFF toggle can
-          never actually be persisted (see 2026-07-09 investigation). */}
+      {/* Fallback for CONTENT edits only now — the toggle auto-saves itself
+          on flip (see handleToggleChange above) and no longer needs a
+          reachable Save button of its own. This still covers message-type/
+          template/button edits, and the rare case where the toggle got
+          folded into an already-dirty pending change instead of
+          auto-saving (see handleToggleChange's comment). */}
       {dirty && !(form.enabled && expanded) && (
         <div className="mt-4 flex justify-end border-t border-neutral-100 pt-4 dark:border-neutral-800">
           {saveButton}
