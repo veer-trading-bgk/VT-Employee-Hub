@@ -2168,3 +2168,34 @@ already fully enforced just because an ADR exists.
     reactively for a single non-reproduced phrasing. An admin hitting this is
     expected to read the actual reply and judge it themselves, same as the
     already-documented design.
+
+18. **2026-07-09 — `docs/v3/12_DECISION_LOG.md`'s DL-005 ("Merge team_lead Role
+    into manager") was never actually implemented in backend authorization; the
+    real, code-verified state is now ratified as intentional, not drift, and
+    DL-005 is marked Superseded by a new DL-021 in that same file (full
+    context/decision/rationale there, not duplicated here).** `team_lead`
+    remained a real, distinct `checkRole()` role throughout: `manager` has
+    broad, company-wide access across `attendance.js` (leave admin),
+    `compensation.js` (payroll/adjustments), `crm.js` (leads/import/stats/
+    analytics), and most of `metrics.js`'s admin routes; `team_lead` has a
+    narrow metrics/points-only surface (`performers`, `my-team` — team_lead-only,
+    manager can't call it — `add-for-member`, `points.js`'s `award`), absent
+    entirely from `attendance.js`/`compensation.js`/`crm.js`'s `checkRole()`
+    lists, and where it does have access it's hard-restricted to its own team
+    via `teamLeadId` checks in `resolveTargetUserId()`/`add-for-member`
+    (`metrics.js:95`, `metrics.js:1041`) that `manager` doesn't have. The only
+    place a merge actually happened is the frontend *display* layer —
+    `toV3Role()` (`dashboard/src/types/v3.ts`) maps both raw roles to the same
+    `'manager'` UI bucket, presentation only, never touched backend
+    authorization. Decision by Viir: keep the code as-is (team-scoped
+    delegation is a real, useful feature for SMB sales teams), correct the
+    docs instead. `09_PERMISSION_MATRIX.md`, `06_ROLE_BASED_EXPERIENCE.md`,
+    `11_PHASE3_IMPLEMENTATION_PLAN.md`, and `ARCHITECTURE_AUDIT.md` all
+    annotated/corrected in the same pass — see each file's own note. Standing
+    rule now written down in `09_PERMISSION_MATRIX.md` and
+    `06_ROLE_BASED_EXPERIENCE.md`: `v3Role`/display buckets (from `toV3Role()`
+    or equivalent) must never be used for permission gating anywhere, only raw
+    roles — this exact confusion (conflating the display collapse with a real
+    permission merge) is part of what let DL-005's stale claim stand
+    unnoticed, and was separately the root cause of an entire class of RBAC
+    bugs fixed this session (Wave 2).

@@ -107,7 +107,8 @@ Each entry follows this structure:
 
 ### [DL-005] Merge team_lead Role into manager
 **Date:** 2026-06-29
-**Status:** Approved
+**Status:** Superseded
+**Superseded by:** [DL-021] — the merge described below was never implemented in backend authorization; `team_lead` remained a distinct, real `checkRole()` role throughout, and the split is now ratified as intentional rather than retroactively enforced. This entry is left unedited below for history — see DL-021 for the current, accurate state.
 
 **Context:** V2 has 7 roles: superadmin, admin, manager, team_lead, agent, telecaller, intern. The `team_lead` role had nearly identical permissions to `manager` with a different home path.
 
@@ -363,6 +364,33 @@ Each entry follows this structure:
 **Rationale:** Campaigns require WhatsApp template approval workflows, sending rate limits, opt-out management, and analytics. Building this correctly in Phase 3 would add 30+ days to delivery. It is better to ship a great Phase 3 without Campaigns than a compromised Phase 3 with a rushed Campaigns feature.
 
 **Consequences:** Phase 4 planning document must include Campaigns as a first-class item. The Automation module's "Sequences" feature in Phase 3 covers individual customer sequences (not bulk broadcasts), which partially satisfies the use case.
+
+---
+
+### [DL-021] team_lead/manager Split Ratified as Intentional — Supersedes DL-005
+**Date:** 2026-07-09
+**Status:** Approved
+**Decided by:** Viir
+
+**Context:** DL-005 (and the frozen `09_PERMISSION_MATRIX.md`, built on top of it) documented a decision to merge `team_lead` into `manager` — one role, same permissions. That merge was never implemented in backend authorization. Verified directly against the code, not assumed: `team_lead` remains a real, distinct value throughout `Role`/`checkRole()`/`updateEmployeeSchema` (`src/utils/validation.js:177,199`), and the backend enforces a genuinely different, narrower scope for it than for `manager` — not just a cosmetic difference:
+- `manager` has broad, company-wide access across four modules: `attendance.js` (leave admin, all attendance records), `compensation.js` (payroll, adjustments — view), `crm.js` (lead creation/assign/restore/import, stats, analytics), and most of `metrics.js`'s admin-facing routes (`team-summary`, `bulk-entry`, `pending`, `verify`, `pending/dismiss`). Confirmed via `resolveTargetUserId()` (`metrics.js:64-100`): a `manager` can act on/view any employee's metrics company-wide, no team-membership check.
+- `team_lead` has access to a narrow, metrics/points-only surface — `metrics.js`'s `performers`, `my-team` (team_lead-*exclusive*, manager cannot call it), and `add-for-member`; `points.js`'s `award`. It has **zero** access anywhere in `attendance.js`, `compensation.js`, or `crm.js` — not even reduced to team scope, simply absent from every `checkRole()` list in those three files. Where it does have access, it's explicitly team-restricted: `resolveTargetUserId()`/`add-for-member` both reject a target employee whose `teamLeadId !== req.user.id` with a 403 (`metrics.js:95`, `metrics.js:1041`) — `manager` has no such check.
+
+The only place any merge actually happened is the frontend *display* layer: `toV3Role()` (`dashboard/src/types/v3.ts:7-18`) maps both raw `manager` and raw `team_lead` to the single V3 UI bucket `'manager'`. This is presentation only — it never touched backend authorization, and conflating it with a real permission merge is what let DL-005's claim go unnoticed as inaccurate for this long.
+
+**Decision:** Keep the code as-is. The `manager`/`team_lead` split is ratified as **intentional, current product behavior** — a real feature (team-scoped delegation for SMB sales teams: a team lead can enter metrics and manage sign-offs for their own small team without the company-wide reach a manager has), not accidental drift from an unfinished migration. The docs were wrong, not the code. No code changes accompany this decision.
+
+**Alternatives considered:**
+- Actually implement the DL-005 merge now (collapse `team_lead` into `manager` in the backend, matching the docs) — rejected. That would be a real permission *reduction* for existing `team_lead` users (losing nothing, since `team_lead` is already a subset-plus-team-restriction of `manager`'s reach) or a permission *expansion* (if migrated the other direction) with no product request driving it, months after the fact, and would require a live user-role migration for a change nobody asked for.
+- Leave DL-005 and `09_PERMISSION_MATRIX.md` as the source of truth and treat the backend split as a bug to fix — rejected. The split correctly serves a real need (team-scoped delegation) that a fully-merged company-wide `manager` role can't express, and multiple modules were deliberately built to enforce it (the `teamLeadId` checks aren't accidental — they're commented as intentional restrictions at each call site).
+
+**Rationale:** The backend behavior is more correct than the plan that preceded it. `team_lead` as team-scoped and `manager` as company-wide is a real, useful permission distinction for a multi-team sales org, and it already works and is already tested. Rewriting the backend to match a two-week-old planning doc, when the doc's own premise ("95% identical permissions") doesn't hold, would be change for the sake of matching paper rather than for the sake of the product.
+
+**Consequences:**
+- `09_PERMISSION_MATRIX.md`'s "Manager" column/row descriptions reflect `team_lead`-shaped (team-scoped) behavior more closely than raw `manager`'s actual (company-wide) reach in several capabilities — annotated in that document rather than rewritten wholesale (its own format is frozen; see the document's own note pointing here and at the code).
+- `06_ROLE_BASED_EXPERIENCE.md`'s V2→V3 role migration table and "Why merge team_lead into manager" section are corrected to state the real, current backend behavior.
+- `11_PHASE3_IMPLEMENTATION_PLAN.md` and `ARCHITECTURE_AUDIT.md`'s `team_lead → manager` implementation-plan line items are annotated as never executed and no longer planned, rather than left implying it's still pending work.
+- `toV3Role()`'s manager/team_lead → `'manager'` display collapse stays as-is (harmless for navigation/sidebar rendering) — but per this session's Wave 2 RBAC findings, it must never be used as, or mistaken for, a permission gate. Only raw roles (`req.user.role` server-side, the raw `role` field client-side) may gate an action; `v3Role`/display buckets are for UI grouping only.
 
 ---
 

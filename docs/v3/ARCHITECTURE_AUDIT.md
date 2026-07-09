@@ -348,7 +348,7 @@ This sequence is derived from three constraints:
 *High risk. Affects DynamoDB user records. Must be last.*
 
 **F1 — Role consolidation**
-- Merge `team_lead` → `manager` in `types/index.ts` and `utils/permissions.ts`
+- ~~Merge `team_lead` → `manager` in `types/index.ts` and `utils/permissions.ts`~~ — **never executed, no longer planned.** Corrected 2026-07-09: verified against the code that this merge was never implemented in backend authorization; `team_lead` remains a real, distinct, team-scoped `checkRole()` role, ratified as intentional product behavior (`docs/v3/12_DECISION_LOG.md` DL-021, superseding DL-005). Only the frontend display layer (`toV3Role()`) collapses the two into one UI bucket — never use that for permission gating.
 - Merge `agent`, `telecaller`, `intern` → `sales` in type system
 - Add `owner` role (above admin, below superadmin)
 - Add `support` role

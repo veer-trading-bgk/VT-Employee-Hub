@@ -6,15 +6,30 @@
 
 ---
 
+## ⚠️ Correction (2026-07-09) — "Manager" in this document conflates two distinct raw backend roles
+
+This entire document was written assuming `docs/v3/12_DECISION_LOG.md`'s DL-005 ("merge `team_lead` into `manager`") had actually been implemented. **It never was.** DL-005 is now marked Superseded by DL-021 in that log — the real, ratified-as-intentional backend state is:
+
+| Raw role | Real scope | Where enforced |
+|---|---|---|
+| `manager` | **Company-wide** — not team-scoped | `attendance.js` (leave admin, all records), `compensation.js` (payroll, adjustments), `crm.js` (leads/import/stats/analytics), most of `metrics.js`'s admin routes (`team-summary`, `bulk-entry`, `pending`, `verify`) |
+| `team_lead` | **Team-scoped only, and a much narrower capability set** — not merely a restricted version of Manager | `metrics.js` only: `performers`, `my-team` (team_lead-*exclusive*), `add-for-member` (team-restricted via `teamLeadId`); `points.js`'s `award`. **Zero** access anywhere in `attendance.js`, `compensation.js`, or `crm.js`. |
+
+The **"Manager"** column throughout this document describes team-*scoped* behavior — which is closer to what `team_lead` actually gets than to raw `manager`'s real (company-wide, broader) reach in several capabilities (attendance leave admin, payroll, CRM import/stats/analytics — none of which `team_lead` can touch at all, and none of which are team-restricted for `manager`). Treat this document's "Manager" column as describing the **team-scoped delegate persona**, not a single raw backend role — for exact per-route enforcement, **the code (`checkRole()` calls in `src/routes/*.js`) is authoritative, not this table.** Rewriting all 13 sections' tables to split every row into separate Manager/Team-Lead columns was judged impractical for a frozen document with this many capability rows; this callout plus `docs/v3/12_DECISION_LOG.md`'s DL-021 (full per-module breakdown) are the source of truth instead.
+
+**Standing rule, written down here because this confusion already caused real bugs:** `toV3Role()` (`dashboard/src/types/v3.ts`) collapses raw `manager` AND raw `team_lead` into the single **display** bucket `'manager'` for UI/navigation purposes only. **`v3Role`/display buckets must never be used for permission gating** — only raw roles (`req.user.role` server-side, the raw `role` field client-side). Conflating the display collapse with an actual permission merge is exactly the mistake that let DL-005's claim stand uncorrected, and separately caused an entire class of RBAC bugs (frontend gates checking `v3Role === 'manager'` where the backend's real check was scoped differently) fixed in this session's Wave 2.
+
+---
+
 ## 1. Role Definitions
 
-APForce V3 has five roles. A user has exactly one role at any time.
+APForce V3 has five *display* roles used for navigation/sidebar grouping. A user has exactly one *raw* role at any time (`superadmin`, `admin`, `manager`, `team_lead`, `agent`, `telecaller`, `intern`) — see the correction above for how raw roles map to these five, and why "Manager" below does not correspond 1:1 to the raw `manager` role's actual backend permissions.
 
 | Role | Who | Primary purpose |
 |---|---|---|
 | **Owner** | Company founder / account owner (1 per workspace) | Full access + billing + danger zone |
 | **Admin** | Senior staff designated by Owner | Full operational access, no billing |
-| **Manager** | Team leads | Operational access scoped to their team |
+| **Manager** | Team leads *and* managers (raw `manager` + raw `team_lead` — see correction above; their real backend scopes differ) | Operational access scoped to their team, **for `team_lead`** — raw `manager` is company-wide in several capabilities, not team-scoped |
 | **Sales** | Field employees, sub-brokers | Own leads and conversations only |
 | **Support** | Back-office, operations staff | View + message; no CRM mutation |
 

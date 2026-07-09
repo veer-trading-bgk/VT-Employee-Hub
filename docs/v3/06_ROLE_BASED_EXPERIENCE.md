@@ -427,18 +427,22 @@ The above role definitions are the APForce defaults. Admins and Owners can custo
 
 ## V2 → V3 Role Migration
 
+**Correction (2026-07-09):** The `team_lead` → `manager` merge described below (`docs/v3/12_DECISION_LOG.md`'s DL-005) was never implemented in backend authorization — `team_lead` remains a real, distinct `checkRole()` role with a genuinely different (narrower, team-scoped) permission set than `manager` (company-wide in several modules). DL-005 is now marked Superseded by DL-021 in that log, which has the full code-verified breakdown. This is ratified as **intentional, current product behavior** (team-scoped delegation is a real feature, not incomplete migration) — the table and rationale below are kept for historical context but no longer describe reality; do not treat the `manager`/`team_lead` row as accurate. The only place a merge actually happened is the frontend *display* layer: `toV3Role()` collapses both raw roles into the single `'manager'` UI bucket for navigation/sidebar purposes — **never use that display bucket for permission gating**, only raw roles (this exact conflation caused a class of RBAC bugs fixed in Wave 2 of this session).
+
 | V2 Role | V3 Role | Migration notes |
 |---|---|---|
 | `superadmin` | Platform Admin | Unchanged. APForce internal only. |
 | `admin` | `admin` | Same. Add explicit "admin vs owner" distinction. |
-| `manager` | `manager` | Absorbs `team_lead`. |
-| `team_lead` | `manager` | Merged into manager with the same permissions. No data loss — existing team_lead users become managers. |
+| `manager` | `manager` | ~~Absorbs `team_lead`~~ — never implemented; `team_lead` remains distinct, see correction above. |
+| `team_lead` | `manager` (**display only**) | ~~Merged into manager with the same permissions.~~ Never implemented in backend authorization — `team_lead` is real, distinct, and team-scoped. Only `toV3Role()`'s UI bucket merges the two; raw role stays `team_lead`. |
 | `agent` | `sales` | Renamed. Same permissions. |
 | `telecaller` | `sales` | Merged into sales. Telecaller was conceptually identical to agent. |
 | `intern` | `sales` | Merged into sales. Intern-specific restrictions (e.g., cannot delete) become permission flags on the sales role rather than a separate role. |
 
-**Why merge team_lead into manager:**
+**Why merge team_lead into manager (historical rationale — decision superseded, kept for context):**
 The `team_lead` role had 95% identical permissions to `manager` with a different home path. It was a naming artifact, not a functionally distinct role. Merging reduces code complexity, reduces the number of permission cases to test, and reduces the cognitive load of role configuration for admins.
+
+This premise (95% identical) did not hold once actually checked against the code: `manager` has company-wide reach across four modules (`attendance.js`, `compensation.js`, `crm.js`, most of `metrics.js`); `team_lead` has a narrow metrics/points-only surface, absent from the other three modules entirely, and team-restricted everywhere it does apply. See DL-021 for the full breakdown.
 
 **Why merge telecaller + intern into sales:**
 All three (agent, telecaller, intern) performed the same job in APForce: managing leads and conversations. The differences (seniority, salary) are HR concepts, not product permission concepts. A sales agent permission level can have configurable restrictions (e.g., "intern-level" = cannot delete contacts) without requiring a separate role.

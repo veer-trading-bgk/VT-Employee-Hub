@@ -444,7 +444,9 @@ Transform APForce from a Customer 360-centric CRM into a complete Business Opera
 
 ### Commit P3-20 — Role System Update (sales + support + owner roles)
 
-**Purpose:** Introduce the V3 role model: rename `agent/telecaller/intern` to `sales`, `team_lead` to `manager`, add `support` and `owner` roles.
+**Correction (2026-07-09):** The `team_lead` → `manager` line item below was never executed — no `Role` type change, no `DynamoDB` migration script ever remapped `team_lead` values to `manager`, and no backend permission check was ever updated to treat them as one role. `team_lead` remains a real, distinct, team-scoped `checkRole()` role in production today. This is now ratified as intentional (`docs/v3/12_DECISION_LOG.md` DL-021, superseding DL-005) — **no longer planned, not a pending gap to close.** The `agent/telecaller/intern` → `sales` half of this commit did happen (see `toV3Role()`); only the `team_lead` → `manager` half was ever a display-only mapping, never a backend one.
+
+**Purpose:** Introduce the V3 role model: rename `agent/telecaller/intern` to `sales`, ~~`team_lead` to `manager`~~ (never executed, see correction above), add `support` and `owner` roles.
 
 **Files changed:**
 - `src/types/index.ts` — Update `Role` type
@@ -457,7 +459,7 @@ Transform APForce from a Customer 360-centric CRM into a complete Business Opera
 - `agent` → `sales`
 - `telecaller` → `sales`
 - `intern` → `sales` (with `restrictions: ['no-delete']` flag)
-- `team_lead` → `manager`
+- ~~`team_lead` → `manager`~~ — never executed, see correction above
 - `admin` → `admin` (unchanged)
 - First user in each company → `owner`
 
