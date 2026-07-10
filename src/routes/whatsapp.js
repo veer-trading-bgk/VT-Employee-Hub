@@ -268,7 +268,13 @@ router.get('/auth/init', authMiddleware, checkRole(['admin']), (req, res) => {
   const url = new URL('https://www.facebook.com/dialog/oauth');
   url.searchParams.set('client_id', appId);
   url.searchParams.set('redirect_uri', redirectUri);
-  url.searchParams.set('scope', 'whatsapp_business_management,whatsapp_business_messaging,business_management');
+  // Only the two WhatsApp-specific scopes this app is actually approved for —
+  // a third, bare `business_management` (missing the whatsapp_ prefix; not the
+  // same permission as whatsapp_business_management) was here too and made
+  // Meta's OAuth dialog reject the whole request with "Invalid Scopes:
+  // business_management" (2026-07-10). Confirmed against the two scope names
+  // that already work for the manual System User token connect flow.
+  url.searchParams.set('scope', 'whatsapp_business_management,whatsapp_business_messaging');
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('state', state);
 
