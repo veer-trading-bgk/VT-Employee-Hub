@@ -887,6 +887,98 @@ describe('AutomationEngine — graph engine (nodes[]/edges[])', () => {
   });
 });
 
+// ─── Single-editor migration Fix 3: converted (formerly-linear) workflows ───
+// Proves entryNodeId resolution and execution for a workflow converted by
+// scripts/migrate-linear-to-graph-workflows.js, rather than assuming the
+// converter's structural output executes correctly just because it passed
+// the empirical field-loss gate (that gate proves storage fidelity, not
+// runtime behavior — this proves runtime behavior specifically).
+describe('AutomationEngine — converted (formerly-linear) workflow execution', () => {
+  const resolved = (value) => ({ promise: () => Promise.resolve(value) });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    dynamodb.update.mockImplementation(guardedUpdateMock());
+    dynamodb.put.mockReturnValue(resolved({}));
+  });
+
+  function makeExecItem(overrides = {}) {
+    return {
+      PK: `AUTO_EXEC#${CID}`,
+      SK: `EXEC#2026-01-01T00:00:00.000Z#exec-converted`,
+      executionId: 'exec-converted',
+      startedAt: new Date().toISOString(),
+      path: [],
+      ...overrides,
+    };
+  }
+
+  function finalPatch() {
+    const call = dynamodb.update.mock.calls.find((c) => c[0].Key?.SK?.startsWith('EXEC#'));
+    return call ? call[0].ExpressionAttributeValues : undefined;
+  }
+
+  test('a converted assign_employee -> end workflow with valid config assigns the lead and completes', async () => {
+    // Exact shape convertLinearToGraph() produces from steps
+    // [{id:'s1',type:'assign_employee',config:{employeeId,employeeName}}, {id:'s2',type:'end',config:{}}].
+    const workflow = {
+      id: 'wf-converted-1', name: 'assign', entryNodeId: 's1',
+      nodes: [
+        { id: 's1', type: 'assign_employee', config: { employeeId: 'emp_42', employeeName: 'Priya' } },
+        { id: 's2', type: 'end', config: {} },
+      ],
+      edges: [{ id: 's1->s2', source: 's1', target: 's2' }],
+    };
+    const execItem = makeExecItem();
+    const context  = { leadPK: LEAD_PK };
+
+    await engine._runGraph(CID, workflow, execItem, context, workflow.entryNodeId);
+
+    // entryNodeId genuinely resolved to s1, not assumed — the assign update fired.
+    const assignCall = dynamodb.update.mock.calls.find((c) => c[0].Key?.PK === LEAD_PK);
+    expect(assignCall).toBeDefined();
+    expect(assignCall[0].ExpressionAttributeValues[':at']).toBe('emp_42');
+
+    const vals = finalPatch();
+    expect(vals[':st']).toBe('completed');
+    expect(vals[':path'].map((p) => p.nodeId)).toEqual(['s1', 's2']);
+    expect(vals[':path'].find((p) => p.nodeId === 's1').status).toBe('completed');
+  });
+
+  test('the real converted "assign" workflow (viir_trading, migrated 2026-07-10) resolves its real entryNodeId and fails for the same pre-existing config reason, not a new one', async () => {
+    // Exact shape from the live migration run (scripts/migrate-linear-to-graph-workflows.js
+    // output) — real node id, real (empty) employeeId matching the actual persisted
+    // config, which is the same misconfiguration already surfaced in production
+    // CloudWatch logs before conversion. Proves conversion didn't change behavior,
+    // and that entryNodeId really does resolve to the right node in the real shape,
+    // not just in a hand-written test fixture.
+    const workflow = {
+      id: 'e1f37fe1-4146-44f4-82ac-fc50846973c3', name: 'assign',
+      entryNodeId: 'step-1783528276473-cwlv',
+      nodes: [
+        { id: 'step-1783528276473-cwlv', type: 'assign_employee', config: { employeeId: '', employeeName: '' } },
+        { id: 'end-default', type: 'end', config: {} },
+      ],
+      edges: [{ id: 'step-1783528276473-cwlv->end-default', source: 'step-1783528276473-cwlv', target: 'end-default' }],
+    };
+    const execItem = makeExecItem();
+    const context  = { leadPK: LEAD_PK };
+
+    await engine._runGraph(CID, workflow, execItem, context, workflow.entryNodeId);
+
+    // No assign update fired — the missing-employeeId guard threw before reaching dynamodb.update for the lead.
+    expect(dynamodb.update.mock.calls.some((c) => c[0].Key?.PK === LEAD_PK)).toBe(false);
+
+    const vals = finalPatch();
+    const s1 = vals[':path'].find((p) => p.nodeId === 'step-1783528276473-cwlv');
+    expect(s1.status).toBe('failed');
+    expect(s1.error).toBe('assign_employee: employeeId and leadPK required');
+    // Execution still reaches 'end' — one action node failing doesn't halt graph traversal.
+    expect(vals[':path'].map((p) => p.nodeId)).toEqual(['step-1783528276473-cwlv', 'end-default']);
+  });
+});
+
 // ─── Per-button/row handles on send_buttons/send_list nodes ─────────────────
 // Opt-in pause point: these node types only ever paused via a separate
 // condition(button_reply) node before this feature. Now they can pause
