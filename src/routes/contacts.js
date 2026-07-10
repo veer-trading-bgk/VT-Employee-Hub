@@ -6,6 +6,7 @@ const { rateLimit } = require('../middleware/rateLimiter');
 const { to10Digit } = require('../utils/phone');
 const TagService = require('../services/TagService');
 const PipelineService = require('../services/PipelineService');
+const ContactBulkOps = require('../services/ContactBulkOpsService');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -283,25 +284,85 @@ router.put('/stage', authMiddleware, rateLimit(20, 60_000), async (req, res, nex
       return res.status(400).json({ error: 'Invalid stage key' });
     }
 
-    if (leadId) {
-      await dynamodb.update({
-        TableName: TABLE,
-        Key: { PK: `LEAD#${companyId}#${leadId}`, SK: 'METADATA' },
-        UpdateExpression: 'SET stage = :s',
-        ExpressionAttributeValues: { ':s': stage },
-      }).promise();
-    } else if (phone) {
-      await dynamodb.update({
-        TableName: TABLE,
-        Key: { PK: `INBOX#${companyId}#${to10Digit(phone)}`, SK: 'CONTACT' },
-        UpdateExpression: 'SET stage = :s',
-        ExpressionAttributeValues: { ':s': stage },
-      }).promise();
-    } else {
-      return res.status(400).json({ error: 'leadId or phone required' });
+    if (!leadId && !phone) return res.status(400).json({ error: 'leadId or phone required' });
+
+    const result = await ContactBulkOps.updateStage(companyId, { leadId, phone }, stage);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/contacts/bulk-update ──────────────────────────────────────────
+// True bulk endpoint — ONE request, every selected contact processed
+// SEQUENTIALLY inside this single Lambda invocation. Replaces the old
+// N-concurrent-individual-calls pattern (Promise.allSettled over one PUT per
+// contact) that fanned out up to 50 simultaneous invocations against this
+// AWS account's Lambda concurrency ceiling (confirmed 10 total, shared
+// across every function in the account via `aws lambda get-account-settings`
+// — well below 50), which is what actually caused the reported partial
+// failures on 2026-07-09 (confirmed via CloudWatch: real 429/503s, not a
+// silent-success race — see ContactBulkOpsService.js's own comments for the
+// full correction). Sequential processing also means only ever one request
+// against the app's own per-route rate limiters, instead of racing the
+// whole burst against them at once.
+const MAX_BULK_CONTACTS = 500;
+const VALID_BULK_OPERATIONS = new Set(['assign', 'tag', 'untag', 'stage']);
+
+router.post('/bulk-update', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const { contacts, operation, params = {} } = req.body;
+    const companyId = req.user.companyId;
+
+    if (!Array.isArray(contacts) || contacts.length === 0) {
+      return res.status(400).json({ error: 'contacts must be a non-empty array' });
+    }
+    if (contacts.length > MAX_BULK_CONTACTS) {
+      return res.status(400).json({ error: `contacts cannot exceed ${MAX_BULK_CONTACTS} per request` });
+    }
+    if (!VALID_BULK_OPERATIONS.has(operation)) {
+      return res.status(400).json({ error: `operation must be one of: ${[...VALID_BULK_OPERATIONS].join(', ')}` });
+    }
+    if (operation === 'assign' && !params.assignedTo) {
+      return res.status(400).json({ error: 'params.assignedTo required for assign' });
+    }
+    if ((operation === 'tag' || operation === 'untag') && !params.tagId) {
+      return res.status(400).json({ error: 'params.tagId required for tag/untag' });
+    }
+    if (operation === 'stage') {
+      if (!params.stage) return res.status(400).json({ error: 'params.stage required for stage' });
+      if (!(await PipelineService.isValidStage(companyId, params.stage))) {
+        return res.status(400).json({ error: 'Invalid stage key' });
+      }
     }
 
-    res.json({ success: true, stage });
+    const results = [];
+    for (const c of contacts) {
+      const { id, leadId, phone } = c ?? {};
+      try {
+        if (!id) throw new Error('id required for each contact');
+
+        if (operation === 'assign') {
+          if (!leadId) throw new Error('assign only applies to CRM leads');
+          await ContactBulkOps.assignLead(companyId, leadId, { assignedTo: params.assignedTo, assignedToName: params.assignedToName });
+        } else if (operation === 'stage') {
+          if (!leadId && !phone) throw new Error('leadId or phone required');
+          await ContactBulkOps.updateStage(companyId, { leadId, phone }, params.stage);
+        } else if (operation === 'tag') {
+          if (!leadId && !phone) throw new Error('leadId or phone required');
+          await ContactBulkOps.updateTags(companyId, { leadId, phone }, { add: [params.tagId], remove: [] });
+        } else if (operation === 'untag') {
+          if (!leadId && !phone) throw new Error('leadId or phone required');
+          await ContactBulkOps.updateTags(companyId, { leadId, phone }, { add: [], remove: [params.tagId] });
+        }
+        results.push({ id, ok: true });
+      } catch (err) {
+        results.push({ id: c?.id, ok: false, error: err.message || 'Update failed' });
+      }
+    }
+
+    const succeeded = results.filter((r) => r.ok).length;
+    res.json({ success: true, results, succeeded, failed: results.length - succeeded });
   } catch (err) {
     next(err);
   }

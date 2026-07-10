@@ -13,6 +13,7 @@ const { ENTITY } = require('../events/catalog');
 const LeadService = require('../services/LeadService');
 const CIS = require('../services/CustomerIdentityService');
 const PipelineService = require('../services/PipelineService');
+const ContactBulkOps = require('../services/ContactBulkOpsService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -477,28 +478,20 @@ router.put('/leads/:id/assign', authMiddleware, checkRole(['admin', 'manager']),
     if (!assignedTo) return res.status(400).json({ error: 'assignedTo required' });
 
     const companyId = req.user.companyId;
-    const PK = leadPK(companyId, req.params.id);
 
-    const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
-    if (!existing.Item) return res.status(404).json({ error: 'Lead not found' });
-
-    await dynamodb.update({
-      TableName: TABLE,
-      Key: { PK, SK: 'METADATA' },
-      UpdateExpression: 'SET assignedTo = :at, assignedToName = :atn, chatStatus = :cs, updatedAt = :ua',
-      ExpressionAttributeValues: {
-        ':at': assignedTo,
-        ':atn': assignedToName ?? null,
-        ':cs': 'open',
-        ':ua': new Date().toISOString(),
-      },
-    }).promise();
+    let result;
+    try {
+      result = await ContactBulkOps.assignLead(companyId, req.params.id, { assignedTo, assignedToName });
+    } catch (e) {
+      if (e instanceof ContactBulkOps.NotFoundError) return res.status(404).json({ error: e.message });
+      throw e;
+    }
 
     await logAudit(req.user.id, 'crm_lead_assigned', req.params.id, 'success', req.ip, { assignedTo });
     // Await before responding — Lambda may freeze the container immediately after
     // res.json(), making fire-and-forget after the response unreliable.
-    await notifyCompany(companyId, { event: 'lead_assigned', leadId: req.params.id, assignedTo, assignedToName }).catch(() => {});
-    res.json({ success: true, assignedTo, assignedToName });
+    await notifyCompany(companyId, { event: 'lead_assigned', leadId: req.params.id, assignedTo: result.assignedTo, assignedToName: result.assignedToName }).catch(() => {});
+    res.json({ success: true, ...result });
   } catch (err) {
     logger.error('crm/leads/:id/assign error', err);
     next(err);

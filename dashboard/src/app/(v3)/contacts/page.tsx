@@ -40,6 +40,7 @@ import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 import { buildContactDeleteRequest } from '@/lib/contactUrls';
+import { decideBulkOutcome, type BulkUpdateResponse } from '@/lib/bulkUpdateFeedback';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -314,6 +315,11 @@ function ContactsContent() {
   // Promise.all gives — a single failed item (permission, already-deleted,
   // transient 5xx) used to sink the ENTIRE batch's success reporting and
   // skip invalidateQueries even when most items had already succeeded.
+  // Still used by bulk delete only — assign/tag moved to the true bulk
+  // endpoint below (2026-07-10, docs/phase3/TECHNICAL_DEBT.md); delete
+  // wasn't in that fix's scope (POST /bulk-update covers assign/tag/untag/
+  // stage, not delete) and is left on this N-call pattern deliberately,
+  // not by oversight.
   async function runBulkOp<T>(items: T[], op: (item: T) => Promise<unknown>) {
     const settled = await Promise.allSettled(items.map(op));
     const failed = settled.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
@@ -352,25 +358,47 @@ function ContactsContent() {
     onError: () => toast.error('Delete failed unexpectedly — please try again'),
   });
 
+  // ── True bulk endpoint (2026-07-10, docs/phase3/TECHNICAL_DEBT.md) ──────────
+  // Replaces the old N-concurrent-individual-calls pattern for assign/tag —
+  // that fanned out up to 50 simultaneous requests against a 10-slot AWS
+  // Lambda concurrency ceiling (account-wide, confirmed via
+  // `aws lambda get-account-settings`), which is what actually caused the
+  // reported partial failures, not a race condition (see
+  // ContactBulkOpsService.js). One request now, processed sequentially
+  // server-side; the response is a real per-id result, read and reported
+  // honestly here instead of assumed successful.
+  //
+  // The decision logic itself (what toast, what happens to the selection)
+  // lives in decideBulkOutcome() (lib/bulkUpdateFeedback.ts) — pulled out of
+  // this component so it's testable as a plain function. On partial failure
+  // it leaves only the FAILED ids selected instead of clearing the whole
+  // selection, so the failed contacts are identifiable (still checked/
+  // highlighted in the table) and hitting the same bulk action again
+  // immediately retries just what didn't land.
+  function reportBulkOutcome(action: string, res: BulkUpdateResponse) {
+    const decision = decideBulkOutcome(action, res);
+    if (decision.toastType === 'success') toast.success(decision.message);
+    else if (decision.toastType === 'error') toast.error(decision.message);
+    if (decision.retrySelectedIds !== null) setSelectedIds(new Set(decision.retrySelectedIds));
+  }
+
   // Bulk tag — apply one catalog tag to every selected contact
   const bulkTagMutation = useMutation({
-    mutationFn: async (tagId: string) => {
+    mutationFn: async (tagId: string): Promise<BulkUpdateResponse> => {
       const targets = (data?.contacts ?? []).filter((c) => selectedIds.has(c.id));
-      return runBulkOp(targets, (c) => {
+      if (targets.length === 0) return { success: true, results: [], succeeded: 0, failed: 0 };
+      const contacts = targets.map((c) => {
         const isLead = c.type === 'lead' || (c.leadId ?? null) !== null;
-        return apiFetch('/api/tags/contacts', {
-          method: 'PUT',
-          body: JSON.stringify({
-            ...(isLead ? { leadId: c.leadId ?? c.id } : { phone: c.phone }),
-            add: [tagId],
-            remove: [],
-          }),
-        });
+        return { id: c.id, ...(isLead ? { leadId: c.leadId ?? c.id } : { phone: c.phone }) };
+      });
+      return apiFetch<BulkUpdateResponse>('/api/contacts/bulk-update', {
+        method: 'POST',
+        body: JSON.stringify({ contacts, operation: 'tag', params: { tagId } }),
       });
     },
-    onSuccess: ({ succeeded, failed, firstReason }) => {
-      reportBulkResult('Tagged', succeeded, failed, firstReason);
-      if (succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
+    onSuccess: (res) => {
+      reportBulkOutcome('Tagged', res);
+      if (res.succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
     },
     onError: () => toast.error('Tagging failed unexpectedly — please try again'),
   });
@@ -380,20 +408,23 @@ function ContactsContent() {
   const bulkAssignMutation = useMutation({
     mutationFn: async ({ employeeId, employeeName }: { employeeId: string; employeeName: string }) => {
       const targets = (data?.contacts ?? []).filter((c) => selectedIds.has(c.id) && c.type === 'lead');
-      const result = await runBulkOp(targets, (c) =>
-        apiFetch(`/api/crm/leads/${c.leadId ?? c.id}/assign`, {
-          method: 'PUT',
-          body: JSON.stringify({ assignedTo: employeeId, assignedToName: employeeName }),
-        }),
-      );
-      return { ...result, skippedNonLeads: selectedIds.size - targets.length };
-    },
-    onSuccess: ({ succeeded, failed, firstReason, skippedNonLeads }) => {
-      reportBulkResult('Assigned', succeeded, failed, firstReason);
-      if (skippedNonLeads > 0) {
-        toast.info(`${skippedNonLeads} selected contact${skippedNonLeads !== 1 ? 's are' : ' is'} not a CRM lead yet — skipped (assign only applies to leads)`);
+      const skippedNonLeads = selectedIds.size - targets.length;
+      if (targets.length === 0) {
+        return { success: true, results: [], succeeded: 0, failed: 0, skippedNonLeads } as BulkUpdateResponse & { skippedNonLeads: number };
       }
-      if (succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
+      const contacts = targets.map((c) => ({ id: c.id, leadId: c.leadId ?? c.id }));
+      const res = await apiFetch<BulkUpdateResponse>('/api/contacts/bulk-update', {
+        method: 'POST',
+        body: JSON.stringify({ contacts, operation: 'assign', params: { assignedTo: employeeId, assignedToName: employeeName } }),
+      });
+      return { ...res, skippedNonLeads };
+    },
+    onSuccess: (res) => {
+      reportBulkOutcome('Assigned', res);
+      if (res.skippedNonLeads > 0) {
+        toast.info(`${res.skippedNonLeads} selected contact${res.skippedNonLeads !== 1 ? 's are' : ' is'} not a CRM lead yet — skipped (assign only applies to leads)`);
+      }
+      if (res.succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
     },
     onError: () => toast.error('Assignment failed unexpectedly — please try again'),
   });

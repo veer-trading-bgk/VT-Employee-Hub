@@ -1,16 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { authMiddleware, checkRole } = require('../middleware/auth');
-const dynamodb = require('../config/dynamodb');
 const { getCatalog, saveCatalog } = require('../services/TagService');
-
-const TABLE = process.env.DYNAMODB_TABLE_METRICS;
-
-function to10Digit(phone) {
-  if (!phone) return '';
-  const d = String(phone).replace(/\D/g, '');
-  return d.length > 10 ? d.slice(-10) : d;
-}
+const ContactBulkOps = require('../services/ContactBulkOpsService');
 
 function newTagId() {
   return `t_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -42,31 +34,18 @@ router.post('/', authMiddleware, checkRole(['admin', 'manager', 'superadmin']), 
 
 // PUT /api/tags/contacts — add/remove tags on a contact
 // IMPORTANT: this route must be declared before PUT /:id to avoid param collision
+// Delegates to ContactBulkOpsService.updateTags() (optimistic concurrency,
+// not a bare read-modify-write) — this is also the fix for the single-
+// contact rapid-tag-toggle race (ContactTags.tsx, Inbox/Customer 360/CrmTab
+// all call this exact route), since it's the same underlying write path.
 router.put('/contacts', authMiddleware, async (req, res, next) => {
   try {
     const { leadId, phone, add = [], remove = [] } = req.body;
     const companyId = req.user.companyId;
     if (!leadId && !phone) return res.status(400).json({ error: 'leadId or phone required' });
 
-    const key = leadId
-      ? { PK: `LEAD#${companyId}#${leadId}`, SK: 'METADATA' }
-      : { PK: `INBOX#${companyId}#${to10Digit(phone)}`, SK: 'CONTACT' };
-
-    const r = await dynamodb.get({ TableName: TABLE, Key: key }).promise();
-    const current = r.Item?.tags ?? [];
-    const updated = [
-      ...current.filter((t) => !remove.includes(t)),
-      ...add.filter((t) => !current.includes(t)),
-    ];
-
-    await dynamodb.update({
-      TableName: TABLE,
-      Key: key,
-      UpdateExpression: 'SET tags = :t',
-      ExpressionAttributeValues: { ':t': updated },
-    }).promise();
-
-    res.json({ success: true, tags: updated });
+    const result = await ContactBulkOps.updateTags(companyId, { leadId, phone }, { add, remove });
+    res.json({ success: true, ...result });
   } catch (err) { next(err); }
 });
 

@@ -302,3 +302,19 @@
 **Fix:** Not done — deliberately deferred per this track's explicit instruction to prioritize visibility over premature optimization. If/when a company's real lead count approaches four figures, revisit: virtualize `KanbanColumn`'s card list (windowing), and/or move `GET /api/contacts/all` to the same async-job pattern flagged for CSV import above if the fetch itself becomes the bottleneck rather than the render.
 
 **Priority:** Low — no company is near this scale today (viir_trading, the most active, sits at 114). Revisit if usage patterns approach 1000+ leads for one company.
+
+## Bulk Delete Still Uses the Old N-Concurrent-Calls Pattern
+
+**Issue:** Found/fixed 2026-07-10 for bulk assign/tag (Contacts page partial-failure bug — root cause was the AWS account's 10-slot Lambda concurrency ceiling, not a rate limit or a race; see `ContactBulkOpsService.js` and `POST /api/contacts/bulk-update`). Bulk **delete** was explicitly out of that fix's scope (the new endpoint covers `assign`/`tag`/`untag`/`stage` only) and still fires N concurrent `DELETE /api/crm/leads/:id` calls via the old `runBulkOp()`/`Promise.allSettled` pattern in `contacts/page.tsx`. It carries the exact same concurrency-ceiling exposure — confirmed via CloudWatch on 2026-07-09 as the single worst-hit operation that day (305 calls: 33 succeeded, 170×429, 102×503) — because delete's own rate limit (`crm.js`'s `DELETE /leads/:id`, `rateLimit(10, 60_000)`) is the tightest of the three, and it's not affected by this fix at all.
+
+**Fix:** Not done — extend `POST /api/contacts/bulk-update` with a `delete` operation (reusing the same sequential-processing shape) and switch `bulkDeleteMutation` to it, the same way assign/tag were migrated.
+
+**Priority:** Medium — this is the worst-measured case of the three and is now the only one left unfixed. Should be picked up as a fast follow, not indefinitely deferred.
+
+## `tags` Storage Shape: Optimistic Concurrency Chosen Over Native DynamoDB Set
+
+**Issue:** Decided 2026-07-10 while fixing the real (non-bulk) tag race — `ContactTags.tsx`'s rapid same-contact tag toggles (Inbox/Customer 360/CrmTab), which genuinely do read-modify-write on a shared key. `tags` is stored as a plain DynamoDB List (a JS array via the document client), which has no atomic ADD/DELETE-by-value update expression — only a native String Set (SS) type supports that. Migrating every existing lead/INBOX contact's `tags` attribute from List to Set, across every company, is real-data work with a much larger blast radius than this fix and would need its own hold-for-review gate (per the standing rule on data mutations). `ContactBulkOpsService.updateTags()` instead uses optimistic concurrency — a conditional write on `updatedAt`, bounded retry on conflict — which eliminates the same lost-update race without touching storage shape, proven via a deterministic concurrency test (`tests/contactBulkOpsService.test.js`) that reproduces the old code's loss and confirms the new code's zero-loss behavior under identical interleaving.
+
+**Fix:** Not done, and not clearly needed — optimistic concurrency is a complete fix for the race, not a stopgap. A Set-type migration would only be worth revisiting if retry contention itself became a measurable cost (many concurrent writers on the same contact, repeatedly) — not observed or expected at current usage.
+
+**Priority:** Low — informational. No known scenario currently requires the storage-shape change.

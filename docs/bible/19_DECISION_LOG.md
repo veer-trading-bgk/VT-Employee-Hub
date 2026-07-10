@@ -2199,3 +2199,33 @@ already fully enforced just because an ADR exists.
     permission merge) is part of what let DL-005's stale claim stand
     unnoticed, and was separately the root cause of an entire class of RBAC
     bugs fixed this session (Wave 2).
+
+19. **2026-07-10 — second instance this week of an incoming diagnostic/audit
+    claim contradicting directly-verified code or log evidence; both times
+    caught by re-verification before any implementation, not after.** First:
+    the single-editor-migration "audit" (Fix 1-4 premises) claimed a
+    `nodeDataSchemas` sanitizer bug at `automations.js:80-90`, a missing canvas
+    delay node, and "3 linear workflows, 2 with `send_template`" — none of
+    which matched the actual codebase (`nodeDataSchemas` never existed in git
+    history at any commit; the delay node had shipped 2026-07-04; a live table
+    scan found exactly 1 linear workflow, `assign_employee`+`end`, zero
+    `send_template`). Second: the bulk-actions "reconciliation" claimed the
+    Contacts-page bulk assign/tag partial failures were "a read-modify-write
+    race... all HTTP 200, no rate limiting involved" — contradicted by
+    CloudWatch evidence already gathered in the same session (real 429s and
+    503s, `assignLead()` confirmed to be an unconditional `SET` with no
+    read-modify-write at all, and bulk operations always target distinct
+    contacts so can't collide with themselves). **How both resolved:** the
+    real findings were kept and acted on — the migration's actual (much
+    smaller) scope shipped as `76fa6ef`/`acc822b`; the bulk-actions fix kept
+    the correct concurrency-ceiling root cause while separately confirming a
+    genuinely different race *did* exist (`ContactTags.tsx`'s same-contact
+    rapid-tag-toggle path) and fixed that too, with a deterministic
+    concurrency test proving the old code lost an update and the new code
+    doesn't. In both cases the incorrect claim was corrected in-place (code
+    comments, this log) rather than left standing or silently overwritten.
+    Standing practice, not new after this entry: verify a claim against
+    actual code/live data/logs before building on it, especially before any
+    production write path or real-data mutation — see
+    `feedback_hold_for_review_covers_data_mutations` in session memory for the
+    adjacent rule this pattern also produced.
