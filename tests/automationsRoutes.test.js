@@ -286,3 +286,50 @@ describe('PUT /api/automations/:id — trigger.config (keyword_message)', () => 
     expect(call.ExpressionAttributeValues[':t']).toEqual({ type: 'lead_created', conditions: [] });
   });
 });
+
+// ─── PUT /:id — name-only body (Track A4 Batch 2, canvas rename field) ──────
+// The canvas editor's new WorkflowNameField sends {name} alone (no
+// nodes/edges/trigger/steps) — this is the existing partial-update PUT
+// handler, unchanged; these tests confirm the exact contract the new
+// frontend field relies on rather than assuming it from a static read.
+describe('PUT /api/automations/:id — name-only body (canvas rename field)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: {
+      id: 'wf1', companyId: CID, name: 'Old Name',
+      nodes: [{ id: 'n1', type: 'end', config: {} }], edges: [], entryNodeId: 'n1',
+      trigger: { type: 'lead_created', conditions: [] },
+    } }) });
+  });
+
+  test('a {name}-only body updates just the name — no nodes/edges/trigger keys touched', async () => {
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(automationsRouter, '/:id', 'put');
+    const res = mockRes();
+    await handler({ params: { id: 'wf1' }, body: { name: 'New Name' }, user: USER }, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith({ success: true });
+    const call = dynamodb.update.mock.calls[0][0];
+    expect(call.ExpressionAttributeValues[':n']).toBe('New Name');
+    expect(call.UpdateExpression).not.toMatch(/nodes|edges|trigger|steps/);
+  });
+
+  test('an empty/whitespace-only name is rejected with 400 and does not write', async () => {
+    const handler = getRouteHandler(automationsRouter, '/:id', 'put');
+    const res = mockRes();
+    await handler({ params: { id: 'wf1' }, body: { name: '   ' }, user: USER }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.update).not.toHaveBeenCalled();
+  });
+
+  test('name is trimmed before persisting', async () => {
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(automationsRouter, '/:id', 'put');
+    const res = mockRes();
+    await handler({ params: { id: 'wf1' }, body: { name: '  Renamed Flow  ' }, user: USER }, res, jest.fn());
+
+    const call = dynamodb.update.mock.calls[0][0];
+    expect(call.ExpressionAttributeValues[':n']).toBe('Renamed Flow');
+  });
+});

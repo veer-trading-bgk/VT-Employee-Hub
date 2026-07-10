@@ -208,7 +208,6 @@ function WorkflowRow({
   const stepCount = isGraph
     ? (w.nodes ?? []).filter((n) => n.type !== 'end').length
     : (w.steps ?? []).filter((s) => s.type !== 'end').length;
-  const canDelete = isAdmin && status !== 'active';
   const canToggle = isAdmin && ['active', 'paused', 'draft'].includes(status);
 
   return (
@@ -270,11 +269,12 @@ function WorkflowRow({
               <Copy className="h-4 w-4" aria-hidden />
             </button>
           )}
-          {canDelete && (
+          {isAdmin && (
             <button
               onClick={() => onDelete(w)}
-              title="Delete"
-              className="rounded p-1 text-neutral-400 transition-colors hover:bg-error-50 hover:text-error-600 dark:hover:bg-error-900/20"
+              disabled={status === 'active'}
+              title={status === 'active' ? 'Pause this workflow before deleting it' : 'Delete'}
+              className="rounded p-1 text-neutral-400 transition-colors hover:bg-error-50 hover:text-error-600 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-neutral-400 dark:hover:bg-error-900/20"
             >
               <Trash2 className="h-4 w-4" aria-hidden />
             </button>
