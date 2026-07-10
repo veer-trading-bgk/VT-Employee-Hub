@@ -137,7 +137,14 @@ function CloseBtn({ onClick }: { onClick: () => void }) {
 
 // ── Shared panel wrapper ───────────────────────────────────────────────────────
 
-function Panel({ children, width = 'w-80' }: { children: React.ReactNode; width?: string }) {
+// Default widened w-80 (320px) -> w-96 (384px), Track A5 Fix 4 — Quick Reply
+// and Templates are the two panels that don't override this (Emoji/
+// Attachment/More all pass their own explicit `width` and are unaffected).
+// Both were reported cramped; Templates shares the identical default-width
+// shape, so the shared default is the actual fix, not a Quick-Reply-only
+// override (see the canned-response line-clamp removal below for why that
+// part of the fix is NOT mirrored onto Templates).
+function Panel({ children, width = 'w-96' }: { children: React.ReactNode; width?: string }) {
   return (
     <div className={cn(
       'absolute bottom-full left-0 z-50 mb-1 rounded-xl border border-neutral-200 bg-white shadow-lg',
@@ -680,7 +687,16 @@ export function ComposerToolbar({
                         </span>
                       )}
                     </div>
-                    <p className="mt-0.5 line-clamp-2 text-[11px] text-neutral-500">{cr.body}</p>
+                    {/* No line-clamp here, unlike Templates' identical-looking preview below —
+                        checked real data before deciding: templates' bodyPreview caps around
+                        100 chars (8 real templates, longest 100) and mostly fits 2 lines, AND
+                        there's a "fill in variables" review step before send, so truncation
+                        there is low-cost. Canned responses have neither: the one real example
+                        is 246 chars of multi-line formatted text, and handleQrSelect() inserts
+                        it straight into the draft with no review step — the 2-line preview was
+                        the only chance to confirm you're picking the right one, and it wasn't
+                        showing enough to do that. */}
+                    <p className="mt-0.5 whitespace-pre-wrap text-[11px] text-neutral-500">{cr.body}</p>
                   </button>
                 ))}
               </div>

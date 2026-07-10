@@ -2199,22 +2199,24 @@ router.post('/inbox/:leadId/note', authMiddleware, rateLimit(20, 60_000), async 
     const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
     const timestamp = new Date().toISOString();
     const mentionNames = [...content.matchAll(/@(\w+)/g)].map((m) => m[1]);
-    await dynamodb.put({
-      TableName: TABLE,
-      Item: {
-        PK, SK: `NOTE#${timestamp}`,
-        content: content.trim(),
-        authorId: req.user.id,
-        authorName: req.user.name,
-        type: 'note',
-        timestamp,
-        ...(mentionNames.length && { mentions: mentionNames }),
-      },
-    }).promise();
+    // Built as its own variable (not inline in the put()) so the same object
+    // that's persisted is also returned to the caller — Track A5 Fix 2: the
+    // frontend needs the real note (real SK/authorName) to reconcile its
+    // optimistic placeholder, not just a bare timestamp.
+    const note = {
+      PK, SK: `NOTE#${timestamp}`,
+      content: content.trim(),
+      authorId: req.user.id,
+      authorName: req.user.name,
+      type: 'note',
+      timestamp,
+      ...(mentionNames.length && { mentions: mentionNames }),
+    };
+    await dynamodb.put({ TableName: TABLE, Item: note }).promise();
     if (mentionNames.length > 0) {
       logger.alert(`📌 <b>${req.user.name}</b> mentioned ${mentionNames.map((n) => `@${n}`).join(', ')} in a note\nLead: <code>${req.params.leadId}</code>`);
     }
-    res.json({ success: true, timestamp });
+    res.json({ success: true, timestamp, note });
   } catch (err) { next(err); }
 });
 

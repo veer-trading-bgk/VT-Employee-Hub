@@ -1,8 +1,9 @@
 'use client';
 
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { toast } from 'sonner';
+import { useAuth } from '@/context/AuthContext';
 
 /**
  * Single shared owner of the internal-note write paths — POST/PUT/DELETE
@@ -19,15 +20,76 @@ import { toast } from 'sonner';
  * only) — callers should also hide the affordance client-side to avoid a
  * surprising 403, but must not rely on the client check alone.
  */
-export function useAddNote(leadId: string | undefined, onSuccess: () => void) {
+
+export interface InternalNoteItem {
+  SK: string;
+  content: string;
+  authorId?: string;
+  authorName?: string;
+  timestamp: string;
+  editedAt?: string;
+}
+
+interface WaConvNotesShape {
+  internalNotes?: InternalNoteItem[];
+  [key: string]: unknown;
+}
+
+// Track A5 Fix 2 (2026-07-10, docs/phase3/TECHNICAL_DEBT.md): the "did my
+// note actually save?" report traced to no optimistic UI update — the POST
+// used to return only {success, timestamp}, so the only way a new note
+// appeared was an invalidateQueries()-triggered refetch landing sometime
+// after the "Note saved" toast already fired. Same shape as this file's
+// sibling mutations (inbox/page.tsx's sendMutation onMutate/onError
+// against the same ['wa-conv', X] cache) — optimistic append in onMutate,
+// snapshot+rollback in onError, precise reconcile (swap the temp
+// placeholder for the real object the server returns) in onSuccess, so
+// there's no unnecessary extra round-trip once we already have the
+// authoritative note back.
+export function useAddNote(leadId: string | undefined, onAdded: () => void) {
+  const qc = useQueryClient();
+  const { user } = useAuth();
+
   return useMutation({
     mutationFn: (content: string) =>
-      apiFetch(`/api/whatsapp/inbox/${leadId}/note`, {
+      apiFetch<{ success: boolean; timestamp: string; note: InternalNoteItem }>(`/api/whatsapp/inbox/${leadId}/note`, {
         method: 'POST',
         body: JSON.stringify({ content }),
       }),
-    onSuccess,
-    onError: () => toast.error('Failed to save note'),
+    onMutate: async (content: string) => {
+      const queryKey = ['wa-conv', leadId];
+      await qc.cancelQueries({ queryKey });
+      const previous = qc.getQueryData<WaConvNotesShape>(queryKey);
+      const tempSK = `NOTE#optimistic-${Date.now()}`;
+      const optimisticNote: InternalNoteItem = {
+        SK: tempSK,
+        content,
+        authorId: user?.id,
+        authorName: user?.name,
+        timestamp: new Date().toISOString(),
+      };
+      qc.setQueryData<WaConvNotesShape>(queryKey, (old) => ({
+        ...old,
+        internalNotes: [...(old?.internalNotes ?? []), optimisticNote],
+      }));
+      return { previous, tempSK, queryKey };
+    },
+    onError: (_err, _content, context) => {
+      if (context) qc.setQueryData(context.queryKey, context.previous);
+      toast.error('Failed to save note');
+    },
+    onSuccess: (res, _content, context) => {
+      if (context) {
+        // Swap the optimistic placeholder for the real object (real SK,
+        // real authorName if it ever differs) instead of leaving the temp
+        // one in the cache or invalidating for a second round-trip.
+        qc.setQueryData<WaConvNotesShape>(context.queryKey, (old) => ({
+          ...old,
+          internalNotes: (old?.internalNotes ?? []).map((n) => (n.SK === context.tempSK ? res.note : n)),
+        }));
+      }
+      onAdded();
+    },
   });
 }
 

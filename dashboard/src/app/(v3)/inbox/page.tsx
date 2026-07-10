@@ -31,7 +31,7 @@ import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { assignmentKey } from '@/hooks/useOwnerAssign';
 import type { AssignmentRecord } from '@/hooks/useOwnerAssign';
 import { ComposerToolbar } from '@/components/inbox/ComposerToolbar';
-import { useAddNote, useEditNote, useDeleteNote, canModifyNote } from '@/hooks/useNoteMutations';
+import { useAddNote, useEditNote, useDeleteNote, canModifyNote, type InternalNoteItem } from '@/hooks/useNoteMutations';
 import { useContactMutations } from '@/hooks/useContactMutations';
 import { EditableName } from '@/components/shared/EditableName';
 import { formatRelativeTime } from '@/utils/formatters';
@@ -132,18 +132,18 @@ interface WaMessage {
   resolvedBody?: string | null;
 }
 
-interface InternalNoteItem {
-  SK: string;
-  content: string;
-  authorId?: string;
-  authorName?: string;
-  timestamp: string;
-  editedAt?: string;
-}
+// InternalNoteItem now lives in @/hooks/useNoteMutations (imported above) —
+// single source of truth shared with the mutation hooks that write it,
+// instead of a second, independently-drifting copy of the same shape.
 
 interface FlowFieldItem { key: string; label: string; value: string; }
 
-type ConvTab = 'open' | 'unassigned' | 'resolved';
+// 'unread' added Track A5 Fix 3 — the backend's GET /inbox route already
+// supported ?status=unread (whatsapp.js, filters on unreadCount > 0) and
+// already computed counts.unread; only the tab itself was missing. 'all' is
+// also supported server-side but deliberately not exposed here — out of
+// this fix's scope per explicit instruction.
+type ConvTab = 'open' | 'unassigned' | 'resolved' | 'unread';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -500,6 +500,7 @@ function ConversationList({
     { id: 'open',       label: 'Open'       },
     { id: 'unassigned', label: 'Unassigned' },
     { id: 'resolved',   label: 'Resolved'   },
+    { id: 'unread',     label: 'Unread'     },
   ];
 
   return (
@@ -1743,8 +1744,11 @@ function CustomerSnapshotPanel({
     qc.invalidateQueries({ queryKey: ['wa-conv', convKey] });
   }
 
+  // No refreshNotes() here, unlike edit/delete below — useAddNote's onSuccess
+  // already reconciles the cache directly with the real note the server
+  // returned (Track A5 Fix 2), so an extra invalidateQueries() would just be
+  // a wasted round-trip for data we already have.
   const addNote = useAddNote(conversation.leadId, () => {
-    refreshNotes();
     setNoteText('');
     toast.success('Note saved');
   });
@@ -1956,7 +1960,7 @@ function CustomerSnapshotPanel({
                           </>
                         ) : (
                           <>
-                            <p className="whitespace-pre-wrap text-xs text-neutral-700 dark:text-neutral-300">{note.content}</p>
+                            <p className="whitespace-pre-wrap text-sm text-neutral-700 dark:text-neutral-300">{note.content}</p>
                             <div className="mt-1 flex items-center justify-between gap-2">
                               <p className="text-[10px] text-neutral-400">
                                 {note.authorName ?? 'Agent'} · {formatRelativeTime(note.timestamp)}

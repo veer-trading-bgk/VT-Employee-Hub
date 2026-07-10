@@ -66,6 +66,31 @@ describe('POST /api/whatsapp/inbox/:leadId/note', () => {
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
   });
 
+  // Track A5 Fix 2: the response must carry the real created note (real SK/
+  // authorName/timestamp), not just a bare timestamp — the frontend's
+  // optimistic mutation needs this to reconcile its placeholder with the
+  // real object instead of leaving a temp id in the cache or forcing a
+  // second round-trip refetch just to see what it already just wrote.
+  test('response includes the exact note object that was persisted', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(whatsappRouter, '/inbox/:leadId/note', 'post');
+
+    const req = {
+      params: { leadId: 'lead_123' },
+      body: { content: 'Called back, will decide by Friday' },
+      user: { companyId: 'acme', id: 'emp_1', name: 'Test Agent' },
+    };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    await handler(req, res, jest.fn());
+
+    const [putArgs] = dynamodb.put.mock.calls[0];
+    const body = res.json.mock.calls[0][0];
+    expect(body.note).toEqual(putArgs.Item); // exactly what was written, not a re-derived copy
+    expect(body.note.SK).toBe(body.timestamp && `NOTE#${body.timestamp}`);
+    expect(body.note.authorId).toBe('emp_1');
+    expect(body.note.authorName).toBe('Test Agent');
+  });
+
   test('rejects an empty/whitespace-only note with 400 and never writes', async () => {
     const handler = getRouteHandler(whatsappRouter, '/inbox/:leadId/note', 'post');
     const req = {
