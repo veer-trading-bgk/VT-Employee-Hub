@@ -20,13 +20,16 @@ jest.mock('../src/services/ContactBulkOpsService', () => ({
   assignLead: jest.fn(),
   updateStage: jest.fn(),
   updateTags: jest.fn(),
+  deleteContact: jest.fn(),
   NotFoundError: class NotFoundError extends Error {},
 }));
+jest.mock('../src/utils/audit', () => ({ logAudit: jest.fn().mockResolvedValue(undefined) }));
 
 process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
 
 const PipelineService = require('../src/services/PipelineService');
 const ContactBulkOps = require('../src/services/ContactBulkOpsService');
+const { logAudit } = require('../src/utils/audit');
 const contactsRouter = require('../src/routes/contacts');
 
 function getRouteHandler(path, method) {
@@ -62,7 +65,7 @@ describe('POST /api/contacts/bulk-update — request validation', () => {
 
   test('rejects an unknown operation', async () => {
     const res = mockRes();
-    await handler({ user: USER, body: { contacts: [{ id: 'c1', leadId: 'c1' }], operation: 'delete', params: {} } }, res, jest.fn());
+    await handler({ user: USER, body: { contacts: [{ id: 'c1', leadId: 'c1' }], operation: 'bogus', params: {} } }, res, jest.fn());
     expect(res.status).toHaveBeenCalledWith(400);
   });
 
@@ -160,5 +163,71 @@ describe('POST /api/contacts/bulk-update — per-id result array (mixed valid + 
 
     // Sequential = each start/end pair completes before the next starts.
     expect(order).toEqual(['start:a', 'end:a', 'start:b', 'end:b', 'start:c', 'end:c']);
+  });
+});
+
+describe('POST /api/contacts/bulk-update — operation: delete (Track A5 fast-follow, 2026-07-10)', () => {
+  const ADMIN = { id: 'u1', role: 'admin', companyId: 'comp_test' };
+  const MANAGER = { id: 'u2', role: 'manager', companyId: 'comp_test' };
+
+  test('a manager is rejected with 403 — delete is admin-only, unlike assign/tag/stage', async () => {
+    const res = mockRes();
+    await handler({ user: MANAGER, body: { contacts: [{ id: 'c1', leadId: 'lead1' }], operation: 'delete' } }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(ContactBulkOps.deleteContact).not.toHaveBeenCalled();
+  });
+
+  test('an admin succeeds: a lead delete and an unknown-contact delete both dispatch and audit correctly', async () => {
+    ContactBulkOps.deleteContact
+      .mockResolvedValueOnce({ isLead: true, phone: '9876543210', convId: 'conv1', inboxConvId: null, convTlPurge: { tlLead: true, conv: true, tlConv: true, inboxConv: null, tlInboxConv: null } })
+      .mockResolvedValueOnce({ isLead: false });
+
+    const contacts = [
+      { id: 'lead1', leadId: 'lead1' },
+      { id: '9000000000', phone: '9000000000' },
+    ];
+    const res = mockRes();
+    await handler({ user: ADMIN, body: { contacts, operation: 'delete' } }, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true, succeeded: 2, failed: 0,
+      results: [{ id: 'lead1', ok: true }, { id: '9000000000', ok: true }],
+    }));
+    expect(ContactBulkOps.deleteContact).toHaveBeenCalledWith('comp_test', { leadId: 'lead1', phone: undefined });
+    expect(ContactBulkOps.deleteContact).toHaveBeenCalledWith('comp_test', { leadId: undefined, phone: '9000000000' });
+
+    // Same audit action name a single delete would leave (crm_lead_purged),
+    // tagged via:'bulk' to distinguish origin — plus a new action for the
+    // unknown-contact path, which the single route never audited before.
+    expect(logAudit).toHaveBeenCalledWith('u1', 'crm_lead_purged', 'lead1', 'success', undefined, expect.objectContaining({ via: 'bulk', convId: 'conv1' }));
+    expect(logAudit).toHaveBeenCalledWith('u1', 'contacts_unknown_deleted', '9000000000', 'success', undefined, { via: 'bulk' });
+  });
+
+  test('a NotFoundError (already-deleted contact) reports as a normal per-id failure, not a thrown error', async () => {
+    ContactBulkOps.deleteContact.mockRejectedValueOnce(new ContactBulkOps.NotFoundError('Lead not found'));
+    const res = mockRes();
+    await handler({ user: ADMIN, body: { contacts: [{ id: 'gone', leadId: 'gone' }], operation: 'delete' } }, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      succeeded: 0, failed: 1,
+      results: [{ id: 'gone', ok: false, error: 'Lead not found' }],
+    }));
+    expect(logAudit).not.toHaveBeenCalled(); // no audit entry for a delete that never happened
+  });
+
+  test('partial failure: one delete succeeds, one fails — only the successful one is audited', async () => {
+    ContactBulkOps.deleteContact
+      .mockResolvedValueOnce({ isLead: true, phone: '9111111111', convId: null, inboxConvId: null, convTlPurge: {} })
+      .mockRejectedValueOnce(new Error('Too many requests'));
+
+    const contacts = [{ id: 'a', leadId: 'a' }, { id: 'b', leadId: 'b' }];
+    const res = mockRes();
+    await handler({ user: ADMIN, body: { contacts, operation: 'delete' } }, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      succeeded: 1, failed: 1,
+      results: [{ id: 'a', ok: true }, { id: 'b', ok: false, error: 'Too many requests' }],
+    }));
+    expect(logAudit).toHaveBeenCalledTimes(1);
   });
 });

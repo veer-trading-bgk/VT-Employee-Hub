@@ -11,7 +11,10 @@
 // error (validation, DynamoDB) propagate for the caller to handle.
 
 const dynamodb = require('../config/dynamodb');
+const logger = require('../config/logger');
 const { to10Digit } = require('../utils/phone');
+const { leadPhoneLockPK, leadPhoneLockSK, conversationPK, tlPK } = require('../core/entityKeys');
+const { ENTITY } = require('../events/catalog');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -120,4 +123,230 @@ async function updateTags(companyId, { leadId, phone }, { add = [], remove = [] 
   }
 }
 
-module.exports = { assignLead, updateStage, updateTags, contactKey, NotFoundError };
+// ── Delete a CRM lead — hard-purge: removes all DDB items for this lead ─────
+// Extracted verbatim from crm.js's DELETE /leads/:id (Track A5 fast-follow,
+// 2026-07-10) so the bulk-delete path reuses the exact same purge logic
+// instead of a shortcut that only deletes the LEAD# record and leaves
+// orphaned CONV#/TL# partitions behind.
+//
+// Deletes METADATA + all MSG/NOTE items under LEAD# PK, the INBOX# CONTACT
+// shadow record and any pre-promotion INBOX# messages for the same phone,
+// the lead's own TL# timeline, and — if a WhatsApp conversation was ever
+// linked (leadItem.convId, written by conversationResolver.js) — that CONV#
+// entity and its TL# timeline too. Also checks INBOX#'s OWN convId pointer
+// (Era 41): before the Era 41 fix, resolveForInbox() and resolveForLead()
+// could independently create two different CONV# entities for the same
+// contact (a genuine cross-call-stack race, see 19_DECISION_LOG.md Era 41)
+// — Era 37's purge only ever followed the lead's own convId, silently
+// leaving the INBOX#-linked one behind as a permanent orphan. This purges
+// that one too, whenever it differs from the lead's.
+// CONTACT#'s own TL# partition (TL#{cid}#CONTACT#{contactId}) is
+// deliberately left alone: the Contact entity is a separate, longer-lived
+// identity that survives this lead's deletion (this function never touches
+// CONTACT# at all), so its timeline — which may include fan-out entries
+// from this conversation — legitimately continues to exist. See
+// docs/bible/19_DECISION_LOG.md Era 36/37/41 and docs/phase3/TECHNICAL_DEBT.md
+// for the incident this closes.
+//
+// Audit logging and the partial-failure response message stay with the
+// caller (same split as assignLead/updateStage/updateTags above) — this
+// returns enough (phone/convId/inboxConvId/convTlPurge) for the caller to
+// log and format a response, but never calls logAudit itself.
+async function deleteLead(companyId, leadId) {
+  const PK = leadKey(companyId, leadId).PK;
+
+  const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
+  if (!existing.Item) throw new NotFoundError('Lead not found');
+  const phone = existing.Item.phone;
+
+  // Helper: query all items under a PK and batch-delete them
+  async function purgePartition(pk) {
+    const items = [];
+    let lk;
+    do {
+      const r = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk',
+        ExpressionAttributeValues: { ':pk': pk },
+        ...(lk && { ExclusiveStartKey: lk }),
+      }).promise();
+      items.push(...(r.Items ?? []));
+      lk = r.LastEvaluatedKey;
+    } while (lk);
+    for (let i = 0; i < items.length; i += 25) {
+      await dynamodb.batchWrite({
+        RequestItems: {
+          [TABLE]: items.slice(i, i + 25).map((it) => ({
+            DeleteRequest: { Key: { PK: it.PK, SK: it.SK } },
+          })),
+        },
+      }).promise();
+    }
+  }
+
+  // 1. Delete all items under LEAD# PK (METADATA, MSG#*, NOTE#*, etc.)
+  await purgePartition(PK);
+
+  // 2. Delete all items under INBOX# PK for this phone (shadow CONTACT + pre-promotion MSG#*).
+  //    Read the INBOX# CONTACT item's own convId FIRST, before purging it away —
+  //    Era 37 only ever checked the LEAD#'s own convId; this can differ (see Era 41).
+  let inboxConvId = null;
+  if (phone) {
+    const inboxItem = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `INBOX#${companyId}#${phone}`, SK: 'CONTACT' },
+    }).promise().catch(() => ({}));
+    inboxConvId = inboxItem.Item?.convId ?? null;
+    await purgePartition(`INBOX#${companyId}#${phone}`).catch(() => {});
+  }
+
+  // 3. Delete the lead's own TL# timeline (touch_received entries, written by
+  //    CustomerIdentityService on every resolveOrCreate() call — independent of
+  //    whether a CONV# was ever created). Outcome is tracked (not just logged) so
+  //    it can be surfaced on the audit record and, if it failed, in the response.
+  const convTlPurge = { tlLead: true, conv: null, tlConv: null };
+  await purgePartition(tlPK(companyId, ENTITY.LEAD, leadId))
+    .catch((e) => {
+      convTlPurge.tlLead = false;
+      logger.warn(`ContactBulkOps.deleteLead: TL#LEAD delete failed leadId=${leadId}: ${e.message}`);
+    });
+
+  // 4. Delete the linked CONV# entity + its TL# timeline, if a WhatsApp conversation
+  //    was ever started for this lead. convId is written onto LEAD# METADATA (alongside
+  //    contactId, via if_not_exists) by src/utils/conversationResolver.js the first time
+  //    an inbound message is resolved — leads that pre-date that pointer, or that never
+  //    received an inbound WhatsApp message, simply have no convId. That is not an error
+  //    condition: purge what exists, skip what doesn't. (conv/tlConv stay `null` — not
+  //    applicable — rather than `true`, so the audit record can distinguish "nothing to
+  //    purge" from "purge attempted and succeeded".)
+  const convId = existing.Item.convId;
+  if (convId) {
+    convTlPurge.conv = true;
+    convTlPurge.tlConv = true;
+    await purgePartition(conversationPK(companyId, convId))
+      .catch((e) => {
+        convTlPurge.conv = false;
+        logger.warn(`ContactBulkOps.deleteLead: CONV# delete failed leadId=${leadId} convId=${convId}: ${e.message}`);
+      });
+    await purgePartition(tlPK(companyId, ENTITY.CONV, convId))
+      .catch((e) => {
+        convTlPurge.tlConv = false;
+        logger.warn(`ContactBulkOps.deleteLead: TL#CONV delete failed leadId=${leadId} convId=${convId}: ${e.message}`);
+      });
+    logger.info(`ContactBulkOps.deleteLead: leadId=${leadId} purged linked conversation convId=${convId}`);
+  } else {
+    logger.info(`ContactBulkOps.deleteLead: leadId=${leadId} has no convId — skipping CONV#/TL#(CONV) purge (pre-dates conversation pointer or never messaged)`);
+  }
+
+  // 4b. (Era 41) The INBOX# CONTACT item's own convId can point at a DIFFERENT
+  //     conversation than the lead's — resolveForInbox() and resolveForLead() used
+  //     to race independently before the Era 41 fix, each creating its own CONV#
+  //     for the same contact. Purge that orphan too, whenever it's not the same
+  //     one just purged above (or wasn't purged because the lead had no convId).
+  convTlPurge.inboxConv = null;
+  convTlPurge.tlInboxConv = null;
+  if (inboxConvId && inboxConvId !== convId) {
+    convTlPurge.inboxConv = true;
+    convTlPurge.tlInboxConv = true;
+    await purgePartition(conversationPK(companyId, inboxConvId))
+      .catch((e) => {
+        convTlPurge.inboxConv = false;
+        logger.warn(`ContactBulkOps.deleteLead: INBOX-linked CONV# delete failed leadId=${leadId} inboxConvId=${inboxConvId}: ${e.message}`);
+      });
+    await purgePartition(tlPK(companyId, ENTITY.CONV, inboxConvId))
+      .catch((e) => {
+        convTlPurge.tlInboxConv = false;
+        logger.warn(`ContactBulkOps.deleteLead: TL#(INBOX-linked CONV) delete failed leadId=${leadId} inboxConvId=${inboxConvId}: ${e.message}`);
+      });
+    logger.info(`ContactBulkOps.deleteLead: leadId=${leadId} purged orphaned INBOX-linked conversation inboxConvId=${inboxConvId}`);
+  }
+  const convTlPartialFailure = Object.values(convTlPurge).some((v) => v === false);
+
+  // 5. Release the LEAD_PHONE# uniqueness lock (a separate PK, written by
+  //    CustomerIdentityService._createCustomer). This was previously left
+  //    behind, orphaning the lock: every future create for this number then
+  //    failed its ConditionExpression and surfaced a raw "Transaction
+  //    cancelled" 500 (production incident 2026-07-03). phoneNorm is the
+  //    lock's key component — fall back to normalising the stored phone for
+  //    older records written before phoneNorm was persisted.
+  //    Associated IDEM# locks (24h TTL) can't be enumerated by leadId here;
+  //    CIS ignores a stale idem lock whose lead no longer exists instead.
+  const phoneNorm = existing.Item.phoneNorm || (phone ? to10Digit(phone) : null);
+  if (phoneNorm) {
+    await dynamodb.delete({
+      TableName: TABLE,
+      Key: { PK: leadPhoneLockPK(companyId, phoneNorm), SK: leadPhoneLockSK() },
+    }).promise().catch((e) => logger.warn(`ContactBulkOps.deleteLead: phone lock delete failed phoneNorm=${phoneNorm}: ${e.message}`));
+  }
+
+  return {
+    phone,
+    convId: convId ?? null,
+    inboxConvId: inboxConvId ?? null,
+    convTlPurge,
+    convTlPartialFailure,
+  };
+}
+
+// ── Delete an unknown (phone-only, INBOX#-only) contact ─────────────────────
+// Extracted verbatim from contacts.js's DELETE /unknown/:phone. Purges only
+// the INBOX# partition (CONTACT + any pre-promotion MSG#* items) — unlike
+// deleteLead above, this does NOT purge CONV#/TL# partitions. That matches
+// the single-contact route's existing (pre-Track-A5) behavior exactly; a
+// scan for whether unknown contacts can also accumulate an orphaned CONV#/TL#
+// pair the way leads can is a separate, not-yet-scoped question — flagged in
+// docs/phase3/TECHNICAL_DEBT.md rather than silently expanded here.
+async function deleteUnknownContact(companyId, phone) {
+  const normPhone = to10Digit(phone);
+  const PK = inboxKey(companyId, normPhone).PK;
+
+  const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'CONTACT' } }).promise();
+  if (!existing.Item) throw new NotFoundError('Unknown contact not found');
+
+  const items = [];
+  let lk;
+  do {
+    const r = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk',
+      ExpressionAttributeValues: { ':pk': PK },
+      ...(lk && { ExclusiveStartKey: lk }),
+    }).promise();
+    items.push(...(r.Items ?? []));
+    lk = r.LastEvaluatedKey;
+  } while (lk);
+
+  for (let i = 0; i < items.length; i += 25) {
+    await dynamodb.batchWrite({
+      RequestItems: {
+        [TABLE]: items.slice(i, i + 25).map((it) => ({
+          DeleteRequest: { Key: { PK: it.PK, SK: it.SK } },
+        })),
+      },
+    }).promise();
+  }
+
+  return {};
+}
+
+// ── Delete a contact (lead or unknown) — bulk-delete's single entry point ──
+// Dispatches to deleteLead or deleteUnknownContact based on the same
+// isLead test the frontend's buildContactDeleteRequest (now retired) used:
+// leadId present => lead, otherwise phone-only unknown contact.
+async function deleteContact(companyId, { leadId, phone }) {
+  if (leadId) {
+    const result = await deleteLead(companyId, leadId);
+    return { isLead: true, ...result };
+  }
+  if (phone) {
+    await deleteUnknownContact(companyId, phone);
+    return { isLead: false };
+  }
+  throw new Error('leadId or phone required');
+}
+
+module.exports = {
+  assignLead, updateStage, updateTags, contactKey,
+  deleteLead, deleteUnknownContact, deleteContact,
+  NotFoundError,
+};

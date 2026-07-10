@@ -39,7 +39,6 @@ import { useContactMutations } from '@/hooks/useContactMutations';
 import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
-import { buildContactDeleteRequest } from '@/lib/contactUrls';
 import { decideBulkOutcome, type BulkUpdateResponse } from '@/lib/bulkUpdateFeedback';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -310,54 +309,6 @@ function ContactsContent() {
     placeholderData: { contacts: [], total: 0, page: 1, pageSize: PAGE_SIZE },
   });
 
-  // Shared helper: run one bulk operation per selected contact and report a
-  // real succeeded/failed split instead of the all-or-nothing behavior
-  // Promise.all gives — a single failed item (permission, already-deleted,
-  // transient 5xx) used to sink the ENTIRE batch's success reporting and
-  // skip invalidateQueries even when most items had already succeeded.
-  // Still used by bulk delete only — assign/tag moved to the true bulk
-  // endpoint below (2026-07-10, docs/phase3/TECHNICAL_DEBT.md); delete
-  // wasn't in that fix's scope (POST /bulk-update covers assign/tag/untag/
-  // stage, not delete) and is left on this N-call pattern deliberately,
-  // not by oversight.
-  async function runBulkOp<T>(items: T[], op: (item: T) => Promise<unknown>) {
-    const settled = await Promise.allSettled(items.map(op));
-    const failed = settled.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
-    const succeeded = settled.length - failed.length;
-    const firstReason = failed[0]
-      ? (failed[0].reason instanceof Error ? failed[0].reason.message : String(failed[0].reason))
-      : null;
-    return { succeeded, failed: failed.length, firstReason };
-  }
-
-  function reportBulkResult(action: string, succeeded: number, failed: number, firstReason: string | null) {
-    if (failed === 0) {
-      toast.success(`${action} ${succeeded} contact${succeeded !== 1 ? 's' : ''}`);
-    } else if (succeeded === 0) {
-      toast.error(`Failed to ${action.toLowerCase()} ${failed} contact${failed !== 1 ? 's' : ''}${firstReason ? `: ${firstReason}` : ''}`);
-    } else {
-      toast.error(`${action} ${succeeded} contact${succeeded !== 1 ? 's' : ''} — ${failed} failed${firstReason ? `: ${firstReason}` : ''}`);
-    }
-  }
-
-  // Bulk delete — route each contact to the correct backend endpoint
-  const bulkDeleteMutation = useMutation({
-    mutationFn: async (ids: string[]) => {
-      const allContacts = data?.contacts ?? [];
-      const targets = allContacts.filter((c) => ids.includes(c.id));
-      return runBulkOp(targets, (c) => {
-        const { url, method } = buildContactDeleteRequest(c);
-        return apiFetch(url, { method });
-      });
-    },
-    onSuccess: ({ succeeded, failed, firstReason }) => {
-      reportBulkResult('Deleted', succeeded, failed, firstReason);
-      setSelectedIds(new Set());
-      if (succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
-    },
-    onError: () => toast.error('Delete failed unexpectedly — please try again'),
-  });
-
   // ── True bulk endpoint (2026-07-10, docs/phase3/TECHNICAL_DEBT.md) ──────────
   // Replaces the old N-concurrent-individual-calls pattern for assign/tag —
   // that fanned out up to 50 simultaneous requests against a 10-slot AWS
@@ -427,6 +378,36 @@ function ContactsContent() {
       if (res.succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
     },
     onError: () => toast.error('Assignment failed unexpectedly — please try again'),
+  });
+
+  // Bulk delete — Track A5 fast-follow (2026-07-10): the last of the four
+  // bulk operations still on the old N-concurrent-calls pattern, which is
+  // exactly what produced the reported partial failures under load ("50
+  // deleted, 5 failed: Too many requests" — same class already fixed for
+  // assign/tag above). Now the same true bulk endpoint; the shared
+  // decideBulkOutcome()/reportBulkOutcome() honest-feedback pattern is
+  // reused unmodified. This is the most destructive of the four operations
+  // (a hard, unrecoverable purge — see ContactBulkOpsService.deleteLead/
+  // deleteUnknownContact) — handleBulkDelete's window.confirm below is the
+  // only checkpoint before it fires, same as before this fix.
+  const bulkDeleteMutation = useMutation({
+    mutationFn: async (ids: string[]): Promise<BulkUpdateResponse> => {
+      const targets = (data?.contacts ?? []).filter((c) => ids.includes(c.id));
+      if (targets.length === 0) return { success: true, results: [], succeeded: 0, failed: 0 };
+      const contacts = targets.map((c) => {
+        const isLead = c.type === 'lead' || (c.leadId ?? null) !== null;
+        return { id: c.id, ...(isLead ? { leadId: c.leadId ?? c.id } : { phone: c.phone }) };
+      });
+      return apiFetch<BulkUpdateResponse>('/api/contacts/bulk-update', {
+        method: 'POST',
+        body: JSON.stringify({ contacts, operation: 'delete' }),
+      });
+    },
+    onSuccess: (res) => {
+      reportBulkOutcome('Deleted', res);
+      if (res.succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
+    },
+    onError: () => toast.error('Delete failed unexpectedly — please try again'),
   });
 
   function handleSort(key: string, dir: SortDirection) {

@@ -4,6 +4,7 @@ const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const { rateLimit } = require('../middleware/rateLimiter');
 const { to10Digit } = require('../utils/phone');
+const { logAudit } = require('../utils/audit');
 const TagService = require('../services/TagService');
 const PipelineService = require('../services/PipelineService');
 const ContactBulkOps = require('../services/ContactBulkOpsService');
@@ -232,40 +233,21 @@ router.get('/all', authMiddleware, async (req, res, next) => {
 
 // ── DELETE /api/contacts/unknown/:phone — hard-purge all INBOX# items for this phone ──
 // Deletes the CONTACT record + all MSG#* items under the INBOX# PK.
+// Purge logic (INBOX# partition: CONTACT + pre-promotion MSG#*) now lives in
+// ContactBulkOpsService.deleteUnknownContact — extracted verbatim (Track A5
+// fast-follow, 2026-07-10) so the new bulk-delete path (POST /bulk-update)
+// reuses the exact same purge as this single-contact route.
 router.delete('/unknown/:phone', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
     const phone = to10Digit(req.params.phone);
     if (!phone) return res.status(400).json({ error: 'phone required' });
 
-    const PK = `INBOX#${companyId}#${phone}`;
-
-    const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'CONTACT' } }).promise();
-    if (!existing.Item) return res.status(404).json({ error: 'Unknown contact not found' });
-
-    // Query all items under this INBOX# PK (CONTACT, MSG#*, etc.)
-    const items = [];
-    let lk;
-    do {
-      const r = await dynamodb.query({
-        TableName: TABLE,
-        KeyConditionExpression: 'PK = :pk',
-        ExpressionAttributeValues: { ':pk': PK },
-        ...(lk && { ExclusiveStartKey: lk }),
-      }).promise();
-      items.push(...(r.Items ?? []));
-      lk = r.LastEvaluatedKey;
-    } while (lk);
-
-    // Batch-delete all (DynamoDB limit: 25 per call)
-    for (let i = 0; i < items.length; i += 25) {
-      await dynamodb.batchWrite({
-        RequestItems: {
-          [TABLE]: items.slice(i, i + 25).map((it) => ({
-            DeleteRequest: { Key: { PK: it.PK, SK: it.SK } },
-          })),
-        },
-      }).promise();
+    try {
+      await ContactBulkOps.deleteUnknownContact(companyId, phone);
+    } catch (e) {
+      if (e instanceof ContactBulkOps.NotFoundError) return res.status(404).json({ error: e.message });
+      throw e;
     }
 
     res.json({ success: true });
@@ -307,7 +289,16 @@ router.put('/stage', authMiddleware, rateLimit(20, 60_000), async (req, res, nex
 // against the app's own per-route rate limiters, instead of racing the
 // whole burst against them at once.
 const MAX_BULK_CONTACTS = 500;
-const VALID_BULK_OPERATIONS = new Set(['assign', 'tag', 'untag', 'stage']);
+// 'delete' added Track A5 fast-follow (2026-07-10) — was the last bulk
+// operation still on the old N-concurrent-calls pattern (see
+// contacts/page.tsx's former runBulkOp), which produced real partial
+// failures under load (50 attempted, 5 "Too many requests") for the exact
+// same reason assign/tag did before this route existed. checkRole below
+// stays ['admin', 'manager'] for assign/tag/untag/stage; 'delete' gets its
+// own admin-only check further down, matching the single-contact delete
+// routes' checkRole(['admin']) — a bulk request must not be a way to get
+// destructive access a manager wouldn't have one contact at a time.
+const VALID_BULK_OPERATIONS = new Set(['assign', 'tag', 'untag', 'stage', 'delete']);
 
 router.post('/bulk-update', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
@@ -335,6 +326,17 @@ router.post('/bulk-update', authMiddleware, checkRole(['admin', 'manager']), rat
         return res.status(400).json({ error: 'Invalid stage key' });
       }
     }
+    // Delete is the most destructive of the four operations and, unlike the
+    // others, is completely unrecoverable (ContactBulkOps.deleteLead /
+    // deleteUnknownContact are hard purges, not soft-deletes — see their own
+    // comments). The single-contact delete routes both already require
+    // checkRole(['admin']); this route's own decorator allows manager too
+    // (for assign/tag/stage), so 'delete' needs this extra in-handler check
+    // to carry the same safeguard rather than let the bulk path quietly
+    // grant managers destructive access they don't have one contact at a time.
+    if (operation === 'delete' && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can bulk delete contacts' });
+    }
 
     const results = [];
     for (const c of contacts) {
@@ -354,6 +356,22 @@ router.post('/bulk-update', authMiddleware, checkRole(['admin', 'manager']), rat
         } else if (operation === 'untag') {
           if (!leadId && !phone) throw new Error('leadId or phone required');
           await ContactBulkOps.updateTags(companyId, { leadId, phone }, { add: [], remove: [params.tagId] });
+        } else if (operation === 'delete') {
+          if (!leadId && !phone) throw new Error('leadId or phone required');
+          const delResult = await ContactBulkOps.deleteContact(companyId, { leadId, phone });
+          // Same audit trail a single delete would leave (crm_lead_purged /
+          // a new contacts_unknown_deleted action for the phone-only path,
+          // which the single unknown-contact route has never logged — a
+          // pre-existing gap, tracked separately in TECHNICAL_DEBT.md rather
+          // than silently fixed here), tagged via=bulk to distinguish origin.
+          if (delResult.isLead) {
+            await logAudit(req.user.id, 'crm_lead_purged', leadId, 'success', req.ip, {
+              via: 'bulk', phone: delResult.phone, convId: delResult.convId,
+              inboxConvId: delResult.inboxConvId, convTlPurge: delResult.convTlPurge,
+            });
+          } else {
+            await logAudit(req.user.id, 'contacts_unknown_deleted', phone, 'success', req.ip, { via: 'bulk' });
+          }
         }
         results.push({ id, ok: true });
       } catch (err) {
