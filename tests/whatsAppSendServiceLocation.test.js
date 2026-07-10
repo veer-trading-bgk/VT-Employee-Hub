@@ -46,7 +46,15 @@ beforeEach(() => {
 });
 
 describe('sendLocation()', () => {
-  test('posts a Meta location message with latitude/longitude/name/address', async () => {
+  // 2026-07-10 fix (docs/phase3/TECHNICAL_DEBT.md): real A/B send to a test
+  // number confirmed name/address in the outbound Meta payload makes
+  // WhatsApp's client open the location as a text SEARCH on tap instead of
+  // an exact pin — regardless of the name's content (Android's geo: URI
+  // intent requires the search/`q=` form the moment a label is present).
+  // The Meta payload must be coordinates-only, unconditionally — this
+  // replaces the old "posts name/address" test, which asserted the exact
+  // behavior that caused the bug.
+  test('Meta payload is coordinates-only — name/address are NEVER forwarded to Meta, even when provided', async () => {
     await WASendSvc.sendLocation(CID, { phone: PHONE }, { latitude: 12.97, longitude: 77.59, name: 'HQ Office', address: '1 MG Road' }, AGENT_USER);
 
     expect(axios.post).toHaveBeenCalledWith(
@@ -54,13 +62,16 @@ describe('sendLocation()', () => {
       expect.objectContaining({
         messaging_product: 'whatsapp',
         type: 'location',
-        location: { latitude: 12.97, longitude: 77.59, name: 'HQ Office', address: '1 MG Road' },
+        location: { latitude: 12.97, longitude: 77.59 },
       }),
       expect.any(Object),
     );
+    const [, body] = axios.post.mock.calls[0];
+    expect(body.location).not.toHaveProperty('name');
+    expect(body.location).not.toHaveProperty('address');
   });
 
-  test('omits name/address from the Meta payload when not provided', async () => {
+  test('Meta payload is coordinates-only when name/address are not provided either', async () => {
     await WASendSvc.sendLocation(CID, { phone: PHONE }, { latitude: 1, longitude: 2 }, AGENT_USER);
     const [, body] = axios.post.mock.calls[0];
     expect(body.location).toEqual({ latitude: 1, longitude: 2 });
@@ -73,6 +84,11 @@ describe('sendLocation()', () => {
     expect(result.pk).toEqual(expect.any(String));
   });
 
+  // Deliberately unchanged by the 2026-07-10 fix — name/address are dropped
+  // ONLY from the Meta payload above; the fix's own scope explicitly keeps
+  // them in DynamoDB storage so the Inbox's own bubble (inbox/page.tsx's
+  // MessageBubble, which reads message.location.name/.address from this
+  // exact stored record) still shows the agent-side branch name/address.
   test('stores a MSG# record with type: location and a readable preview', async () => {
     await WASendSvc.sendLocation(CID, { phone: PHONE }, { latitude: 1, longitude: 2, name: 'HQ Office' }, AGENT_USER);
     const putCall = dynamodb.put.mock.calls.find((c) => c[0].Item.type === 'location');

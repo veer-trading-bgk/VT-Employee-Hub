@@ -643,11 +643,28 @@ class WhatsAppSendService {
    * @param {object} location
    * @param {number}  location.latitude
    * @param {number}  location.longitude
-   * @param {string}  [location.name]     — shown as the pin's title in WhatsApp
-   * @param {string}  [location.address]  — shown under the name
+   * @param {string}  [location.name]     — stored + shown in OUR OWN Inbox
+   *                                         bubble only (see below) — never
+   *                                         sent to Meta, see 2026-07-10 fix note
+   * @param {string}  [location.address]  — same as name, Inbox-only
    *
    * @returns {{ wamid, timestamp, pk, msgSK }}
    */
+  // 2026-07-10 (docs/phase3/TECHNICAL_DEBT.md): name/address used to be
+  // forwarded to Meta's location message API too. Confirmed via a real A/B
+  // send to a test number — with name/address, WhatsApp's client opens the
+  // location as a text SEARCH on tap (many name matches, not the pin); with
+  // ONLY latitude/longitude, it opens as an exact pin. This isn't about the
+  // name's content (a short, clean name reproduced it identically to a
+  // messy one) — Android's own geo: URI intent docs explain why: a label
+  // requires the `q=` (search) form of the intent, whereas bare coordinates
+  // use the direct "show a map here" form — so ANY non-empty name forces
+  // search mode, regardless of what's in it. name/address are still fully
+  // captured in `location` below and still stored via _storeMessage() +
+  // rendered in the Inbox's own bubble (inbox/page.tsx's MessageBubble,
+  // which reads message.location.name/.address from OUR stored record, not
+  // from anything Meta echoes back) — this fix only removes them from the
+  // outbound Graph API call, i.e. what the CUSTOMER's phone receives.
   async sendLocation(companyId, target, location, user) {
     const contact = await this.resolveContact(companyId, target);
     this._assertSendPermission(user, contact);
@@ -662,7 +679,7 @@ class WhatsAppSendService {
         recipient_type: 'individual',
         to: this._toE164(contact.phone),
         type: 'location',
-        location: { latitude, longitude, ...(name && { name }), ...(address && { address }) },
+        location: { latitude, longitude }, // name/address deliberately omitted — see fix note above
       },
       { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' } },
     );
