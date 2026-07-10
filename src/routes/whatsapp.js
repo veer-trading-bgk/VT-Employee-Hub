@@ -2919,8 +2919,37 @@ router.post('/send-template', authMiddleware, rateLimit(20, 60_000), async (req,
     );
     res.json({ success: true });
   } catch (err) {
-    logger.error('send-template error', err?.response?.data ?? err.message);
-    if (err.status) return res.status(err.status).json({ error: err.message });
+    // logger.error only extracts .message from Error instances -- passing
+    // err.response.data (a plain object) straight through renders as
+    // "[object Object]" in CloudWatch/Telegram (docs/phase3/TECHNICAL_DEBT.md,
+    // same defect already fixed for the connect/config/OAuth/template-submit
+    // routes tonight). JSON.stringify it so Meta's actual rejection reason is
+    // readable. This route's axios call (inside WhatsAppSendService.sendTemplate)
+    // carries the token only in the Authorization header, never in request
+    // params, so err.response.data alone is safe to log/return in full.
+    //
+    // Branch on err.response?.data FIRST, not err.status -- a real Meta/axios
+    // rejection from sendTemplate()'s unwrapped axios.post() call has
+    // err.response.status, never a top-level err.status (that only exists on
+    // this service's own custom-thrown errors, e.g. "Template not found").
+    // The original code checked err.status only, which meant a genuine Meta
+    // rejection always fell through to the generic next(err) 500 handler --
+    // its real, useful detail was silently discarded, not just mislogged.
+    const rawError = err.response?.data;
+    if (rawError) {
+      logger.error('send-template error', JSON.stringify(rawError));
+      // error_user_msg/error_user_title are Meta's own end-user-facing error
+      // fields -- usually far more specific than the generic .message (e.g.
+      // naming exactly which component was rejected and why) -- prefer them
+      // when Meta includes them.
+      const metaErr = rawError?.error ?? {};
+      const friendlyMessage = metaErr.error_user_msg || metaErr.message || 'Meta API error';
+      return res.status(err.response?.status ?? 400).json({ error: friendlyMessage, rawError });
+    }
+    if (err.status) {
+      logger.error('send-template error', err.message);
+      return res.status(err.status).json({ error: err.message });
+    }
     next(err);
   }
 });

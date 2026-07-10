@@ -338,11 +338,52 @@ class WhatsAppSendService {
     const bodyParams = (variableValues ?? []).map(String);
     const components = [];
 
-    const headerComp = (tmpl.components ?? []).find(
-      (c) => c.type === 'HEADER' && c.format === 'TEXT' && /\{\{1\}\}/.test(c.text ?? ''),
-    );
-    if (headerComp && options.headerVariableValue != null) {
+    // 2026-07-10 fix (docs/phase3/TECHNICAL_DEBT.md): this only ever handled
+    // TEXT headers -- an approved template with an IMAGE/VIDEO/DOCUMENT
+    // header (e.g. cdsl_invite_marketing, approved the same night) got NO
+    // header component at all here, and Meta rejected the send outright:
+    // "(#132012) ... header: Format mismatch, expected IMAGE, received
+    // UNKNOWN". Confirmed via Meta's own docs (Media/Message API reference,
+    // Media Card Carousel Templates) that a template header parameter at
+    // SEND time needs a MediaObject ({id} or {link}) -- a DIFFERENT Meta API
+    // concern from the Resumable Upload handle used once at template
+    // CREATION time (uploadTemplateHeaderHandle(), ~24h validity, never
+    // reused). Using `id` here, not `link`: Meta's regular /media-endpoint
+    // media IDs are valid ~30 days and are the more reliable choice --
+    // `link` sends are documented (real production reports, not just Meta's
+    // docs) to intermittently fail with 429s because Meta proxies external
+    // URL fetches and rate-limits by the HOSTING PROVIDER'S ASN, not per
+    // WABA account.
+    const headerComp = (tmpl.components ?? []).find((c) => c.type === 'HEADER');
+    if (headerComp?.format === 'TEXT' && /\{\{1\}\}/.test(headerComp.text ?? '') && options.headerVariableValue != null) {
       components.push({ type: 'header', parameters: [{ type: 'text', text: String(options.headerVariableValue) }] });
+    } else if (headerComp && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(headerComp.format)) {
+      if (!tmpl.headerMediaRef?.s3Key) {
+        // Fail fast with a clear, actionable message instead of letting Meta's
+        // opaque "Format mismatch, expected X, received UNKNOWN" happen again --
+        // this is the exact same underlying gap (no header sent at all), just
+        // caught before the API call instead of surfaced as a Meta rejection.
+        throw this._err(
+          `Template "${tmpl.templateName}" has a ${headerComp.format} header but no stored media reference — re-upload its header image via the Templates editor`,
+          500,
+        );
+      }
+      const mediaType = headerComp.format.toLowerCase(); // 'image' | 'video' | 'document'
+      const mediaId = await this.resolveMediaId(companyId, {
+        s3Key: tmpl.headerMediaRef.s3Key,
+        mimeType: tmpl.headerMediaRef.mimeType,
+        filename: tmpl.headerMediaRef.filename,
+        // s3Key doubles as resolveMediaId()'s dedup cache key here instead of
+        // a real SHA-256 content hash -- it's already unique-per-asset
+        // (uploads/{companyId}/{randomUUID()}.{ext}, per GET /upload-url) and
+        // immutable for a given template, which is exactly what the cache key
+        // needs to be. Avoids re-uploading the SAME header image to Meta on
+        // every single send of a template that might go out to hundreds of
+        // leads, and reuses resolveMediaId()'s existing 29-day MEDIACACHE#
+        // mechanism unmodified rather than building a second cache.
+        fileHash: tmpl.headerMediaRef.s3Key,
+      });
+      components.push({ type: 'header', parameters: [{ type: mediaType, [mediaType]: { id: mediaId } }] });
     }
     if (bodyParams.length) {
       components.push({ type: 'body', parameters: bodyParams.map((v) => ({ type: 'text', text: v })) });
