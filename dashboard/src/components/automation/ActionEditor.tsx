@@ -12,9 +12,13 @@ export const inputCls  = 'w-full rounded-lg border border-neutral-200 bg-white p
 export const selectCls = 'w-full rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-sm text-neutral-900 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100';
 
 /**
- * Per-action-type config editor — shared by the linear builder (WorkflowBuilder.tsx)
- * and the branching canvas's node side panel (Phase 2). A graph action node's
- * `config` is byte-identical to a legacy step's `config`, so one editor serves both.
+ * Per-action-type config editor for the canvas's node side panel
+ * (NodeConfigPanel.tsx's fallback for plain action-type nodes). A graph
+ * action node's `config` is byte-identical to a legacy linear step's
+ * `config` (same StepConfig union, see types/automations.ts) — this editor
+ * predates the single-editor migration (2026-07-10) and was originally
+ * shared with the now-removed linear builder too, which is why the config
+ * shape still matches so exactly.
  */
 export function ActionEditor({ step, onChange }: { step: WorkflowStep; onChange: (c: WorkflowStep['config']) => void }) {
   const cfg = step.config as Record<string, unknown>;

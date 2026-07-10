@@ -1,12 +1,12 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Zap, LayoutDashboard, List, Activity } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { AutomationDashboard } from '@/components/automation/AutomationDashboard';
 import { WorkflowList } from '@/components/automation/WorkflowList';
 import { ExecutionList } from '@/components/automation/ExecutionList';
-import { WorkflowCreateDrawer } from '@/components/automation/WorkflowCreateDrawer';
 import { WelcomeMessagePanel } from '@/components/settings/WelcomeMessagePanel';
 import { WorkingHoursPanel } from '@/components/settings/WorkingHoursPanel';
 import { DelayedResponsePanel } from '@/components/settings/DelayedResponsePanel';
@@ -21,8 +21,8 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
 ];
 
 function AutomationPageInner() {
-  const [activeTab,    setActiveTab]    = useState<Tab>('dashboard');
-  const [createOpen,   setCreateOpen]   = useState(false);
+  const [activeTab, setActiveTab] = useState<Tab>('dashboard');
+  const router = useRouter();
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -68,7 +68,7 @@ function AutomationPageInner() {
             <AutomationDashboard
               onViewWorkflows={() => setActiveTab('workflows')}
               onViewExecutions={() => setActiveTab('executions')}
-              onCreateWorkflow={() => setCreateOpen(true)}
+              onCreateWorkflow={() => router.push('/automation/canvas/new')}
             />
           )}
           {activeTab === 'workflows'  && (
@@ -82,9 +82,6 @@ function AutomationPageInner() {
           {activeTab === 'executions' && <ExecutionList />}
         </div>
       </div>
-
-      {/* Global create drawer — triggered from dashboard empty state */}
-      <WorkflowCreateDrawer key={createOpen ? 'open' : 'closed'} open={createOpen} onClose={() => setCreateOpen(false)} />
     </div>
   );
 }

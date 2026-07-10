@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Search, Trash2, Play, Pause, Zap, GitBranch, ListOrdered, Copy } from 'lucide-react';
+import { Plus, Search, Trash2, Play, Pause, Zap, GitBranch, Copy } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/v3/ui/Button';
@@ -18,13 +18,9 @@ import {
   type AutomationsResponse, type Workflow,
   WORKFLOW_STATUS_META, getTriggerLabel, getWorkflowStatus, isGraphWorkflow,
 } from '@/types/automations';
-import { WorkflowCreateDrawer } from './WorkflowCreateDrawer';
 
 export function WorkflowList() {
-  const [search,        setSearch]        = useState('');
-  const [drawerOpen,    setDrawerOpen]    = useState(false);
-  const [editWorkflow,  setEditWorkflow]  = useState<Workflow | null>(null);
-  const [createMenuOpen, setCreateMenuOpen] = useState(false);
+  const [search, setSearch] = useState('');
   const { user } = useAuth();
   const isAdmin = ['owner', 'admin'].includes(toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]));
   const qc = useQueryClient();
@@ -71,19 +67,14 @@ export function WorkflowList() {
     !search || w.name.toLowerCase().includes(search.toLowerCase()),
   );
 
-  function openCreateSimple() { setCreateMenuOpen(false); setEditWorkflow(null); setDrawerOpen(true); }
-  function openCreateAdvanced() { setCreateMenuOpen(false); router.push('/automation/canvas/new'); }
-
-  // A workflow is either linear (steps[]) or graph-shaped (nodes[]) for its whole
-  // lifetime — route to whichever editor actually understands its shape.
-  function openEdit(w: Workflow) {
-    if (isGraphWorkflow(w)) { router.push(`/automation/canvas/${w.id}`); return; }
-    setEditWorkflow(w);
-    setDrawerOpen(true);
-  }
+  // Single-editor migration (2026-07-10, docs/phase3/TECHNICAL_DEBT.md): the
+  // canvas is now the only editor — create always starts a fresh graph
+  // workflow, edit always opens the canvas. There is no more Simple/Advanced
+  // choice and no workflow shape this could route to besides graph.
+  function openCreate() { router.push('/automation/canvas/new'); }
+  function openEdit(w: Workflow) { router.push(`/automation/canvas/${w.id}`); }
 
   return (
-    <>
       <div className="space-y-4">
         {/* Toolbar */}
         <div className="flex items-center justify-between gap-3">
@@ -98,38 +89,9 @@ export function WorkflowList() {
             />
           </div>
           {isAdmin && (
-            <div className="relative">
-              <Button variant="primary" size="sm" iconLeft={<Plus className="h-4 w-4" />} onClick={() => setCreateMenuOpen((v) => !v)}>
-                Create Workflow
-              </Button>
-              {createMenuOpen && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setCreateMenuOpen(false)} aria-hidden />
-                  <div className="absolute right-0 top-full z-20 mt-1.5 w-64 rounded-xl border border-neutral-200 bg-white p-1.5 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
-                    <button
-                      onClick={openCreateSimple}
-                      className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800"
-                    >
-                      <ListOrdered className="mt-0.5 h-4 w-4 shrink-0 text-neutral-400" aria-hidden />
-                      <span>
-                        <span className="block text-sm font-medium text-neutral-900 dark:text-white">Simple</span>
-                        <span className="block text-xs text-neutral-400">One trigger, a linear list of steps</span>
-                      </span>
-                    </button>
-                    <button
-                      onClick={openCreateAdvanced}
-                      className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-neutral-50 dark:hover:bg-neutral-800"
-                    >
-                      <GitBranch className="mt-0.5 h-4 w-4 shrink-0 text-primary-500" aria-hidden />
-                      <span>
-                        <span className="block text-sm font-medium text-neutral-900 dark:text-white">Advanced (branching)</span>
-                        <span className="block text-xs text-neutral-400">Visual canvas with if/else conditions</span>
-                      </span>
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+            <Button variant="primary" size="sm" iconLeft={<Plus className="h-4 w-4" />} onClick={openCreate}>
+              Create Workflow
+            </Button>
           )}
         </div>
 
@@ -143,7 +105,7 @@ export function WorkflowList() {
             icon={Zap}
             title={search ? 'No workflows match your search' : 'No workflows yet'}
             description={!search ? 'Create a workflow to automate lead follow-ups, stage changes, and WhatsApp messages.' : undefined}
-            action={!search && isAdmin ? { label: 'Create Workflow', onClick: openCreateSimple } : undefined}
+            action={!search && isAdmin ? { label: 'Create Workflow', onClick: openCreate } : undefined}
           />
         ) : (
           <div className="overflow-x-auto rounded-xl border border-neutral-200 dark:border-neutral-800">
@@ -181,14 +143,6 @@ export function WorkflowList() {
           </div>
         )}
       </div>
-
-      <WorkflowCreateDrawer
-        key={editWorkflow?.id ?? 'new'}
-        open={drawerOpen}
-        onClose={() => { setDrawerOpen(false); setEditWorkflow(null); }}
-        workflow={editWorkflow}
-      />
-    </>
   );
 }
 
