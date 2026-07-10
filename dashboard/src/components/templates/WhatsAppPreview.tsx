@@ -136,9 +136,9 @@ export function WhatsAppPreview({ form, variableValues = [], darkMode = false, c
                 <div className={cn('w-full', ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(form.headerType) ? '' : 'px-3 pt-2.5')}>
                   {form.headerType === 'IMAGE' && (
                     <div className={cn('flex h-28 w-full items-center justify-center', isDark ? 'bg-neutral-700' : 'bg-neutral-100')}>
-                      {form.headerMediaUrl ? (
+                      {form.headerPreviewUrl ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={form.headerMediaUrl} alt="Header" className="h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                        <img src={form.headerPreviewUrl} alt="Header" className="h-full w-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} />
                       ) : (
                         <ImageIcon className="h-8 w-8 text-neutral-400" aria-label="Image placeholder" />
                       )}

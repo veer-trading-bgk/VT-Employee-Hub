@@ -112,6 +112,23 @@ export interface WaTemplate {
 
   // Analytics (aggregated)
   analytics?: TemplateAnalytics;
+
+  // S3 reference for a media (IMAGE/VIDEO/DOCUMENT) HEADER's example, if any.
+  // Deliberately NOT resolved into components[].example.header_handle at
+  // save time — Meta's Resumable Upload handles expire in ~24h and drafts
+  // routinely sit far longer than that. POST /templates/:id/submit resolves
+  // this fresh on every submit attempt instead (2026-07-10,
+  // docs/phase3/TECHNICAL_DEBT.md).
+  headerMediaRef?: TemplateHeaderMediaRef | null;
+}
+
+// Matches automation/MediaSourceField.tsx's MediaSourceValue shape
+// structurally (not imported directly — lib/templates stays decoupled from
+// components/automation; TypeScript's structural typing makes this safe).
+export interface TemplateHeaderMediaRef {
+  s3Key?:    string;
+  mimeType?: string;
+  filename?: string;
 }
 
 export interface TemplateAnalytics {
@@ -138,7 +155,8 @@ export interface TemplateFormValues {
   // Header
   headerType: 'NONE' | HeaderFormat;
   headerText: string;
-  headerMediaUrl: string;
+  headerMediaRef: TemplateHeaderMediaRef | null; // submitted value — S3 reference, resolved to a Meta handle server-side at submit time
+  headerPreviewUrl: string | null;                // display-only — a presigned GET URL for the WhatsApp-bubble preview, never submitted
   headerVariableExample: string;
 
   // Body

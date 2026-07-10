@@ -5,6 +5,7 @@ import type {
   SyncTemplatesResponse,
   SubmitTemplateResponse,
   TemplateFormValues,
+  TemplateHeaderMediaRef,
   AiTemplateDraftResponse,
 } from './types';
 import { formToComponents, getBodyPreview, extractVariableCount, buildVariableLabels } from './validation';
@@ -30,6 +31,7 @@ export interface CreateTemplatePayload {
   components: object[];
   allowCategoryChange: boolean;
   status?: string;
+  headerMediaRef: TemplateHeaderMediaRef | null;
 }
 
 export function buildCreatePayload(form: TemplateFormValues): CreateTemplatePayload {
@@ -49,6 +51,10 @@ export function buildCreatePayload(form: TemplateFormValues): CreateTemplatePayl
     components,
     allowCategoryChange: form.allowCategoryChange,
     status: 'DRAFT',
+    // S3 reference for a media HEADER's example, if any — resolved to a real
+    // Meta handle server-side at submit time, not here. See headerMediaRef's
+    // doc comment in types.ts.
+    headerMediaRef: ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(form.headerType) ? form.headerMediaRef : null,
   };
 }
 

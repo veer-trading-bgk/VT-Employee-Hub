@@ -603,6 +603,97 @@ class WhatsAppSendService {
     return mediaId;
   }
 
+  // ── uploadTemplateHeaderHandle ────────────────────────────────────────────
+  /**
+   * Turns an S3-uploaded file into a Meta Resumable-Upload asset handle,
+   * ready to place at a template's HEADER component's example.header_handle.
+   * A DIFFERENT Meta API surface from resolveMediaId()'s /media endpoint —
+   * that one returns a message-send media_id (valid ~30 days, used to send a
+   * message); this one returns a template-example handle (valid ~24 HOURS
+   * per Meta's own docs, used only inside a POST /{waba-id}/message_templates
+   * call). Called by POST /templates/:id/submit right before building the
+   * Meta payload — NOT at draft-save time — specifically because of that
+   * short lifetime: a handle resolved when a draft is saved would very
+   * plausibly be expired by the time it's actually submitted (drafts
+   * routinely sit for days; the template that surfaced this whole bug did).
+   *
+   * No dedup cache (unlike resolveMediaId()'s 29-day MEDIACACHE# pattern) —
+   * a cache for a resource that expires in ~24h and is used once per submit
+   * attempt has no real value.
+   *
+   * Two-step Resumable Upload flow (docs.developers.facebook.com/docs/
+   * graph-api/guides/upload/ + .../templates/components/):
+   *   1. POST /{app-id}/uploads?file_length&file_type&file_name&access_token
+   *      (access_token as a QUERY param here) -> { id: "upload:<session>" }
+   *   2. POST /{session_id} with header Authorization: OAuth {token} (NOT
+   *      "Bearer" — every other Graph call in this file uses Bearer; this
+   *      one is documented as OAuth specifically) + file_offset: 0 + raw
+   *      bytes as the body -> { h: "<handle>" }
+   *
+   * @param {object} media
+   * @param {string} media.s3Key     — must already be scoped/validated by the caller
+   * @param {string} media.mimeType
+   * @param {string} [media.filename]
+   * @returns {Promise<string>} handle, e.g. "4::aW..."
+   */
+  async uploadTemplateHeaderHandle(companyId, { s3Key, mimeType, filename }) {
+    const mediaBucket = process.env.WA_MEDIA_BUCKET;
+    if (!mediaBucket) throw this._err('WA_MEDIA_BUCKET env var not set', 500);
+    const appId = process.env.META_APP_ID;
+    if (!appId) throw this._err('META_APP_ID env var not set', 500);
+    const cfg = await this._requireConfig(companyId);
+
+    // Download from S3 (internal AWS network — fast, no Lambda payload limit)
+    const s3Obj = await s3Client.getObject({ Bucket: mediaBucket, Key: s3Key }).promise();
+    const fileBytes = s3Obj.Body;
+    const safeFilename = filename ?? s3Key.split('/').pop() ?? 'file';
+
+    let sessionRes;
+    try {
+      sessionRes = await axios.post(`${this._graphUrl(cfg)}/${appId}/uploads`, null, {
+        params: {
+          file_length: fileBytes.length,
+          file_type: mimeType,
+          file_name: safeFilename,
+          access_token: cfg.accessToken,
+        },
+      });
+    } catch (e) {
+      logger.error(
+        `uploadTemplateHeaderHandle: session creation failed for s3Key=${s3Key} (status ${e.response?.status ?? 'n/a'})`,
+        JSON.stringify(e.response?.data ?? { message: e.message }),
+      );
+      const err = this._err('Failed to start Meta upload session', e.response?.status ?? 502);
+      err.details = e.response?.data;
+      throw err;
+    }
+    const uploadSessionId = sessionRes.data?.id;
+    if (!uploadSessionId) throw this._err('Meta did not return an upload session id', 500);
+
+    let uploadRes;
+    try {
+      uploadRes = await axios.post(`${this._graphUrl(cfg)}/${uploadSessionId}`, fileBytes, {
+        headers: {
+          Authorization: `OAuth ${cfg.accessToken}`,
+          file_offset: '0',
+          'Content-Type': 'application/octet-stream',
+        },
+      });
+    } catch (e) {
+      logger.error(
+        `uploadTemplateHeaderHandle: byte upload failed for s3Key=${s3Key} (status ${e.response?.status ?? 'n/a'})`,
+        JSON.stringify(e.response?.data ?? { message: e.message }),
+      );
+      const err = this._err('Failed to upload file to Meta', e.response?.status ?? 502);
+      err.details = e.response?.data;
+      throw err;
+    }
+    const handle = uploadRes.data?.h;
+    if (!handle) throw this._err('Meta did not return an upload handle', 500);
+
+    return handle;
+  }
+
   // ── sendReadReceipt ──────────────────────────────────────────────────────
   /**
    * Send a read-receipt status update (blue ticks) for an inbound message.

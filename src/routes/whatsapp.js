@@ -2510,7 +2510,7 @@ router.get('/templates', authMiddleware, async (req, res, next) => {
 router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { name, templateName, language, category, bodyPreview, variables,
-            components, allowCategoryChange, metaTemplateId } = req.body;
+            components, allowCategoryChange, metaTemplateId, headerMediaRef } = req.body;
     if (!name?.trim() || !templateName?.trim()) {
       return res.status(400).json({ error: 'name and templateName are required' });
     }
@@ -2541,6 +2541,13 @@ router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60
       bodyPreview: bodyPreview?.trim() ?? '',
       variables: variables ?? [],
       components: components ?? null,
+      // S3 reference for a media (IMAGE/VIDEO/DOCUMENT) HEADER's example, if
+      // any — { s3Key, mimeType, filename }. Deliberately NOT resolved to a
+      // real example.header_handle here: Meta's Resumable Upload handles
+      // expire in ~24h, and drafts routinely sit far longer than that before
+      // submission. POST /templates/:id/submit resolves this fresh, right
+      // before building the Meta payload, every time (see that route).
+      headerMediaRef: headerMediaRef ?? null,
       status: 'DRAFT',
       qualityScore: 'UNKNOWN',
       allowCategoryChange: allowCategoryChange ?? true,
@@ -2559,7 +2566,7 @@ router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60
 router.put('/templates/:id', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { name, templateName, language, category, bodyPreview, variables,
-            components, status, allowCategoryChange } = req.body;
+            components, status, allowCategoryChange, headerMediaRef } = req.body;
     const now = new Date().toISOString();
     let updateExpr = 'SET #n = :n, templateName = :tn, #lang = :lang, category = :cat, bodyPreview = :bp, variables = :vars, updatedAt = :ua, allowCategoryChange = :acc';
     const exprNames = { '#n': 'name', '#lang': 'language' };
@@ -2572,6 +2579,12 @@ router.put('/templates/:id', authMiddleware, checkRole(['admin']), rateLimit(20,
     if (components !== undefined) {
       updateExpr += ', components = :comp';
       exprVals[':comp'] = components;
+    }
+    // See POST /templates for why this is a separate S3-reference field, not
+    // resolved into example.header_handle here.
+    if (headerMediaRef !== undefined) {
+      updateExpr += ', headerMediaRef = :hmr';
+      exprVals[':hmr'] = headerMediaRef;
     }
     if (status !== undefined) {
       updateExpr += ', #s = :s, statusHistory = list_append(if_not_exists(statusHistory, :empty), :h)';
@@ -2655,11 +2668,38 @@ router.post('/templates/:id/submit', authMiddleware, checkRole(['admin']), rateL
       return res.status(400).json({ error: `Template status is ${tmpl.status} — only DRAFT or REJECTED can be submitted` });
     }
 
+    // Resolve a fresh Meta media handle for a media HEADER right before
+    // submission — never at draft-save time (see headerMediaRef's own
+    // comment on POST /templates above: handles expire in ~24h, drafts
+    // routinely don't). Builds a COPY of tmpl.components — the stored
+    // DynamoDB record is never mutated — so every submit/resubmit attempt
+    // (including resubmitting a REJECTED template, possibly days after the
+    // first attempt) re-resolves a brand new handle from the same stable S3
+    // reference instead of ever reusing a possibly-expired one.
+    let components = tmpl.components;
+    if (tmpl.headerMediaRef?.s3Key) {
+      let handle;
+      try {
+        handle = await WASendSvc.uploadTemplateHeaderHandle(req.user.companyId, tmpl.headerMediaRef);
+      } catch (e) {
+        logger.error(
+          `templates/:id/submit: header media upload to Meta failed for templateId=${req.params.id} (status ${e.status ?? 'n/a'})`,
+          JSON.stringify(e.details ?? { message: e.message }),
+        );
+        return res.status(e.status ?? 400).json({ error: e.message, rawError: e.details });
+      }
+      components = tmpl.components.map((c) =>
+        c.type === 'HEADER' && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(c.format)
+          ? { ...c, example: { ...c.example, header_handle: [handle] } }
+          : c,
+      );
+    }
+
     const payload = {
       name: tmpl.templateName,
       language: tmpl.language,
       category: tmpl.category,
-      components: tmpl.components,
+      components,
       allow_category_change: tmpl.allowCategoryChange ?? true,
     };
 
@@ -2683,8 +2723,26 @@ router.post('/templates/:id/submit', authMiddleware, checkRole(['admin']), rateL
     res.json({ success: true, metaTemplateId, status: 'PENDING' });
   } catch (err) {
     if (err.response?.data) {
-      logger.error('submit template to Meta failed', err.response.data);
-      return res.status(400).json({ error: err.response.data?.error?.message ?? 'Meta API error' });
+      // logger.error only extracts .message from Error instances — passing
+      // err.response.data (a plain object) straight through renders as
+      // "[object Object]" in CloudWatch/Telegram (docs/phase3/TECHNICAL_DEBT.md,
+      // same defect already fixed for the connect/config routes in 101d190).
+      // JSON.stringify it so Meta's actual rejection reason is readable. This
+      // route's axios call carries the token only in the Authorization
+      // header (not request params), so err.response.data alone is safe to
+      // log/return in full — no err.config/err.request needed or logged.
+      const rawError = err.response.data;
+      logger.error(
+        `submit template to Meta failed for templateId=${req.params.id} (status ${err.response.status ?? 'n/a'})`,
+        JSON.stringify(rawError),
+      );
+      // error_user_msg/error_user_title are Meta's own end-user-facing error
+      // fields — usually far more specific than the generic .message (e.g.
+      // naming exactly which button/component was rejected and why), so
+      // prefer them when Meta includes them.
+      const metaErr = rawError?.error ?? {};
+      const friendlyMessage = metaErr.error_user_msg || metaErr.message || 'Meta API error';
+      return res.status(400).json({ error: friendlyMessage, rawError });
     }
     next(err);
   }

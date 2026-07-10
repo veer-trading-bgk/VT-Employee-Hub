@@ -17,6 +17,16 @@ interface MediaSourceFieldProps {
   value:    MediaSourceValue;
   onChange: (v: MediaSourceValue) => void;
   accept?:  string; // file input accept attribute
+  // Default true — the two existing callers (Send Buttons/Send Document node
+  // configs) keep their "paste a URL" tab unchanged. Set false for
+  // TemplateCreateDrawer's header media field: a template header's example
+  // must go through Meta's Resumable Upload API to get a real handle (see
+  // docs/phase3/TECHNICAL_DEBT.md's location-message investigation session)
+  // — a pasted URL can never produce one, and letting the backend fetch an
+  // arbitrary user-supplied URL to feed into that flow is also an avoidable
+  // SSRF surface, so the mode is removed there rather than left reachable
+  // and broken.
+  allowUrlMode?: boolean;
 }
 
 /**
@@ -28,8 +38,8 @@ interface MediaSourceFieldProps {
  * time, by AutomationEngine (WhatsAppSendService.resolveMediaId()), since there's
  * no lead/target to send to yet at config time.
  */
-export function MediaSourceField({ value, onChange, accept }: MediaSourceFieldProps) {
-  const [mode, setMode] = useState<'upload' | 'url'>(value.url ? 'url' : 'upload');
+export function MediaSourceField({ value, onChange, accept, allowUrlMode = true }: MediaSourceFieldProps) {
+  const [mode, setMode] = useState<'upload' | 'url'>(value.url && allowUrlMode ? 'url' : 'upload');
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -61,30 +71,32 @@ export function MediaSourceField({ value, onChange, accept }: MediaSourceFieldPr
 
   return (
     <div className="space-y-2">
-      <div className="flex gap-1 rounded-lg bg-neutral-100 p-0.5 dark:bg-neutral-800">
-        <button
-          type="button"
-          onClick={() => setMode('upload')}
-          className={cn(
-            'flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors',
-            mode === 'upload' ? 'bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-white' : 'text-neutral-500',
-          )}
-        >
-          <Upload className="mr-1 inline h-3 w-3" aria-hidden />Upload
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode('url')}
-          className={cn(
-            'flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors',
-            mode === 'url' ? 'bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-white' : 'text-neutral-500',
-          )}
-        >
-          <LinkIcon className="mr-1 inline h-3 w-3" aria-hidden />URL
-        </button>
-      </div>
+      {allowUrlMode && (
+        <div className="flex gap-1 rounded-lg bg-neutral-100 p-0.5 dark:bg-neutral-800">
+          <button
+            type="button"
+            onClick={() => setMode('upload')}
+            className={cn(
+              'flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors',
+              mode === 'upload' ? 'bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-white' : 'text-neutral-500',
+            )}
+          >
+            <Upload className="mr-1 inline h-3 w-3" aria-hidden />Upload
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode('url')}
+            className={cn(
+              'flex-1 rounded-md px-2 py-1 text-xs font-medium transition-colors',
+              mode === 'url' ? 'bg-white text-neutral-900 shadow-sm dark:bg-neutral-700 dark:text-white' : 'text-neutral-500',
+            )}
+          >
+            <LinkIcon className="mr-1 inline h-3 w-3" aria-hidden />URL
+          </button>
+        </div>
+      )}
 
-      {mode === 'upload' ? (
+      {mode === 'upload' || !allowUrlMode ? (
         <div>
           {value.s3Key ? (
             <div className="flex items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-900">

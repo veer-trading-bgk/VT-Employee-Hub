@@ -129,9 +129,15 @@ export function validateTemplate(form: TemplateFormValues): ValidationResult {
       }
     }
   } else if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(form.headerType)) {
-    if (!form.headerMediaUrl.trim()) {
-      warnings.push(warn('headerMediaUrl', 'MISSING_MEDIA',
-        'No media URL provided — you will need to supply the media ID at send time'));
+    // Hard error, not a warning (was a warning before 2026-07-10) — Meta
+    // rejects template submission outright without a real example for a
+    // media header ("Missing Sample Parameter for Title Type"), confirmed
+    // via a real submission failure (docs/phase3/TECHNICAL_DEBT.md). Letting
+    // this through as a soft warning just relays Meta's opaque rejection
+    // later instead of catching it before submit.
+    if (!form.headerMediaRef?.s3Key) {
+      errors.push(err('headerMediaRef', 'MISSING_MEDIA',
+        'Upload an example image/video/document — Meta requires this to review a media header template'));
     }
   }
 
@@ -337,9 +343,14 @@ function buildStandardComponents(form: TemplateFormValues) {
       if (vars.length > 0) {
         header.example = { header_text: [form.headerVariableExample || ''] };
       }
-    } else if (form.headerMediaUrl) {
-      header.example = { header_handle: [form.headerMediaUrl] };
     }
+    // No `else if` branch for IMAGE/VIDEO/DOCUMENT here — example.header_handle
+    // is deliberately NOT set from form state. form.headerMediaRef (the S3
+    // reference) travels alongside `components` as its own top-level field
+    // (see buildCreatePayload() in api.ts) and gets resolved to a real Meta
+    // handle server-side, fresh, at submit time (POST /templates/:id/submit)
+    // — never here at save time. See headerMediaRef's own doc comment in
+    // types.ts for why.
     components.push(header);
   }
 

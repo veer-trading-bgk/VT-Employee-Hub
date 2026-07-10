@@ -18,9 +18,11 @@ import { Button } from '@/components/v3/ui/Button';
 import { Input } from '@/components/v3/ui/Input';
 import { Select } from '@/components/v3/ui/Select';
 import { cn } from '@/lib/cn';
+import { apiFetch } from '@/lib/api';
 import { WhatsAppPreview } from './WhatsAppPreview';
 import { validateTemplate } from '@/lib/templates/validation';
 import { createTemplate, updateTemplate, templateKeys } from '@/lib/templates/api';
+import { MediaSourceField } from '@/components/automation/MediaSourceField';
 import type { TemplateFormValues, WaTemplate, TemplateCategory, ButtonType, OtpType, AiTemplateDraft } from '@/lib/templates/types';
 import {
   CATEGORY_OPTIONS,
@@ -42,7 +44,8 @@ function defaultForm(): TemplateFormValues {
     allowCategoryChange: true,
     headerType: 'NONE',
     headerText: '',
-    headerMediaUrl: '',
+    headerMediaRef: null,
+    headerPreviewUrl: null,
     headerVariableExample: '',
     bodyText: '',
     bodyVariables: [],
@@ -71,6 +74,20 @@ function defaultButton(type: ButtonType = 'QUICK_REPLY'): TemplateFormValues['bu
     flowAction: 'navigate',
     navigateScreen: '',
   };
+}
+
+// Resolves a presigned GET URL for the WhatsApp-bubble preview only — reuses
+// the same GET /api/whatsapp/s3-url route the Inbox/Documents tab already
+// use for exactly this purpose (ConversationTab.tsx, DocumentsTab.tsx).
+// Cosmetic: a failed resolve just leaves the placeholder icon showing
+// instead of the real image, never blocks saving/submitting the template.
+async function resolveHeaderPreviewUrl(s3Key: string): Promise<string | null> {
+  try {
+    const res = await apiFetch<{ url: string }>(`/api/whatsapp/s3-url?key=${encodeURIComponent(s3Key)}`);
+    return res.url;
+  } catch {
+    return null;
+  }
 }
 
 // Auto-generate snake_case template name from display name
@@ -171,7 +188,14 @@ export function TemplateCreateDrawer({ open, onClose, editTemplate, aiDraft }: P
         allowCategoryChange: editTemplate.allowCategoryChange ?? true,
         headerType: (headerComp?.format ?? 'NONE') as TemplateFormValues['headerType'],
         headerText: headerComp?.text ?? '',
-        headerMediaUrl: headerComp?.example?.header_handle?.[0] ?? '',
+        // The pre-fix broken shape (a raw URL under example.header_handle,
+        // e.g. the one real draft that surfaced this whole bug) has no
+        // headerMediaRef at all — falls through to null here, same as a
+        // template with no media header. Recreating via this new upload UI
+        // is the fix for that one record, not a migration (see
+        // docs/phase3/TECHNICAL_DEBT.md).
+        headerMediaRef: editTemplate.headerMediaRef ?? null,
+        headerPreviewUrl: null, // resolved async below once headerMediaRef.s3Key is known
         headerVariableExample: headerComp?.example?.header_text?.[0] ?? '',
         bodyText: bodyComp?.text ?? editTemplate.bodyPreview ?? '',
         bodyVariables: bodyVars,
@@ -184,6 +208,13 @@ export function TemplateCreateDrawer({ open, onClose, editTemplate, aiDraft }: P
       });
       setNameManuallyEdited(true);
       setAiReasoning(null);
+
+      if (editTemplate.headerMediaRef?.s3Key) {
+        const s3Key = editTemplate.headerMediaRef.s3Key;
+        resolveHeaderPreviewUrl(s3Key).then((url) => {
+          setForm((f) => (f.headerMediaRef?.s3Key === s3Key ? { ...f, headerPreviewUrl: url } : f));
+        });
+      }
     } else if (aiDraft) {
       setForm(applyAiDraft(aiDraft));
       setNameManuallyEdited(false);
@@ -476,13 +507,39 @@ export function TemplateCreateDrawer({ open, onClose, editTemplate, aiDraft }: P
                   </>
                 )}
                 {['IMAGE', 'VIDEO', 'DOCUMENT'].includes(form.headerType) && (
-                  <Input
-                    label="Media URL (optional)"
-                    placeholder="https://cdn.example.com/image.jpg"
-                    value={form.headerMediaUrl}
-                    onChange={(e) => update('headerMediaUrl', e.target.value)}
-                    hint="Used only for preview — actual media uploaded at send time"
-                  />
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                      Example {form.headerType === 'IMAGE' ? 'Image' : form.headerType === 'VIDEO' ? 'Video' : 'Document'}
+                    </label>
+                    <MediaSourceField
+                      allowUrlMode={false}
+                      accept={form.headerType === 'IMAGE' ? 'image/*' : form.headerType === 'VIDEO' ? 'video/*' : 'application/pdf'}
+                      value={{
+                        s3Key: form.headerMediaRef?.s3Key,
+                        mimeType: form.headerMediaRef?.mimeType,
+                        filename: form.headerMediaRef?.filename,
+                      }}
+                      onChange={(v) => {
+                        if (!v.s3Key) {
+                          update('headerMediaRef', null);
+                          update('headerPreviewUrl', null);
+                          return;
+                        }
+                        update('headerMediaRef', { s3Key: v.s3Key, mimeType: v.mimeType, filename: v.filename });
+                        update('headerPreviewUrl', null); // clear the old preview immediately, resolve the new one below
+                        resolveHeaderPreviewUrl(v.s3Key).then((url) => {
+                          setForm((f) => (f.headerMediaRef?.s3Key === v.s3Key ? { ...f, headerPreviewUrl: url } : f));
+                        });
+                      }}
+                    />
+                    {fieldError(visibleErrors, 'headerMediaRef') ? (
+                      <p className="mt-1 text-xs text-error-600">{fieldError(visibleErrors, 'headerMediaRef')}</p>
+                    ) : (
+                      <p className="mt-1 text-[11px] text-neutral-400">
+                        Meta requires a real example to review this template — it&apos;s uploaded via Meta&apos;s own Resumable Upload API when you submit, not just used for preview.
+                      </p>
+                    )}
+                  </div>
                 )}
               </Section>
             )}
