@@ -220,3 +220,59 @@ nav,
     scroll-behavior: auto !important;
   }
 }
+
+/* ── Legal page typography (privacy-policy / terms / data-deletion) ──
+   Scoped to .legal-content rather than a global prose reset — these are
+   the only 3 pages with long-form hand-authored HTML in this app, so a
+   full @tailwindcss/typography dependency wasn't worth adding for 3 pages. */
+.legal-content h2 {
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--foreground);
+}
+.legal-content h2:first-child {
+  margin-top: 0;
+}
+.legal-content h3 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.legal-content p {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.legal-content ul {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+  padding-left: 1.25rem;
+  list-style-type: disc;
+}
+.legal-content ul ul {
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+.legal-content li {
+  margin-top: 0.25rem;
+}
+.legal-content li::marker {
+  color: var(--border-strong);
+}
+.legal-content strong {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.legal-content a {
+  color: var(--ring);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.legal-content hr {
+  margin-top: 2rem;
+  margin-bottom: 1.5rem;
+  border-color: var(--border);
+}
