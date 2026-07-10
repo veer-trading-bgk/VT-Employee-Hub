@@ -10,6 +10,15 @@ import type { AutomationResponse } from '@/types/automations';
 // real edit route, /automation/canvas/[id] — which is where Save/load actually live.
 // This mirrors how Notion/Docs-style "new document" flows work, and avoids a second,
 // parallel "unsaved canvas" code path alongside the real one.
+//
+// 2026-07-10 (docs/phase3/TECHNICAL_DEBT.md): this page never asked for a
+// name — STARTER_BODY.name is a hardcoded default with no UI to override it
+// before the POST fires. Rather than build a separate name-entry step here,
+// the redirect target's own rename field (canvas/[id]/page.tsx's
+// WorkflowNameField, added in Batch 2) now auto-focuses when it detects
+// this exact "just created, still untitled" case via the ?new=1 query
+// param below — reusing the existing rename mechanism instead of a second
+// one.
 const STARTER_BODY = {
   name: 'New workflow',
   trigger: { type: 'lead_created', conditions: [] },
@@ -30,7 +39,7 @@ export default function WorkflowCanvasNewPage() {
       method: 'POST',
       body: JSON.stringify(STARTER_BODY),
     })
-      .then((res) => router.replace(`/automation/canvas/${res.automation.id}`))
+      .then((res) => router.replace(`/automation/canvas/${res.automation.id}?new=1`))
       .catch(() => router.replace('/automation'));
   }, [router]);
 
