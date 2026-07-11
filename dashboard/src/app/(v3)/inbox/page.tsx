@@ -525,26 +525,44 @@ function ConversationList({
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-neutral-200 dark:border-neutral-800">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => onTabChange(tab.id)}
-            className={cn(
-              'flex-1 py-2 text-xs font-medium transition-colors border-b-2',
-              activeTab === tab.id
-                ? 'border-primary-600 text-primary-700 dark:text-primary-300'
-                : 'border-transparent text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300',
-            )}
-          >
-            {tab.label}
-            {(counts[tab.id] ?? 0) > 0 && (
-              <span className="ml-1 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary-600 px-1 text-[9px] font-bold text-white">
-                {counts[tab.id]}
-              </span>
-            )}
-          </button>
-        ))}
+      <div className="border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+        <div
+          role="tablist"
+          aria-label="Conversation status"
+          className="flex gap-1 rounded-lg border border-neutral-200 bg-neutral-50 p-1 dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          {tabs.map((tab) => {
+            const isActive = activeTab === tab.id;
+            const count = counts[tab.id] ?? 0;
+            return (
+              <button
+                key={tab.id}
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => onTabChange(tab.id)}
+                className={cn(
+                  'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-xs font-medium transition-colors',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-1',
+                  isActive
+                    ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300'
+                    : 'text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200',
+                )}
+              >
+                {tab.label}
+                <span
+                  className={cn(
+                    'inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-bold tabular-nums',
+                    isActive
+                      ? 'bg-primary-600 text-white'
+                      : 'bg-neutral-200 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300',
+                  )}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* List */}
