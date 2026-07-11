@@ -525,11 +525,11 @@ function ConversationList({
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-neutral-200 px-3 py-2 dark:border-neutral-800">
+      <div className="border-b border-neutral-200 px-0.5 py-1.5 dark:border-neutral-800">
         <div
           role="tablist"
           aria-label="Conversation status"
-          className="flex gap-1 rounded-lg border border-neutral-200 bg-neutral-50 p-1 dark:border-neutral-700 dark:bg-neutral-900"
+          className="flex overflow-x-auto rounded-lg border border-neutral-200 bg-neutral-50 p-0.5 scrollbar-none dark:border-neutral-700 dark:bg-neutral-900"
         >
           {tabs.map((tab) => {
             const isActive = activeTab === tab.id;
@@ -541,7 +541,7 @@ function ConversationList({
                 aria-selected={isActive}
                 onClick={() => onTabChange(tab.id)}
                 className={cn(
-                  'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-xs font-medium transition-colors',
+                  'flex shrink-0 items-center gap-px whitespace-nowrap rounded-md px-0.5 py-1.5 text-[10px] font-medium transition-colors',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-1',
                   isActive
                     ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/40 dark:text-primary-300'
@@ -551,7 +551,7 @@ function ConversationList({
                 {tab.label}
                 <span
                   className={cn(
-                    'inline-flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-bold tabular-nums',
+                    'inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full px-0.5 text-[9px] font-bold tabular-nums',
                     isActive
                       ? 'bg-primary-600 text-white'
                       : 'bg-neutral-200 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300',
