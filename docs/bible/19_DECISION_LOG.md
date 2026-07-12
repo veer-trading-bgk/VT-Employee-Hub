@@ -1,6 +1,11 @@
 # 19 — Decision Log
 
-Status: verified against repo state 2026-07-02 (commit `50771ba`, branch `main`).
+Status: verified against repo state 2026-07-02 (commit `50771ba`, branch `main`). Extended with a
+new Era 44 on 2026-07-12 covering 2026-07-09 through 2026-07-12 (this file is a running
+chronological log, appended to incrementally — Eras 8 through 43 were already added in earlier
+sessions between the original 2026-07-02 verification and this pass; treat each Era's own cited
+date/commit as the accurate verification point for that entry, not the file-level Status line
+above).
 
 This is a chronological institutional-memory log of the major architectural and product
 decisions behind APForce (repo: VT-Employee-Hub / vt-employee-bot). It exists so a new
@@ -1957,6 +1962,175 @@ Other consumers (`crm.js`'s `recentContacts`, `contacts.js`'s sort, all dashboar
 
 ---
 
+## Era 44 — CI path-filtering, Track A closure, single-editor migration, Templates/OAuth fixes, Track B2 (batches 1+2a), apforce.in marketing + CORS fix, Meta App Review submitted (2026-07-09 to 2026-07-12)
+
+Six mostly-independent threads, spanning four calendar days, consolidated into one Era entry here
+because none individually warranted a full Era write-up and this document had fallen behind actual
+`main` by several days before this pass. Per-commit detail for several of these already exists in
+`docs/phase3/TECHNICAL_DEBT.md` (cited per item below) — this entry indexes and dates them for the
+Decision Log's own chronological record rather than re-deriving what's already written elsewhere.
+
+### CI: path-based job filtering
+
+**Date:** 2026-07-09, commit `8baede4`. **Decision:** a new `changes` job (`dorny/paths-filter@v3`)
+runs first on every push to `main` and computes four boolean outputs (`backend`, `dashboard`,
+`e2e`, `workflow`); each of the three real jobs' own `if:` now checks the relevant output instead
+of running unconditionally. **Why:** GitHub-hosted runner queue times (5-15 minutes, observed
+twice in one day) made every push running all three jobs regardless of what changed genuinely
+painful — a docs-only or dashboard-only push no longer waits on/runs backend packaging and Lambda
+deploy steps it doesn't need. **Status:** shipped, current — this Era 44 entry's own commits are a
+live example (the doc-only ones below skip all three jobs; see `13_DEPLOYMENT.md`'s "Path-based
+job filtering" section for the full mechanics, including the skipped-counts-as-satisfied pattern
+`e2e`/`deploy-dashboard` use against `deploy-backend`). **Reference:** commit `8baede4`;
+`.github/workflows/deploy.yml`; `13_DEPLOYMENT.md`, `10_TESTING_GUIDE.md` (both updated 2026-07-12
+in the same pass as this entry).
+
+### Track A — Contacts/Inbox fix track, closed
+
+**Date range:** 2026-07-08 to 2026-07-10. **Status:** confirmed closed (per direct report,
+2026-07-12) — all items live on `main`. Named items independently verified against git history in
+this pass: **A2** — CSV import truncating around ~30 contacts, fixed `95063cd` (2026-07-08),
+confirmed via a real 123-contact import completing in 6746ms with zero errors. **A3** — Kanban/List
+100-lead truncation, fixed via `GET /api/contacts/all` returning the complete matching set in one
+response rather than a paginated slice (see `docs/phase3/TECHNICAL_DEBT.md`'s "Sales Kanban's
+Unpaginated Fetch" entry for the scale tradeoff this intentionally accepted). **A5** — notes
+visibility/save + unread tab + panel width, commit `a69767e` (2026-07-10). The full item-by-item
+breakdown (A1, A4, A6-A9) was not re-derived commit-by-commit in this pass — treat the git range
+`2026-07-08`..`2026-07-10` plus `docs/phase3/TECHNICAL_DEBT.md`'s Track-A-tagged entries as the
+source of record for individual items, this entry only records the track's closure date and the
+three items with direct git/doc evidence gathered here. **One real finding surfaced *during* Track
+A and deliberately left open, not fixed:** `contacts.js`'s RBAC check for `team_lead` is
+own-assigned-only, matching every non-admin role — but `docs/v3/09_PERMISSION_MATRIX.md` documents
+`team_lead` as seeing/exporting "Team" contacts, a scope that doesn't exist in the actual route.
+This is a genuine product decision (implement team-scoping, or correct the doc to match own-only
+behavior), not a drive-by fix — see "Open architectural questions" item 20 below and
+`docs/phase3/TECHNICAL_DEBT.md`'s "Contacts RBAC: team_lead sees team Is Documented But Not
+Implemented" entry (found 2026-07-09). **Reference:** commits `95063cd`, `a69767e`; git log range
+2026-07-08 to 2026-07-10; `docs/phase3/TECHNICAL_DEBT.md`.
+
+### Automation: single-editor migration — the linear "Simple" editor is removed, canvas is the only editor
+
+**Date:** 2026-07-10, commits `76fa6ef` (Fix 3: `steps[]`→`nodes[]`/`edges[]` converter, migrates
+the one real linear workflow) and `acc822b` (Fix 4: deletes `WorkflowCreateDrawer.tsx`, routes
+"Create Workflow" straight to `/automation/canvas/new`, removes the now-unused linear-editor UI
+from `WorkflowBuilder.tsx`). **Why now, not earlier:** an incoming audit had proposed a larger,
+differently-scoped fix (claiming a `nodeDataSchemas` sanitizer bug and a missing canvas delay node,
+neither of which existed in the actual codebase) — re-verification against real code and a live
+DynamoDB scan found the true scope much smaller: exactly one real linear workflow existed
+(`assign_employee`+`end`, `viir_trading`), converted losslessly and verified via a field-by-field
+diff through the real POST/PUT/GET handlers before Fix 4 removed the only path that could ever
+create another one. See "Open architectural questions" item 19 above (already recorded, same
+incident) for the full incorrect-premise/re-verification detail — not duplicated here.
+**Consequences:** `WorkflowList`'s `openEdit()` no longer branches on `isGraphWorkflow` — every
+workflow is graph-shaped now, so every edit routes to the canvas unconditionally. **Status:**
+shipped, current. **Reference:** commits `76fa6ef`, `acc822b`; Era 43's neighbor, "Open
+architectural questions" item 19.
+
+### WhatsApp: Templates image-header fix (create-time + send-time) and OAuth scope bug
+
+**Templates — create-time (Resumable Upload).** **Date:** 2026-07-10, commit `efd6a43`. A
+Marketing-category template submission with an IMAGE header failed with Meta's
+`"Missing Sample Parameter for Title Type"` — root cause: `example.header_handle` must be an
+opaque asset handle from Meta's Resumable Upload API (`POST /{app-id}/uploads` →
+`POST /{session_id}` → `{h}`), not a plain public URL; confirmed via a repo-wide scan that **no
+template, for any company, had ever had a working media header** — a from-day-one gap, not a
+regression. Fix: `WhatsAppSendService.uploadTemplateHeaderHandle()` implements the real two-step
+flow, resolved at submit time (not draft-save time, since Meta's handles expire in ~24h and drafts
+sit far longer) from a stable S3 reference so a resubmitted REJECTED template always gets a fresh
+handle. Frontend's free-text "Media URL" field is replaced by the existing `MediaSourceField`
+component with URL-mode explicitly disabled here (a pasted URL can never produce a valid handle,
+and fetching an arbitrary user-supplied URL server-side is an avoidable SSRF surface). Verified
+end-to-end for real: a real image, a real draft, a real Meta submission accepted
+(`metaTemplateId: 1023494577273780`, `PENDING`). See `docs/phase3/TECHNICAL_DEBT.md`'s "RESOLVED:
+Marketing-Category Template Submission Rejected" entry for the fuller incident writeup, including
+the `logger.error()` "[object Object]" gap this fix's diagnosis had to work around first (also
+still-open elsewhere, see that same file).
+
+**Templates — send-time (media ID at send).** **Date:** 2026-07-10, commit `4bde8a9`. A separate,
+adjacent bug: `sendTemplate()` only built a header parameter for TEXT headers, so an *approved*
+IMAGE-header template still failed to send (`"header: Format mismatch, expected IMAGE, received
+UNKNOWN"`) — a real customer-facing send blocked. Fix reuses the existing `resolveMediaId()` (the
+regular `/media` endpoint, a different Meta API surface from the Resumable Upload handle used once
+at template creation), fed from the template's stored `headerMediaRef`. Verified with a real
+authorized send to the project's confirmed-safe test number — delivered and read.
+
+**OAuth: invalid `business_management` scope blocking every "Connect with Meta" attempt.**
+**Date:** 2026-07-10, commit `eb24e2c`. `GET /auth/init` requested a third, bare
+`business_management` scope alongside the two correct `whatsapp_business_*` ones — a real Meta
+permission name, not a typo, but this app was never approved for it and doesn't need it (confirmed
+against the already-working manual System User token connect flow, which never requested it).
+Meta rejects the *entire* OAuth request when any one requested scope isn't in the app's approved
+list, so this blocked 100% of OAuth-based connects, not just a degraded permission set. Fix: scope
+removed, two `whatsapp_business_*` scopes are sufficient. **Status (all three):** shipped, current.
+**Reference:** commits `efd6a43`, `4bde8a9`, `eb24e2c`; `docs/phase3/TECHNICAL_DEBT.md`.
+
+### Automation: Track B2, batches 1 and 2a (batch 2b/item 9 still queued)
+
+**Date:** 2026-07-12, commits `c9bec11` (Batch 1) and `f82f6d0` (Batch 2a). Batch 1: fixed the
+Save/Auto-arrange panel hiding behind the docked node-config panel (real usability bug, verified
+in a real browser via this repo's established no-login-harness technique), added a delete-node
+affordance, grouped the node palette into categories, gave the Trigger column a Badge to match
+Status, adopted `GaugeChart` for the dashboard's Success Rate tile (first real use of that
+component), and relocated the three always-on settings panels (Welcome Message/Working
+Hours/Delayed Response) out of the Workflows tab into a new Settings tab per product decision —
+Workflows now shows only the workflow list. Batch 2a: added per-workflow `successCount`/
+`failureCount` (incremented alongside the existing `runCount` in `AutomationEngine.js`'s finalize
+step) surfaced as a list-glance health indicator; gave `GET /executions` real `page`/`pageSize`
+pagination plus server-side search/sort (mirroring the `contacts.js`+`Pagination.tsx` numeric-
+offset convention, since production data — 92 `AUTO_EXEC#` records total, confirmed read-only — is
+well short of where pagination would matter today, but the shape is now correct ahead of scale);
+`Table.tsx` gained an opt-in, backward-compatible expandable-row capability so `ExecutionList` could
+adopt the shared `SearchBar`/`FilterBar`/`Table` components instead of hand-rolled markup, without
+losing its step/path trace-expand feature. **Explicitly deferred, stated in the Batch 2a commit
+message itself:** item 9 (execution-volume/trigger-breakdown charts) "stays queued for its own
+aggregation-strategy pass" — not started, needs its own scoping (see `docs/PENDING_WORK.md`).
+**Status:** Batches 1 and 2a shipped, current; remaining B2 scope (item 9) open.
+**Reference:** commits `c9bec11`, `f82f6d0`.
+
+### apforce.in marketing page + CORS fix
+
+**Date:** 2026-07-12, commits `634533c` (marketing page) and `a640484` (CORS fix). Meta App Review
+requires a public website link for the app. `634533c` reuses the existing `vt-employee-hub` Vercel
+project rather than standing up new hosting — `apforce.in`/`www.apforce.in` domains added alongside
+`app.apforce.in`, and `dashboard/src/proxy.ts` rewrites `/` to a new static marketing page only for
+those two marketing hosts; every other host/path (including the dashboard, login, and legal pages)
+passes through untouched. A same-day follow-up (`a640484`) fixed a CORS error the marketing page
+threw on load: the shared root layout's `AuthProvider` restored the session on *every* route,
+including the public marketing page, firing a cross-origin `/api/auth/me` request from `apforce.in`
+that the backend's CORS allowlist correctly rejected (`apforce.in` was deliberately never added —
+the marketing page has no legitimate reason to talk to the backend at all). Root-cause options were
+weighed explicitly: true structural isolation via Next.js multiple-root-layouts would have required
+moving every existing route into a sibling route group (`app/(app)/` alongside `app/(marketing)/`)
+— verified against this repo's own Next.js 16.2.9 docs (`node_modules/next/dist/docs/`) that this
+is genuinely how the App Router requires it, not a training-data assumption — a large mechanical
+diff touching every route's file location for a CORS fix. **Decision (explicit choice, asked and
+answered):** a targeted pathname guard in `AuthContext.tsx` instead — skip the `/api/auth/me` call
+when `usePathname() === '/marketing'` — achieving the same "zero backend calls from apforce.in"
+outcome with a five-line diff and zero risk to any other route, at the cost of not being permanent
+structural isolation (a future unconditional call added to `AuthProvider`/`WebSocketProvider`/
+`AssignmentBridgeProvider` could still leak onto the marketing page and wouldn't be caught by this
+guard). Validated with a real Playwright browser session against a local dev server (zero `/api/`
+requests on direct `/marketing` navigation) and confirmed green in the real CI run for this exact
+commit (`https://github.com/veer-trading-bgk/VT-Employee-Hub/actions/runs/29194812944` — Dashboard→
+Vercel and E2E both succeeded, Backend→Lambda correctly skipped per Era 44's CI path-filtering
+entry above, since no `src/**` file changed). A pre-existing, unrelated service-worker bug was
+found and logged (not fixed) while validating this: `public/sw.js`'s offline fallback returns a
+synthetic `200 {"error":"Offline"}` for any unreachable `/api/` call, which `AuthContext` then
+trusts as a valid logged-in user — see `docs/phase3/TECHNICAL_DEBT.md`'s "Service Worker Offline
+Fallback..." entry. **Status:** shipped, current, hash-verified on `origin/main`.
+**Reference:** commits `634533c`, `a640484`; `dashboard/src/proxy.ts`, `dashboard/src/context/AuthContext.tsx`.
+
+### Meta App Review — submitted
+
+**Date:** submitted 2026-07-12 (per direct report; not a git-verifiable event — no commit marks an
+external review-portal submission). **Status:** "in review" — Meta's stated review window is up to
+20 days. The apforce.in marketing page (above) and the legal pages (`008611d`, 2026-07-10 — Privacy
+Policy, Terms, Data Deletion) were both prerequisites shipped specifically to support this
+submission. **Reference:** `docs/PENDING_WORK.md` (external/waiting-on-Meta section) tracks this
+until Meta responds.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or
@@ -2229,3 +2403,24 @@ already fully enforced just because an ADR exists.
     production write path or real-data mutation — see
     `feedback_hold_for_review_covers_data_mutations` in session memory for the
     adjacent rule this pattern also produced.
+
+20. **2026-07-09, still unresolved as of 2026-07-12 — `team_lead`'s Contacts-module scope
+    (own-only vs. team-wide) is a real product decision awaiting Viir's call, not yet
+    made.** Found while extracting `contacts.js`'s `GET /` fetch+merge+filter logic into a
+    shared helper for the new export route (Track A, see Era 44 above):
+    `docs/v3/09_PERMISSION_MATRIX.md` documents `team_lead` as seeing "Team" contacts and
+    being able to export team contacts, but `contacts.js`'s actual RBAC check is binary —
+    `isAdmin ? everything : own-assigned-only` — with no "team" tier at all, so `team_lead`
+    currently falls into the same own-only bucket as `agent`/`telecaller`/`intern`. This is
+    a different file, and a different finding, from item 18/DL-021 above (which resolved
+    `team_lead`'s scope in `attendance.js`/`compensation.js`/`crm.js`/`metrics.js`) — it
+    confirms `team_lead`'s real backend scope is inconsistently documented/implemented
+    across files, not that this specific gap was part of DL-021's resolution. **Not a
+    drive-by fix candidate:** implementing team-scoping and correcting the permission
+    matrix to state own-only behavior are both legitimate outcomes: only Viir can decide
+    which matches the actual product intent for Contacts specifically. Tracked as a
+    standing open item in `docs/PENDING_WORK.md` (Product decisions awaiting Viir's call)
+    so it doesn't only live in this log's history. **Reference:**
+    `docs/phase3/TECHNICAL_DEBT.md`'s "Contacts RBAC: team_lead sees team Is Documented But
+    Not Implemented" entry; `docs/v3/09_PERMISSION_MATRIX.md`; item 18 above/DL-021 in
+    `docs/v3/12_DECISION_LOG.md` (the resolved, adjacent-but-different finding).

@@ -234,11 +234,33 @@ exercises business logic end-to-end.
 
 ## CI integration (`.github/workflows/deploy.yml`)
 
-Single workflow, `on: push: branches: [main]`, three jobs. Order matters:
+**Updated 2026-07-12 for the path-based job filtering added 2026-07-09 (commit `8baede4`)** — the
+rest of this section's step-by-step detail is otherwise unchanged from the 2026-07-02 verification.
+
+Single workflow, `on: push: branches: [main]`, **four** jobs: a `changes` job (runs first, via
+`dorny/paths-filter@v3`) plus the three original jobs below, each now conditionally gated on
+`changes`'s output instead of running unconditionally on every push:
+
+| `changes` output | Paths matched | Gates job |
+|---|---|---|
+| `backend` | `src/**`, `package.json`, `package-lock.json` | `deploy-backend` |
+| `dashboard` | `dashboard/**` | `deploy-dashboard` |
+| `e2e` | `dashboard/**`, `src/routes/**`, `src/services/**` | `e2e` |
+| `workflow` | `.github/**` | all three (OR'd into every job's condition) |
+
+A push touching only `docs/**` or root `*.md` files (no filter pattern above matches) leaves every
+output `false` — all three real jobs skip, and the run shows green with nothing deployed. `e2e`
+and `deploy-dashboard` both additionally require `deploy-backend.result` to be `success` **or**
+`skipped` — a dashboard-only push that correctly skipped `deploy-backend` still lets both of those
+jobs run; only an actual `deploy-backend` *failure* blocks them. See `13_DEPLOYMENT.md`'s
+"Path-based job filtering" section for the full rationale (why `e2e`'s filter is wider than
+`backend`'s, why no `docs` filter is needed).
 
 ### 1. `deploy-backend` (blocking gate)
 
-Runs on every push to `main`, in this order:
+Runs on every push to `main` **that touches `src/**`, `package.json`, `package-lock.json`, or
+`.github/**`** (see table above — a dashboard- or docs-only push skips this job entirely), in this
+order:
 
 1. Checkout, Node 22 setup (`cache-dependency-path: package-lock.json`).
 2. `npm install` (full install, dev deps included — needed for Jest).
@@ -259,8 +281,10 @@ Runs on every push to `main`, in this order:
 
 ### 2. `e2e` (non-blocking, informational only)
 
-`needs: [deploy-backend]`, so it only starts after backend tests pass and Lambda is already deployed and
-smoke-tested. **`continue-on-error: true` at the job level.**
+`needs: [changes, deploy-backend]`, gated on `changes.outputs.e2e == 'true'` (or `workflow`) **and**
+`deploy-backend.result` being `success` or `skipped`. In the common case (backend + dashboard both
+changed) this is unchanged from before: it only starts after backend tests pass and Lambda is
+already deployed and smoke-tested. **`continue-on-error: true` at the job level.**
 
 This is a deliberate current tradeoff, not an oversight — but it's one a CTO should know explicitly:
 **a failing E2E run does not fail the workflow and does not block `deploy-dashboard`.** The dashboard will
@@ -278,18 +302,22 @@ and `NEXT_PUBLIC_API_URL=https://api.viirtrading.com` — i.e. **CI E2E runs the
 
 ### 3. `deploy-dashboard`
 
-`needs: [deploy-backend]` only — **not** `needs: [deploy-backend, e2e]**. Runs in parallel with (or
-regardless of the outcome of) the `e2e` job. Installs Vercel CLI, `vercel deploy --prod`. This is the
-concrete mechanism behind "E2E doesn't block deploys": there is no `needs: e2e` anywhere in the file.
+`needs: [changes, deploy-backend]`, gated on `changes.outputs.dashboard == 'true'` (or `workflow`)
+**and** `deploy-backend.result` being `success` or `skipped` — **not** `needs: [deploy-backend,
+e2e]`. Runs in parallel with (or regardless of the outcome of) the `e2e` job. Installs Vercel CLI,
+`vercel deploy --prod`. This is the concrete mechanism behind "E2E doesn't block deploys": there is
+no `needs: e2e` anywhere in the file.
 
 ### Summary of what blocks what
 
-| Failure | Blocks Lambda deploy? | Blocks Vercel deploy? |
+| Failure / condition | Blocks Lambda deploy? | Blocks Vercel deploy? |
 |---|---|---|
-| Jest test fails (`npm test` in `deploy-backend`) | Yes | Yes (dashboard job needs `deploy-backend`) |
+| Jest test fails (`npm test` in `deploy-backend`) | Yes | Yes (dashboard job needs `deploy-backend` to succeed-or-skip; a real failure is neither) |
 | `/health` smoke-test curl fails | Yes (job fails at that step, but Lambda code was already pushed in step 8 — see caveat below) | Yes |
 | Playwright E2E fails | No | No |
 | EventBridge rule step fails | No (`continue-on-error: true`) | No |
+| Push touches only `dashboard/**` (no backend/workflow paths) | `deploy-backend` skips (not a failure) — Lambda simply isn't touched | No — `deploy-dashboard` still runs, since `deploy-backend` "skipped" satisfies its gate |
+| Push touches only `docs/**` or root `*.md` | All three jobs skip — nothing deploys, run is green | Same |
 
 Caveat worth flagging: the Lambda `update-function-code` calls happen (step 8) **before** the `/health`
 smoke test (step 11). If the smoke test fails, the new code is already live on both Lambdas — the workflow

@@ -3,10 +3,52 @@
 Status: verified against repo state 2026-07-02 (commit `43b89af`, branch `main`), cross-checked
 against live AWS state in account `657672949684` (region `ap-south-1`).
 
+**Update 2026-07-12:** the CI trigger model changed on 2026-07-09 (commit `8baede4`) and this
+chapter's Overview/pipeline sections below are now updated for it — see "Path-based job filtering"
+immediately below. This is a scoped update to the CI-trigger mechanics only; the rest of this
+chapter (AWS resource state, Gaps section, manual fallback paths) was not re-verified against
+live AWS state in this pass — treat those sections as still dated to 2026-07-02 until a full
+re-verification pass is done.
+
 This chapter documents the deployment process **as it actually exists** — read directly from
 `.github/workflows/deploy.yml`, `src/handler.js`, `package.json`, and `src/config/secrets.js`.
 Where the process has a gap (no rollback procedure, no canary strategy), that gap is called out
 explicitly in its own section rather than papered over with an invented "best practice."
+
+## Path-based job filtering (added 2026-07-09, commit `8baede4`)
+
+Every push to `main` now runs a `changes` job **first**, before any of the three real jobs.
+It uses `dorny/paths-filter@v3` to compute four boolean outputs from the diff of that push, and
+every downstream job's own `if:` condition checks the relevant output before running at all:
+
+| Output | Paths matched | Gates |
+|---|---|---|
+| `backend` | `src/**`, `package.json`, `package-lock.json` | `deploy-backend` |
+| `dashboard` | `dashboard/**` | `deploy-dashboard` |
+| `e2e` | `dashboard/**`, `src/routes/**`, `src/services/**` | `e2e` |
+| `workflow` | `.github/**` | all three jobs (OR'd into each job's condition) |
+
+**Why `e2e`'s filter is wider than `backend`'s:** E2E exercises the real, deployed API — a
+backend route or service change can affect what E2E should catch even if `deploy-backend`'s
+narrower filter also matches (redundant is fine there). Backend-only `utils`/`config` changes
+don't reach any route surface E2E would exercise, so they're deliberately excluded from the
+`e2e` filter even though they'd match `backend`.
+
+**Why no `docs` filter is defined:** it doesn't need one. `docs/**` and root-level `*.md` files
+don't match any of the four patterns above, so a docs-only push naturally leaves `backend`,
+`dashboard`, `e2e`, and `workflow` all `false` — every one of the three real jobs skips. This
+task's own doc-only commits are the live example of that path.
+
+**Skipped-counts-as-success, not skipped-counts-as-failure:** `e2e` and `deploy-dashboard` both
+depend on `deploy-backend` via `needs:`, but their `if:` conditions explicitly accept
+`needs.deploy-backend.result == 'skipped'` as well as `'success'` (combined with `always()` so
+GitHub actually evaluates the expression instead of auto-skipping because a dependency didn't
+run). Concretely: a dashboard-only push skips `deploy-backend` entirely, and `deploy-dashboard`
+still runs (backend "skipped" satisfies its gate) while `e2e` runs too (dashboard paths match its
+filter). A backend-only push (e.g. `src/utils/*.js` with no route/service touched) runs
+`deploy-backend`, skips `e2e` (doesn't match the `e2e` filter) and skips `deploy-dashboard`
+(doesn't match `dashboard`). Every job appears in the Actions UI as `skipped`, not `failed` — no
+required-status-check on `main` is broken by a legitimately-skipped job.
 
 There is **no Terraform, CDK, SAM, or Serverless Framework** in this repo. AWS resources
 (Lambda functions, the EventBridge rule) are created and updated via raw `aws` CLI calls
@@ -83,9 +125,12 @@ API Gateway ID (live, from `get-policy` on `vt-employee-bot-api`): `95nr4gdvi6`,
 
 ## Backend Deploy Pipeline
 
-Source: `.github/workflows/deploy.yml`, job `deploy-backend`. Trigger: `push` to `main`.
-Runner: `ubuntu-latest`. Steps run in this exact order — **each step's failure blocks the next**
-unless marked `continue-on-error: true`.
+Source: `.github/workflows/deploy.yml`, job `deploy-backend`. Trigger: `push` to `main`, **gated**
+by the `changes` job — only runs when `needs.changes.outputs.backend == 'true'` (touches `src/**`,
+`package.json`, or `package-lock.json`) or `outputs.workflow == 'true'` (touches `.github/**`); a
+push that touches only `dashboard/**` or `docs/**` skips this job entirely (see "Path-based job
+filtering" above). Runner: `ubuntu-latest`. Steps run in this exact order — **each step's failure
+blocks the next** unless marked `continue-on-error: true`.
 
 1. **Checkout** — `actions/checkout@v4`.
 2. **Setup Node** — `actions/setup-node@v4`, Node **22**, npm cache keyed on `package-lock.json`.
@@ -142,7 +187,12 @@ unless marked `continue-on-error: true`.
 
 ### E2E job (non-blocking today)
 
-- `needs: [deploy-backend]` — only runs after backend deploy succeeds.
+- `needs: [changes, deploy-backend]` — gated by `needs.changes.outputs.e2e == 'true'`
+  (`dashboard/**`, `src/routes/**`, or `src/services/**` changed) or `outputs.workflow == 'true'`,
+  **and** `deploy-backend.result` being `success` **or** `skipped` (a dashboard-only push that
+  skipped `deploy-backend` still lets `e2e` run — "skipped" counts as satisfying this gate, not as
+  a block). The condition is wrapped in `always()` so GitHub evaluates it instead of
+  auto-skipping just because `deploy-backend` didn't run.
 - `continue-on-error: true` at the job level — **a failing E2E suite does not fail the workflow
   run and does not block `deploy-dashboard`.**
 - Runs Playwright (`npm run test:e2e` in `dashboard/`) against `https://api.viirtrading.com`
@@ -158,8 +208,12 @@ unless marked `continue-on-error: true`.
 
 Source: `.github/workflows/deploy.yml`, job `deploy-dashboard`.
 
-- `needs: [deploy-backend]` — **the dashboard does not deploy unless the backend job succeeded**
-  (including its blocking test run and blocking smoke test). It does *not* wait on the `e2e`
+- `needs: [changes, deploy-backend]` — gated by `needs.changes.outputs.dashboard == 'true'`
+  (`dashboard/**` changed) or `outputs.workflow == 'true'`, **and** `deploy-backend.result` being
+  `success` **or** `skipped` (same skipped-counts-as-satisfied pattern as `e2e` above, also
+  wrapped in `always()`). In practice: **the dashboard does not deploy if the backend job ran and
+  failed** (including its blocking test run and blocking smoke test), but a dashboard-only push
+  that correctly skipped `deploy-backend` entirely still deploys. It does *not* wait on the `e2e`
   job — `e2e` and `deploy-dashboard` both key off `deploy-backend` and run in parallel.
 - Steps: checkout → setup Node 22 → `npm install --global vercel@latest` → `vercel deploy --prod --token=${{ secrets.VERCEL_TOKEN }}`.
 - No `npm run build` / `npm test` step runs in this job — the Vercel CLI's `deploy --prod`

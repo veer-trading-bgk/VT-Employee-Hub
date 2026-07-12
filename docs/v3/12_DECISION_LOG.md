@@ -315,6 +315,55 @@ Each entry follows this structure:
 
 ---
 
+### [DL-022] Automation Module: Remove the Linear "Simple" Editor — Canvas Is the Only Editor
+**Date:** 2026-07-10
+**Status:** Approved
+**Decided by:** Viir (via re-verified, corrected scope — see Rationale)
+
+**Context:** The Automation module shipped with two workflow editors: a linear step-sequence
+"Simple" editor (`WorkflowCreateDrawer.tsx`/`WorkflowBuilder.tsx`, `steps[]`-shaped data) and a
+newer branching graph canvas (`nodes[]`/`edges[]`-shaped, supports if/else condition nodes, button-
+reply branching, per-button handles). Maintaining two editors and two underlying data shapes for
+the same conceptual object (a workflow) is duplicate surface area with no product reason for a user
+to prefer the older, strictly-less-capable one.
+
+**Decision:** Delete the linear "Simple" editor entirely. `WorkflowCreateDrawer.tsx` is removed;
+"Create Workflow" navigates straight to `/automation/canvas/new`; every existing workflow (linear
+or graph) opens in the canvas — `WorkflowList`'s `openEdit()` no longer branches on
+`isGraphWorkflow`, because after this change every workflow *is* graph-shaped. A one-time converter
+(`convertLinearToGraph()`) migrated the one real linear workflow that existed in production
+(`assign_employee`+`end`, `viir_trading`) rather than the app carrying a permanent dual-shape
+runtime path.
+
+**Alternatives considered:**
+- Keep both editors, let users choose — rejected because it doubles the testing/maintenance surface
+  for a strictly-dominated option (everything the linear editor can express, the canvas can express
+  plus branching), and the "which editor should I use" choice itself is confusing with no clear
+  answer.
+- Migrate the data shape but keep the linear UI as a "simple mode" view over graph data — rejected
+  as unnecessary complexity: no product request was driving keeping a simplified view, and it would
+  mean maintaining two renderers for one data shape indefinitely.
+
+**Rationale:** An incoming audit initially proposed a larger, riskier version of this change
+(claiming a sanitizer bug and a missing canvas node that, on direct re-verification against the
+actual codebase and a live DynamoDB scan, did not exist — see `docs/bible/19_DECISION_LOG.md` Era
+44 and its "Open architectural questions" item 19 for the full incorrect-premise/correction
+detail). Re-scoping down to what the codebase and real data actually showed — exactly one real
+linear workflow, losslessly convertible — made this a small, low-risk migration rather than the
+larger one originally proposed. Verified the conversion was lossless via a field-by-field diff
+through the real POST/PUT/GET handlers against real AWS before deleting anything.
+
+**Consequences:** `WorkflowStep`/linear-specific types and their UI (`StepCard`, `Connector`,
+`stepSummary`) are dead code and were removed alongside the drawer, not left as unused scaffolding.
+Any future workflow creation path (if one is ever added outside the canvas UI) must produce
+`nodes[]`/`edges[]` directly — there is no longer a linear shape to fall back to or convert from at
+runtime, only the one-time migration script (kept for historical/reference purposes, not part of
+the live app).
+
+**Superseded by:** —
+
+---
+
 ## Rejected Features
 
 ### [DL-017] "Customer 360" Sidebar Navigation Item — Rejected
@@ -403,6 +452,12 @@ The only place any merge actually happened is the frontend *display* layer: `toV
 | OQ-003 | How many days of inactivity triggers the "Dormant" flag? Should it be configurable per lifecycle stage? | Lifecycle model | Open |
 | OQ-004 | Should the Customers > Import flow handle deduplication automatically (phone number match) or prompt the agent for each duplicate? | Import workflow | Open |
 | OQ-005 | Is the Relationship Score feature (DL-??? — new in this doc) worth implementing in Phase 3, or defer to Phase 4? | C360 header enhancement | Open |
+| OQ-006 | Should `team_lead`'s Contacts-module scope be **own-only** (current actual behavior, undocumented) or **team-wide** (as `09_PERMISSION_MATRIX.md` currently documents — "sees Team contacts," "can export team contacts")? Found 2026-07-09, still open as of 2026-07-12. Not the same finding as DL-021 (which resolved `team_lead` vs `manager` scope in `attendance.js`/`compensation.js`/`crm.js`/`metrics.js`) — this is `contacts.js` specifically, a different route with its own binary `isAdmin ? all : own-only` check and no team tier at all. | Contacts module RBAC | Open — awaiting Viir's product call; tracked in `docs/PENDING_WORK.md` |
+
+**Note on DL-021 (team_lead/manager split):** DL-021 above resolved `team_lead`'s scope for
+`attendance.js`/`compensation.js`/`crm.js`/`metrics.js`. It did **not** cover `contacts.js` — that
+file's `team_lead` scoping is the separate, still-open OQ-006 immediately above. Do not read DL-021
+as having settled Contacts-module behavior; it hasn't.
 
 ---
 
