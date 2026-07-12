@@ -35,7 +35,6 @@ import {
   templateKeys,
 } from '@/lib/templates/api';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role } from '@/types/v3';
 import type { WaTemplate, TemplateStatus, TemplateCategory, QualityScore, AiTemplateDraft } from '@/lib/templates/types';
 import {
   SENDABLE_STATUSES,
@@ -67,12 +66,20 @@ interface Props {
 export function TemplateList({ onSendTemplate }: Props) {
   const qc = useQueryClient();
 
-  // RBAC
+  // RBAC — raw backend role, not the v3Role display bucket (DL-021,
+  // docs/v3/12_DECISION_LOG.md: display buckets must never be used for
+  // permission gating, only raw roles). Matches the real checkRole() gates on
+  // the template routes (src/routes/whatsapp.js): create/edit/delete/submit/
+  // ai-draft are admin-only, sync/history/list are admin+manager.
   const { user } = useAuth();
-  const role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const canManage = role === 'owner' || role === 'admin';
-  const canSync = role === 'owner' || role === 'admin' || role === 'manager';
-  const canSendRole = canManage || role === 'manager'; // /send-template backend: admin|manager
+  const rawRole = user?.role;
+  const canManage = rawRole === 'superadmin' || rawRole === 'admin';
+  const canSync = canManage || rawRole === 'manager';
+  // Dead code today (Templates audit finding #5 — onSendTemplate is never
+  // passed by either live caller, so the Send button this gates never
+  // renders). Left role-equivalent to the old display-bucket check (which
+  // treated team_lead as 'manager') rather than silently narrowing it.
+  const canSendRole = canManage || rawRole === 'manager' || rawRole === 'team_lead';
 
   // Filters & sort
   const [filters, setFilters] = useState<Filters>({ search: '', status: '', category: '', quality: '' });
