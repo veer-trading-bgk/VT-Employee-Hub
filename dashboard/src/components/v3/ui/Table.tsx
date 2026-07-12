@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode, useState } from 'react';
+import { Fragment, ReactNode } from 'react';
 import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Checkbox } from './Checkbox';
@@ -30,6 +30,12 @@ export interface TableProps<T> {
   bulkActions?: ReactNode;
   stickyHeader?: boolean;
   className?: string;
+  // Expandable rows (opt-in) — expansion state is controlled by the caller,
+  // same as sortKey/selectedIds above, not owned internally by Table. Renders
+  // an extra full-width row directly below the matching row when both props
+  // are provided; omit either to get today's exact behavior unchanged.
+  expandedRowId?: string | null;
+  renderExpandedRow?: (row: T, index: number) => ReactNode;
 }
 
 function SortIcon({ active, dir }: { active: boolean; dir: SortDirection }) {
@@ -54,6 +60,8 @@ export function Table<T>({
   bulkActions,
   stickyHeader = true,
   className,
+  expandedRowId,
+  renderExpandedRow,
 }: TableProps<T>) {
   const allIds = data.map((row, i) => keyExtractor(row, i));
   const allSelected = allIds.length > 0 && allIds.every((id) => selectedIds.has(id));
@@ -158,31 +166,40 @@ export function Table<T>({
               data.map((row, i) => {
                 const id = keyExtractor(row, i);
                 const isSelected = selectedIds.has(id);
+                const isExpanded = !!renderExpandedRow && expandedRowId === id;
                 return (
-                  <tr
-                    key={id}
-                    onClick={onRowClick ? () => onRowClick(row) : undefined}
-                    className={cn(
-                      'border-b border-neutral-100 transition-colors dark:border-neutral-800/50',
-                      onRowClick && 'cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/30',
-                      isSelected && 'bg-primary-50/50 dark:bg-primary-900/10',
+                  <Fragment key={id}>
+                    <tr
+                      onClick={onRowClick ? () => onRowClick(row) : undefined}
+                      className={cn(
+                        'border-b border-neutral-100 transition-colors dark:border-neutral-800/50',
+                        onRowClick && 'cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/30',
+                        isSelected && 'bg-primary-50/50 dark:bg-primary-900/10',
+                      )}
+                    >
+                      {selectable && (
+                        <td className="w-10 px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            checked={isSelected}
+                            onChange={() => toggleRow(id)}
+                            aria-label={`Select row ${i + 1}`}
+                          />
+                        </td>
+                      )}
+                      {columns.map((col) => (
+                        <td key={col.key} className="px-4 py-3 text-neutral-700 dark:text-neutral-300">
+                          {col.cell(row, i)}
+                        </td>
+                      ))}
+                    </tr>
+                    {isExpanded && (
+                      <tr className="border-b border-neutral-100 bg-neutral-50/50 dark:border-neutral-800/50 dark:bg-neutral-900/30">
+                        <td colSpan={columns.length + (selectable ? 1 : 0)} className="px-6 py-3">
+                          {renderExpandedRow(row, i)}
+                        </td>
+                      </tr>
                     )}
-                  >
-                    {selectable && (
-                      <td className="w-10 px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                        <Checkbox
-                          checked={isSelected}
-                          onChange={() => toggleRow(id)}
-                          aria-label={`Select row ${i + 1}`}
-                        />
-                      </td>
-                    )}
-                    {columns.map((col) => (
-                      <td key={col.key} className="px-4 py-3 text-neutral-700 dark:text-neutral-300">
-                        {col.cell(row, i)}
-                      </td>
-                    ))}
-                  </tr>
+                  </Fragment>
                 );
               })
             )}

@@ -333,3 +333,118 @@ describe('PUT /api/automations/:id — name-only body (canvas rename field)', ()
     expect(call.ExpressionAttributeValues[':n']).toBe('Renamed Flow');
   });
 });
+
+// ─── GET /executions — pagination (Track B2 Batch 2a, Item 8) ──────────────
+// Real production companies don't reliably have >200 execution records to
+// exercise this against live data, so this is the seeded case the batch's
+// validation note allows for. Two things this specifically has to prove:
+// (1) the do/while drain actually walks DynamoDB's real LastEvaluatedKey
+// across multiple raw pages rather than just reading the first one, and
+// (2) status/q filtering happens on the FULL drained set before the
+// page/total math, not on an already-capped or already-sliced subset — the
+// exact bug the old Limit-then-filter code had (see automations.js's own
+// comment on this route).
+describe('GET /api/automations/executions — pagination', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  function makeExec(i, overrides = {}) {
+    return {
+      executionId: `exec-${i}`, workflowId: 'wf-1', workflowName: 'Test Workflow',
+      companyId: CID, status: 'completed', contactName: `Contact ${i}`,
+      triggeredBy: { type: 'lead_created', entityId: 'lead-1' },
+      startedAt: new Date(2026, 0, 1, 0, 0, i).toISOString(),
+      ...overrides,
+    };
+  }
+
+  test('no page param -> single bounded query, no drain, unpaginated response shape unchanged (AutomationDashboard widget)', async () => {
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [makeExec(1)] }) });
+    const handler = getRouteHandler(automationsRouter, '/executions', 'get');
+    const res = mockRes();
+    await handler({ query: { limit: '5' }, user: USER }, res, jest.fn());
+
+    expect(dynamodb.query).toHaveBeenCalledTimes(1);
+    expect(dynamodb.query.mock.calls[0][0].Limit).toBe(5);
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.success).toBe(true);
+    expect(payload.total).toBeUndefined();
+    expect(payload.page).toBeUndefined();
+  });
+
+  test('page param present -> drains every raw DynamoDB page via LastEvaluatedKey, then slices correctly for the requested page', async () => {
+    const allItems = Array.from({ length: 250 }, (_, i) => makeExec(i));
+    dynamodb.query
+      .mockReturnValueOnce({ promise: () => Promise.resolve({ Items: allItems.slice(0, 150), LastEvaluatedKey: { SK: 'cursor-1' } }) })
+      .mockReturnValueOnce({ promise: () => Promise.resolve({ Items: allItems.slice(150, 250) }) });
+
+    const handler = getRouteHandler(automationsRouter, '/executions', 'get');
+    const res = mockRes();
+    await handler({ query: { page: '3', pageSize: '100' }, user: USER }, res, jest.fn());
+
+    expect(dynamodb.query).toHaveBeenCalledTimes(2);
+    expect(dynamodb.query.mock.calls[1][0].ExclusiveStartKey).toEqual({ SK: 'cursor-1' });
+
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.total).toBe(250);
+    expect(payload.pages).toBe(3);
+    expect(payload.page).toBe(3);
+    expect(payload.executions).toHaveLength(50); // last partial page: 250 - 200
+    expect(payload.executions[0].executionId).toBe('exec-200');
+    expect(payload.executions[49].executionId).toBe('exec-249');
+  });
+
+  test('status filter narrows total/pages to the filtered count, not the raw drained count', async () => {
+    const completed = Array.from({ length: 8 }, (_, i) => makeExec(i, { status: 'completed' }));
+    const failed    = Array.from({ length: 3 }, (_, i) => makeExec(100 + i, { status: 'failed' }));
+    dynamodb.query.mockReturnValueOnce({ promise: () => Promise.resolve({ Items: [...completed, ...failed] }) });
+
+    const handler = getRouteHandler(automationsRouter, '/executions', 'get');
+    const res = mockRes();
+    await handler({ query: { page: '1', pageSize: '50', status: 'failed' }, user: USER }, res, jest.fn());
+
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.total).toBe(3);
+    expect(payload.executions).toHaveLength(3);
+    expect(payload.executions.every((e) => e.status === 'failed')).toBe(true);
+  });
+
+  test('q search filters by workflowName/contactName across the full drained set before slicing', async () => {
+    const items = [
+      makeExec(1, { workflowName: 'Welcome Flow',    contactName: 'Asha'  }),
+      makeExec(2, { workflowName: 'Follow-up Flow',  contactName: 'Ravi'  }),
+      makeExec(3, { workflowName: 'Welcome Flow',    contactName: 'Meera' }),
+    ];
+    dynamodb.query.mockReturnValueOnce({ promise: () => Promise.resolve({ Items: items }) });
+
+    const handler = getRouteHandler(automationsRouter, '/executions', 'get');
+    const res = mockRes();
+    await handler({ query: { page: '1', pageSize: '50', q: 'welcome' }, user: USER }, res, jest.fn());
+
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.total).toBe(2);
+    expect(payload.executions.map((e) => e.contactName).sort()).toEqual(['Asha', 'Meera']);
+  });
+
+  test('sortDir=asc reverses the naturally-descending drain order; no sortDir (or desc) keeps it as-is', async () => {
+    // makeExec's startedAt is monotonically increasing with i, so the drain
+    // arrives ascending here (unlike real DynamoDB, where ScanIndexForward:false
+    // already yields descending) — irrelevant to what's under test: only that
+    // sortDir=asc actually re-sorts by startedAt ascending, and its absence
+    // leaves the drained order untouched.
+    const items = [makeExec(3), makeExec(1), makeExec(2)];
+    dynamodb.query.mockReturnValueOnce({ promise: () => Promise.resolve({ Items: items }) });
+    const handler = getRouteHandler(automationsRouter, '/executions', 'get');
+    const res = mockRes();
+    await handler({ query: { page: '1', pageSize: '50', sortDir: 'asc' }, user: USER }, res, jest.fn());
+
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.executions.map((e) => e.executionId)).toEqual(['exec-1', 'exec-2', 'exec-3']);
+
+    jest.clearAllMocks();
+    dynamodb.query.mockReturnValueOnce({ promise: () => Promise.resolve({ Items: items }) });
+    const res2 = mockRes();
+    await handler({ query: { page: '1', pageSize: '50' }, user: USER }, res2, jest.fn());
+    const payload2 = res2.json.mock.calls[0][0];
+    expect(payload2.executions.map((e) => e.executionId)).toEqual(['exec-3', 'exec-1', 'exec-2']);
+  });
+});

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Search, Trash2, Play, Pause, Zap, GitBranch, Copy } from 'lucide-react';
+import { Plus, Search, Trash2, Play, Pause, Zap, GitBranch, Copy, Minus, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/v3/ui/Button';
@@ -146,6 +146,47 @@ export function WorkflowList() {
   );
 }
 
+// List-glance health indicator — deliberately simple (3 states, one icon),
+// not a detail view. `tracked` (successCount+failureCount) can be 0 even
+// when runCount > 0 for any workflow that ran before these two fields
+// existed (AutomationEngine.js only writes them going forward, no backfill —
+// see Workflow type's own comment) — that case must render as "unknown", not
+// silently read as "healthy" just because failureCount happens to be 0.
+function HealthIndicator({ workflow: w }: { workflow: Workflow }) {
+  const runCount = w.runCount ?? 0;
+  const successCount = w.successCount ?? 0;
+  const failureCount = w.failureCount ?? 0;
+  const tracked = successCount + failureCount;
+
+  if (runCount === 0) {
+    return (
+      <span title="No runs yet">
+        <Minus className="h-3.5 w-3.5 text-neutral-300" aria-hidden />
+      </span>
+    );
+  }
+  if (tracked === 0) {
+    return (
+      <span title="No health data yet — this workflow ran before health tracking was added">
+        <Minus className="h-3.5 w-3.5 text-neutral-300" aria-hidden />
+      </span>
+    );
+  }
+  if (failureCount === 0) {
+    return (
+      <span title={`${tracked}/${tracked} tracked runs succeeded`}>
+        <CheckCircle2 className="h-3.5 w-3.5 text-success-500" aria-hidden />
+      </span>
+    );
+  }
+  const successRate = Math.round((successCount / tracked) * 100);
+  return (
+    <span title={`${failureCount} of ${tracked} tracked runs failed (${successRate}% success)`}>
+      <AlertTriangle className={cn('h-3.5 w-3.5', successRate >= 50 ? 'text-warning-500' : 'text-error-500')} aria-hidden />
+    </span>
+  );
+}
+
 function WorkflowRow({
   workflow: w, isAdmin, onEdit, onToggle, onDelete, onDuplicate,
 }: {
@@ -193,7 +234,10 @@ function WorkflowRow({
         {stepCount}
       </td>
       <td className="px-4 py-3 text-right text-sm text-neutral-600 dark:text-neutral-400">
-        {(w.runCount ?? 0).toLocaleString()}
+        <div className="flex items-center justify-end gap-1.5">
+          <HealthIndicator workflow={w} />
+          {(w.runCount ?? 0).toLocaleString()}
+        </div>
       </td>
       <td className="px-4 py-3 text-right text-xs text-neutral-400">
         {w.lastRunAt ? format(new Date(w.lastRunAt), 'd MMM, h:mm a') : '—'}

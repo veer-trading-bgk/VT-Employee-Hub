@@ -926,11 +926,19 @@ class AutomationEngine {
       ExpressionAttributeValues: { ':st': finalStatus, [valKey]: results, ':ca': completedAt, ':dm': durationMs },
     }).promise();
 
-    // Bump workflow stats (fire-and-forget)
+    // Bump workflow stats (fire-and-forget). successCount/failureCount give
+    // WorkflowList.tsx a per-workflow health indicator without opening each
+    // execution — 'completed' is the only success terminal state, 'failed'
+    // and 'partial_failure' both count as a failure for this simple binary
+    // split (no separate partial-failure counter). Existing workflows with
+    // no history just start both at 0 from here on — AUTO_EXEC# records
+    // carry a 90-day TTL (_startExecution above), so there is no complete
+    // history to backfill from even if it were wanted.
+    const statField = finalStatus === 'completed' ? 'successCount' : 'failureCount';
     dynamodb.update({
       TableName: TABLE,
       Key:       { PK: `CONFIG#AUTO#${companyId}`, SK: `AUTO#${workflow.id}` },
-      UpdateExpression: 'SET runCount = if_not_exists(runCount, :z) + :one, lastRunAt = :lra, updatedAt = :ua',
+      UpdateExpression: `SET runCount = if_not_exists(runCount, :z) + :one, ${statField} = if_not_exists(${statField}, :z) + :one, lastRunAt = :lra, updatedAt = :ua`,
       ExpressionAttributeValues: { ':one': 1, ':z': 0, ':lra': completedAt, ':ua': completedAt },
     }).promise().catch(() => {});
   }

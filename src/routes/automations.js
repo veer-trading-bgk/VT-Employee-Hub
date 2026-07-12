@@ -146,24 +146,83 @@ router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req
 });
 
 // ── GET /executions — must be before /:id ───────────────────────────────────
+// Two modes, distinguished by whether `page` is present:
+//  - No `page` (AutomationDashboard's "recent executions" widget, ?limit=5):
+//    unchanged cheap path — a single bounded query, no full-partition read.
+//  - `page` present (ExecutionList.tsx): drains the full AUTO_EXEC# partition
+//    then filters + slices in memory, the same "fetch everything server-side,
+//    slice for the page, return {total,page,pageSize,pages}" convention
+//    contacts.js's GET / already uses to pair with the shared Pagination.tsx
+//    component (see fetchFilteredContacts there) — reused rather than
+//    inventing a client-facing LastEvaluatedKey cursor, since Pagination.tsx
+//    is built for numbered pages/a total count, not an opaque forward-only
+//    token. The drain still uses DynamoDB's real LastEvaluatedKey internally
+//    (do/while below) — cost is bounded by the 90-day TTL on AUTO_EXEC#
+//    records (_startExecution, AutomationEngine.js), same bound item 7's
+//    "no backfill" note relies on.
 router.get('/executions', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
     const { companyId } = req.user;
-    const { status, workflowId, limit = '50' } = req.query;
+    const { status, workflowId, q, limit, page, pageSize = '50', sortDir } = req.query;
 
-    const result = await dynamodb.query({
-      TableName: TABLE,
-      KeyConditionExpression: 'PK = :pk',
-      ExpressionAttributeValues: { ':pk': execPK(companyId) },
-      ScanIndexForward: false,
-      Limit: Math.min(parseInt(limit, 10) || 50, 200),
-    }).promise();
+    if (!page) {
+      const result = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk',
+        ExpressionAttributeValues: { ':pk': execPK(companyId) },
+        ScanIndexForward: false,
+        Limit: Math.min(parseInt(limit, 10) || 50, 200),
+      }).promise();
 
-    let executions = result.Items ?? [];
+      let executions = result.Items ?? [];
+      if (status)     executions = executions.filter((e) => e.status     === status);
+      if (workflowId) executions = executions.filter((e) => e.workflowId === workflowId);
+
+      return res.json({ success: true, executions });
+    }
+
+    const items = [];
+    let lastKey;
+    do {
+      const r = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk',
+        ExpressionAttributeValues: { ':pk': execPK(companyId) },
+        ScanIndexForward: false,
+        ...(lastKey && { ExclusiveStartKey: lastKey }),
+      }).promise();
+      items.push(...(r.Items ?? []));
+      lastKey = r.LastEvaluatedKey;
+    } while (lastKey);
+
+    let executions = items;
     if (status)     executions = executions.filter((e) => e.status     === status);
     if (workflowId) executions = executions.filter((e) => e.workflowId === workflowId);
+    // Server-side text search — necessary once results are actually paginated:
+    // filtering only the current page's already-sliced rows (as the frontend
+    // used to do entirely client-side) would silently miss matches sitting on
+    // other pages. Same q-search convention as contacts.js's GET /.
+    if (q) {
+      const ql = q.toLowerCase();
+      executions = executions.filter((e) =>
+        (e.workflowName ?? '').toLowerCase().includes(ql) ||
+        (e.contactName  ?? '').toLowerCase().includes(ql));
+    }
+    // The drain loop above already yields newest-first (ScanIndexForward:false,
+    // preserved across pages since each page is pushed in query order) — that
+    // covers 'desc' and the unsorted default for free. Only 'asc' needs an
+    // actual re-sort.
+    if (sortDir === 'asc') {
+      executions = [...executions].sort((a, b) => (a.startedAt ?? '').localeCompare(b.startedAt ?? ''));
+    }
 
-    res.json({ success: true, executions });
+    const total = executions.length;
+    const pg    = Math.max(1, parseInt(page, 10));
+    const ps    = Math.min(100, Math.max(1, parseInt(pageSize, 10)));
+    const pages = Math.ceil(total / ps) || 1;
+    const sliced = executions.slice((pg - 1) * ps, pg * ps);
+
+    res.json({ success: true, executions: sliced, total, page: pg, pageSize: ps, pages });
   } catch (err) { next(err); }
 });
 

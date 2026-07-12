@@ -979,6 +979,84 @@ describe('AutomationEngine — converted (formerly-linear) workflow execution', 
   });
 });
 
+// ─── Track B2 Batch 2a, Item 7: per-workflow successCount/failureCount ──────
+// Proves _finalizeExecution's workflow-stats update (runCount today) now also
+// bumps exactly one of successCount/failureCount depending on the real
+// terminal status of a real graph run — driven through the actual engine
+// (_runGraph), not asserted by reading the source. Reuses the exact
+// assign_employee success/fail fixtures already proven in the "converted
+// workflow execution" describe block above (valid employeeId completes;
+// empty employeeId throws 'assign_employee: employeeId and leadPK required',
+// and since it's the workflow's only non-end/condition node, failedCount ===
+// actionCount, so _finalizeExecution computes finalStatus 'failed', not
+// 'partial_failure' — see _finalizeExecution's own finalStatus derivation).
+describe('AutomationEngine — successCount/failureCount workflow stats', () => {
+  const resolved = (value) => ({ promise: () => Promise.resolve(value) });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    dynamodb.update.mockImplementation(guardedUpdateMock());
+    dynamodb.put.mockReturnValue(resolved({}));
+  });
+
+  function statsCall(workflowId) {
+    return dynamodb.update.mock.calls.find(
+      (c) => c[0].Key?.PK === `CONFIG#AUTO#${CID}` && c[0].Key?.SK === `AUTO#${workflowId}`,
+    );
+  }
+
+  test('a fully successful graph execution increments successCount and runCount, not failureCount', async () => {
+    const workflow = {
+      id: 'wf-health-success', name: 'health-success', entryNodeId: 's1',
+      nodes: [
+        { id: 's1', type: 'assign_employee', config: { employeeId: 'emp_42', employeeName: 'Priya' } },
+        { id: 's2', type: 'end', config: {} },
+      ],
+      edges: [{ id: 's1->s2', source: 's1', target: 's2' }],
+    };
+    const execItem = {
+      PK: `AUTO_EXEC#${CID}`, SK: 'EXEC#2026-01-01T00:00:00.000Z#exec-health-1',
+      executionId: 'exec-health-1', startedAt: new Date().toISOString(), path: [],
+    };
+
+    await engine._runGraph(CID, workflow, execItem, { leadPK: LEAD_PK }, workflow.entryNodeId);
+
+    const call = statsCall(workflow.id);
+    expect(call).toBeDefined();
+    const [{ UpdateExpression, ExpressionAttributeValues }] = call;
+    expect(UpdateExpression).toContain('runCount = if_not_exists(runCount, :z) + :one');
+    expect(UpdateExpression).toContain('successCount = if_not_exists(successCount, :z) + :one');
+    expect(UpdateExpression).not.toContain('failureCount');
+    expect(ExpressionAttributeValues[':one']).toBe(1);
+  });
+
+  test('a failing graph execution increments failureCount and runCount, not successCount', async () => {
+    const workflow = {
+      id: 'wf-health-fail', name: 'health-fail', entryNodeId: 's1',
+      nodes: [
+        { id: 's1', type: 'assign_employee', config: { employeeId: '', employeeName: '' } },
+        { id: 's2', type: 'end', config: {} },
+      ],
+      edges: [{ id: 's1->s2', source: 's1', target: 's2' }],
+    };
+    const execItem = {
+      PK: `AUTO_EXEC#${CID}`, SK: 'EXEC#2026-01-01T00:00:00.000Z#exec-health-2',
+      executionId: 'exec-health-2', startedAt: new Date().toISOString(), path: [],
+    };
+
+    await engine._runGraph(CID, workflow, execItem, { leadPK: LEAD_PK }, workflow.entryNodeId);
+
+    const call = statsCall(workflow.id);
+    expect(call).toBeDefined();
+    const [{ UpdateExpression, ExpressionAttributeValues }] = call;
+    expect(UpdateExpression).toContain('runCount = if_not_exists(runCount, :z) + :one');
+    expect(UpdateExpression).toContain('failureCount = if_not_exists(failureCount, :z) + :one');
+    expect(UpdateExpression).not.toContain('successCount');
+    expect(ExpressionAttributeValues[':one']).toBe(1);
+  });
+});
+
 // ─── Per-button/row handles on send_buttons/send_list nodes ─────────────────
 // Opt-in pause point: these node types only ever paused via a separate
 // condition(button_reply) node before this feature. Now they can pause

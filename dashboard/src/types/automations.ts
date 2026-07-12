@@ -261,6 +261,12 @@ export interface Workflow {
   edges?:         GraphEdge[];
   entryNodeId?:   string;
   runCount:       number;
+  // Absent on any workflow that hasn't completed a run since this field was
+  // added (AutomationEngine.js only writes it going forward, no backfill —
+  // AUTO_EXEC# history carries a 90-day TTL, so there's nothing to backfill
+  // from anyway) — always default to 0, never assume presence.
+  successCount?:  number;
+  failureCount?:  number;
   lastRunAt?:     string | null;
   createdBy:      string;
   createdByName?: string | null;
@@ -339,7 +345,13 @@ export interface AutomationStats {
 
 export interface AutomationsResponse   { success: boolean; automations: Workflow[]  }
 export interface AutomationResponse    { success: boolean; automation:  Workflow    }
-export interface ExecutionsResponse    { success: boolean; executions:  Execution[] }
+// total/page/pageSize/pages are present only in the paginated mode (GET
+// /executions?page=...) — absent in the older unpaginated ?limit= mode
+// AutomationDashboard's "recent executions" widget still uses.
+export interface ExecutionsResponse    {
+  success: boolean; executions: Execution[];
+  total?: number; page?: number; pageSize?: number; pages?: number;
+}
 export interface AutomationStatsResponse { success: boolean; stats: AutomationStats }
 
 // ── UI metadata ───────────────────────────────────────────────────────────────

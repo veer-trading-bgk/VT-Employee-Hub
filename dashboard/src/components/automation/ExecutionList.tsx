@@ -1,11 +1,15 @@
 'use client';
 
-import { Fragment, useState } from 'react';
-import { Search, CheckCircle2, XCircle, Clock, Activity, ChevronDown, ChevronRight, GitBranch } from 'lucide-react';
+import { useState } from 'react';
+import { CheckCircle2, XCircle, Clock, Activity, ChevronDown, ChevronRight, GitBranch } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { Badge } from '@/components/v3/ui/Badge';
 import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { SkeletonTable } from '@/components/v3/ui/Skeleton';
+import { SearchBar } from '@/components/v3/ui/SearchBar';
+import { FilterBar, type FilterChip } from '@/components/v3/ui/FilterBar';
+import { Table, type TableColumn, type SortDirection } from '@/components/v3/ui/Table';
+import { Pagination } from '@/components/v3/ui/Pagination';
 import { apiFetch } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { format } from 'date-fns';
@@ -14,53 +18,131 @@ import {
   EXECUTION_STATUS_META, ACTION_META, isGraphExecution,
 } from '@/types/automations';
 
+const STATUS_OPTIONS = [
+  { value: 'completed',        label: 'Completed'       },
+  { value: 'partial_failure',  label: 'Partial Failure' },
+  { value: 'failed',           label: 'Failed'          },
+  { value: 'running',          label: 'Running'         },
+  { value: 'paused',           label: 'Paused'          },
+];
+
 interface ExecutionListProps {
   workflowFilter?: string;
 }
 
 export function ExecutionList({ workflowFilter }: ExecutionListProps) {
-  const [search,   setSearch]   = useState('');
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [status,   setStatus]   = useState('');
+  const [search,     setSearch]     = useState('');
+  const [status,     setStatus]     = useState('');
+  const [page,       setPage]       = useState(1);
+  const [pageSize,   setPageSize]   = useState(50);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Only one sortable column exists today (Started), so a single SortDirection
+  // is enough — 'desc' (newest first) matches the prior implicit order.
+  const [sortDir,    setSortDir]    = useState<SortDirection>('desc');
 
-  const url = `/api/automations/executions?limit=100${workflowFilter ? `&workflowId=${workflowFilter}` : ''}${status ? `&status=${status}` : ''}`;
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  if (workflowFilter) params.set('workflowId', workflowFilter);
+  if (status)         params.set('status', status);
+  if (search)         params.set('q', search);
+  if (sortDir)         params.set('sortDir', sortDir);
 
   const { data, isLoading } = useQuery<ExecutionsResponse>({
-    queryKey: ['executions', workflowFilter, status],
-    queryFn:  () => apiFetch(url),
+    queryKey: ['executions', workflowFilter, status, search, page, pageSize, sortDir],
+    queryFn:  () => apiFetch(`/api/automations/executions?${params.toString()}`),
     refetchInterval: 15_000,
   });
 
-  const executions = (data?.executions ?? []).filter((e) =>
-    !search || e.workflowName.toLowerCase().includes(search.toLowerCase()) || (e.contactName ?? '').toLowerCase().includes(search.toLowerCase()),
-  );
+  function handleSort(_key: string, dir: SortDirection) {
+    setSortDir(dir);
+    setPage(1);
+  }
+
+  const executions = data?.executions ?? [];
+  const statusLabel = STATUS_OPTIONS.find((o) => o.value === status)?.label;
+  const chips: FilterChip[] = status ? [{ key: 'status', label: 'Status', value: statusLabel ?? status }] : [];
+
+  const columns: TableColumn<Execution>[] = [
+    {
+      key: 'expand', header: '', width: 'w-8',
+      cell: (e) => (
+        expandedId === e.executionId
+          ? <ChevronDown className="h-3.5 w-3.5 text-neutral-400" aria-hidden />
+          : <ChevronRight className="h-3.5 w-3.5 text-neutral-400" aria-hidden />
+      ),
+    },
+    {
+      key: 'workflow', header: 'Workflow',
+      cell: (e) => <p className="max-w-[160px] truncate font-medium text-neutral-900 dark:text-white">{e.workflowName}</p>,
+    },
+    {
+      key: 'contact', header: 'Contact',
+      cell: (e) => e.contactName ?? <span className="text-neutral-300 dark:text-neutral-600">—</span>,
+    },
+    {
+      key: 'status', header: 'Status',
+      cell: (e) => {
+        const meta = EXECUTION_STATUS_META[e.status] ?? EXECUTION_STATUS_META.failed;
+        const StatusIcon =
+          e.status === 'completed' ? CheckCircle2 :
+          e.status === 'failed'    ? XCircle      :
+          e.status === 'running'   ? Activity     : Clock;
+        return (
+          <div className="flex items-center gap-1.5">
+            <StatusIcon
+              className={cn(
+                'h-3.5 w-3.5 shrink-0',
+                e.status === 'completed' ? 'text-success-500'  :
+                e.status === 'failed'    ? 'text-error-500'    :
+                e.status === 'running'   ? 'text-primary-500 animate-pulse' : 'text-warning-500',
+              )}
+              aria-hidden
+            />
+            <Badge variant={meta.variant} className="text-[10px]">{meta.label}</Badge>
+          </div>
+        );
+      },
+    },
+    {
+      key: 'trigger', header: 'Trigger',
+      cell: (e) => (
+        e.triggeredBy?.type
+          ? <Badge variant="default" className="text-[10px]">{e.triggeredBy.type}</Badge>
+          : <span className="text-xs text-neutral-400">—</span>
+      ),
+    },
+    {
+      key: 'started', header: 'Started', sortable: true,
+      cell: (e) => <span className="text-xs text-neutral-400">{format(new Date(e.startedAt), 'd MMM, h:mm a')}</span>,
+    },
+    {
+      key: 'duration', header: 'Duration',
+      cell: (e) => <span className="text-xs text-neutral-400">{e.durationMs != null ? `${e.durationMs}ms` : '—'}</span>,
+    },
+  ];
 
   return (
     <div className="space-y-4">
       {/* Toolbar */}
       <div className="flex items-center gap-3">
-        <div className="relative max-w-xs flex-1">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" aria-hidden />
-          <input
-            type="search"
-            placeholder="Search executions…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="h-9 w-full rounded-lg border border-neutral-200 bg-white pl-9 pr-3 text-sm placeholder:text-neutral-400 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
-          />
-        </div>
-        <select
-          value={status}
-          onChange={(e) => setStatus(e.target.value)}
-          className="h-9 rounded-lg border border-neutral-200 bg-white px-3 text-sm text-neutral-700 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+        <SearchBar
+          value={search}
+          onChange={(v) => { setSearch(v); setPage(1); }}
+          placeholder="Search executions…"
+          className="max-w-xs"
+        />
+        <FilterBar
+          chips={chips}
+          onRemoveChip={() => { setStatus(''); setPage(1); }}
         >
-          <option value="">All statuses</option>
-          <option value="completed">Completed</option>
-          <option value="partial_failure">Partial Failure</option>
-          <option value="failed">Failed</option>
-          <option value="running">Running</option>
-          <option value="paused">Paused</option>
-        </select>
+          <select
+            value={status}
+            onChange={(e) => { setStatus(e.target.value); setPage(1); }}
+            className="h-9 rounded-lg border border-neutral-200 bg-white px-3 text-sm text-neutral-700 focus:outline-none focus:ring-2 focus:ring-primary-500/20 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+          >
+            <option value="">All statuses</option>
+            {STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </FilterBar>
       </div>
 
       {/* Content */}
@@ -68,102 +150,36 @@ export function ExecutionList({ workflowFilter }: ExecutionListProps) {
         <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 overflow-hidden">
           <SkeletonTable rows={5} />
         </div>
-      ) : executions.length === 0 ? (
-        <EmptyState
-          icon={Activity}
-          title={search || status ? 'No executions match your filters' : 'No executions yet'}
-          description={!search && !status ? 'Executions appear here when active workflows run.' : undefined}
-        />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-neutral-200 dark:border-neutral-800">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900/70">
-                <th className="w-8 px-4 py-3" />
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-neutral-500">Workflow</th>
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-neutral-500">Contact</th>
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-neutral-500">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wide text-neutral-500">Trigger</th>
-                <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-neutral-500">Started</th>
-                <th className="px-4 py-3 text-right text-xs font-medium uppercase tracking-wide text-neutral-500">Duration</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-              {executions.map((e) => (
-                <Fragment key={e.executionId}>
-                  <ExecutionRow
-                    execution={e}
-                    expanded={expanded === e.executionId}
-                    onToggle={() => setExpanded(expanded === e.executionId ? null : e.executionId)}
-                  />
-                  {expanded === e.executionId && (
-                    <tr className="bg-neutral-50/50 dark:bg-neutral-900/30">
-                      <td colSpan={7} className="px-6 py-3">
-                        {isGraphExecution(e) ? <PathTrace path={e.path ?? []} /> : <StepTrace steps={e.steps ?? []} />}
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
+        <div className="overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-800">
+          <Table<Execution>
+            columns={columns}
+            data={executions}
+            keyExtractor={(e) => e.executionId}
+            onRowClick={(e) => setExpandedId(expandedId === e.executionId ? null : e.executionId)}
+            expandedRowId={expandedId}
+            renderExpandedRow={(e) => (isGraphExecution(e) ? <PathTrace path={e.path ?? []} /> : <StepTrace steps={e.steps ?? []} />)}
+            sortKey="started"
+            sortDir={sortDir}
+            onSort={handleSort}
+            emptyState={
+              <EmptyState
+                icon={Activity}
+                title={search || status ? 'No executions match your filters' : 'No executions yet'}
+                description={!search && !status ? 'Executions appear here when active workflows run.' : undefined}
+              />
+            }
+          />
+          <Pagination
+            page={data?.page ?? page}
+            pageSize={data?.pageSize ?? pageSize}
+            total={data?.total ?? 0}
+            onPageChange={setPage}
+            onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+          />
         </div>
       )}
     </div>
-  );
-}
-
-function ExecutionRow({
-  execution: e, expanded, onToggle,
-}: { execution: Execution; expanded: boolean; onToggle: () => void }) {
-  const meta = EXECUTION_STATUS_META[e.status] ?? EXECUTION_STATUS_META.failed;
-  const StatusIcon =
-    e.status === 'completed' ? CheckCircle2 :
-    e.status === 'failed'    ? XCircle      :
-    e.status === 'running'   ? Activity     : Clock;
-
-  return (
-    <tr
-      className="cursor-pointer bg-white hover:bg-neutral-50/70 dark:bg-neutral-950 dark:hover:bg-neutral-900/70"
-      onClick={onToggle}
-    >
-      <td className="px-4 py-3">
-        {expanded
-          ? <ChevronDown className="h-3.5 w-3.5 text-neutral-400" aria-hidden />
-          : <ChevronRight className="h-3.5 w-3.5 text-neutral-400" aria-hidden />}
-      </td>
-      <td className="px-4 py-3">
-        <p className="max-w-[160px] truncate font-medium text-neutral-900 dark:text-white">{e.workflowName}</p>
-      </td>
-      <td className="px-4 py-3 text-sm text-neutral-500">
-        {e.contactName ?? <span className="text-neutral-300 dark:text-neutral-600">—</span>}
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-1.5">
-          <StatusIcon
-            className={cn(
-              'h-3.5 w-3.5 shrink-0',
-              e.status === 'completed' ? 'text-success-500'  :
-              e.status === 'failed'    ? 'text-error-500'    :
-              e.status === 'running'   ? 'text-primary-500 animate-pulse' : 'text-warning-500',
-            )}
-            aria-hidden
-          />
-          <Badge variant={meta.variant} className="text-[10px]">{meta.label}</Badge>
-        </div>
-      </td>
-      <td className="px-4 py-3">
-        {e.triggeredBy?.type
-          ? <Badge variant="default" className="text-[10px]">{e.triggeredBy.type}</Badge>
-          : <span className="text-xs text-neutral-400">—</span>}
-      </td>
-      <td className="px-4 py-3 text-right text-xs text-neutral-400">
-        {format(new Date(e.startedAt), 'd MMM, h:mm a')}
-      </td>
-      <td className="px-4 py-3 text-right text-xs text-neutral-400">
-        {e.durationMs != null ? `${e.durationMs}ms` : '—'}
-      </td>
-    </tr>
   );
 }
 
