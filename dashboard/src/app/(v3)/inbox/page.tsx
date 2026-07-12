@@ -1441,10 +1441,10 @@ function ThreadPane({
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
-                rows={1}
-                className="scrollbar-thin max-h-24 flex-1 resize-none rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-                style={{ minHeight: 40 }}
+                placeholder="Reply"
+                rows={2}
+                className="scrollbar-thin max-h-32 flex-1 resize-none rounded-xl border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none focus:ring-1 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                style={{ minHeight: 64 }}
               />
               <Button
                 variant="primary"
@@ -1456,7 +1456,6 @@ function ThreadPane({
                 aria-label="Send message"
               />
             </div>
-            <p className="mt-1.5 text-[10px] text-neutral-400">WhatsApp · Enter to send · Shift+Enter for newline</p>
           </>
         )}
       </div>
