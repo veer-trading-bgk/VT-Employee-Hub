@@ -149,6 +149,5 @@ export const templateKeys = {
   list: () => [...templateKeys.all, 'list'] as const,
   detail: (id: string) => [...templateKeys.all, 'detail', id] as const,
   history: (id: string) => [...templateKeys.all, 'history', id] as const,
-  analytics: (id: string) => [...templateKeys.all, 'analytics', id] as const,
   sync: () => [...templateKeys.all, 'sync'] as const,
 };
