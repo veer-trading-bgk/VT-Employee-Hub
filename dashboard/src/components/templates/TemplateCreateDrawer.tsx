@@ -826,6 +826,14 @@ interface ButtonEditorProps {
 function ButtonEditor({ index, button, isAuth, onChange, onRemove, errors }: ButtonEditorProps) {
   const prefix = `buttons[${index}]`;
 
+  // Types like FLOW/MPM/CATALOG have no editor here — STANDARD_BUTTON_OPTIONS'
+  // dropdown never offers them, so they can only reach an existing template via
+  // another path (e.g. a /templates/sync pull from Meta). Rendering the normal
+  // form would show a <Select> with a value that isn't one of its own options.
+  // Read-only instead, so the button's real content stays visible without a
+  // broken control (Templates module audit, finding #6).
+  const isUnsupportedType = !isAuth && !STANDARD_BUTTON_OPTIONS.some((o) => o.value === button.type);
+
   return (
     <div className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 dark:border-neutral-700 dark:bg-neutral-900">
       <div className="mb-2.5 flex items-center justify-between">
@@ -842,6 +850,22 @@ function ButtonEditor({ index, button, isAuth, onChange, onRemove, errors }: But
         </button>
       </div>
 
+      {isUnsupportedType ? (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between gap-2 rounded-md border border-neutral-200 bg-white px-2.5 py-2 dark:border-neutral-700 dark:bg-neutral-800">
+            <span className="truncate text-sm text-neutral-800 dark:text-neutral-200">
+              {button.text || <span className="italic text-neutral-400">(no text)</span>}
+            </span>
+            <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] font-medium text-neutral-500 dark:bg-neutral-700 dark:text-neutral-400">
+              {BUTTON_TYPE_LABELS[button.type] ?? button.type}
+            </span>
+          </div>
+          <p className="flex items-start gap-1.5 text-[11px] text-neutral-400">
+            <Info className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+            Not editable here — this button type isn&rsquo;t supported by the template editor yet. Remove it to add a supported button instead.
+          </p>
+        </div>
+      ) : (
       <div className="flex flex-col gap-2.5">
         {/* Type selector */}
         {!isAuth && (
@@ -947,6 +971,7 @@ function ButtonEditor({ index, button, isAuth, onChange, onRemove, errors }: But
           </>
         )}
       </div>
+      )}
     </div>
   );
 }
