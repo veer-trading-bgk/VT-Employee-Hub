@@ -356,3 +356,87 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 **Fix:** Not yet scoped. Likely needs either (a) `sw.js` excluding `/api/auth/*` from the generic offline-fallback response (let auth calls fail through as a real network error instead of synthesizing a fake 200), or (b) `AuthContext.tsx` validating the response shape (e.g. checking for an expected field like `email`/`role`) before trusting it as a `User`, instead of trusting any 2xx status.
 
 **Priority:** Low — requires the real backend to be unreachable from the client's network while a service worker is already installed (an existing PWA install going offline mid-session, or a broken/misconfigured `NEXT_PUBLIC_API_URL` in a non-production environment, as found here). Not a security hole — the real backend still enforces auth on every actual API call, this only affects optimistic client-side UI state — but worth fixing before it produces a confusing "why does the dashboard render for a logged-out user on flaky wifi" report.
+
+## Templates Module Audit (2026-07-12) — 10 findings, 6 resolved same session
+
+**Source:** a scoped read-only audit of the Templates module (3 documented UI surfaces, `src/routes/whatsapp.js`'s template endpoints, RBAC, dead/stub UI states, empty/loading/error handling, real-browser layout/race verification, ADR-012 compliance for send-capable actions — full audit request and findings list given directly in chat, not a separate doc). Findings #1, #2, #4, #6 were fixed the same session (product-approved, each its own commit below); #3 and #10 were trivial cleanups bundled into the fix touching that file; #5, #7, #9 are logged here as open, tracked in `docs/PENDING_WORK.md`. #8 was found and deliberately left alone — see its own entry.
+
+### 1 — RESOLVED: Standalone /templates had no page-level or backend role gate
+
+**Issue:** `dashboard/src/app/(v3)/templates/page.tsx` had no `ProtectedRoute allowedRoles` wrapper (unlike Campaigns' identical Templates tab, `campaigns/page.tsx:132`, which already used one), and `GET /api/whatsapp/templates` (`src/routes/whatsapp.js:2497`) had no `checkRole()` at all. Any authenticated role — including Sales/Support — could reach the full template list/dashboard by direct URL; only the New Template/Sync/AI Draft buttons were hidden client-side. Contradicts `docs/v3/09_PERMISSION_MATRIX.md:279`'s "Sales/Support: Hidden" for Templates.
+
+**Fix (commit `825a173`):** `templates/page.tsx` now wraps its content in `<ProtectedRoute allowedRoles={['admin', 'manager']}>` (same pattern as Campaigns — split into a `TemplatesPageInner` + thin gated default export). `GET /api/whatsapp/templates` now requires `checkRole(['admin', 'manager'])` — the real security boundary; the frontend gate is a UX nicety on top of it, not the control itself. Verified live in a real browser: `telecaller` role redirected away before the page rendered, `manager`/`admin` saw the page normally.
+
+**Priority:** Resolved — was High (real, currently-live over-exposure of template content to roles documented as fully excluded).
+
+### 2 — RESOLVED: team_lead saw a Sync button the backend would 403
+
+**Issue:** `TemplateList.tsx:72-75` gated `canManage`/`canSync`/`canSendRole` on `toV3Role(user.role)` (the V3 *display* bucket), which maps both raw `manager` and raw `team_lead` to the single bucket `'manager'` — a violation of the standing DL-021 rule (`docs/v3/12_DECISION_LOG.md`: display buckets must never be used for permission gating, only raw roles). A `team_lead` user would see the Sync button, then get a real 403 clicking it, since `POST /templates/sync`'s `checkRole(['admin', 'manager'])` checks the raw role and `'team_lead'` isn't literally `'manager'`.
+
+**Fix (commit `bac5875`):** `canManage`/`canSync` now read `user.role` directly (raw role) instead of routing through `toV3Role()`; the `toV3Role` import was removed from the file entirely. `canManage = rawRole === 'superadmin' || rawRole === 'admin'`, `canSync = canManage || rawRole === 'manager'` — matches the real `checkRole()` gates on the template routes exactly.
+
+**Priority:** Resolved — was High (a real button promising an action the backend would refuse, for a real, in-use role).
+
+### 3 — RESOLVED (comment only): canSendRole's backend-behavior comment was wrong
+
+**Issue:** `TemplateList.tsx:75`'s comment (`// /send-template backend: admin|manager`) was factually incorrect — `POST /api/whatsapp/send-template` has no `checkRole()` at all, correctly open to every authenticated role per `docs/v3/09_PERMISSION_MATRIX.md:101`'s "Send template: ✓ ✓ ✓ ✓ ✓". Currently inert (see finding #5 — the Send button this gates is unreachable), but the false premise would have misled whoever eventually wires it up.
+
+**Fix (commit `bac5875`, bundled with finding #2's edit to the same file):** stale comment deleted. `canSendRole`'s actual boolean logic was deliberately left unchanged (translated to raw-role equivalents of the same reachable set — `canManage || rawRole === 'manager' || rawRole === 'team_lead'` — rather than widened to "always true," since that behavior change wasn't in this fix's approved scope and the gate is dead code today regardless).
+
+**Priority:** Resolved (comment). The underlying "should Send be open to all roles" question stays open under finding #5.
+
+### 4 — RESOLVED: broadcast launch allowed manager, docs say admin-only
+
+**Issue:** `POST /api/whatsapp/broadcast` (`src/routes/whatsapp.js:3166`) allowed `checkRole(['admin', 'manager'])`, but `docs/v3/09_PERMISSION_MATRIX.md`'s action table (line 298) explicitly lists "Create broadcast: Owner ✓, Admin ✓, Manager ✗" — the row-level table (line 280) also lists Broadcast as `Manager: View` only. A real, live route (called from `dashboard/src/app/(v3)/inbox/page.tsx`'s Broadcast tab, not from Templates or Campaigns) let managers launch real sends the product intent never granted.
+
+**Fix (commit `949a337`), product-confirmed the docs were correct:** `checkRole(['admin', 'manager'])` → `checkRole(['admin'])`.
+
+**Priority:** Resolved — was Medium (backend exceeding documented intent on a real send-triggering action).
+
+### 5 — OPEN: Templates' own Send button is unreachable dead code
+
+**Issue:** `TemplateList.tsx`'s `onSendTemplate` prop, `SENDABLE_STATUSES`/`canSendRole` gating, and the row-level Send button (lines 64, 422, 687-696) are all internally wired correctly, but neither live consumer (`templates/page.tsx`, `campaigns/page.tsx`'s Templates tab) passes `onSendTemplate` — confirmed by reading both render call sites. `onSend` always evaluates to `undefined`; the button never renders regardless of role or template status.
+
+**Fix:** Not yet scoped — needs a product decision (wire a real `onSendTemplate` handler at one or both call sites, e.g. opening the existing Inbox send-a-template flow, or remove the dead prop/button/gating entirely if sending was never meant to live inside this module).
+
+**Priority:** Medium — dead code with real, if currently inert, gating logic attached; worth a deliberate decision rather than indefinite drift.
+
+### 6 — RESOLVED: FLOW/MPM/CATALOG button types broke the editor on existing templates
+
+**Issue:** `ButtonType` (`dashboard/src/lib/templates/types.ts:21-26`) includes `FLOW`/`MPM`/`CATALOG` with dedicated form-state fields and display labels (`BUTTON_TYPE_LABELS`), but `STANDARD_BUTTON_OPTIONS` (`constants.ts:126-130`, the actual Type `<Select>`) only offers `QUICK_REPLY`/`URL`/`PHONE_NUMBER`. `ButtonEditor` (`TemplateCreateDrawer.tsx`) had no rendering branch for the other three either. An existing template with one of these types (e.g. synced from Meta via `/templates/sync`) would show the Type `<Select>` with a value matching none of its own options when opened for editing.
+
+**Fix (commit `50fdc96`):** `ButtonEditor` now renders any button whose type isn't in `STANDARD_BUTTON_OPTIONS` as a read-only summary (button text + type badge) with a "not editable here" note, instead of the broken editable form. Removing the button is still available; editing its fields is not. Verified live in a real browser with a mocked FLOW-type button: read-only note and badge rendered correctly, and a sibling QUICK_REPLY button on the same template kept its normal editable `<Select>`, confirming the fix is scoped to only the unsupported type.
+
+**Priority:** Resolved — was Medium (a broken, confusing control reachable only via synced templates, narrow but real).
+
+### 7 — OPEN: "Settings → Templates" is spec-only, never built
+
+**Issue:** `docs/v3/06_SCREEN_SPECIFICATIONS.md:929,960` and `docs/v3/09_PERMISSION_MATRIX.md:279` both describe a Templates section inside Settings → Channels. `dashboard/src/app/(v3)/settings/page.tsx` has zero references to templates (confirmed by direct case-insensitive grep) — the 3rd documented UI surface doesn't exist; Templates only actually lives at the standalone `/templates` route and inside Campaigns' 6th tab.
+
+**Fix:** Not yet scoped — needs a decision: build the missing section (per the spec's own description: a read-only Meta-approved-template list with a `[+ Request New Template]` drawer), or correct the two docs to describe only the 2 real surfaces.
+
+**Priority:** Medium — a documented, expected surface simply isn't there; low risk (no broken code, just a missing feature) but worth a deliberate decision rather than silent doc/code drift.
+
+### 8 — OPEN, deliberately not touched: V3_NAV_PERMISSIONS is dead code
+
+**Issue:** `dashboard/src/types/v3.ts:21-33`'s `V3_NAV_PERMISSIONS` route-permission map is fully defined and exported but has zero importers anywhere in `dashboard/src` (confirmed by repo-wide grep). Plausibly the intended mechanism for page-level route gating that was never wired into any layout or page — consistent with why `/templates` (finding #1) ended up with no page-level guard: the mechanism that should have provided one exists in code but was never connected.
+
+**Decision (explicit, this session):** leave it exactly as-is — do not wire it in, do not delete it, as part of the Templates fix batch. Finding #1 was fixed with the same per-page `ProtectedRoute allowedRoles` pattern Campaigns already established, not by wiring this map. Whether to centralize route gating through `V3_NAV_PERMISSIONS` (in e.g. `(v3)/layout.tsx`) instead of per-page `ProtectedRoute` calls is a separate architectural question, out of scope for a targeted RBAC fix.
+
+**Priority:** Low — not urgent; no page is currently missing a gate as a result of leaving this alone (finding #1's fix used the established per-page pattern instead). Tracked as a future centralization idea in `docs/PENDING_WORK.md`, not a bug.
+
+### 9 — OPEN, doc-clarity only: docs' "Owner" role doesn't map to any real per-company role
+
+**Issue:** `toV3Role()` (`dashboard/src/types/v3.ts:9`) produces `'owner'` only from the raw `superadmin` role — APForce's own platform-level, cross-tenant staff role — not from any company-level "account creator" concept. The V3 permission docs (Templates' matrix included) model 5 tiers as if "Owner" sat above "Admin" for every company. In practice, every real company employee's ceiling is `admin`; the "Owner: Edit" tier in these matrices is only reachable by platform staff, never by an actual customer.
+
+**Fix:** None required functionally — `checkRole()`'s own `superadmin` bypass already covers the intended "can do everything" case regardless of this labeling. Purely a documentation-clarity item: note or correct the docs to distinguish "Owner" as a documentation concept from `superadmin` as the implementation, so a future reader doesn't assume a real per-company "Owner" role exists to test against. Tracked in `docs/PENDING_WORK.md`.
+
+**Priority:** Low — no functional bug, just a semantic mismatch between docs and implementation worth a footnote.
+
+### 10 — RESOLVED: unused templateKeys.analytics query key
+
+**Issue:** `templateKeys.analytics` (`dashboard/src/lib/templates/api.ts:152`) was defined but had zero call sites anywhere in the codebase — no `fetchTemplateAnalytics()`-style function or consumer existed.
+
+**Fix (commit `b80305d`):** removed.
+
+**Priority:** Resolved — was Low (harmless, but dead surface area).

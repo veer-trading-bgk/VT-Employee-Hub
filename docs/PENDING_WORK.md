@@ -44,7 +44,6 @@ struck-through and left in place.
   existing `runCount`/`successCount`/`failureCount` atomic-increment, day-bucketed pattern is
   flagged as a plausible lead for the aggregation strategy, not yet confirmed as the chosen
   approach.
-- **B1 — Templates module UI/UX audit.** Not started.
 - **B3 — Settings module deep audit.** Not started.
 - **B4 — AI Admin module UI/UX audit.** Not started.
 - **Phase 2 (Viir's chosen scope) — n8n-style automation builder features:** Condition/IF node,
@@ -85,6 +84,21 @@ struck-through and left in place.
   entity hasn't been checked — if it can, this is the same orphan-record bug class already fixed
   for leads (Era 37/41), just on an unaudited path. Not done.
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Unknown-Contact Delete Never Purges CONV#/TL#".
+- **V3_NAV_PERMISSIONS centralization.** Route gating is currently per-page (`ProtectedRoute
+  allowedRoles`, e.g. Campaigns and, as of 2026-07-12, Templates) rather than driven by the
+  existing-but-unused `V3_NAV_PERMISSIONS` map (`dashboard/src/types/v3.ts:21-33`). A central guard
+  (e.g. in `(v3)/layout.tsx`, consuming that map) would prevent the class of bug the Templates
+  audit's finding #1 was — a page silently shipping with no gate at all. Not urgent: no page is
+  currently missing a gate after that fix. Deliberately not done as part of the Templates fix batch
+  (would have widened that fix's scope well beyond RBAC on one module).
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Templates Module Audit", finding #8.
+- **Docs' "Owner" role tier doesn't map to any real per-company role.** `toV3Role()` only produces
+  `'owner'` from the raw `superadmin` role (APForce's own platform staff), never from any
+  company-level role — every real company employee's ceiling is `admin`. The V3 permission docs
+  model "Owner" as sitting above "Admin" for every company, which doesn't correspond to anything
+  reachable by an actual customer. No functional bug (`checkRole()`'s `superadmin` bypass already
+  covers the intended behavior) — doc-clarity only.
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Templates Module Audit", finding #9.
 
 ## External / waiting-on-Meta
 
