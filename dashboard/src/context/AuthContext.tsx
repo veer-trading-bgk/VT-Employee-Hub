@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { api, ApiClientError, UserShape, setMemoryToken } from '@/lib/api';
 import type { User } from '@/types';
 
@@ -22,9 +22,11 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
   const router = useRouter();
+  const pathname = usePathname();
+  const [user, setUser] = useState<User | null>(null);
+  // The public marketing page never restores a session, so it's never "loading" it.
+  const [loading, setLoading] = useState(() => pathname !== '/marketing');
 
   const logout = useCallback(async () => {
     try { await api.logout(); } catch { /* best-effort */ }
@@ -33,8 +35,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.push('/login');
   }, [router]);
 
-  // Restore session from cookie on load
+  // Restore session from cookie on load. The public marketing page
+  // (apforce.in rewrites '/' to this route) is static and never needs auth
+  // state — skip the call so it never sends a cross-origin request to the
+  // backend, which apforce.in is intentionally not in the CORS allowlist for.
   useEffect(() => {
+    if (pathname === '/marketing') return;
     (async () => {
       try {
         const me = await api.me() as UserShape & { token?: string };
@@ -46,7 +52,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [pathname]);
 
   // Global handler: apiFetch dispatches this when a 401 survives even after a
   // token refresh attempt — meaning the refresh token is also expired/invalid.
