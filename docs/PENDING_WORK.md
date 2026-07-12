@@ -99,6 +99,14 @@ struck-through and left in place.
   reachable by an actual customer. No functional bug (`checkRole()`'s `superadmin` bypass already
   covers the intended behavior) — doc-clarity only.
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Templates Module Audit", finding #9.
+- **DL-021 raw-role audit** — 6 candidate violations found while fixing Templates finding #2, not
+  yet fixed. Files: `sales/page.tsx:1120` (`isAdmin` gating Team View tab), `CampaignList.tsx:26-27`
+  (`canDelete`), `WorkflowList.tsx:25` (`isAdmin`-style workflow actions), `entry/page.tsx:237-238`
+  (`canBulk`), `employees/page.tsx:14-15` (`canCreate`/invite), `settings/page.tsx:1434-1435`
+  (`visibleSections` — which Settings sections render at all; same bug class as the Templates
+  finding #1 RBAC gap just fixed, and directly overlaps B3's future scope). Each needs a backend
+  cross-check against its corresponding endpoint's actual `checkRole()` before fixing — same depth
+  of work as the Templates batch. Not scoped or prioritized yet.
 
 ## External / waiting-on-Meta
 
