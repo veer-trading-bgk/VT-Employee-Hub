@@ -329,6 +329,10 @@ router.get('/leads/:id', authMiddleware, async (req, res, next) => {
     const metaRes = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
     if (!metaRes.Item) return res.status(404).json({ error: 'Lead not found' });
     const meta = metaRes.Item;
+    // Older/partially-created records can lack these array fields entirely —
+    // default them so consumers don't have to null-check on every render.
+    if (!Array.isArray(meta.productInterest)) meta.productInterest = [];
+    if (!Array.isArray(meta.tags)) meta.tags = [];
 
     const empRoles = ['telecaller', 'agent', 'intern'];
     if (empRoles.includes(req.user.role) && meta.assignedTo !== req.user.id) {

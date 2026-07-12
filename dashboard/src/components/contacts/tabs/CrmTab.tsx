@@ -520,9 +520,9 @@ function CrmPanel() {
                 <div className="col-span-2">
                   <dt className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Product Interest</dt>
                   <dd className="mt-1">
-                    {contact.productInterest.length > 0 ? (
+                    {(contact.productInterest ?? []).length > 0 ? (
                       <div className="flex flex-wrap gap-1.5">
-                        {contact.productInterest.map((p) => (
+                        {(contact.productInterest ?? []).map((p) => (
                           <span
                             key={p}
                             className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-medium text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300"
@@ -576,10 +576,10 @@ function CrmPanel() {
                 <div className="absolute right-0 top-8 z-20">
                   <TagSelector
                     catalogTags={tagCatalog}
-                    selectedIds={contact.tags}
+                    selectedIds={contact.tags ?? []}
                     loading={addTag.isPending || removeTag.isPending}
                     onToggle={(tagId) => {
-                      if (contact.tags.includes(tagId)) {
+                      if ((contact.tags ?? []).includes(tagId)) {
                         removeTag.mutate(tagId);
                       } else {
                         addTag.mutate(tagId);
