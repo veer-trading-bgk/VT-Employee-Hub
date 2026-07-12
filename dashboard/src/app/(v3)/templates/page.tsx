@@ -3,12 +3,13 @@
 import { useState } from 'react';
 import { FileText, LayoutDashboard, List } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 import { TemplateDashboard } from '@/components/templates/TemplateDashboard';
 import { TemplateList } from '@/components/templates/TemplateList';
 
 type Tab = 'overview' | 'templates';
 
-export default function TemplatesPage() {
+function TemplatesPageInner() {
   const [activeTab, setActiveTab] = useState<Tab>('overview');
 
   return (
@@ -58,6 +59,19 @@ export default function TemplatesPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+// Admin/manager only — GET /api/whatsapp/templates enforces the same gate
+// server-side (src/routes/whatsapp.js). Previously reachable by any
+// authenticated role via this direct route, with only the New Template/
+// Sync/AI Draft buttons hidden client-side (Templates module audit, finding
+// #1 — see docs/phase3/TECHNICAL_DEBT.md).
+export default function TemplatesPage() {
+  return (
+    <ProtectedRoute allowedRoles={['admin', 'manager']}>
+      <TemplatesPageInner />
+    </ProtectedRoute>
   );
 }
 

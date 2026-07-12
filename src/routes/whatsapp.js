@@ -2494,7 +2494,7 @@ router.delete('/flows/:flowId', authMiddleware, checkRole(['admin', 'manager']),
 });
 
 // ── GET /api/whatsapp/templates — list stored templates ───────────────────────
-router.get('/templates', authMiddleware, async (req, res, next) => {
+router.get('/templates', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
   try {
     const items = [];
     let lastKey;
