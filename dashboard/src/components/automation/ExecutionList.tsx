@@ -152,7 +152,11 @@ function ExecutionRow({
           <Badge variant={meta.variant} className="text-[10px]">{meta.label}</Badge>
         </div>
       </td>
-      <td className="px-4 py-3 text-xs text-neutral-400">{e.triggeredBy?.type ?? '—'}</td>
+      <td className="px-4 py-3">
+        {e.triggeredBy?.type
+          ? <Badge variant="default" className="text-[10px]">{e.triggeredBy.type}</Badge>
+          : <span className="text-xs text-neutral-400">—</span>}
+      </td>
       <td className="px-4 py-3 text-right text-xs text-neutral-400">
         {format(new Date(e.startedAt), 'd MMM, h:mm a')}
       </td>

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Zap, LayoutDashboard, List, Activity } from 'lucide-react';
+import { Zap, LayoutDashboard, List, Activity, Settings } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { AutomationDashboard } from '@/components/automation/AutomationDashboard';
 import { WorkflowList } from '@/components/automation/WorkflowList';
@@ -12,12 +12,13 @@ import { WorkingHoursPanel } from '@/components/settings/WorkingHoursPanel';
 import { DelayedResponsePanel } from '@/components/settings/DelayedResponsePanel';
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 
-type Tab = 'dashboard' | 'workflows' | 'executions';
+type Tab = 'dashboard' | 'workflows' | 'executions' | 'settings';
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
   { id: 'dashboard',  label: 'Dashboard',  icon: LayoutDashboard },
   { id: 'workflows',  label: 'Workflows',  icon: List            },
   { id: 'executions', label: 'Executions', icon: Activity        },
+  { id: 'settings',   label: 'Settings',   icon: Settings         },
 ];
 
 function AutomationPageInner() {
@@ -71,15 +72,15 @@ function AutomationPageInner() {
               onCreateWorkflow={() => router.push('/automation/canvas/new')}
             />
           )}
-          {activeTab === 'workflows'  && (
+          {activeTab === 'workflows'  && <WorkflowList />}
+          {activeTab === 'executions' && <ExecutionList />}
+          {activeTab === 'settings'   && (
             <>
               <WelcomeMessagePanel />
               <WorkingHoursPanel />
               <DelayedResponsePanel />
-              <WorkflowList />
             </>
           )}
-          {activeTab === 'executions' && <ExecutionList />}
         </div>
       </div>
     </div>

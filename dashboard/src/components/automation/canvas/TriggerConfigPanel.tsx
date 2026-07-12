@@ -24,7 +24,9 @@ export function TriggerConfigPanel({ trigger, onChange, onClose, workflowId }: T
   return (
     <div
       className={cn(
-        'absolute right-3 top-3 bottom-3 z-10 flex w-[380px] flex-col overflow-hidden',
+        // top-16 (not top-3) so this panel never overlaps the canvas's own
+        // top-right Save/Auto-arrange Panel — see WorkflowCanvas.tsx.
+        'absolute right-3 top-16 bottom-3 z-10 flex w-[380px] flex-col overflow-hidden',
         'rounded-xl border border-neutral-200 bg-white shadow-lg',
         'dark:border-neutral-800 dark:bg-neutral-900',
       )}

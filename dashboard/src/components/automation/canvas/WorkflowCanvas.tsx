@@ -100,6 +100,15 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
     setEdges((eds) => eds.filter((e) => !deletedIds.has(e.source) && !deletedIds.has(e.target)));
   }, [setEdges]);
 
+  // Explicit delete affordance (NodeConfigPanel's trash icon) — keyboard Backspace
+  // already deletes via React Flow's own change/onNodesDelete path above; this
+  // mirrors that same edge-cleanup so both paths behave identically.
+  function deleteSelectedNode(nodeId: string) {
+    setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+    setEdges((eds) => eds.filter((e) => e.source !== nodeId && e.target !== nodeId));
+    setSelectedNodeId(null);
+  }
+
   function addNode(type: NodeType) {
     const config: NodeConfig =
       type === 'condition'     ? defaultConditionConfig() :
@@ -212,6 +221,7 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
           config={selectedNode.data.config}
           onChange={updateSelectedConfig}
           onClose={() => setSelectedNodeId(null)}
+          onDelete={() => deleteSelectedNode(selectedNode.id)}
         />
       )}
     </div>

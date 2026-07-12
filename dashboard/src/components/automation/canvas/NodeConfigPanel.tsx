@@ -1,6 +1,6 @@
 'use client';
 
-import { X, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin } from 'lucide-react';
+import { X, Trash2, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ACTION_META, isConditionConfig, type ActionType, type NodeType } from '@/types/automations';
 import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig, SendMessageConfig, SendListConfig, SendLocationConfig, StepConfig } from '@/types/automations';
@@ -19,6 +19,7 @@ interface NodeConfigPanelProps {
   config:           NodeConfig;
   onChange:         (config: NodeConfig) => void;
   onClose:          () => void;
+  onDelete:         () => void;
 }
 
 const EXTRA_TITLES: Partial<Record<NodeType, { label: string; icon: typeof GitBranch }>> = {
@@ -36,7 +37,7 @@ const EXTRA_TITLES: Partial<Record<NodeType, { label: string; icon: typeof GitBr
  * The canvas behind it must stay interactive (pan/zoom/click other nodes) while a
  * node's config is open, which a modal Drawer would block.
  */
-export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose }: NodeConfigPanelProps) {
+export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose, onDelete }: NodeConfigPanelProps) {
   const extra = EXTRA_TITLES[nodeType];
   const Icon  = extra?.icon ?? ACTION_ICONS[nodeType as ActionType] ?? undefined;
   const title = extra?.label ?? ACTION_META[nodeType as ActionType]?.label ?? nodeType;
@@ -44,7 +45,9 @@ export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose }:
   return (
     <div
       className={cn(
-        'absolute right-3 top-3 bottom-3 z-10 flex w-[380px] flex-col overflow-hidden',
+        // top-16 (not top-3) so this panel never overlaps the canvas's own
+        // top-right Save/Auto-arrange Panel — see WorkflowCanvas.tsx.
+        'absolute right-3 top-16 bottom-3 z-10 flex w-[380px] flex-col overflow-hidden',
         'rounded-xl border border-neutral-200 bg-white shadow-lg',
         'dark:border-neutral-800 dark:bg-neutral-900',
       )}
@@ -62,13 +65,23 @@ export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose }:
             <p className="truncate text-[11px] text-neutral-400">{nodeId}</p>
           </div>
         </div>
-        <button
-          onClick={onClose}
-          className="shrink-0 rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
-          aria-label="Close panel"
-        >
-          <X className="h-4 w-4" aria-hidden />
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            onClick={onDelete}
+            className="rounded-lg p-1.5 text-neutral-400 hover:bg-error-50 hover:text-error-600 dark:hover:bg-error-900/20"
+            aria-label="Delete node"
+            title="Delete node"
+          >
+            <Trash2 className="h-4 w-4" aria-hidden />
+          </button>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+            aria-label="Close panel"
+          >
+            <X className="h-4 w-4" aria-hidden />
+          </button>
+        </div>
       </div>
 
       {/* Body */}

@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
 import { Badge } from '@/components/v3/ui/Badge';
+import { GaugeChart } from '@/components/charts/GaugeChart';
 import { cn } from '@/lib/cn';
 import { format } from 'date-fns';
 import {
@@ -56,19 +57,24 @@ export function AutomationDashboard({
       </div>
 
       {/* Execution performance */}
-      <div className="grid grid-cols-2 gap-3">
-        {statsLoading
-          ? Array.from({ length: 2 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-xl" />)
-          : [
-              { label: 'Total Executions', value: (s?.totalExecutions ?? 0).toLocaleString(), sub: 'all workflows'    },
-              { label: 'Success Rate',     value: `${s?.successRate ?? 0}%`,                  sub: 'completed / run'  },
-            ].map((kpi) => (
-              <div key={kpi.label} className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
-                <p className="text-xl font-bold text-neutral-900 dark:text-white">{kpi.value}</p>
-                <p className="text-xs font-medium text-neutral-700 dark:text-neutral-300">{kpi.label}</p>
-                <p className="text-xs text-neutral-400">{kpi.sub}</p>
-              </div>
-            ))}
+      <div className="grid grid-cols-2 items-start gap-3">
+        {statsLoading ? (
+          <>
+            <Skeleton className="h-16 rounded-xl" />
+            <Skeleton className="h-48 rounded-xl" />
+          </>
+        ) : (
+          <>
+            <div className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+              <p className="text-xl font-bold text-neutral-900 dark:text-white">{(s?.totalExecutions ?? 0).toLocaleString()}</p>
+              <p className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Total Executions</p>
+              <p className="text-xs text-neutral-400">all workflows</p>
+            </div>
+            <div className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+              <GaugeChart value={s?.successRate ?? 0} label="Success Rate" />
+            </div>
+          </>
+        )}
       </div>
 
       {/* Recent executions */}
