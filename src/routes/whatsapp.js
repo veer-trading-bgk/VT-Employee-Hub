@@ -3163,7 +3163,11 @@ router.post('/send-location', authMiddleware, rateLimit(20, 60_000), async (req,
 });
 
 // ── POST /api/whatsapp/broadcast — send template to a lead segment ────────────
-router.post('/broadcast', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
+// Admin-only, matching docs/v3/09_PERMISSION_MATRIX.md's action table ("Create
+// broadcast": Owner/Admin only, Manager ✗) — manager previously had launch
+// access here despite being documented as View-only (Templates audit, finding
+// #4; product-confirmed, see docs/phase3/TECHNICAL_DEBT.md).
+router.post('/broadcast', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { templateId, variableValues, filter, headerVariableValue } = req.body;
     if (!templateId) return res.status(400).json({ error: 'templateId required' });
