@@ -630,3 +630,105 @@ Verified live (temporary harness, deleted after use): edited the name and saved 
 **Verification:** all 5 fixes are `tsc`/ESLint clean (confirmed no new errors on every touched file, plus a full project-wide `tsc --noEmit` pass). **Real-browser verification at 375/390px (and 1280px desktop regression for Fixes 1/3/4) was not performed.** This environment had no `E2E_EMAIL`/`E2E_PASSWORD` set initially; once supplied, the real login attempt against the live backend returned "Login failed. Please try again." (a genuine auth rejection, not a network/CORS failure — the login page loaded and the form submitted correctly) — not retried with credential guesses, and the user chose to proceed without live verification rather than supply corrected credentials. Each fix is therefore verified at the code level only (type-checking, linting, and — for Fixes 1 and 3 — matching an already-proven live pattern exactly) and should get a real-device/real-browser pass before being considered fully closed.
 
 **Priority:** Medium — real mobile-usability bugs on customer-facing surfaces (Inbox, Customer 360, Templates, Automation), fixed but unverified live in this environment.
+
+## B4 — AI Admin Module Audit (2026-07-13) — 11 findings, 7 resolved this batch (5 code, 2 doc-fix), 4 open
+
+**Source:** a read-only UI/UX + RBAC audit of every AI-related admin/superadmin surface — Settings > AI (`AISection.tsx`), the AI Administration module (`ai-admin/` — General/Conversation/Compliance/Prompt Management/Future, 5 tabs, not 4 as originally scoped; Prompt Management shipped later, Era 26/PR2), Knowledge Center, Platform > AI Costs (`AiCostsTab.tsx`), and the (since-removed) approval queue — conducted via 4 parallel read-only agents (static reads + backend cross-checks) plus live role-scoped Playwright verification (the CORS-credentialed-request trap from the M1 mobile audit re-confirmed and avoided from the start) in a separate Claude Code session/instance, not this one. This entry documents the fix batch implemented here from that audit's findings, following the same S1/S2 pattern as the B3 Settings audit.
+
+**RBAC confirmed solid, zero gaps found** — verified independently at both frontend (`ProtectedRoute allowedRoles`, not nav-hiding) and backend (router-level `authMiddleware`+`adminMiddleware`/`platformAdminMiddleware` blanket gates, confirmed live via direct-URL role-bypass attempts for manager/telecaller/admin-on-Platform) across all three admin/superadmin surfaces. Not a finding below — recorded because the audit specifically checked for it, per the B3 lesson (nav-hiding alone is not enforcement).
+
+### 1 — RESOLVED: ADR-016 turn-cap/"unsupervised" language disclosed in company-facing AI settings copy
+
+**Issue:** `AISection.tsx:30`'s `conversational-sales-agent` description (Settings > AI, reachable by any company admin) stated the AI conversation agent runs "for up to 10 turns, before any human is involved" — ADR-016 Requirement 2 explicitly names this exact file and requires zero company-facing visibility of the exchange cap, not even read-only. The label also carried "(multi-turn)".
+
+**Fix (commit `7e0d73d`):** label and description rewritten to describe the toggle's actual behavior (responds to enquiries, follows the same compliance rules as the team, hands off automatically) with no turn-count or autonomy-framing language — product-approved wording. A third instance beyond the original audit's two (see finding #10) was found via this commit's own repo-wide grep verification: `GeneralTab.tsx:14` (AI Administration's own General tab, which the original audit judged clean under a narrower "no explicit number disclosed" reading) also carried "multi-turn"/"before any human is involved" — fixed in the same commit, same fix category.
+
+**Priority:** Resolved — was Critical (the one confirmed live compliance-rule violation in the audit).
+
+### 2 — OPEN, awaiting business input: AiCostsTab's entire cost report is pricing-placeholder-tainted
+
+**Issue:** Every dollar/rupee figure `AiCostsTab.tsx` renders traces back to `AIService.js:275`'s `costUsd = rawCost * aiConfig.PRICING.marginMultiplier` — `marginMultiplier` (and the per-model token rates it multiplies) are explicitly labeled `PLACEHOLDER` in `aiConfig.js`, not finalized pricing. This corrected the audit's own starting premise (that only a narrow "wallet points" figure would be affected) — `costUsd` itself bakes in the placeholder at the point of computation, so there is no clean/real dollar figure anywhere in this report except the Embeddings estimate (a separate, real Voyage list-price constant). Compounding: every INR figure additionally rides a hardcoded, non-refreshed FX snapshot (`USD_TO_INR_RATE = 95.05`, dated 2026-07-08).
+
+**Fix:** Not implemented — needs real business input to set `marginMultiplier`/`pointsPerUsd` to actual values (and ideally a live/refreshed FX rate), not a code fix. Blast radius is now precisely scoped: `AiCostsTab.tsx` (all of it) and `AISection.tsx`'s dormant Wallet-balance card (currently always 0 — see finding #9's note that `WalletService.credit()`/`debit()` have zero callers anywhere in `src/` today, so this is a *future* blast radius, not an active wrong-number-shown-today one).
+
+**Priority:** High — not a security bug, but a superadmin-facing financial report that is silently wrong today. Owner: Viir (business/pricing decision, tracked in `docs/PENDING_WORK.md`).
+
+### 3 — RESOLVED: AiCostsTab's low-data banner implied pricing is finalized
+
+**Issue:** `AiCostsTab.tsx:310`'s banner said "Numbers below are real, not placeholders" — using the word "placeholders" to reassure about data *completeness* (Era 36/38, unrelated), which collided with the real, separate, undisclosed pricing-placeholder issue (finding #2) sitting on the exact same tab.
+
+**Fix (commit `37dea40`):** reworded to avoid the colliding word and to add the pricing-provisional caveat this tab discloses nowhere else, pointing to `PENDING_WORK.md`.
+
+**Priority:** Resolved — was High (actively misleading, cheap fix).
+
+### 4 — OPEN, scoped and approved: no compliance-monitoring surface exists for the autonomous conversational agent
+
+**Issue:** `conversational-sales-agent` initiates and carries unsupervised multi-turn WhatsApp conversations with new customers (real regulatory exposure — SEBI-registered AP). Neither AI Administration's Conversation tab nor its Compliance tab shows any actual escalated conversation, guardrail-trip count, or incident drill-down — Compliance only displays the static rule *taxonomy*. The underlying signal exists (`ai_conversation_turn` audit records, `guardrailTripped`/`qualified`/`reasoning` fields, written per-turn by `ConversationalAgentService.js:454-459`) but is reachable only through the generic, unfiltered Audit Log.
+
+**Scoping (Viir-approved, pre-onboarding priority — not yet implemented):**
+- **Data:** `ai_conversation_turn` audit records are the only signal available (no separate handoff/escalation audit action exists — `_handoff()` writes no audit record of its own; a handoff summary IS written but as a human-readable Customer 360 note, not an aggregate/queryable signal). Volume: ≤`MAX_TURNS` (10) records per conversation, low absolute volume pre-onboarding.
+- **Surface:** extend AI Administration's existing Compliance tab (not a new tab) — already titled "Compliance," already explains the rules; the occurrences belong directly below. `AuditTable` (Settings > Audit Log's shared component) doesn't fit as-is (fixed 6 generic columns, never renders `details`) — needs a small, purpose-built table copying its visual idiom, not a new visual language. `AiCostsTab`'s `EntityDrilldown` interaction (paste/click an id → fetch everything for it) is the right pattern to mirror for "click a flagged turn → see the full conversation."
+- **MVP (explicitly scoped, rest deferred):** (a) guardrail-trip list (`details.guardrailTripped === true`, most-recent-first, with `reasoning` shown) + drill-down into the full conversation's turns, (c) per-day trip counts (cheap — same result set, `groupBy(date)`, include in MVP). **Deferred:** any actionable queue (acknowledge/assign/dismiss) — audit records are immutable history with no status field; a real queue needs new DynamoDB state, a materially bigger feature, not scoped now.
+- **Backend:** reuse `queryAuditLogs()` (`src/routes/audit.js:12-50` — already does a real `companyIdIndex` GSI query, not a scan, when `companyId` is known, with an `extraFilter` param already proven for exactly this "filter by action type" pattern at 2 existing call sites). Recommended: promote it from `routes/audit.js` to `utils/audit.js` (single source of truth) so `routes/aiAdmin.js` can import it without a route-file-to-route-file reach-across; add exactly one new route, `GET /api/ai-admin/compliance/conversations`, inheriting `aiAdmin.js`'s existing router-level admin gate automatically.
+- **Two implementation-time caveats flagged during scoping, not yet resolved:** (1) the drill-down ("all turns for one `conversationId`") has no dedicated index — `conversationId` is neither the audit table's PK nor SK — so it must be a `companyId`-GSI query filtered by `details.conversationId`, bounded to one company+date-range, not a proper indexed lookup; fine at single-conversation scale but should be built knowingly, not assumed free. (2) `details.guardrailTripped` is a nested-map `FilterExpression` path — verify whether `details` needs `ExpressionAttributeNames` escaping (DynamoDB's reserved-word list; `#action` is already escaped for exactly this reason at existing call sites, `details` untested) before this ships.
+- **Estimated commits:** (1) refactor `queryAuditLogs()` to `utils/audit.js`, zero behavior change, verify existing 4 callers first; (2) new backend route + tests; (3) frontend — table + per-day counts appended to `ComplianceTab.tsx`, drill-down view.
+
+**Priority:** Medium-High — no broken UI, but a real operational gap on a feature carrying real regulatory exposure. Not started.
+
+### 5 — OPEN, queued: systemic `isError` gap across nearly every AI-admin query
+
+**Issue:** The `TagsSection` reference pattern (destructure `isError`, show Retry, never silently render a false-empty/stuck-loading state) is missing on ~11 queries across 9 files: `GeneralTab.tsx`, `ConversationTab.tsx`, `ComplianceTab.tsx`, `PromptManagementTab.tsx` (both its addendum query and its versions query — the latter renders a fetch failure identically to a genuine "no versions yet" empty state), `FutureAiSettingsTab.tsx`, `AISection.tsx`'s wallet query (renders "0 points" on failure, indistinguishable from a real zero balance), `AiCostsTab.tsx`'s main query (renders skeletons forever on failure, no error state at all — despite this same file's own `EntityDrilldown` sub-component doing this correctly), and all three Knowledge Center queries (`KnowledgeList.tsx`, `DocumentList.tsx`, `KnowledgeEntryDrawer.tsx`'s versions query).
+
+**Fix:** Not implemented — mechanical, well-precedented, low-risk, same one-line-per-query pattern applied ~11 times. Queued as its own batch.
+
+**Priority:** Medium — no data-mutation risk (all read paths), wide but shallow.
+
+### 6 — RESOLVED: `FutureAiSettingsTab` claimed RAG doesn't exist; it's been live since the day after this tab shipped
+
+**Issue:** `FutureAiSettingsTab.tsx`'s locked RAG/Embedding/Search rows said "no RAG infrastructure exists yet" / "Requires the Knowledge Center... before this can do anything" — true 2026-07-06 (Era 24, when the tab shipped), false since 2026-07-07 (Era 27-31 — Knowledge Center, Document Knowledge, and full RAG integration all shipped the next day). `ConversationalAgentService._fetchKnowledgeContext()` calls `EmbeddingService`/`KnowledgeService`/`DocumentChunkRetrievalService` live on every conversation turn.
+
+**Fix (commit `e46c9b3`):** removed the three locked rows (judgment call, explained in the commit message: a live, unconditional, non-configurable capability doesn't belong as a "coming soon" preview in a tab named "Future AI Settings" — no admin-facing control for RAG exists to preview, since it isn't gated by any toggle). The tab's still-accurate "Custom model settings" section (genuinely unwired into `AIService` today, confirmed via grep) was left untouched.
+
+**Priority:** Resolved — was Medium (user-facing misinformation about a real, active capability, not a security issue).
+
+### 7 — RESOLVED (doc-fix): ADR-015 Rule 6 still described the approval queue as existing; it was deliberately removed Era 21
+
+**Issue:** ADR-015's Rule 6 (written 2026-07-03, addended 2026-07-05) described `src/services/ApprovalService.js`, `src/routes/approvals.js`, and `dashboard/src/app/(v3)/approvals/page.tsx` as existing, built infrastructure. Confirmed via Glob: none exist. `19_DECISION_LOG.md`'s Era 21 entry (2026-07-06) explains the deliberate removal (dead weight once `inbox-template-suggestion` switched to sending directly) — ADR-015 itself was never amended to reflect it, which is exactly why this audit's own approval-queue task was initially framed around "does it work" rather than "was it removed."
+
+**Fix (commit `e0e4289`):** amended as a third, dated Rule 6 addendum (2026-07-06), preserving the original rule text and both 2026-07-05 addenda as historical record rather than rewriting them. Two more stale pointers to the same removed mechanism, found while implementing this fix and corrected for internal consistency: the Related list's `ApprovalService.js` entry, and the Data model additions table's `APPROVAL#{companyId}` row.
+
+**Priority:** Resolved — was Medium (misleading to any reader trusting ADR-015 as current ground truth; not a functional gap).
+
+### 8 — RESOLVED (doc-fix): ADR-015's Related list still pointed at deleted `InsightsPanel.tsx`
+
+**Issue:** `ADR-015:246` still listed `dashboard/src/components/ai/InsightsPanel.tsx` as "the existing frontend AI slot, currently unwired into Customer 360." File confirmed deleted 2026-07-05 (dead code, never mounted anywhere). `CODEBASE_AUDIT.md` and `docs/bible/08_MODULES.md` already got this correction 2026-07-08 — ADR-015 was the one remaining stale copy.
+
+**Fix (commit `e0e4289`, same commit as finding #7):** struck through with a REMOVED note, matching this doc's own established convention for closed items. Context/Migration-Status mentions of the same file elsewhere in ADR-015 (lines ~28, ~126) left untouched — legitimate historical narration of what was true on the ADR's original dates, not current-state claims.
+
+**Priority:** Resolved — was Low-Medium.
+
+### 9 — RESOLVED: `GET /api/ai/wallet` allowed manager; its only UI caller is admin-only
+
+**Issue:** `src/routes/ai.js:109` allowed `checkRole(['admin', 'manager'])`, but `AISection.tsx` (its only frontend caller) sits behind `adminOnly: true` with no manager override — a manager could never see the Wallet card in the UI but could fetch the same data via direct API call.
+
+**Fix (commit `4963883`):** tightened to `checkRole(['admin'])` — product-confirmed to match the page, not widen the page to match the route. New tests added (`getRouteStack` helper — the existing test used `getRouteHandler`, which deliberately bypasses all middleware including `checkRole`, so it could never have caught this gap): manager/telecaller rejected 403, admin passes, superadmin bypasses (unchanged).
+
+**Priority:** Resolved — was Low (data was low-sensitivity and currently always 0 — `WalletService.credit()`/`debit()` have zero callers anywhere in `src/` today).
+
+### 10 — RESOLVED: `conversationAgentEnabled`'s "not yet exposed in this UI" claim was false
+
+**Issue:** `AISection.tsx:30`'s description said the CONVAGENT `enabled` flag was "not yet exposed in this UI — set via `PUT /api/whatsapp/conversation-agent-config`." `GeneralTab.tsx`'s own "AI Conversation Agent" toggle writes the identical `CONFIG#CONVAGENT#{companyId}` record (confirmed by key match) — it now is exposed, just via a different page.
+
+**Fix (commit `7e0d73d`, same commit as finding #1):** corrected in the same description rewrite — replaced the stale PUT-endpoint reference with a plain pointer to AI Administration → General.
+
+**Priority:** Resolved — was Low.
+
+### 11 — OPEN, queued: small functionality gaps, no user-facing risk
+
+- `updateDocumentMeta()` (`dashboard/src/lib/knowledge/documentsApi.ts:64-66`) is fully wired end-to-end (real frontend fn, real backend route) but has zero UI callers — no way to rename/re-categorize an uploaded Knowledge Center document after upload.
+- `CompanyCostTable` (`AiCostsTab.tsx:138-169`) never passes `onRowClick` to the shared `Table` component — clicking a company row doesn't drill into it, despite `Table.tsx` supporting exactly that pattern and `EntityDrilldown` existing right below it (manual conversationId paste is the only working path in).
+- `EntityDrilldownResult` fetches per-record `embedUsage` data but only ever renders the aggregate total — the granular list the backend already returns is unused.
+
+**Fix:** Not implemented — each is small; bundle as a low-priority sweep-up batch.
+
+**Priority:** Low.

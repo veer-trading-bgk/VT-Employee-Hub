@@ -40,7 +40,14 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
   existing `runCount`/`successCount`/`failureCount` atomic-increment, day-bucketed pattern is
   flagged as a plausible lead for the aggregation strategy, not yet confirmed as the chosen
   approach.
-- **B4 — AI Admin module UI/UX audit.** Not started.
+- **B4 remaining (AI Admin audit follow-up — 7 of 11 findings resolved 2026-07-13).** isError sweep
+  (~11 queries across 9 AI Administration/Knowledge Center files — `TagsSection` reference pattern
+  not yet applied). Sweep-up batch (3 small gaps: unwired `updateDocumentMeta()`, `CompanyCostTable`
+  row-click drill-down, unused `embedUsage` detail in `AiCostsTab.tsx`). Compliance-monitoring
+  dashboard for the autonomous conversational agent — scoped and Viir-approved (guardrail-trip list +
+  conversation drill-down + per-day counts, extends AI Administration's Compliance tab, reuses
+  `queryAuditLogs()`), pre-onboarding priority, not yet implemented.
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "B4 — AI Admin Module Audit", findings #4/#5/#11.
 - **Settings mobile navigation build (B3 finding #4).** The documented mobile "two-screen"
   Settings experience (section list → section content, back arrow returns) does not exist —
   `settings/page.tsx`'s sidebar is simply `hidden ... md:flex` with no mobile equivalent, so below
@@ -57,10 +64,12 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
   matrix).
 - **Phase 2 (Viir's chosen scope) — n8n-style automation builder features:** Condition/IF node,
   drag-to-connect canvas UX, dry-run/test mode. Scope chosen by Viir; not started.
-- **AI pricing placeholder fix** (`src/config/aiConfig.js`) — `PRICING` is a placeholder, not real
-  per-model/per-token cost data. Small fix, not done.
-  *Detail:* `docs/bible/19_DECISION_LOG.md` Era 11 (ADR-015) region; confirmed still a placeholder
-  as of the Phase 2A audit.
+- **AI pricing placeholder fix** (`src/config/aiConfig.js`) — `PRICING.marginMultiplier`/`pointsPerUsd`
+  and the per-model token rates are placeholders, not real cost data. Confirmed (B4 audit, 2026-07-13)
+  to taint every dollar/rupee figure on Platform → AI Costs, not just a narrow "wallet points" display
+  — needs real business input to set actual values, plus the hardcoded `USD_TO_INR_RATE` FX snapshot
+  (dated 2026-07-08, not auto-refreshed) needs a refresh mechanism. Viir's plate — not a code-only fix.
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "B4 — AI Admin Module Audit", finding #2.
 - **`ctwa_clid` / Meta ads click-to-WhatsApp attribution capture.** No Meta Ads API integration
   exists in this codebase today (CTWA campaigns are record-only — configured in Meta Ads Manager
   directly, not launched from APForce; see `docs/bible/20_CURRENT_STATE.md` §4). Needed before
