@@ -16,7 +16,7 @@ struck-through and left in place.
 - Keep entries short — one or two sentences plus a pointer to where the full detail lives. This
   file is a checklist to scan, not a place to re-litigate the full context every time.
 
-**Last updated:** 2026-07-12.
+**Last updated:** 2026-07-13.
 
 ---
 
@@ -44,8 +44,28 @@ struck-through and left in place.
   existing `runCount`/`successCount`/`failureCount` atomic-increment, day-bucketed pattern is
   flagged as a plausible lead for the aggregation strategy, not yet confirmed as the chosen
   approach.
-- **B3 — Settings module deep audit.** Not started. Informational note found while building the Settings → Templates section (Templates audit finding #7): `docs/v3/06_SCREEN_SPECIFICATIONS.md`'s Settings spec also lists a "Broadcast" section under CHANNELS, alongside WhatsApp and Templates — like Templates was, Broadcast is still entirely spec-only, no section exists in `settings/page.tsx` today. Not an action item on its own, just worth knowing when B3 starts (same "spec vs. built" gap class, one more instance of it).
 - **B4 — AI Admin module UI/UX audit.** Not started.
+- **Settings mobile navigation build (B3 finding #4).** The documented mobile "two-screen"
+  Settings experience (section list → section content, back arrow returns) does not exist —
+  `settings/page.tsx`'s sidebar is simply `hidden ... md:flex` with no mobile equivalent, so below
+  768px there is no way to switch Settings sections through the UI at all (confirmed live). Needs a
+  real mobile nav (bottom sheet, hamburger, or a genuine two-screen router state) — a build item,
+  not a one-line fix. Not started.
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Settings Module Audit", finding #4.
+- **Settings spec sync.** 3 documented Settings sections (Teams, Roles & Permissions, Danger Zone)
+  have zero code anywhere, not even a stub; conversely 5 built sections (Notifications, Security,
+  Appearance, AI, Metric Targets) have no documentation at all. Needs a decision per section: build
+  the missing ones, or correct the docs to describe only what actually exists (same "spec vs. built"
+  gap class as the Templates/Broadcast finding already closed). Not started.
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Settings Module Audit" section intro (spec vs. built
+  matrix).
+- **Automation canvas sub-pages have no `ProtectedRoute` of their own.** Found while tightening
+  `GET /api/automations/:id` to admin-only (B3 finding #8, commit `9eab2a1`): unlike the main
+  `/automation` page, `/automation/canvas/new` and `/automation/canvas/[id]` aren't wrapped in
+  `ProtectedRoute allowedRoles`. Not nav-reachable for a manager (no button links there), so no
+  currently-used workflow broke when the backend route tightened — but a manager who already knew a
+  workflow id and typed the canvas URL directly would now get a 403 where they previously got 200.
+  Small, same-pattern fix as the main page's own guard; not done.
 - **Phase 2 (Viir's chosen scope) — n8n-style automation builder features:** Condition/IF node,
   drag-to-connect canvas UX, dry-run/test mode. Scope chosen by Viir; not started.
 - **AI pricing placeholder fix** (`src/config/aiConfig.js`) — `PRICING` is a placeholder, not real
@@ -99,14 +119,16 @@ struck-through and left in place.
   reachable by an actual customer. No functional bug (`checkRole()`'s `superadmin` bypass already
   covers the intended behavior) — doc-clarity only.
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Templates Module Audit", finding #9.
-- **DL-021 raw-role audit** — 6 candidate violations found while fixing Templates finding #2, not
-  yet fixed. Files: `sales/page.tsx:1120` (`isAdmin` gating Team View tab), `CampaignList.tsx:26-27`
-  (`canDelete`), `WorkflowList.tsx:25` (`isAdmin`-style workflow actions), `entry/page.tsx:237-238`
-  (`canBulk`), `employees/page.tsx:14-15` (`canCreate`/invite), `settings/page.tsx:1434-1435`
-  (`visibleSections` — which Settings sections render at all; same bug class as the Templates
-  finding #1 RBAC gap just fixed, and directly overlaps B3's future scope). Each needs a backend
-  cross-check against its corresponding endpoint's actual `checkRole()` before fixing — same depth
-  of work as the Templates batch. Not scoped or prioritized yet.
+- **DL-021 raw-role audit — CLOSED-AS-ANALYZED, cleanup queued.** All 6 tracked candidates
+  (`sales/page.tsx:1120`, `CampaignList.tsx:26-27`, `WorkflowList.tsx:25`, `entry/page.tsx:237-238`,
+  `employees/page.tsx:14-15`, `settings/page.tsx:1447/1463`) were cross-checked against their
+  backend `checkRole()` gates during the B3 audit (2026-07-13) and found structurally harmless — all
+  6 use only v3Role buckets that can never diverge from a raw-role check for the roles in play
+  today (5 are singleton-bucket checks; the 6th, `entry/page.tsx`, depends on a backend mirror that
+  currently holds but is worth re-checking if `team_lead` scope is ever split from `manager`, per
+  OQ-006 above). A raw-role-ify cleanup pass across all 6 sites is queued as low-priority follow-up
+  work (batch "S3"), not urgent.
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Settings Module Audit", finding #10.
 
 ## External / waiting-on-Meta
 

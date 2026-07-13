@@ -272,7 +272,7 @@ What appears in the sidebar for each role.
 | Employees | Full | Full | View | Hidden | Hidden |
 | Teams | Full | Full | View | Hidden | Hidden |
 | Roles & Permissions | Edit | View | Hidden | Hidden | Hidden |
-| Audit Log | Full | View | Hidden | Hidden | Hidden |
+| Audit Log | Full | Full | Hidden | Hidden | Hidden |
 | Pipelines & Stages | Full | Full | Hidden | Hidden | Hidden |
 | Tags | Full | Full | Edit | Hidden | Hidden |
 | WhatsApp | Full | Full | Hidden | Hidden | Hidden |
@@ -281,6 +281,15 @@ What appears in the sidebar for each role.
 | Integrations | Full | View | Hidden | Hidden | Hidden |
 | Billing | Full | Hidden | Hidden | Hidden | Hidden |
 | Danger Zone | Full | Hidden | Hidden | Hidden | Hidden |
+
+**Audit Log correction (2026-07-13, B3 audit finding #13):** Admin corrected from
+`View` to `Full` — `src/routes/audit.js`'s 5 routes (including `GET /export`) all use
+`adminMiddleware` uniformly (admin or superadmin, identical treatment); there is no
+code-enforced Owner-vs-Admin tier for Audit Log today. An Owner-only export tier is
+deferred until a real per-company Owner role exists — `toV3Role()` only ever produces
+`'owner'` from the raw `superadmin` platform role, never from any company-level role
+(see finding #9 in the Templates Module Audit section below), so an "Owner: Full,
+Admin: View-only" split isn't implementable against a real company employee today.
 
 ### Settings Actions (where accessible)
 

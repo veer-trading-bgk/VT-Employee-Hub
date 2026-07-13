@@ -456,3 +456,145 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 **Fix (commit `e659d85`):** gated on `canManage`, matching the toolbar button and correctly folding in the new `readOnly` override too (`canManage` is `false` whenever `readOnly` is `true`, regardless of role).
 
 **Priority:** Resolved — was Low/Medium (no real data-mutation risk since the backend already rejected it, but a genuine UI-level RBAC gate failure on a surface meant to be fully locked down).
+
+## Settings Module Audit (B3, 2026-07-13) — 17 findings, 3 resolved same session (#1, #2, #8), 1 doc-fix (#13), 13 open
+
+**Source:** a scoped read-only audit of the Settings module (`settings/page.tsx`'s tab-switcher and every inline section, all extracted section components under `dashboard/src/components/v3/settings/` and `dashboard/src/components/settings/`, and their backing backend routes) — 6 audit tasks given directly in chat: the DL-021 raw-role sweep on the 6 candidates tracked in `docs/PENDING_WORK.md`, a spec-vs-built matrix against `06_SCREEN_SPECIFICATIONS.md`/`02_INFORMATION_ARCHITECTURE.md`, a permission-matrix cross-check against `09_PERMISSION_MATRIX.md` §10, a backend gate audit, dead/stub UI + state-handling review, and real-browser role-scoped verification (admin/manager/team_lead/telecaller, plus a mobile-viewport check) via a temporary no-login Playwright harness, deleted after use. Findings #1, #2, #8 were fixed the same session as "Batch S1" (security-only fixes, each its own commit, held for review before push); #13 resolved as a doc-fix in the same batch. Findings #3-#7, #7b, #9-#12, #14-#16 remain open, tracked below and (selectively) in `docs/PENDING_WORK.md`.
+
+### 1 — RESOLVED: Privilege escalation — an Admin could grant the Admin role to anyone
+
+**Issue:** `src/routes/admin.js`'s `POST /employees` and `PUT /employees/:id` were both correctly `adminMiddleware`-gated, but neither checked the target `role` value against the requester's own role. `registerSchema`/`updateEmployeeSchema` (`src/utils/validation.js:210,232`) accept `role: 'admin'` with no restriction on who can set it. Contradicts `docs/v3/09_PERMISSION_MATRIX.md:292,330-332` ("Admin: Limited (can't create Admin)... prevents privilege escalation without Owner knowledge"). Any `admin`-role user could promote any employee — or themselves via PUT — to `admin`.
+
+**Fix (commit `089c23c`):** both routes now reject a payload with `role === 'admin'` unless `req.user.role === 'superadmin'`. Demotion (changing a role away from `admin`) is deliberately not blocked — the doc's stated intent is about granting/creating Admin, not about admins losing the role. New tests: `tests/adminEmployeeAdminGrantGate.test.js` (direct-handler-invocation, 9 cases).
+
+**Priority:** Resolved — was Critical.
+
+### 2 — RESOLVED: `PUT /api/tags/contacts` had no role gate and no ownership scoping
+
+**Issue:** `src/routes/tags.js:41` had `authMiddleware` only — no `checkRole()`, no per-contact ownership check — delegating straight to `ContactBulkOpsService.updateTags()`, which itself has zero ownership/team scoping. Any authenticated employee, any role, could add/remove tags on any contact company-wide. Doc intent (`09_PERMISSION_MATRIX.md` §5 Contacts bulk-actions): Owner/Admin all, Manager team-scoped, Sales own-only, Support none.
+
+**Fix (commit `1e86eca`):** added `ContactBulkOpsService.getContactAssignee()` (reuses the service's existing `contactKey()`/`dynamodb`/`TABLE` rather than duplicating key resolution into `tags.js`) and gated the route: `intern` (Support) blocked outright; `manager`/`team_lead`/`agent`/`telecaller` own-only (`assignedTo === req.user.id`); `admin`/`superadmin` unrestricted. Manager got own-only rather than "team-scoped" as the doc's literal wording says — no extractable team-scoping mechanism exists anywhere in this codebase to reuse (`contacts.js`'s own `fetchFilteredContacts` documents this exact gap already: manager and team_lead both fall into a binary own-only bucket there, same as Sales). OQ-006 (`docs/v3/12_DECISION_LOG.md`) stays open, not resolved by this fix. New tests: `tests/tagsContactsRbac.test.js` (direct-handler-invocation, 8 cases).
+
+**Priority:** Resolved — was Critical.
+
+### 3 — OPEN: blank-config auto-save can overwrite real WhatsApp settings on a transient fetch failure
+
+**Issue:** `WelcomeMessagePanel.tsx:42`, `WorkingHoursPanel.tsx:48,53`, `DelayedResponsePanel.tsx:35` — none destructure `isError` from their `useQuery`. On a failed GET, the inner `*Form` falls back to `EMPTY_CONFIG` (everything blank/off) with no error indicator. Every field in the backing Zod schemas (`src/utils/validation.js:150-181,352-384`) is optional-with-default, so a blank state is 100% schema-valid — if the admin then flips a toggle believing the feature was genuinely off, it auto-saves immediately (no manual "Save" step) and can overwrite a real, previously-configured welcome message / working-hours schedule / delayed-response message with blanks.
+
+**Fix:** Not yet scoped — needs `isError` handling (block the toggle / show a retry state instead of rendering `EMPTY_CONFIG` as if it were real data) across all three panels.
+
+**Priority:** High — traced via code + schema inspection, not yet reproduced live (would require injecting a real GET failure against a populated config), but the causal chain is fully traced and the blast radius (silently wiping a live WhatsApp automation config) is real.
+
+### 4 — OPEN: the documented mobile "two-screen" Settings experience does not exist
+
+**Issue:** `settings/page.tsx:1489` — `<aside className="hidden w-[240px] ... md:flex">`, `<main>` has no responsive hiding at all. Confirmed live at 375px: the section-list sidebar is fully hidden, `<main>` renders the active section directly, and there is no back button, no section picker, no way to switch sections at all — stuck on whatever `?tab=` resolved to (default `profile`). Compounding this: `docs/v3/08_RESPONSIVE_GUIDELINES.md` describes a custom 4-tier breakpoint scale claimed to be "defined once in `design-tokens.css`" — that file/override doesn't exist; `globals.css`'s `@theme inline` block registers only fonts/colors, no breakpoints, so Tailwind v4's *default* scale is actually in effect (`md`=768px, not the doc's claimed 1280px "laptop" tier).
+
+**Fix:** Not yet scoped — needs a real mobile nav (bottom sheet, hamburger, or a genuine two-screen router state). Build item, not a one-line fix. Tracked in `docs/PENDING_WORK.md`.
+
+**Priority:** High — confirmed live, fully broken experience for any mobile user not on the default Profile tab.
+
+### 5 — OPEN: `renderContent()` has zero role gating — direct `?tab=` navigation renders admin-only sections to any role
+
+**Issue:** `settings/page.tsx:1452-1487`. `visibleSections` (1461-1464) is consumed only by the sidebar (`1496`) — `renderContent()`'s switch never checks it. `<ProtectedRoute>` at the `(v3)` layout level has no `allowedRoles`, so any authenticated role reaches `/settings` at all, and `activeSection` seeds directly from `searchParams.get('tab')` cast with `as` (compile-time only). Confirmed live: a `manager` hitting `/settings?tab=whatsapp` gets the full `WhatsAppSection` mount, which fires `GET /api/whatsapp/config/full`, 403s, and — because of finding #6 — silently renders the complete "Connect WhatsApp" onboarding form as if no WhatsApp were connected yet. Not a data leak (every backend route checked stayed correctly gated), but real API calls fire and a misleading admin-only UI renders to non-admins, with zero frontend defense-in-depth.
+
+**Fix:** Not yet scoped — gate `renderContent()`'s switch the same way `visibleSections` already does (reuse the same predicate), fall back to the first visible section or an "access denied" state otherwise.
+
+**Priority:** Medium — architecture gap, not an active leak (every backend route sampled stayed correctly gated).
+
+### 6 — OPEN: missing `isError` handling across most sections masks real fetch failures as legitimate empty/default states
+
+**Issue:** Confirmed pattern in `WhatsAppSection` (falls to "Connect" mode, confirmed live under finding #5), `EmployeesSection` (`v3/team/EmployeesSection.tsx:632` — `.catch(() => ({success:false,data:[]}))` swallows the error entirely; confirmed live: manager via `?tab=employees` sees a plain "No employees yet" with zero error indicator), `TargetsSection` (`settings/page.tsx:900-921` — sync effect never populates `form` on failure → every metric row silently `return null`s), `AuditSection` (`settings/page.tsx:1087-1106` — all 3 queries, including suspicious-activity/security tabs, render "no records" on a failed fetch, masking a genuine fetch error as "clean" for a security-relevant surface), `AISection` (`masterOn = cfg?.masterEnabled ?? true` defaults to **enabled** on failure), `WhatsAppFlowsPanel`/`BranchesPanel` (empty-array fallback masks fetch failure as "nothing registered yet"). `TagsSection` is the one correctly-built exception (`isError` + Retry button, `settings/page.tsx:1387-1392`) — reference pattern for the fix.
+
+**Fix:** Not yet scoped — add `isError` handling to each listed section, following `TagsSection`'s existing pattern.
+
+**Priority:** Medium, elevated to High specifically for `AuditSection` (security-monitoring surface indistinguishable from "clean" on fetch failure).
+
+### 7 — OPEN: Tags is hidden from Manager's Settings nav despite Manager having real Edit capability
+
+**Issue:** `settings/page.tsx:109` — `{ id: 'tags', ..., adminOnly: true }`. Backend `POST/PUT /api/tags` (`tags.js:20,53`) allow `admin`+`manager`+`superadmin`; `09_PERMISSION_MATRIX.md` §10 documents Tags as `Manager: Edit`. But `adminOnly: true` means `visibleSections` computes `!adminOnly || isAdmin` → false for manager — Tags never appears in a manager's sidebar. Confirmed live: manager's visible sections = `[Profile, Appearance, Notifications, Security, Templates]` — no Tags; only reachable by manually typing `?tab=tags` (where it then works correctly per finding #5's bypass path).
+
+**Fix:** Not yet scoped — change the Tags `SECTIONS` entry to `visibleToRoles: ['admin', 'manager']` (raw-role, same pattern already used for Templates), not `adminOnly`.
+
+**Priority:** Medium — a real, documented capability is unreachable through normal navigation, though not a security issue (the underlying route is correctly gated either way).
+
+### 7b — OPEN, corollary of #7: non-manager/non-admin roles that reach Tags via bypass see a create button that will always fail
+
+**Issue:** Confirmed live: `telecaller` via `?tab=tags` sees a fully rendered "Create New Tag" card with a working-looking "Create Tag" button (`TagsSection` has zero internal role gate — relies entirely on the page-level guard finding #5 shows doesn't actually apply to direct navigation). Backend's `POST /api/tags` excludes `telecaller`, so the button always 403s if clicked.
+
+**Fix:** Not yet scoped — bundle with finding #7's fix; `TagsSection` needs its own `canCreate` check regardless once #5 is fixed properly (defense in depth).
+
+**Priority:** Low-Medium.
+
+### 8 — RESOLVED: systemic "Manager gets read access" loophole vs. documented module-level Hidden (Automation + Flows)
+
+**Issue:** `src/routes/automations.js:108,163,240,358` (`GET /stats`, `/executions`, `/`, `/:id`) and `whatsapp.js:2454,2486` (Flows `POST`/`DELETE`) all used `checkRole(['admin','manager'])`, while `09_PERMISSION_MATRIX.md` §2/§9 and the Settings §10 WhatsApp row both state the entire module is Manager-Hidden.
+
+**Fix (commit `9eab2a1`):** product-confirmed docs win — all 6 routes tightened to `checkRole(['admin'])`. No manager-facing regression: the Automation nav entry was already hidden for manager (`V3Sidebar.tsx` `roles: ['owner','admin']`) and the main `/automation` page was already `ProtectedRoute allowedRoles={['admin']}`-gated; `WhatsAppFlowsPanel` only ever mounts when `WhatsAppSection`'s own (unchanged, already admin-only) config fetch succeeds, so it was already unreachable for a manager. One narrow pre-existing gap noted, not fixed here: the automation canvas sub-pages (`/automation/canvas/new`, `/automation/canvas/[id]`) have no `ProtectedRoute` of their own — a manager who already knew a workflow id and typed the canvas URL directly would have reached `GET /api/automations/:id` before this fix and now gets 403 — but this was never a nav-reachable path, so no currently-used workflow breaks. Flagged in `docs/PENDING_WORK.md`.
+
+**Priority:** Resolved — was Medium, product-decision item (resolved by product confirming docs over code).
+
+### 9 — OPEN: bare (ungated) GET routes in `companies.js` and `whatsapp.js`
+
+**Issue:** `companies.js:17` (`GET /profile`), `companies.js:94` (`GET /trial`) — bare `authMiddleware` only, any role. `whatsapp.js:2442` (`GET /flows`), `whatsapp.js:3490` (`GET /branches`) — same. Confirms the `docs/bible/08_MODULES.md:273` "mix of bare + adminMiddleware" note for `companies.js`, and extends it to `whatsapp.js`. Doc says Company Profile should be `Manager: Read / Sales+Support: Hidden`; WhatsApp should be `Manager: Hidden` entirely. All four are GET-only — no unguarded mutating route found in either file. `companies.js`'s two routes are currently dead code from the UI's perspective (Organisation is a `StubSection`, zero frontend caller); `whatsapp.js`'s two are reachable but only auto-fire when `WhatsAppSection`'s `connected` is already true.
+
+**Fix:** Not yet scoped.
+
+**Priority:** Medium for the `whatsapp.js` pair (reachable, contradicts doc), Low for the `companies.js` pair (currently unreachable from any UI).
+
+### 10 — CLOSED-AS-ANALYZED: DL-021 raw-role sweep, all 6 tracked candidates
+
+**Issue:** The 6 candidates tracked in `docs/PENDING_WORK.md` (`sales/page.tsx:1120`, `CampaignList.tsx:26-27`, `WorkflowList.tsx:25`, `entry/page.tsx:237-238`, `employees/page.tsx:14-15`, `settings/page.tsx:1447/1463`) all check only the `'owner'`/`'admin'` v3Role buckets — which are **singleton** buckets in `toV3Role()` (only raw `superadmin`/`admin` ever map into them) — so a v3Role-bucket check is structurally incapable of diverging from a raw-role check for 5 of the 6. The one exception: `entry/page.tsx:237-238`'s `canBulk` checks the **two-role** `'manager'` bucket (`manager`+`team_lead`), which only matches backend (`metrics.js`'s `CAN_ACT_FOR_OTHERS`) because the backend was deliberately written to mirror it — a real (if currently honored) dependency, not a structural guarantee, and the one to revisit if `team_lead` scope is ever split from `manager` the way `contacts.js` already has (OQ-006).
+
+**Fix:** None required — all 6 are harmless-but-noncompliant (style debt, not a bug), analyzed and closed as such. A cleanup pass (raw-role-ify all 6 call sites) is queued as low-priority follow-up work, not urgent.
+
+**Priority:** Low (analysis complete; cleanup itself queued, not scheduled).
+
+### 11 — OPEN: `ProfileSection`'s "Save changes" is fake; "Change photo" is a dead button
+
+**Issue:** `settings/page.tsx:125` — `handleSave` is `await new Promise(r => setTimeout(r, 600))` plus a success toast; no API call exists (no PUT route was even found for a user's own profile — only `companies.js`'s company-level profile). `settings/page.tsx:143` — "Change photo" has no `onClick` at all. Profile is universally visible (all roles) — this is a visible, everyday surface silently doing nothing.
+
+**Fix:** Not yet scoped — needs either a real per-user profile PUT route + wiring, or the button removed until one exists.
+
+**Priority:** Medium — visible, all-roles UX bug, no real persistence.
+
+### 12 — OPEN: `TargetsSection`'s `set-state-in-effect` causes real, silent loss of in-progress edits
+
+**Issue:** `settings/page.tsx:906-921`. Trace: user saves metric A → `onSuccess` invalidates `['admin-targets']` → React Query's background refetch does not flip `isLoading` (only `isFetching`), so the form stays fully editable with no loading cover → if the user starts editing metric B in that window, the refetch lands, this effect calls `setForm(merged)` wholesale from the server response (which only reflects A), and B's in-progress keystrokes are silently discarded — `dirty` also resets to `false`, so even the "unsaved changes" indicator disappears without a trace.
+
+**Fix:** Not yet scoped — merge only the just-saved key into `form`, or guard the effect against overwriting fields the user has touched since the last save.
+
+**Priority:** Medium.
+
+### 13 — RESOLVED (doc-fix): Audit Log's Owner-vs-Admin distinction was documented but not enforced
+
+**Issue:** `src/routes/audit.js` — all 5 routes (including `GET /export`) use `adminMiddleware` uniformly (admin or superadmin, identical treatment). `09_PERMISSION_MATRIX.md` §10 previously documented `Audit Log: Owner Full, Admin View`, implying Admin shouldn't get export. Not Manager-facing (Manager correctly blocked everywhere in this file) — a doc/code tier mismatch, not a security hole.
+
+**Fix:** `docs/v3/09_PERMISSION_MATRIX.md` §10's Audit Log row corrected to `Admin: Full` (matching actual code), with a note that an Owner-only export tier is deferred until a real per-company Owner role exists (cross-reference finding #9 in the Templates Module Audit section above — `toV3Role()` only ever produces `'owner'` from the raw `superadmin` platform role, never from any company-level role).
+
+**Priority:** Resolved — was Low, resolved by correcting the doc to match intentional/acceptable code behavior rather than changing code.
+
+### 14 — OPEN: 10 dead imports in `settings/page.tsx`
+
+**Issue:** `useCallback`, `useMemo`, `UserPlus`, `api`, `Setup2FAResponse`, `formatDate`, `formatMetricValue`, `Textarea`, `ChevronDown`, `ChevronUp` — zero usages beyond the import line.
+
+**Fix:** Not yet scoped — trivial removal, bundle with any other pass through this file.
+
+**Priority:** Low.
+
+### 15 — OPEN: `SettingsPageInner`'s tab-sync `set-state-in-effect` is currently dead weight
+
+**Issue:** `settings/page.tsx:1456-1459`. On mount, `tab` always equals the value already used to seed `useState` — an `Object.is`-equal no-op, so no double-fetch/flicker happens today. The only in-app link to `/settings?tab=...` (`SendLocationEditor.tsx:22-28`) opens in a new tab, forcing a fresh mount anyway. Would only start mattering if a future same-tab in-app link to `/settings?tab=X` were added while this component stays mounted across it.
+
+**Fix:** Not yet scoped — could be derived at render time instead of an effect, or removed; not urgent since nothing reachable triggers it today.
+
+**Priority:** Low/informational.
+
+### 16 — OPEN, informational: `whatsapp.js:232`'s `POST /_tick` is the one route missing an explicit `authMiddleware` token on its own line
+
+**Issue:** Relies on the router-level middleware chain per `docs/bible/08_MODULES.md:211` (intentional, documented as a secondary manual-trigger path — the real EventBridge entry is a separate pre-router `app.js` mount). Not Settings-surfaced; noted for completeness only, found while auditing `whatsapp.js`'s other routes for this batch.
+
+**Fix:** None needed — intentional per existing documentation.
+
+**Priority:** Informational.
+
+**Spec vs. built matrix (Task 2 of the audit):** of the 13 sections `06_SCREEN_SPECIFICATIONS.md`/`02_INFORMATION_ARCHITECTURE.md` document under Settings, 3 (Teams, Roles & Permissions, Danger Zone) have zero code anywhere, not even a stub; 5 are `StubSection` placeholders (Organisation, Pipelines, Integrations, Billing, Metric Config — 2 of these, Integrations and Billing, have no backend route at all); 5 are fully built (Employees, Audit Log, Tags, WhatsApp, Message Templates). 5 further sections exist in code with no documentation at all (Notifications, Security — both stubs; Appearance, AI, Metric Targets — all three fully built and working). Full table given in chat at audit time, not reproduced here — see `docs/PENDING_WORK.md`'s new "Settings spec sync" entry for the tracked follow-up.
