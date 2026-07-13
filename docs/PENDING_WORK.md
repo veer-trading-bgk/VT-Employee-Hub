@@ -44,7 +44,7 @@ struck-through and left in place.
   existing `runCount`/`successCount`/`failureCount` atomic-increment, day-bucketed pattern is
   flagged as a plausible lead for the aggregation strategy, not yet confirmed as the chosen
   approach.
-- **B3 — Settings module deep audit.** Not started.
+- **B3 — Settings module deep audit.** Not started. Informational note found while building the Settings → Templates section (Templates audit finding #7): `docs/v3/06_SCREEN_SPECIFICATIONS.md`'s Settings spec also lists a "Broadcast" section under CHANNELS, alongside WhatsApp and Templates — like Templates was, Broadcast is still entirely spec-only, no section exists in `settings/page.tsx` today. Not an action item on its own, just worth knowing when B3 starts (same "spec vs. built" gap class, one more instance of it).
 - **B4 — AI Admin module UI/UX audit.** Not started.
 - **Phase 2 (Viir's chosen scope) — n8n-style automation builder features:** Condition/IF node,
   drag-to-connect canvas UX, dry-run/test mode. Scope chosen by Viir; not started.

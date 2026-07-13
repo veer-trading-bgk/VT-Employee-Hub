@@ -357,9 +357,9 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Priority:** Low — requires the real backend to be unreachable from the client's network while a service worker is already installed (an existing PWA install going offline mid-session, or a broken/misconfigured `NEXT_PUBLIC_API_URL` in a non-production environment, as found here). Not a security hole — the real backend still enforces auth on every actual API call, this only affects optimistic client-side UI state — but worth fixing before it produces a confusing "why does the dashboard render for a logged-out user on flaky wifi" report.
 
-## Templates Module Audit (2026-07-12) — 10 findings, 6 resolved same session
+## Templates Module Audit (2026-07-12) — 12 findings, 9 resolved across two sessions (3 open: #8, #9, #11)
 
-**Source:** a scoped read-only audit of the Templates module (3 documented UI surfaces, `src/routes/whatsapp.js`'s template endpoints, RBAC, dead/stub UI states, empty/loading/error handling, real-browser layout/race verification, ADR-012 compliance for send-capable actions — full audit request and findings list given directly in chat, not a separate doc). Findings #1, #2, #4, #6 were fixed the same session (product-approved, each its own commit below); #3 and #10 were trivial cleanups bundled into the fix touching that file; #5, #7, #9 are logged here as open, tracked in `docs/PENDING_WORK.md`. #8 was found and deliberately left alone — see its own entry.
+**Source:** a scoped read-only audit of the Templates module (3 documented UI surfaces, `src/routes/whatsapp.js`'s template endpoints, RBAC, dead/stub UI states, empty/loading/error handling, real-browser layout/race verification, ADR-012 compliance for send-capable actions — full audit request and findings list given directly in chat, not a separate doc). Findings #1, #2, #4, #6 were fixed the first session (product-approved RBAC batch, each its own commit); #3 and #10 were trivial cleanups bundled into the fix touching that file. #5 and #7 were both genuine builds (wire the Send button; build the missing Settings section) — product-approved as "Batch B," scoped in a separate proposal step, then implemented and resolved in a second session (commits `e659d85`, `14a4ec4`, `8c71fc9`) after an adversarial multi-angle review of that batch's own diff found and closed a real bug before anything shipped (see finding #5's entry) and surfaced two more findings logged here as #11 and #12. #9 remains open, tracked in `docs/PENDING_WORK.md`. #8 was found and deliberately left alone — see its own entry.
 
 ### 1 — RESOLVED: Standalone /templates had no page-level or backend role gate
 
@@ -393,13 +393,13 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Priority:** Resolved — was Medium (backend exceeding documented intent on a real send-triggering action).
 
-### 5 — OPEN: Templates' own Send button is unreachable dead code
+### 5 — RESOLVED: Templates' own Send button was unreachable dead code
 
-**Issue:** `TemplateList.tsx`'s `onSendTemplate` prop, `SENDABLE_STATUSES`/`canSendRole` gating, and the row-level Send button (lines 64, 422, 687-696) are all internally wired correctly, but neither live consumer (`templates/page.tsx`, `campaigns/page.tsx`'s Templates tab) passes `onSendTemplate` — confirmed by reading both render call sites. `onSend` always evaluates to `undefined`; the button never renders regardless of role or template status.
+**Issue:** `TemplateList.tsx`'s `onSendTemplate` prop, `SENDABLE_STATUSES`/`canSendRole` gating, and the row-level Send button (lines 64, 422, 687-696) were all internally wired correctly, but neither live consumer (`templates/page.tsx`, `campaigns/page.tsx`'s Templates tab) passed `onSendTemplate` — confirmed by reading both render call sites. `onSend` always evaluated to `undefined`; the button never rendered regardless of role or template status.
 
-**Fix:** Not yet scoped — needs a product decision (wire a real `onSendTemplate` handler at one or both call sites, e.g. opening the existing Inbox send-a-template flow, or remove the dead prop/button/gating entirely if sending was never meant to live inside this module).
+**Fix (commits `e659d85`, `14a4ec4`):** product decision — open the existing Inbox send-a-template flow, not a second implementation. `templates/page.tsx` and `campaigns/page.tsx` now pass `onSendTemplate={(t) => router.push('/inbox?template=' + t.id)}`. `canSendRole` is now unconditionally `true` (matches `POST /send-template` having no role gate at all). Inbox's `ComposerToolbar`/`ExpiredWindowSendBar` auto-open the deep-linked template once the employee picks a conversation, running the same `handleTplSelect()`/send-mutation path a manual click would. See the `feat(inbox)` commit's own message for the real bug an adversarial review found and closed in the same change (the auto-send initially could fire against an arbitrary conversation, not the one the employee picked — `ConversationList`'s pre-existing auto-select behavior, not this feature's own logic, was the gap).
 
-**Priority:** Medium — dead code with real, if currently inert, gating logic attached; worth a deliberate decision rather than indefinite drift.
+**Priority:** Resolved — was Medium.
 
 ### 6 — RESOLVED: FLOW/MPM/CATALOG button types broke the editor on existing templates
 
@@ -409,13 +409,13 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Priority:** Resolved — was Medium (a broken, confusing control reachable only via synced templates, narrow but real).
 
-### 7 — OPEN: "Settings → Templates" is spec-only, never built
+### 7 — RESOLVED: "Settings → Templates" was spec-only, never built
 
-**Issue:** `docs/v3/06_SCREEN_SPECIFICATIONS.md:929,960` and `docs/v3/09_PERMISSION_MATRIX.md:279` both describe a Templates section inside Settings → Channels. `dashboard/src/app/(v3)/settings/page.tsx` has zero references to templates (confirmed by direct case-insensitive grep) — the 3rd documented UI surface doesn't exist; Templates only actually lives at the standalone `/templates` route and inside Campaigns' 6th tab.
+**Issue:** `docs/v3/06_SCREEN_SPECIFICATIONS.md:929,960` and `docs/v3/09_PERMISSION_MATRIX.md:279` both describe a Templates section inside Settings → Channels. `dashboard/src/app/(v3)/settings/page.tsx` had zero references to templates (confirmed by direct case-insensitive grep) — the 3rd documented UI surface didn't exist; Templates only actually lived at the standalone `/templates` route and inside Campaigns' 6th tab.
 
-**Fix:** Not yet scoped — needs a decision: build the missing section (per the spec's own description: a read-only Meta-approved-template list with a `[+ Request New Template]` drawer), or correct the two docs to describe only the 2 real surfaces.
+**Fix (commit `8c71fc9`):** built per the spec — a new `SettingsTemplatesSection.tsx` reuses `TemplateList` (new `readOnly` prop, unconditionally suppressing New Template/Sync/AI Draft/Edit/Delete/Submit regardless of role) plus the existing `TemplateCreateDrawer` for "Request New Template" (admin-only, matching `POST /templates`'s `checkRole(['admin'])`). `SectionDef` gained a `visibleToRoles?: Role[]` field (raw roles) since the section's real intended visibility — admin+manager, matching `GET /templates`'s `checkRole(['admin','manager'])` — is a tier the existing binary `adminOnly` flag can't express.
 
-**Priority:** Medium — a documented, expected surface simply isn't there; low risk (no broken code, just a missing feature) but worth a deliberate decision rather than silent doc/code drift.
+**Priority:** Resolved — was Medium.
 
 ### 8 — OPEN, deliberately not touched: V3_NAV_PERMISSIONS is dead code
 
@@ -440,3 +440,19 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 **Fix (commit `b80305d`):** removed.
 
 **Priority:** Resolved — was Low (harmless, but dead surface area).
+
+### 11 — Found while wiring finding #5 (Batch B, Item 1): sendTemplate() helper in lib/templates/api.ts has zero real callers
+
+**Issue:** `sendTemplate()` (`dashboard/src/lib/templates/api.ts:129-143`) implements the exact `POST /api/whatsapp/send-template` payload shape (`{ leadId?, leadPK?, templateId, variableValues, headerVariableValue? }`) but is never called anywhere in the app. **Three** real send-template flows reimplement the identical `apiFetch('/api/whatsapp/send-template', ...)` call inline instead of using the shared helper — not two, corrected by an adversarial review that found the third: `ComposerToolbar.tsx`'s `sendTplMut`, `inbox/page.tsx`'s `ExpiredWindowSendBar`'s `sendTemplateMutation`, and `dashboard/src/components/whatsapp/TemplatePicker.tsx`'s `sendMutation` (rendered from Customer 360's `ConversationTab.tsx` — the same "24h window expired" use case, a third independent surface for it). The three don't even agree with each other on payload shape: the first two use `leadPK`/`phone` exclusively (never `leadId`), the third uses `leadId` only (no `leadPK`, no `phone` fallback, no `headerVariableValue`) — so the unused helper's own type signature doesn't cleanly match any one of its three real would-be callers.
+
+**Fix:** Not done — out of scope for Batch B, which wired a *new* caller (Templates module's Send button) through the existing Inbox flows via a deep-link, not through this helper. Consolidating three inline implementations (not two) to actually call `sendTemplate()` would be a reasonable follow-up — would need to first reconcile the `leadPK`/`phone` vs. `leadId`-only target-resolution shapes before a single shared payload type could serve all three.
+
+**Priority:** Low — duplicated logic (three copies of one `apiFetch` call, easy to keep in sync since it's a handful of lines each), not a correctness bug. Worth cleaning up next time any of the three flows is touched, not urgent on its own.
+
+### 12 — RESOLVED: Templates empty-state "Create template" link had no RBAC gate at all
+
+**Issue:** Found during Batch B's adversarial review. `TemplateList.tsx`'s empty-state "Create template →" link (rendered when `templates.length === 0`) called `handleCreate()` directly with no `canManage` check — unlike the toolbar's own "+ New Template" button, which was correctly gated. On the pre-existing standalone `/templates` and Campaigns → Templates surfaces, a manager (or, before Batch B's finding #1 fix, any authenticated role) could already open the admin-only `TemplateCreateDrawer` via this link — the backend's `POST /templates` → `checkRole(['admin'])` would still correctly reject the eventual submission, so no data could be created, but the UI-level gate was broken. Newly consequential once Batch B's Settings → Templates section (finding #7) shipped, since that surface is documented as genuinely read-only and this link would have been the one thing in it that wasn't.
+
+**Fix (commit `e659d85`):** gated on `canManage`, matching the toolbar button and correctly folding in the new `readOnly` override too (`canManage` is `false` whenever `readOnly` is `true`, regardless of role).
+
+**Priority:** Resolved — was Low/Medium (no real data-mutation risk since the backend already rejected it, but a genuine UI-level RBAC gate failure on a surface meant to be fully locked down).
