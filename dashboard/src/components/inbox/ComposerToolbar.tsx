@@ -145,7 +145,14 @@ function CloseBtn({ onClick }: { onClick: () => void }) {
 // shape, so the shared default is the actual fix, not a Quick-Reply-only
 // override (see the canned-response line-clamp removal below for why that
 // part of the fix is NOT mirrored onto Templates).
-function Panel({ children, width = 'w-96' }: { children: React.ReactNode; width?: string }) {
+//
+// M2-B Fix 2: the fixed w-96 (384px) clipped ~25px off the right edge at a
+// 375px viewport — this Panel is absolutely positioned at left-0 of the
+// full-width toolbar container (containerRef below), not per-button, so it
+// never had room to shrink on its own. max-w-96 preserves the desktop
+// width exactly; w-[calc(100vw-2rem)] caps it to the viewport (minus a
+// 1rem margin each side) whenever that's narrower.
+function Panel({ children, width = 'w-[calc(100vw-2rem)] max-w-96' }: { children: React.ReactNode; width?: string }) {
   return (
     <div className={cn(
       'absolute bottom-full left-0 z-50 mb-1 rounded-xl border border-neutral-200 bg-white shadow-lg',
