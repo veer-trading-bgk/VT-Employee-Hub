@@ -1117,7 +1117,10 @@ export default function SalesPage() {
   const [showKPIs, setShowKPIs]               = useState(true);
 
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const isAdmin  = ['owner', 'admin'].includes(v3Role);
+  // Raw role, not v3Role (DL-021, docs/v3/12_DECISION_LOG.md: display buckets
+  // must never be used for permission gating, only raw roles).
+  const rawRole = user?.role;
+  const isAdmin  = rawRole === 'superadmin' || rawRole === 'admin';
   // Raw role, not v3Role — matches POST /api/crm/leads's checkRole(['admin','manager'])
   // exactly (same gate canAssignOwner already encodes for the equivalent Inbox/CrmTab
   // assign controls). v3Role would wrongly include 'sales' (agent/telecaller, backend

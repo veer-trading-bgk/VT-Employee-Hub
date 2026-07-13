@@ -11,7 +11,6 @@ import { Avatar } from '@/components/v3/ui/Avatar';
 import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role } from '@/types/v3';
 import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import { formatMetricValue, dailyTarget } from '@/lib/metrics.config';
 import type { MyMetricsResponse, VerificationStatus } from '@/types';
@@ -234,8 +233,14 @@ export default function EntryPage() {
   const qc = useQueryClient();
   const { metrics } = useMetricsConfig();
 
-  const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const canBulk = ['owner', 'admin', 'manager'].includes(v3Role);
+  // Raw role, not v3Role (DL-021, docs/v3/12_DECISION_LOG.md: display buckets
+  // must never be used for permission gating, only raw roles). Mirrors
+  // metrics.js's resolveTargetUserId() CAN_ACT_FOR_OTHERS set exactly — the
+  // real backend gate for acting on another employee's metrics — plus the
+  // same superadmin bypass convention used everywhere else in this codebase.
+  const rawRole = user?.role;
+  const CAN_ACT_FOR_OTHERS = new Set(['admin', 'manager', 'team_lead']);
+  const canBulk = rawRole === 'superadmin' || (!!rawRole && CAN_ACT_FOR_OTHERS.has(rawRole));
 
   const [tab, setTab] = useState<'my' | 'team'>('my');
   const [selectedPerformer, setSelectedPerformer] = useState<Performer | null>(null);

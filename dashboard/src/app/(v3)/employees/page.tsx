@@ -5,14 +5,15 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/v3/ui/Button';
 import { EmployeesSection, triggerAddEmployee } from '@/components/v3/team/EmployeesSection';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role } from '@/types/v3';
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 
 function EmployeesPageInner() {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const canCreate = ['owner', 'admin'].includes(v3Role);
+  // Raw role, not v3Role (DL-021, docs/v3/12_DECISION_LOG.md: display buckets
+  // must never be used for permission gating, only raw roles).
+  const rawRole = user?.role;
+  const canCreate = rawRole === 'superadmin' || rawRole === 'admin';
 
   return (
     <div className="flex h-full flex-col">

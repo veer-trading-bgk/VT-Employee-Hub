@@ -11,7 +11,6 @@ import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { SkeletonTable } from '@/components/v3/ui/Skeleton';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role } from '@/types/v3';
 import { cn } from '@/lib/cn';
 import { format } from 'date-fns';
 import {
@@ -22,7 +21,10 @@ import {
 export function WorkflowList() {
   const [search, setSearch] = useState('');
   const { user } = useAuth();
-  const isAdmin = ['owner', 'admin'].includes(toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]));
+  // Raw role, not v3Role (DL-021, docs/v3/12_DECISION_LOG.md: display buckets
+  // must never be used for permission gating, only raw roles).
+  const rawRole = user?.role;
+  const isAdmin = rawRole === 'superadmin' || rawRole === 'admin';
   const qc = useQueryClient();
   const router = useRouter();
 

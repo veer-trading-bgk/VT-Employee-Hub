@@ -43,7 +43,6 @@ import { Skeleton } from '@/components/v3/ui/Skeleton';
 import { cn } from '@/lib/cn';
 import { useAuth } from '@/context/AuthContext';
 import { useTheme } from '@/context/ThemeContext';
-import { toV3Role } from '@/types/v3';
 import { apiFetch, api, apiErrorMessage } from '@/lib/api';
 import type { Setup2FAResponse } from '@/lib/api';
 import { formatDate } from '@/utils/formatters';
@@ -1581,10 +1580,11 @@ function StubSection({ title, description }: { title: string; description: strin
 
 function SettingsPageInner() {
   const { user, logout } = useAuth();
-  const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const isAdmin = ['owner', 'admin'].includes(v3Role);
-  // Raw role (not v3Role) for visibleToRoles — DL-021, docs/v3/12_DECISION_LOG.md.
+  // Raw role (not v3Role) for visibleToRoles and isAdmin — DL-021,
+  // docs/v3/12_DECISION_LOG.md: display buckets must never be used for
+  // permission gating, only raw roles.
   const rawRole = user?.role;
+  const isAdmin = rawRole === 'superadmin' || rawRole === 'admin';
   const searchParams = useSearchParams();
 
   const initialSection = (searchParams.get('tab') as SettingsSection | null) ?? 'profile';

@@ -10,7 +10,6 @@ import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { SkeletonTable } from '@/components/v3/ui/Skeleton';
 import { apiFetch } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
-import { toV3Role } from '@/types/v3';
 import { CAMPAIGN_STATUS_META, type Campaign, type CampaignsResponse } from '@/types/campaigns';
 import { CampaignCreateDrawer } from './CampaignCreateDrawer';
 import { cn } from '@/lib/cn';
@@ -23,8 +22,10 @@ export function CampaignList({ statusFilter }: CampaignListProps) {
   const [search,     setSearch]     = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const { user } = useAuth();
-  const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
-  const canDelete = v3Role === 'owner' || v3Role === 'admin';
+  // Raw role, not v3Role (DL-021, docs/v3/12_DECISION_LOG.md: display buckets
+  // must never be used for permission gating, only raw roles).
+  const rawRole = user?.role;
+  const canDelete = rawRole === 'superadmin' || rawRole === 'admin';
   const qc = useQueryClient();
 
   const queryKey = statusFilter ? ['campaigns', statusFilter] : ['campaigns'];
