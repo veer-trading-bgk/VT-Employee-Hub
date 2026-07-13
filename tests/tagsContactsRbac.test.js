@@ -7,10 +7,12 @@
  * Gate now mirrors docs/v3/09_PERMISSION_MATRIX.md §5's Contacts
  * bulk-actions row (Owner/Admin: all, Manager/Sales: own-only, Support:
  * none) using the same raw-role reasoning contacts.js's own
- * fetchFilteredContacts already documents (no extractable "team-scoped"
- * mechanism exists anywhere in this codebase — Manager gets own-only here
- * too, same as team_lead, matching that file's own comment rather than
- * inventing a new team-scoping implementation; OQ-006 stays open).
+ * fetchFilteredContacts already documents.
+ *
+ * team_lead upgraded from own-only to team-scoped 2026-07-13 (OQ-006,
+ * docs/v3/12_DECISION_LOG.md, resolved: team-wide) via TeamScopeService,
+ * the same helper contacts.js's fetchFilteredContacts() now uses. manager
+ * stays own-only, unchanged — OQ-006 resolved team_lead only.
  *
  * Direct-handler-invocation technique (see tests/automationsRoutes.test.js)
  * — PUT /contacts has no checkRole() middleware; the RBAC logic under test
@@ -22,8 +24,12 @@ jest.mock('../src/services/ContactBulkOpsService', () => ({
   getContactAssignee: jest.fn(),
   updateTags: jest.fn(),
 }));
+jest.mock('../src/services/TeamScopeService', () => ({
+  getTeamMemberIds: jest.fn(),
+}));
 
 const ContactBulkOps = require('../src/services/ContactBulkOpsService');
+const TeamScopeService = require('../src/services/TeamScopeService');
 const tagsRouter = require('../src/routes/tags');
 
 function getRouteHandler(router, path, method) {
@@ -90,14 +96,37 @@ describe('PUT /api/tags/contacts — RBAC + ownership gate', () => {
     expect(res.status).toHaveBeenCalledWith(403);
   });
 
-  test('team_lead gets own-only scope, matching contacts.js\'s current documented behavior', async () => {
+  test('team_lead tagging their own contact succeeds, no TeamScopeService lookup needed', async () => {
     ContactBulkOps.getContactAssignee.mockResolvedValue({ exists: true, assignedTo: OWNER_ID });
     ContactBulkOps.updateTags.mockResolvedValue({ tags: ['t1'] });
     const req = { body: { leadId: 'lead1', add: ['t1'] }, user: { id: OWNER_ID, role: 'team_lead', companyId: CID } };
     const res = mockRes();
     await handler()(req, res, jest.fn());
     expect(res.status).not.toHaveBeenCalledWith(403);
+    expect(TeamScopeService.getTeamMemberIds).not.toHaveBeenCalled();
     expect(ContactBulkOps.updateTags).toHaveBeenCalledTimes(1);
+  });
+
+  test('team_lead tagging a team member\'s contact succeeds (OQ-006: team-scoped, not own-only)', async () => {
+    ContactBulkOps.getContactAssignee.mockResolvedValue({ exists: true, assignedTo: OTHER_ID });
+    ContactBulkOps.updateTags.mockResolvedValue({ tags: ['t1'] });
+    TeamScopeService.getTeamMemberIds.mockResolvedValue(new Set([OTHER_ID]));
+    const req = { body: { leadId: 'lead1', add: ['t1'] }, user: { id: OWNER_ID, role: 'team_lead', companyId: CID } };
+    const res = mockRes();
+    await handler()(req, res, jest.fn());
+    expect(TeamScopeService.getTeamMemberIds).toHaveBeenCalledWith(CID, OWNER_ID);
+    expect(res.status).not.toHaveBeenCalledWith(403);
+    expect(ContactBulkOps.updateTags).toHaveBeenCalledTimes(1);
+  });
+
+  test('team_lead tagging a non-team contact is rejected with 403, no write', async () => {
+    ContactBulkOps.getContactAssignee.mockResolvedValue({ exists: true, assignedTo: OTHER_ID });
+    TeamScopeService.getTeamMemberIds.mockResolvedValue(new Set()); // OTHER_ID not on the team
+    const req = { body: { leadId: 'lead1', add: ['t1'] }, user: { id: OWNER_ID, role: 'team_lead', companyId: CID } };
+    const res = mockRes();
+    await handler()(req, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(ContactBulkOps.updateTags).not.toHaveBeenCalled();
   });
 
   test('admin bypasses ownership scoping entirely — no getContactAssignee lookup at all', async () => {

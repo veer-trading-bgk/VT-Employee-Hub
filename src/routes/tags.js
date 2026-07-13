@@ -3,6 +3,7 @@ const router = express.Router();
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const { getCatalog, saveCatalog } = require('../services/TagService');
 const ContactBulkOps = require('../services/ContactBulkOpsService');
+const TeamScopeService = require('../services/TeamScopeService');
 
 function newTagId() {
   return `t_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
@@ -46,15 +47,15 @@ router.put('/contacts', authMiddleware, async (req, res, next) => {
 
     // RBAC (docs/v3/09_PERMISSION_MATRIX.md §5 Contacts bulk-actions: Owner/
     // Admin all, Manager/Sales own-only, Support none) — raw role, not
-    // v3Role (DL-021). No extractable "team-scoped" mechanism exists
-    // anywhere in this codebase for Manager to reuse — contacts.js's own
-    // fetchFilteredContacts documents this as a known, deliberate gap
-    // (manager/team_lead both fall into a binary own-only bucket there,
-    // same as Sales) — so Manager gets own-only here too rather than
-    // inventing a new team-scoping implementation. OQ-006
-    // (docs/v3/12_DECISION_LOG.md) stays open, not resolved by this fix.
+    // v3Role (DL-021). team_lead upgraded to team-scoped 2026-07-13
+    // (OQ-006, docs/v3/12_DECISION_LOG.md, resolved: team-wide) via the same
+    // TeamScopeService contacts.js's fetchFilteredContacts() now uses —
+    // manager stays own-only, unchanged: OQ-006 resolved team_lead only, and
+    // no extractable team-scoped mechanism exists for Manager to reuse (a
+    // separate, still-open gap, not silently expanded here).
     const NO_ACCESS_ROLES = new Set(['intern']);
-    const OWN_ONLY_ROLES = new Set(['manager', 'team_lead', 'agent', 'telecaller']);
+    const OWN_ONLY_ROLES = new Set(['manager', 'agent', 'telecaller']);
+    const TEAM_SCOPED_ROLES = new Set(['team_lead']);
     if (NO_ACCESS_ROLES.has(req.user.role)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
@@ -62,6 +63,14 @@ router.put('/contacts', authMiddleware, async (req, res, next) => {
       const { exists, assignedTo } = await ContactBulkOps.getContactAssignee(companyId, { leadId, phone });
       if (!exists) return res.status(404).json({ error: 'Contact not found' });
       if (assignedTo !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (TEAM_SCOPED_ROLES.has(req.user.role)) {
+      const { exists, assignedTo } = await ContactBulkOps.getContactAssignee(companyId, { leadId, phone });
+      if (!exists) return res.status(404).json({ error: 'Contact not found' });
+      if (assignedTo !== req.user.id) {
+        const teamMemberIds = await TeamScopeService.getTeamMemberIds(companyId, req.user.id);
+        if (!teamMemberIds.has(assignedTo)) return res.status(403).json({ error: 'Forbidden' });
+      }
     }
 
     const result = await ContactBulkOps.updateTags(companyId, { leadId, phone }, { add, remove });
