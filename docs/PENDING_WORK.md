@@ -31,8 +31,26 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
   (`docs/phase3/TECHNICAL_DEBT.md` — "M1 Mobile Audit"). Still queued: **A** (Button.tsx design-
   token pass), **E** (broader CSS sweep), **C** (Kanban stage-picker — proposal already approved
   and banked, ready to implement), **F** (Settings content responsiveness — unblocked now that
-  M2-B/D are closed), **G** (sweep-up / remaining loose ends). Full batch detail lives in the M1
-  audit session's own record, not this repo's docs — not started here.
+  M2-B/D are closed; overlaps with B3 finding #4 below, coordinate scope before starting either),
+  **G** (sweep-up / remaining loose ends). Full batch detail lives in the M1 audit session's own
+  record, not this repo's docs — not started here.
+- **`team_lead` bulk-update access — deferred, not rejected (Option B from the OQ-006 proposal).**
+  OQ-006's resolution (`docs/v3/12_DECISION_LOG.md`, [DL-022]) extended `team_lead` to team-wide
+  Contacts read/export/tag scoping but deliberately left `bulk-update` out of that batch —
+  materially more implementation work than the read-scoping fix, not because it's undesirable.
+  `manager`'s existing (already granted, company-wide) `bulk-update` access is unchanged. Revisit
+  as its own decision if a real need arises.
+- **`metrics.js`'s `/my-team` route is an unindexed, cross-company full-table scan.** Resolves
+  `team_lead` membership via a bare `dynamodb.scan()` with no `companyId` key condition — safe
+  today only because employee ids are globally-unique UUIDs, not because the query itself is
+  tenant-scoped. Found while building `TeamScopeService` for OQ-006; suggested fix is migrating
+  `/my-team` to call `TeamScopeService.getTeamMemberIds()` instead. Log-only, not fixed.
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "metrics.js's /my-team route is an unindexed,
+  cross-company full-table scan".
+- **Drip / recurring campaign sequences** (`docs/bible/ROADMAP.md`'s Campaign Intelligence list).
+  Roadmap-level idea, not yet scoped as concrete work — no investigation or decision exists yet,
+  unlike the other items in this section. Flagged here only so it isn't lost; needs its own
+  scoping pass before it's real queued work.
 - **B2 item 9 — execution-volume/trigger-breakdown charts for the Automation dashboard.** Deferred
   out of Track B2 Batches 1/2a explicitly ("stays queued for its own aggregation-strategy pass" —
   `f82f6d0`'s own commit message). Needs its own scoping pass before implementation — how to
@@ -53,8 +71,22 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
   `settings/page.tsx`'s sidebar is simply `hidden ... md:flex` with no mobile equivalent, so below
   768px there is no way to switch Settings sections through the UI at all (confirmed live). Needs a
   real mobile nav (bottom sheet, hamburger, or a genuine two-screen router state) — a build item,
-  not a one-line fix. Not started.
+  not a one-line fix. Overlaps with M2-F (Settings content responsiveness, above) — coordinate
+  scope before starting either. Not started.
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Settings Module Audit", finding #4.
+- **Bare (ungated) GET routes in `companies.js` and `whatsapp.js` (B3 finding #9).**
+  `companies.js`'s `GET /profile`/`GET /trial` and `whatsapp.js`'s `GET /flows`/`GET /branches`
+  have only `authMiddleware` — any role. Docs say Company Profile should exclude Sales/Support and
+  WhatsApp should be Manager-Hidden entirely. The `companies.js` pair is currently unreachable
+  (Organisation is a stub, zero frontend caller); the `whatsapp.js` pair is reachable. Not yet
+  scoped.
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Settings Module Audit", finding #9.
+- **`whatsapp.js`'s `POST /_tick` has no explicit `authMiddleware` token on its own line (B3
+  finding #16) — informational, no action needed.** Relies on the router-level middleware chain
+  instead, which is intentional and already documented (`docs/bible/08_MODULES.md:211`) as a
+  secondary manual-trigger path alongside the real EventBridge entry. Listed here only so a future
+  session doesn't re-investigate it from scratch.
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Settings Module Audit", finding #16.
 - **Settings spec sync.** 3 documented Settings sections (Teams, Roles & Permissions, Danger Zone)
   have zero code anywhere, not even a stub; conversely 5 built sections (Notifications, Security,
   Appearance, AI, Metric Targets) have no documentation at all. Needs a decision per section: build
