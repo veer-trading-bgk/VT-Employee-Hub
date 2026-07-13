@@ -80,6 +80,13 @@ router.post('/employees', rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { email, password, name, role, mobileNumber, panNumber, aadhaarNumber, homeAddress } = registerSchema.parse(req.body);
 
+    // Only an Owner (raw superadmin) may grant the admin role — an admin
+    // creating another admin is the privilege-escalation path
+    // docs/v3/09_PERMISSION_MATRIX.md:292,330-332 documents as blocked.
+    if (role === 'admin' && req.user.role !== 'superadmin') {
+      return res.status(403).json({ error: 'Only a superadmin can assign the admin role' });
+    }
+
     const existing = await dynamodb.query({
       TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
       IndexName: 'emailIndex',
@@ -136,6 +143,15 @@ router.put('/employees/:id', rateLimit(10, 60_000), async (req, res, next) => {
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ error: 'No fields provided to update' });
+    }
+
+    // Only an Owner (raw superadmin) may grant the admin role — same
+    // escalation boundary as POST /employees above. Role changes AWAY from
+    // admin are not blocked here: demotion isn't a privilege escalation, and
+    // docs/v3/09_PERMISSION_MATRIX.md:292,330-332 documents this boundary
+    // specifically as "can't create Admin," not "can't change an Admin."
+    if (updates.role === 'admin' && req.user.role !== 'superadmin') {
+      return res.status(403).json({ error: 'Only a superadmin can assign the admin role' });
     }
 
     if (id === req.user.id && updates.status === 'inactive') {
