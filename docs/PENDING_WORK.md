@@ -27,13 +27,14 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
 
 ## Queued technical work
 
-- **M2 remaining batches (M1 mobile audit follow-up).** M2-B (Fixes 1-4) and M2-D are done
-  (`docs/phase3/TECHNICAL_DEBT.md` — "M1 Mobile Audit"). Still queued: **A** (Button.tsx design-
-  token pass), **E** (broader CSS sweep), **C** (Kanban stage-picker — proposal already approved
-  and banked, ready to implement), **F** (Settings content responsiveness — unblocked now that
-  M2-B/D are closed; overlaps with B3 finding #4 below, coordinate scope before starting either),
-  **G** (sweep-up / remaining loose ends). Full batch detail lives in the M1 audit session's own
-  record, not this repo's docs — not started here.
+- **M2 remaining batches (M1 mobile audit follow-up).** M2-A, M2-B (Fixes 1-4), and M2-D are done
+  (`docs/phase3/TECHNICAL_DEBT.md` — "M1 Mobile Audit" / "M2-A"). Still queued: **E** (broader CSS
+  sweep), **C** (Kanban stage-picker — proposal already approved and banked, ready to implement),
+  **F** (Settings content responsiveness — unblocked now that M2-A/B/D are closed; overlaps with
+  B3 finding #4 below, coordinate scope before starting either), **G** (sweep-up / remaining loose
+  ends — now also carrying the M2-A icon-only `h-8`/`h-7` touch-target heuristic list, see
+  TECHNICAL_DEBT.md). Full batch detail lives in the M1 audit session's own record, not this
+  repo's docs — not started here.
 - **`team_lead` bulk-update access — deferred, not rejected (Option B from the OQ-006 proposal).**
   OQ-006's resolution (`docs/v3/12_DECISION_LOG.md`, [DL-022]) extended `team_lead` to team-wide
   Contacts read/export/tag scoping but deliberately left `bulk-update` out of that batch —
