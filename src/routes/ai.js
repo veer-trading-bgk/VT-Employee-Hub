@@ -106,7 +106,12 @@ router.put('/config', authMiddleware, checkRole(['admin']), async (req, res, nex
 // today — see AIService/WalletService); this route exists so the Settings > AI
 // tab can show a real (if currently static) balance ahead of WhatsApp Calling,
 // which will be the first feature to actually draw it down.
-router.get('/wallet', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+//
+// admin-only (B4 audit Finding 9, 2026-07-13): the only frontend caller,
+// AISection.tsx, is itself adminOnly-gated with no manager override, so a
+// manager could previously reach this route directly (curl/devtools) but
+// never through any UI — tightened to match the page that actually calls it.
+router.get('/wallet', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
     const balancePoints = await WalletService.getBalance(req.user.companyId);
     res.json({ balancePoints });

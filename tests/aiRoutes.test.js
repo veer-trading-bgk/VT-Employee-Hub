@@ -38,6 +38,15 @@ function getRouteHandler(router, path, method) {
   return stack[stack.length - 1].handle;
 }
 
+// Unlike getRouteHandler (final handler only, middleware bypassed —
+// deliberate for the handler-logic tests elsewhere in this file), this
+// returns the full per-route middleware chain so role-gate behavior
+// (checkRole, authMiddleware) can be exercised directly instead of assumed.
+function getRouteStack(router, path, method) {
+  const layer = router.stack.find((l) => l.route && l.route.path === path && l.route.methods[method]);
+  return layer ? layer.route.stack.map((s) => s.handle) : [];
+}
+
 function mockRes() {
   return { status: jest.fn().mockReturnThis(), json: jest.fn() };
 }
@@ -144,5 +153,52 @@ describe('GET /api/ai/wallet — placeholder balance display', () => {
     await handler({ user: USER }, res, jest.fn());
     expect(WalletService.getBalance).toHaveBeenCalledWith('comp_test');
     expect(res.json).toHaveBeenCalledWith({ balancePoints: 0 });
+  });
+});
+
+// B4 audit Finding 9 (2026-07-13): tightened from ['admin', 'manager'] to
+// ['admin'] to match the only frontend caller (AISection.tsx, adminOnly).
+// getRouteHandler (above) deliberately bypasses middleware to unit-test
+// handler logic in isolation — it can't prove a role is actually rejected.
+// This exercises the real checkRole middleware from the route's own stack.
+describe('GET /api/ai/wallet — role gate (admin-only, tightened from admin+manager)', () => {
+  const stack = getRouteStack(aiRouter, '/wallet', 'get');
+  const roleGate = stack[stack.length - 2]; // [authMiddleware, checkRole(['admin']), handler]
+  beforeEach(() => jest.clearAllMocks());
+
+  test('manager is rejected with 403, never reaches the handler', async () => {
+    const req = { user: { ...USER, role: 'manager' } };
+    const res = mockRes();
+    const next = jest.fn();
+    await roleGate(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
+    expect(WalletService.getBalance).not.toHaveBeenCalled();
+  });
+
+  test('telecaller is rejected with 403', async () => {
+    const req = { user: { ...USER, role: 'telecaller' } };
+    const res = mockRes();
+    const next = jest.fn();
+    await roleGate(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+  });
+
+  test('admin passes through to the handler', async () => {
+    const req = { user: { ...USER, role: 'admin' } };
+    const res = mockRes();
+    const next = jest.fn();
+    await roleGate(req, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  test('superadmin bypasses the gate (checkRole\'s unconditional superadmin bypass)', async () => {
+    const req = { user: { ...USER, role: 'superadmin' } };
+    const res = mockRes();
+    const next = jest.fn();
+    await roleGate(req, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
   });
 });
