@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { AlertTriangle, Lock } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 import { Toggle } from '@/components/v3/ui/Toggle';
 import { Select } from '@/components/v3/ui/Select';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
@@ -20,8 +20,15 @@ const MAX_TEMPERATURE = 0.5;
 
 /**
  * Temperature/model are stored and capped, but NOT wired into any live AI
- * call in this PR — see docs/bible/19_DECISION_LOG.md's Phase 2A entry. RAG/
- * embedding/search are locked placeholders; no RAG infrastructure exists yet.
+ * call in this PR — see docs/bible/19_DECISION_LOG.md's Phase 2A entry.
+ *
+ * RAG/knowledge retrieval is deliberately NOT shown on this tab anymore
+ * (B4 audit Finding 6): it shipped live the day after this tab did (Era
+ * 27-31, 2026-07-07) and runs automatically on every conversation turn
+ * (ConversationalAgentService._fetchKnowledgeContext()) with no admin
+ * toggle at all — there's nothing "future" left to preview, and the
+ * removed locked rows' copy ("no RAG infrastructure exists yet") had been
+ * flatly false since the day after this tab shipped.
  */
 export function FutureAiSettingsTab() {
   const qc = useQueryClient();
@@ -104,20 +111,6 @@ export function FutureAiSettingsTab() {
           </div>
         </div>
       </div>
-
-      {[
-        { label: 'RAG (Retrieval-Augmented Generation)', note: 'Requires the Knowledge Center (PR 3/4) before this can do anything.' },
-        { label: 'Embedding model', note: 'No vector store exists yet.' },
-        { label: 'Search configuration', note: 'No semantic search exists yet.' },
-      ].map((row) => (
-        <div key={row.label} className="flex items-center justify-between rounded-xl border border-neutral-200 bg-white p-4 opacity-60 dark:border-neutral-800 dark:bg-neutral-900">
-          <div>
-            <p className="text-sm font-semibold text-neutral-900 dark:text-white">{row.label}</p>
-            <p className="text-xs text-neutral-500">{row.note}</p>
-          </div>
-          <Lock className="h-4 w-4 text-neutral-400" aria-hidden />
-        </div>
-      ))}
 
       <div className="flex justify-end">
         <Button onClick={() => mutation.mutate(custom)} disabled={!dirty || mutation.isPending}>
