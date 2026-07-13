@@ -457,7 +457,7 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Priority:** Resolved — was Low/Medium (no real data-mutation risk since the backend already rejected it, but a genuine UI-level RBAC gate failure on a surface meant to be fully locked down).
 
-## Settings Module Audit (B3, 2026-07-13) — 17 findings, 3 resolved same session (#1, #2, #8), 1 doc-fix (#13), 13 open
+## Settings Module Audit (B3, 2026-07-13) — 17 findings, 9 resolved across two sessions (#1, #2, #3, #5, #6, #7, #7b, #8, #12), 1 doc-fix (#13), 7 open (#4, #9, #10 [analyzed, cleanup queued], #11 [scoped, not implemented], #14, #15, #16)
 
 **Source:** a scoped read-only audit of the Settings module (`settings/page.tsx`'s tab-switcher and every inline section, all extracted section components under `dashboard/src/components/v3/settings/` and `dashboard/src/components/settings/`, and their backing backend routes) — 6 audit tasks given directly in chat: the DL-021 raw-role sweep on the 6 candidates tracked in `docs/PENDING_WORK.md`, a spec-vs-built matrix against `06_SCREEN_SPECIFICATIONS.md`/`02_INFORMATION_ARCHITECTURE.md`, a permission-matrix cross-check against `09_PERMISSION_MATRIX.md` §10, a backend gate audit, dead/stub UI + state-handling review, and real-browser role-scoped verification (admin/manager/team_lead/telecaller, plus a mobile-viewport check) via a temporary no-login Playwright harness, deleted after use. Findings #1, #2, #8 were fixed the same session as "Batch S1" (security-only fixes, each its own commit, held for review before push); #13 resolved as a doc-fix in the same batch. Findings #3-#7, #7b, #9-#12, #14-#16 remain open, tracked below and (selectively) in `docs/PENDING_WORK.md`.
 
@@ -477,13 +477,13 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Priority:** Resolved — was Critical.
 
-### 3 — OPEN: blank-config auto-save can overwrite real WhatsApp settings on a transient fetch failure
+### 3 — RESOLVED: blank-config auto-save could overwrite real WhatsApp settings on a transient fetch failure
 
-**Issue:** `WelcomeMessagePanel.tsx:42`, `WorkingHoursPanel.tsx:48,53`, `DelayedResponsePanel.tsx:35` — none destructure `isError` from their `useQuery`. On a failed GET, the inner `*Form` falls back to `EMPTY_CONFIG` (everything blank/off) with no error indicator. Every field in the backing Zod schemas (`src/utils/validation.js:150-181,352-384`) is optional-with-default, so a blank state is 100% schema-valid — if the admin then flips a toggle believing the feature was genuinely off, it auto-saves immediately (no manual "Save" step) and can overwrite a real, previously-configured welcome message / working-hours schedule / delayed-response message with blanks.
+**Issue:** `WelcomeMessagePanel.tsx:42`, `WorkingHoursPanel.tsx:48,53`, `DelayedResponsePanel.tsx:35` — none destructured `isError` from their `useQuery`. On a failed GET, the inner `*Form` fell back to `EMPTY_CONFIG` (everything blank/off) with no error indicator. Every field in the backing Zod schemas (`src/utils/validation.js:150-181,352-384`) is optional-with-default, so a blank state was 100% schema-valid — if the admin then flipped a toggle believing the feature was genuinely off, it auto-saved immediately (no manual "Save" step) and could overwrite a real, previously-configured welcome message / working-hours schedule / delayed-response message with blanks.
 
-**Fix:** Not yet scoped — needs `isError` handling (block the toggle / show a retry state instead of rendering `EMPTY_CONFIG` as if it were real data) across all three panels.
+**Fix (commit `2d6c71a`):** all three now destructure `isError`/`refetch` and render a retry state instead of mounting the `*Form` on failure — the toggle is unreachable until the real config is known, matching `TagsSection`'s existing `isError` + Retry pattern. Verified live (temporary harness, deleted after use) for all three panels: injected GET failure → retry state renders, no toggle present → lifted failure, clicked Retry → real form renders with its real (non-blank) server state.
 
-**Priority:** High — traced via code + schema inspection, not yet reproduced live (would require injecting a real GET failure against a populated config), but the causal chain is fully traced and the blast radius (silently wiping a live WhatsApp automation config) is real.
+**Priority:** Resolved — was High.
 
 ### 4 — OPEN: the documented mobile "two-screen" Settings experience does not exist
 
@@ -493,37 +493,37 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Priority:** High — confirmed live, fully broken experience for any mobile user not on the default Profile tab.
 
-### 5 — OPEN: `renderContent()` has zero role gating — direct `?tab=` navigation renders admin-only sections to any role
+### 5 — RESOLVED: `renderContent()` had zero role gating — direct `?tab=` navigation rendered admin-only sections to any role
 
-**Issue:** `settings/page.tsx:1452-1487`. `visibleSections` (1461-1464) is consumed only by the sidebar (`1496`) — `renderContent()`'s switch never checks it. `<ProtectedRoute>` at the `(v3)` layout level has no `allowedRoles`, so any authenticated role reaches `/settings` at all, and `activeSection` seeds directly from `searchParams.get('tab')` cast with `as` (compile-time only). Confirmed live: a `manager` hitting `/settings?tab=whatsapp` gets the full `WhatsAppSection` mount, which fires `GET /api/whatsapp/config/full`, 403s, and — because of finding #6 — silently renders the complete "Connect WhatsApp" onboarding form as if no WhatsApp were connected yet. Not a data leak (every backend route checked stayed correctly gated), but real API calls fire and a misleading admin-only UI renders to non-admins, with zero frontend defense-in-depth.
+**Issue:** `settings/page.tsx:1452-1487`. `visibleSections` (1461-1464) was consumed only by the sidebar (`1496`) — `renderContent()`'s switch never checked it. `<ProtectedRoute>` at the `(v3)` layout level has no `allowedRoles`, so any authenticated role reached `/settings` at all, and `activeSection` seeded directly from `searchParams.get('tab')` cast with `as` (compile-time only). Confirmed live: a `manager` hitting `/settings?tab=whatsapp` got the full `WhatsAppSection` mount, which fired `GET /api/whatsapp/config/full`, 403'd, and — because of finding #6 — silently rendered the complete "Connect WhatsApp" onboarding form as if no WhatsApp were connected yet. Not a data leak (every backend route checked stayed correctly gated), but real API calls fired and a misleading admin-only UI rendered to non-admins, with zero frontend defense-in-depth.
 
-**Fix:** Not yet scoped — gate `renderContent()`'s switch the same way `visibleSections` already does (reuse the same predicate), fall back to the first visible section or an "access denied" state otherwise.
+**Fix (commit `a9012f6`):** extracted the exact `visibleSections` predicate into a shared `isSectionVisible()` helper (no duplicated filter logic), and added an `effectiveSection` derived value: if the requested `?tab=` isn't visible for the role, falls back to the first section the role can actually see — silently, no error screen, per the graceful-degradation rule in `docs/v3/09_PERMISSION_MATRIX.md` §13.6. Pure derived value (not an effect + setState), so there's no flash of the unauthorized section's real content on the way to the fallback. `renderContent()`'s switch and the sidebar's active-item highlighting both now key off `effectiveSection`. Verified live: `telecaller` hitting `?tab=whatsapp` or `?tab=tags` now lands on Profile instead of the real component.
 
-**Priority:** Medium — architecture gap, not an active leak (every backend route sampled stayed correctly gated).
+**Priority:** Resolved — was Medium.
 
-### 6 — OPEN: missing `isError` handling across most sections masks real fetch failures as legitimate empty/default states
+### 6 — RESOLVED: missing `isError` handling across most sections masked real fetch failures as legitimate empty/default states
 
-**Issue:** Confirmed pattern in `WhatsAppSection` (falls to "Connect" mode, confirmed live under finding #5), `EmployeesSection` (`v3/team/EmployeesSection.tsx:632` — `.catch(() => ({success:false,data:[]}))` swallows the error entirely; confirmed live: manager via `?tab=employees` sees a plain "No employees yet" with zero error indicator), `TargetsSection` (`settings/page.tsx:900-921` — sync effect never populates `form` on failure → every metric row silently `return null`s), `AuditSection` (`settings/page.tsx:1087-1106` — all 3 queries, including suspicious-activity/security tabs, render "no records" on a failed fetch, masking a genuine fetch error as "clean" for a security-relevant surface), `AISection` (`masterOn = cfg?.masterEnabled ?? true` defaults to **enabled** on failure), `WhatsAppFlowsPanel`/`BranchesPanel` (empty-array fallback masks fetch failure as "nothing registered yet"). `TagsSection` is the one correctly-built exception (`isError` + Retry button, `settings/page.tsx:1387-1392`) — reference pattern for the fix.
+**Issue:** Confirmed pattern in `WhatsAppSection` (fell to "Connect" mode, confirmed live under finding #5), `EmployeesSection` (`v3/team/EmployeesSection.tsx:632` — `.catch(() => ({success:false,data:[]}))` swallowed the error entirely; confirmed live: manager via `?tab=employees` saw a plain "No employees yet" with zero error indicator), `TargetsSection` (`settings/page.tsx:900-921` — sync effect never populated `form` on failure → every metric row silently `return null`'d), `AuditSection` (`settings/page.tsx:1087-1106` — all 3 queries, including suspicious-activity/security tabs, rendered "no records" on a failed fetch, masking a genuine fetch error as "clean" for a security-relevant surface), `AISection` (`masterOn = cfg?.masterEnabled ?? true` defaulted to **enabled** on failure), `WhatsAppFlowsPanel`/`BranchesPanel` (empty-array fallback masked fetch failure as "nothing registered yet"). `TagsSection` was the one correctly-built exception (`isError` + Retry button, `settings/page.tsx:1387-1392`) — reference pattern used for the fix.
 
-**Fix:** Not yet scoped — add `isError` handling to each listed section, following `TagsSection`'s existing pattern.
+**Fix (commits `71c4e11`, `62bf4ed`, `540a00e`, `c713e8c`):** `isError` + Retry (matching `TagsSection`'s pattern, via a new shared `ErrorRetry` helper for the sections living in `settings/page.tsx`) added to `WhatsAppSection`, `TargetsSection`, all 3 `AuditSection` queries, `EmployeesSection` (also removed the `.catch()` swallow entirely — a failed fetch now surfaces as `isError` like every other query in that file), `AISection` (also fixed `masterOn`'s `?? true` → `?? false`: unknown must never render as enabled), `WhatsAppFlowsPanel`, `BranchesPanel`. Verified live (temporary harness, deleted after use): injected a 500 on `GET /api/audit/logs` → confirmed "Failed to load audit logs" + Retry renders, not "No records in this time range"; injected a 500 on `GET /api/ai/config` → confirmed the retry state renders, not "AI features: ON".
 
-**Priority:** Medium, elevated to High specifically for `AuditSection` (security-monitoring surface indistinguishable from "clean" on fetch failure).
+**Priority:** Resolved — was Medium, High for `AuditSection` specifically.
 
-### 7 — OPEN: Tags is hidden from Manager's Settings nav despite Manager having real Edit capability
+### 7 — RESOLVED: Tags was hidden from Manager's Settings nav despite Manager having real Edit capability
 
-**Issue:** `settings/page.tsx:109` — `{ id: 'tags', ..., adminOnly: true }`. Backend `POST/PUT /api/tags` (`tags.js:20,53`) allow `admin`+`manager`+`superadmin`; `09_PERMISSION_MATRIX.md` §10 documents Tags as `Manager: Edit`. But `adminOnly: true` means `visibleSections` computes `!adminOnly || isAdmin` → false for manager — Tags never appears in a manager's sidebar. Confirmed live: manager's visible sections = `[Profile, Appearance, Notifications, Security, Templates]` — no Tags; only reachable by manually typing `?tab=tags` (where it then works correctly per finding #5's bypass path).
+**Issue:** `settings/page.tsx:109` — `{ id: 'tags', ..., adminOnly: true }`. Backend `POST/PUT /api/tags` (`tags.js:20,53`) allow `admin`+`manager`+`superadmin`; `09_PERMISSION_MATRIX.md` §10 documents Tags as `Manager: Edit`. But `adminOnly: true` meant `visibleSections` computed `!adminOnly || isAdmin` → false for manager — Tags never appeared in a manager's sidebar. Confirmed live: manager's visible sections were `[Profile, Appearance, Notifications, Security, Templates]` — no Tags; only reachable by manually typing `?tab=tags`.
 
-**Fix:** Not yet scoped — change the Tags `SECTIONS` entry to `visibleToRoles: ['admin', 'manager']` (raw-role, same pattern already used for Templates), not `adminOnly`.
+**Fix (commit `8b13f35`):** Tags `SECTIONS` entry switched to `visibleToRoles: ['admin', 'manager']` (raw-role, same pattern already used for Templates), not `adminOnly`. Verified live: manager's sidebar now includes Tags; telecaller's still doesn't.
 
-**Priority:** Medium — a real, documented capability is unreachable through normal navigation, though not a security issue (the underlying route is correctly gated either way).
+**Priority:** Resolved — was Medium.
 
-### 7b — OPEN, corollary of #7: non-manager/non-admin roles that reach Tags via bypass see a create button that will always fail
+### 7b — RESOLVED, corollary of #7: non-manager/non-admin roles reaching Tags via bypass saw a create button that would always fail
 
-**Issue:** Confirmed live: `telecaller` via `?tab=tags` sees a fully rendered "Create New Tag" card with a working-looking "Create Tag" button (`TagsSection` has zero internal role gate — relies entirely on the page-level guard finding #5 shows doesn't actually apply to direct navigation). Backend's `POST /api/tags` excludes `telecaller`, so the button always 403s if clicked.
+**Issue:** Confirmed live: `telecaller` via `?tab=tags` saw a fully rendered "Create New Tag" card with a working-looking "Create Tag" button (`TagsSection` had zero internal role gate — relied entirely on the page-level guard finding #5 showed didn't actually apply to direct navigation). Backend's `POST /api/tags` excludes `telecaller`, so the button always 403'd if clicked.
 
-**Fix:** Not yet scoped — bundle with finding #7's fix; `TagsSection` needs its own `canCreate` check regardless once #5 is fixed properly (defense in depth).
+**Fix (commit `a9012f6`, bundled with finding #5's fix):** added `canCreateTags` — a raw-role check in `TagsSection` itself, matching `POST /api/tags`'s actual `checkRole(['admin','manager','superadmin'])` exactly — hiding the "Create New Tag" card. Defense in depth: holds even if finding #5's page-level gate is ever removed, or a future caller mounts `TagsSection` some other way. Verified live: a telecaller who reaches `TagsSection` no longer sees a Create Tag button.
 
-**Priority:** Low-Medium.
+**Priority:** Resolved — was Low-Medium.
 
 ### 8 — RESOLVED: systemic "Manager gets read access" loophole vs. documented module-level Hidden (Automation + Flows)
 
@@ -549,21 +549,28 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Priority:** Low (analysis complete; cleanup itself queued, not scheduled).
 
-### 11 — OPEN: `ProfileSection`'s "Save changes" is fake; "Change photo" is a dead button
+### 11 — OPEN, scoped (2026-07-13): `ProfileSection`'s "Save changes" is fake; "Change photo" is a dead button
 
 **Issue:** `settings/page.tsx:125` — `handleSave` is `await new Promise(r => setTimeout(r, 600))` plus a success toast; no API call exists (no PUT route was even found for a user's own profile — only `companies.js`'s company-level profile). `settings/page.tsx:143` — "Change photo" has no `onClick` at all. Profile is universally visible (all roles) — this is a visible, everyday surface silently doing nothing.
 
-**Fix:** Not yet scoped — needs either a real per-user profile PUT route + wiring, or the button removed until one exists.
+**Scoping (product-confirmed: build a real backend route; not yet implemented):**
+- **No self-service profile route exists anywhere** — `src/routes/auth.js` has `GET /me` (read-only) and no PUT/PATCH; no `users.js`/`profile.js` file exists. `admin.js`'s `PUT /employees/:id` is entirely unreachable by a non-admin (router-level `adminMiddleware`) and has no self-scoped mode beyond one narrow anti-lockout check (can't deactivate your own account) — not a variant to extend.
+- **Proposed route:** new `PUT /api/auth/me` in `auth.js`, gated by `authMiddleware` only (every role edits their own record), operating strictly on `req.user.id` from the verified token — never accepting a client-supplied id, so there is no path to editing someone else's profile.
+- **Proposed fields:** a subset of `updateEmployeeSchema` (`src/utils/validation.js:228-241`, which is `.strict()` — rejects unknown keys) via `.pick()`, not the full schema with a weaker guard bolted on: `name`, `mobileNumber`, `homeAddress` are the safe default. `role`, `status`, `teamLeadId`, `baseSalary`, `autoAssignEnabled`, `autoAssignWeight` must stay excluded (admin-only fields). `email` excluded too — changing your own login identity needs a verification flow, out of scope here. **Open product question, not decided by this scoping:** should `panNumber`/`aadhaarNumber` be self-editable? They're in the admin schema but are sensitive KYC-adjacent government IDs; flagging for an explicit call rather than assuming either way.
+- **"Change photo":** the S3 presigned-PUT pattern used for template/message media (`GET /api/whatsapp/upload-url`, `whatsapp.js:3615-3642` → returns `{uploadUrl, key}`, company-scoped key `uploads/{companyId}/{uuid}.{ext}`) is reusable in *shape* but not by calling that route directly — its MIME allowlist and 5MB limit are WhatsApp/Meta-specific, wider than a profile photo needs (the UI's own existing copy already claims "JPG, PNG up to 2MB"). Needs a new, purpose-built presigned-URL route with an image-only allowlist. Frontend should reuse the existing exported `uploadFileToS3()` helper (`dashboard/src/lib/mediaUpload.ts`) rather than adding a *fourth* inline copy of the XHR-with-progress pattern (three already exist: inbox composer, `ConversationTab.tsx`, and the automation canvas). **No avatar/photo field exists anywhere yet** — `Employee`/`User` types, `GET /api/admin/employees`'s projection, and `updateEmployeeSchema` all lack one; this is net-new. The `Avatar` component already accepts an optional `src` prop and is ready to receive it.
+- **Frontend gap found during scoping:** `AuthContext` exposes no `setUser`/`refreshUser` — only `login`/`verifyTotp`/`verifyBackupCode`/`logout` touch the internal `setUser`. A real implementation needs a new exported `refreshUser()` (re-calls `api.me()`, updates context state), otherwise a saved name change won't appear in `V3Sidebar.tsx`'s displayed name/avatar without a full reload.
+
+**Fix:** Not implemented — scoping only, per explicit instruction. Implementation deferred pending review of this proposal.
 
 **Priority:** Medium — visible, all-roles UX bug, no real persistence.
 
-### 12 — OPEN: `TargetsSection`'s `set-state-in-effect` causes real, silent loss of in-progress edits
+### 12 — RESOLVED: `TargetsSection`'s `set-state-in-effect` caused real, silent loss of in-progress edits
 
-**Issue:** `settings/page.tsx:906-921`. Trace: user saves metric A → `onSuccess` invalidates `['admin-targets']` → React Query's background refetch does not flip `isLoading` (only `isFetching`), so the form stays fully editable with no loading cover → if the user starts editing metric B in that window, the refetch lands, this effect calls `setForm(merged)` wholesale from the server response (which only reflects A), and B's in-progress keystrokes are silently discarded — `dirty` also resets to `false`, so even the "unsaved changes" indicator disappears without a trace.
+**Issue:** `settings/page.tsx:906-921`. Trace: user saves metric A → `onSuccess` invalidates `['admin-targets']` → React Query's background refetch does not flip `isLoading` (only `isFetching`), so the form stayed fully editable with no loading cover → if the user started editing metric B in that window, the refetch landed, this effect called `setForm(merged)` wholesale from the server response (which only reflected A), and B's in-progress keystrokes were silently discarded — `dirty` also reset to `false`, so even the "unsaved changes" indicator disappeared without a trace.
 
-**Fix:** Not yet scoped — merge only the just-saved key into `form`, or guard the effect against overwriting fields the user has touched since the last save.
+**Fix (commit `fc32464`):** a `touchedRef` (ref, not state — must survive the background refetch without itself triggering a re-render) tracks which metric keys have been edited since the form was last authoritatively in sync with the server. The sync effect now preserves any touched key's current local value instead of overwriting it, and only resets `dirty` to `false` when nothing was actually preserved that way. `touchedRef` clears on a completed save or reset. Chose "guard against overwriting touched fields" over "merge only the just-saved key" — this form has one global Save button submitting the whole `form` object at once, not a per-row save, so there's no single "just-saved key" to scope a merge to. Verified live (temporary harness, deleted after use): saved metric A, typed into metric B during an artificially delayed background refetch, confirmed B's typed value survived and "Unsaved changes" still correctly showed.
 
-**Priority:** Medium.
+**Priority:** Resolved — was Medium.
 
 ### 13 — RESOLVED (doc-fix): Audit Log's Owner-vs-Admin distinction was documented but not enforced
 

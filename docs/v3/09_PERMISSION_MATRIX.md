@@ -288,8 +288,9 @@ What appears in the sidebar for each role.
 code-enforced Owner-vs-Admin tier for Audit Log today. An Owner-only export tier is
 deferred until a real per-company Owner role exists — `toV3Role()` only ever produces
 `'owner'` from the raw `superadmin` platform role, never from any company-level role
-(see finding #9 in the Templates Module Audit section below), so an "Owner: Full,
-Admin: View-only" split isn't implementable against a real company employee today.
+(see finding #9 in `docs/phase3/TECHNICAL_DEBT.md`'s Templates Module Audit
+section), so an "Owner: Full, Admin: View-only" split isn't implementable against a
+real company employee today.
 
 ### Settings Actions (where accessible)
 
