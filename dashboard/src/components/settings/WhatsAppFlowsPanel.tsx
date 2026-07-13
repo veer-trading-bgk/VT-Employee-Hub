@@ -35,7 +35,7 @@ export function WhatsAppFlowsPanel() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['whatsapp-flows'],
     queryFn: () => apiFetch<{ success: boolean; flows: FlowRecord[] }>('/api/whatsapp/flows'),
     staleTime: 60_000,
@@ -165,6 +165,11 @@ export function WhatsAppFlowsPanel() {
       <div className="mt-4">
         {isLoading ? (
           <Skeleton className="h-16 w-full" />
+        ) : isError ? (
+          <div className="py-4 text-center">
+            <p className="text-xs text-error-600 dark:text-error-400">Failed to load Flows</p>
+            <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+          </div>
         ) : flows.length === 0 ? (
           <p className="py-4 text-center text-xs text-neutral-400">No Flows registered yet</p>
         ) : (

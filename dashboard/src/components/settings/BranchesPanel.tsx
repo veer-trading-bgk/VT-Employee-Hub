@@ -23,7 +23,7 @@ export function BranchesPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['wa-branches'],
     queryFn: () => apiFetch<{ branches: Branch[] }>('/api/whatsapp/branches'),
     staleTime: 30_000,
@@ -85,6 +85,21 @@ export function BranchesPanel() {
     return (
       <Card className="mt-4">
         <Skeleton className="h-24 w-full" />
+      </Card>
+    );
+  }
+
+  // Never fall back to an empty branches list on a failed fetch (B3 audit
+  // finding #6) — indistinguishable from "no branches configured yet" and
+  // hides that Send Location (canvas node + Inbox button) is reading stale
+  // or missing data right now.
+  if (isError) {
+    return (
+      <Card className="mt-4">
+        <div className="py-4 text-center">
+          <p className="text-sm text-error-600 dark:text-error-400">Failed to load branches</p>
+          <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+        </div>
       </Card>
     );
   }
