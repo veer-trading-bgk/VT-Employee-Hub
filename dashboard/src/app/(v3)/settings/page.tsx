@@ -30,6 +30,7 @@ import {
   Save,
   X,
   Sparkles,
+  FileText,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card } from '@/components/v3/ui/Card';
@@ -55,6 +56,7 @@ import { AISection } from '@/components/v3/settings/AISection';
 import { WabaHealthPanel } from '@/components/settings/WabaHealthPanel';
 import { WhatsAppFlowsPanel } from '@/components/settings/WhatsAppFlowsPanel';
 import { BranchesPanel } from '@/components/settings/BranchesPanel';
+import { SettingsTemplatesSection } from '@/components/settings/SettingsTemplatesSection';
 
 // ── Section definitions ───────────────────────────────────────────────────────
 
@@ -74,7 +76,8 @@ type SettingsSection =
   | 'audit'
   | 'targets'
   | 'metric-config'
-  | 'appearance';
+  | 'appearance'
+  | 'templates';
 
 interface SectionDef {
   id: SettingsSection;
@@ -82,6 +85,14 @@ interface SectionDef {
   description: string;
   icon: React.ReactNode;
   adminOnly?: boolean;
+  // Raw backend roles (not v3Role — DL-021, docs/v3/12_DECISION_LOG.md)
+  // allowed to see this section, for tiers the binary adminOnly flag can't
+  // express (e.g. Templates: visible to admin+manager, hidden for sales/
+  // support). Only the Templates entry uses this today; every other section
+  // keeps using adminOnly. superadmin always sees every section regardless
+  // (see visibleSections below), matching checkRole()/ProtectedRoute's own
+  // unconditional superadmin bypass elsewhere in this codebase.
+  visibleToRoles?: Role[];
 }
 
 const SECTIONS: SectionDef[] = [
@@ -92,6 +103,7 @@ const SECTIONS: SectionDef[] = [
   { id: 'organisation',  label: 'Organisation',     description: 'Company name, logo, settings',           icon: <Building2 className="h-5 w-5" />, adminOnly: true },
   { id: 'employees',     label: 'Employees',        description: 'Invite, manage roles and permissions',   icon: <Users className="h-5 w-5" />, adminOnly: true },
   { id: 'whatsapp',      label: 'WhatsApp',         description: 'Connect and manage WhatsApp Business',   icon: <Smartphone className="h-5 w-5" />, adminOnly: true },
+  { id: 'templates',     label: 'Templates',        description: 'Meta-approved WhatsApp message templates', icon: <FileText className="h-5 w-5" />, visibleToRoles: ['admin', 'manager'] },
   { id: 'ai',            label: 'AI',               description: 'Master switch and per-feature AI controls', icon: <Sparkles className="h-5 w-5" />, adminOnly: true },
   { id: 'pipeline',      label: 'Pipeline Stages',  description: 'Customise your sales stages',            icon: <LayoutGrid className="h-5 w-5" />, adminOnly: true },
   { id: 'tags',          label: 'Tags',             description: 'Manage contact tags',                    icon: <Tag className="h-5 w-5" />, adminOnly: true },
@@ -1433,6 +1445,8 @@ function SettingsPageInner() {
   const { user, logout } = useAuth();
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
   const isAdmin = ['owner', 'admin'].includes(v3Role);
+  // Raw role (not v3Role) for visibleToRoles — DL-021, docs/v3/12_DECISION_LOG.md.
+  const rawRole = user?.role;
   const searchParams = useSearchParams();
 
   const initialSection = (searchParams.get('tab') as SettingsSection | null) ?? 'profile';
@@ -1444,7 +1458,10 @@ function SettingsPageInner() {
     if (tab) setActiveSection(tab);
   }, [searchParams]);
 
-  const visibleSections = SECTIONS.filter((s) => !s.adminOnly || isAdmin);
+  const visibleSections = SECTIONS.filter((s) => {
+    if (s.visibleToRoles) return rawRole === 'superadmin' || (!!rawRole && s.visibleToRoles.includes(rawRole));
+    return !s.adminOnly || isAdmin;
+  });
 
   function renderContent() {
     switch (activeSection) {
@@ -1452,6 +1469,7 @@ function SettingsPageInner() {
       case 'appearance':    return <AppearanceSection />;
       case 'employees':     return <EmployeesSection />;
       case 'whatsapp':      return <WhatsAppSection />;
+      case 'templates':     return <SettingsTemplatesSection />;
       case 'ai':            return <AISection />;
       case 'notifications': return <StubSection title="Notifications" description="Manage your notification preferences" />;
       case 'security':      return <StubSection title="Security" description="Password, 2FA, and session management" />;
