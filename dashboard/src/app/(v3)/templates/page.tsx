@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { FileText, LayoutDashboard, List } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
@@ -10,6 +11,7 @@ import { TemplateList } from '@/components/templates/TemplateList';
 type Tab = 'overview' | 'templates';
 
 function TemplatesPageInner() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>('overview');
 
   return (
@@ -53,7 +55,11 @@ function TemplatesPageInner() {
           )}
           {activeTab === 'templates' && (
             <div className="flex flex-col gap-4">
-              <TemplateList />
+              {/* Deep-links into Inbox with the template preselected — Inbox owns
+                  recipient selection and the actual send flow (variable auto-fill,
+                  unresolved-variable form). See ComposerToolbar.tsx/
+                  ExpiredWindowSendBar's autoOpenTemplateId handling. */}
+              <TemplateList onSendTemplate={(t) => router.push(`/inbox?template=${t.id}`)} />
             </div>
           )}
         </div>

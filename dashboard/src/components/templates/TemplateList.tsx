@@ -61,9 +61,15 @@ interface Filters {
 
 interface Props {
   onSendTemplate?: (template: WaTemplate) => void;
+  // Hard override, not role-based: when true, New Template/Sync/AI Draft/
+  // Edit/Delete/Submit are unconditionally hidden regardless of role. Used by
+  // the Settings → Templates section (a genuinely read-only glance-and-request
+  // surface, distinct from the full-management standalone/Campaigns
+  // surfaces) — those two callers don't pass this, so they're unaffected.
+  readOnly?: boolean;
 }
 
-export function TemplateList({ onSendTemplate }: Props) {
+export function TemplateList({ onSendTemplate, readOnly = false }: Props) {
   const qc = useQueryClient();
 
   // RBAC — raw backend role, not the v3Role display bucket (DL-021,
@@ -73,13 +79,13 @@ export function TemplateList({ onSendTemplate }: Props) {
   // ai-draft are admin-only, sync/history/list are admin+manager.
   const { user } = useAuth();
   const rawRole = user?.role;
-  const canManage = rawRole === 'superadmin' || rawRole === 'admin';
-  const canSync = canManage || rawRole === 'manager';
-  // Dead code today (Templates audit finding #5 — onSendTemplate is never
-  // passed by either live caller, so the Send button this gates never
-  // renders). Left role-equivalent to the old display-bucket check (which
-  // treated team_lead as 'manager') rather than silently narrowing it.
-  const canSendRole = canManage || rawRole === 'manager' || rawRole === 'team_lead';
+  const canManage = !readOnly && (rawRole === 'superadmin' || rawRole === 'admin');
+  const canSync = !readOnly && (canManage || rawRole === 'manager');
+  // POST /send-template has no checkRole() at all — open to every
+  // authenticated role, matching docs/v3/09_PERMISSION_MATRIX.md:101's "Send
+  // template: ✓ ✓ ✓ ✓ ✓". No role restriction here either (Templates audit
+  // finding #5, now wired up — see templates/page.tsx and campaigns/page.tsx).
+  const canSendRole = true;
 
   // Filters & sort
   const [filters, setFilters] = useState<Filters>({ search: '', status: '', category: '', quality: '' });
@@ -401,7 +407,7 @@ export function TemplateList({ onSendTemplate }: Props) {
                       ? 'No templates yet — create your first one'
                       : 'No templates match your filters'}
                   </p>
-                  {templates.length === 0 && (
+                  {templates.length === 0 && canManage && (
                     <button
                       type="button"
                       onClick={handleCreate}

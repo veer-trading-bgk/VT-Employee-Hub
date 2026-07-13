@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Send, LayoutDashboard, List, Users, BarChart3, History, FileText } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { CampaignsDashboard } from '@/components/campaigns/CampaignsDashboard';
@@ -23,6 +24,7 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ElementType }> = [
 ];
 
 function CampaignsPageInner() {
+  const router = useRouter();
   const [activeTab,     setActiveTab]     = useState<Tab>('dashboard');
   const [createOpen,    setCreateOpen]    = useState(false);
   const [templateView,  setTemplateView]  = useState<TemplateView>('overview');
@@ -112,7 +114,9 @@ function CampaignsPageInner() {
               {templateView === 'overview' && (
                 <TemplateDashboard onViewAll={() => setTemplateView('list')} />
               )}
-              {templateView === 'list' && <TemplateList />}
+              {templateView === 'list' && (
+                <TemplateList onSendTemplate={(t) => router.push(`/inbox?template=${t.id}`)} />
+              )}
             </div>
           )}
         </div>
