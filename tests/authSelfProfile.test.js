@@ -115,6 +115,15 @@ describe('PUT /api/auth/me — self-service profile update', () => {
     expect(dynamodb.update).toHaveBeenCalledTimes(1);
   });
 
+  test('avatarKey outside the caller\'s own company prefix is rejected — cross-tenant key forgery', async () => {
+    const req = { body: { avatarKey: 'uploads/other_company/abc.jpg' }, user: { id: UID, email: 'u@test.com', role: 'telecaller', companyId: CID } };
+    const res = mockRes();
+    await handler()(req, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.get).not.toHaveBeenCalled();
+    expect(dynamodb.update).not.toHaveBeenCalled();
+  });
+
   test('empty payload is rejected with 400, no DB calls', async () => {
     const req = { body: {}, user: { id: UID, email: 'u@test.com', role: 'telecaller', companyId: CID } };
     const res = mockRes();
@@ -191,5 +200,21 @@ describe('GET /api/auth/me/avatar-upload-url', () => {
     const res = mockRes();
     await handler()(req, res, jest.fn());
     expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  test('key extension is derived from mimeType, not the filename — a mismatched filename extension is ignored', async () => {
+    const req = { query: { mimeType: 'image/jpeg', filename: 'photo.png' }, user: { id: UID, companyId: CID } };
+    const res = mockRes();
+    await handler()(req, res, jest.fn());
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.key).toMatch(/\.jpg$/);
+  });
+
+  test('key extension is derived from mimeType even when the filename has no extension or a disallowed one', async () => {
+    const req = { query: { mimeType: 'image/png', filename: 'evil.exe' }, user: { id: UID, companyId: CID } };
+    const res = mockRes();
+    await handler()(req, res, jest.fn());
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.key).toMatch(/\.png$/);
   });
 });

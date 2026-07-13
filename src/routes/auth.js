@@ -559,6 +559,14 @@ router.put('/me', authMiddleware, async (req, res, next) => {
       return res.status(400).json({ error: 'No fields provided to update' });
     }
 
+    // avatarKey must be one this user's own upload route could have issued —
+    // otherwise a crafted request could point a profile at another company's
+    // uploaded file (cross-tenant reference, not a read, but still not a
+    // value the schema alone can validate).
+    if (updates.avatarKey && !updates.avatarKey.startsWith(`uploads/${req.user.companyId}/`)) {
+      return res.status(400).json({ error: 'Invalid avatarKey' });
+    }
+
     const existing = await dynamodb.get({
       TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
       Key: { id: req.user.id },
@@ -603,20 +611,29 @@ router.put('/me', authMiddleware, async (req, res, next) => {
 // purpose, so the existing GET /api/whatsapp/s3-url resolver (which only
 // accepts uploads/{cid}/* and inbound/{cid}/* keys) can serve the avatar
 // back for display too, with zero changes there.
-const AVATAR_ALLOWED_MIME = new Set(['image/jpeg', 'image/png']);
+// Maps each allowed MIME type to the exact extension its key gets — the
+// extension is derived from this validated mimeType, never from parsing the
+// client-supplied filename (which is attacker-controlled and proves nothing
+// about the file's real type; a ".jpg" filename can carry any bytes).
+const AVATAR_MIME_EXT = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+]);
 const AVATAR_MAX_BYTES = 2 * 1024 * 1024; // 2MB — matches ProfileSection's own "JPG, PNG up to 2MB" copy
 
 router.get('/me/avatar-upload-url', authMiddleware, async (req, res, next) => {
   try {
     const { mimeType, filename, fileSize } = req.query;
+    // filename is still required for parity with the request shape uploadFileToS3()
+    // always sends, but it no longer drives the key's extension — see AVATAR_MIME_EXT.
     if (!mimeType || !filename) return res.status(400).json({ error: 'mimeType and filename required' });
     if (!MEDIA_BUCKET) return res.status(500).json({ error: 'WA_MEDIA_BUCKET env var not set' });
-    if (!AVATAR_ALLOWED_MIME.has(mimeType)) return res.status(400).json({ error: 'Only JPG and PNG images are allowed' });
+    if (!AVATAR_MIME_EXT.has(mimeType)) return res.status(400).json({ error: 'Only JPG and PNG images are allowed' });
     if (fileSize && Number(fileSize) > AVATAR_MAX_BYTES) {
       return res.status(400).json({ error: 'Avatar must be under 2 MB' });
     }
 
-    const ext = filename.split('.').pop()?.toLowerCase() ?? 'jpg';
+    const ext = AVATAR_MIME_EXT.get(mimeType);
     const key = `uploads/${req.user.companyId}/${randomUUID()}.${ext}`;
 
     const uploadUrl = s3Client.getSignedUrl('putObject', {

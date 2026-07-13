@@ -20,7 +20,9 @@ interface AuthContextValue {
   // Re-fetches /api/auth/me and updates `user` in place — B3 finding #11.
   // Callers that mutate the current user's own record (profile save, avatar
   // upload) call this afterward so displays reading `user` from context
-  // (e.g. V3Sidebar's name/avatar) update immediately, without a reload.
+  // (e.g. V3Sidebar's name/avatar) update immediately, without a reload. On
+  // failure, preserves the current user instead of logging them out — a
+  // transient network blip mid-session shouldn't end it.
   refreshUser: () => Promise<void>;
 }
 
@@ -44,13 +46,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // (B3 finding #11) — re-fetches the current user and updates context
   // state. Doesn't touch `loading`; the mount effect owns that separately
   // so a mid-session refreshUser() call never flashes a loading state.
-  const refreshUser = useCallback(async () => {
+  //
+  // onFailure distinguishes the two callers: the mount-time restore below
+  // needs 'clear' (no valid session → user must become null so
+  // ProtectedRoute redirects to /login). Everything else goes through the
+  // context's public refreshUser() (typed with zero params — see
+  // AuthContextValue), which always defaults to 'preserve': a transient
+  // network blip refreshing an already-logged-in user must not silently
+  // log them out.
+  const refreshUser = useCallback(async (onFailure: 'preserve' | 'clear' = 'preserve') => {
     try {
       const me = await api.me() as UserShape & { token?: string };
       if (me.token) setMemoryToken(me.token);
       setUser(me as User);
     } catch {
-      setUser(null);
+      if (onFailure === 'clear') setUser(null);
     }
   }, []);
 
@@ -61,7 +71,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (pathname === '/marketing') return;
     (async () => {
-      await refreshUser();
+      await refreshUser('clear');
       setLoading(false);
     })();
   }, [pathname, refreshUser]);
