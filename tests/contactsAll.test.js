@@ -23,10 +23,14 @@ jest.mock('../src/services/TagService', () => ({
   matchesTagFilter: jest.fn(),
 }));
 jest.mock('../src/services/PipelineService', () => ({}));
+jest.mock('../src/services/TeamScopeService', () => ({
+  getTeamMemberIds: jest.fn(),
+}));
 
 process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
 
 const dynamodb = require('../src/config/dynamodb');
+const TeamScopeService = require('../src/services/TeamScopeService');
 const contactsRouter = require('../src/routes/contacts');
 
 function getRouteHandler(router, path, method) {
@@ -69,6 +73,7 @@ function mockDynamoForLeads(leads) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  TeamScopeService.getTeamMemberIds.mockResolvedValue(new Set());
 });
 
 describe('GET /api/contacts/all — no truncation past the 100-item pagination cap', () => {
@@ -130,17 +135,46 @@ describe('GET /api/contacts/all — equivalence with the paginated GET / route (
   });
 });
 
-describe('GET /api/contacts/all — RBAC scoping matches the existing routes', () => {
-  test('team_lead sees only their own 20 assigned leads, never the other 130', async () => {
+describe('GET /api/contacts/all — RBAC scoping (OQ-006: team_lead is own + team, not own-only, not company-wide)', () => {
+  test('team_lead sees own 20 assigned leads plus their team\'s leads, via TeamScopeService', async () => {
     const leads = makeLeads(150);
     mockDynamoForLeads(leads);
+    // 10 employees (emp_other20..emp_other29) are on emp_tl's team, one lead each.
+    const teamMemberIds = new Set(Array.from({ length: 10 }, (_, i) => `emp_other${20 + i}`));
+    TeamScopeService.getTeamMemberIds.mockResolvedValue(teamMemberIds);
 
     const allHandler = getRouteHandler(contactsRouter, '/all', 'get');
     const res = mockRes();
     await allHandler({ query: {}, user: TEAM_LEAD }, res, jest.fn());
     const body = res.json.mock.calls[0][0];
 
-    expect(body.total).toBe(20);
-    expect(body.contacts.every((c) => c.assignedTo === 'emp_tl')).toBe(true);
+    expect(TeamScopeService.getTeamMemberIds).toHaveBeenCalledWith(CID, 'emp_tl');
+    expect(body.total).toBe(30); // 20 own + 10 team
+    expect(body.contacts.every((c) => c.assignedTo === 'emp_tl' || teamMemberIds.has(c.assignedTo))).toBe(true);
+  });
+
+  test('team_lead never sees leads assigned outside their own id + team (not company-wide)', async () => {
+    const leads = makeLeads(150);
+    mockDynamoForLeads(leads);
+    TeamScopeService.getTeamMemberIds.mockResolvedValue(new Set(['emp_other20']));
+
+    const allHandler = getRouteHandler(contactsRouter, '/all', 'get');
+    const res = mockRes();
+    await allHandler({ query: {}, user: TEAM_LEAD }, res, jest.fn());
+    const body = res.json.mock.calls[0][0];
+
+    expect(body.total).toBe(21); // 20 own + 1 team member
+    expect(body.contacts.some((c) => c.assignedTo === 'emp_other100')).toBe(false);
+  });
+
+  test('admin bypasses TeamScopeService entirely — no team lookup at all', async () => {
+    const leads = makeLeads(150);
+    mockDynamoForLeads(leads);
+
+    const allHandler = getRouteHandler(contactsRouter, '/all', 'get');
+    const res = mockRes();
+    await allHandler({ query: {}, user: ADMIN }, res, jest.fn());
+
+    expect(TeamScopeService.getTeamMemberIds).not.toHaveBeenCalled();
   });
 });

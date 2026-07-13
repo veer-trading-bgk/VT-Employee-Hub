@@ -8,6 +8,7 @@ const { logAudit } = require('../utils/audit');
 const TagService = require('../services/TagService');
 const PipelineService = require('../services/PipelineService');
 const ContactBulkOps = require('../services/ContactBulkOpsService');
+const TeamScopeService = require('../services/TeamScopeService');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -115,16 +116,29 @@ async function fetchFilteredContacts(req, { q = '', source = '', stage = '', tag
   // same-subscriber numbers differing only in format correctly dedupe.
   const leadPhones = new Set(leadItems.map((l) => l.phoneNorm ?? to10Digit(l.phone)).filter(Boolean));
 
-  // Merge and normalise; non-admin employees see only their assigned leads.
-  // NOTE (2026-07-09): this is admin-sees-all vs non-admin-sees-own-only —
-  // there is no "team_lead sees team" tier here despite that being the
-  // documented intent in docs/v3/09_PERMISSION_MATRIX.md (lines 43/114-117/
-  // 134-136). team_lead currently falls into the non-admin branch and sees
-  // only their own assigned leads, same as any other non-admin role. Not
-  // changed here — this route's RBAC behavior is being preserved exactly as
-  // it already is, not redesigned; see TECHNICAL_DEBT.md for the full note.
+  // Merge and normalise. Three tiers (OQ-006, docs/v3/12_DECISION_LOG.md,
+  // resolved 2026-07-13): admin sees everything; team_lead sees their own
+  // assigned leads plus their team's (TeamScopeService, queried only for
+  // this role so every other role pays zero extra cost); everyone else
+  // (manager included — OQ-006 resolved team_lead only, not manager) sees
+  // own-assigned-only, unchanged. The admin-only INBOX# unclaimed-contact
+  // pool above is deliberately untouched by this — team_lead's team-scoping
+  // extends only to assigned LEAD# contacts.
+  const isTeamLead = req.user.role === 'team_lead';
+  let scopedLeadItems;
+  if (isAdmin) {
+    scopedLeadItems = leadItems;
+  } else if (isTeamLead) {
+    const teamMemberIds = await TeamScopeService.getTeamMemberIds(companyId, req.user.id);
+    scopedLeadItems = leadItems.filter(
+      (l) => l.assignedTo === req.user.id || teamMemberIds.has(l.assignedTo)
+    );
+  } else {
+    scopedLeadItems = leadItems.filter((l) => l.assignedTo === req.user.id);
+  }
+
   let contacts = [
-    ...(isAdmin ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id)).map(normaliseLead),
+    ...scopedLeadItems.map(normaliseLead),
     ...inboxItems.filter((u) => !leadPhones.has(to10Digit(u.phone))).map(normaliseInbox),
   ];
 

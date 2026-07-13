@@ -7,9 +7,10 @@
  * what the paginated route already produced across all its pages for the
  * same filters -- proving fetchFilteredContacts() wasn't accidentally
  * changed while being extracted -- and (2) RBAC scoping on the new route
- * matches the existing paginated route's real (not documented-aspirational)
- * behavior: non-admin roles, including team_lead, see only their own
- * assigned leads, never company-wide data.
+ * matches the existing paginated route's real behavior: admin sees
+ * everything, team_lead sees own + team (OQ-006, resolved 2026-07-13 —
+ * see TeamScopeService), everyone else sees own-assigned-only, never
+ * company-wide data.
  *
  * No prior tests existed for src/routes/contacts.js at all -- confirmed by
  * repo search before writing these.
@@ -24,10 +25,14 @@ jest.mock('../src/services/TagService', () => ({
   matchesTagFilter: jest.fn(),
 }));
 jest.mock('../src/services/PipelineService', () => ({}));
+jest.mock('../src/services/TeamScopeService', () => ({
+  getTeamMemberIds: jest.fn(),
+}));
 
 process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
 
 const dynamodb = require('../src/config/dynamodb');
+const TeamScopeService = require('../src/services/TeamScopeService');
 const contactsRouter = require('../src/routes/contacts');
 
 function getRouteHandler(router, path, method) {
@@ -74,6 +79,7 @@ function mockDynamoForLeads(leads) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  TeamScopeService.getTeamMemberIds.mockResolvedValue(new Set());
 });
 
 describe('GET /api/contacts/export — equivalence with the paginated GET / route', () => {
@@ -123,23 +129,68 @@ describe('GET /api/contacts/export — equivalence with the paginated GET / rout
   });
 });
 
-describe('GET /api/contacts/export — RBAC scoping matches the existing route (not the aspirational doc)', () => {
-  test('team_lead sees only their own assigned leads, never company-wide data', async () => {
+describe('GET /api/contacts (paginated) — inherits the same team_lead scoping as /export and /all', () => {
+  test('GET / returns the same team-scoped rows as /export for the same team_lead', async () => {
+    const leads = makeLeads();
+    TeamScopeService.getTeamMemberIds.mockResolvedValue(new Set(['emp_other3', 'emp_other4']));
+
+    mockDynamoForLeads(leads);
+    const listHandler = getRouteHandler(contactsRouter, '/', 'get');
+    const listRes = mockRes();
+    await listHandler({ query: { pageSize: '50' }, user: TEAM_LEAD }, listRes, jest.fn());
+    const listBody = listRes.json.mock.calls[0][0];
+
+    mockDynamoForLeads(leads);
+    const exportHandler = getRouteHandler(contactsRouter, '/export', 'get');
+    const exportRes = mockRes();
+    await exportHandler({ query: {}, user: TEAM_LEAD }, exportRes, jest.fn());
+    const exportBody = exportRes.json.mock.calls[0][0];
+
+    expect(listBody.total).toBe(5);
+    expect(listBody.contacts.map((c) => c.id).sort()).toEqual(exportBody.contacts.map((c) => c.id).sort());
+  });
+});
+
+describe('GET /api/contacts/export — RBAC scoping (OQ-006: team_lead is own + team, not own-only, not company-wide)', () => {
+  test('team_lead sees own assigned leads plus team members\' leads, via TeamScopeService', async () => {
     const leads = makeLeads();
     mockDynamoForLeads(leads);
+    // lead3/lead4 are assigned to emp_other3/emp_other4 — both on emp_tl's team.
+    TeamScopeService.getTeamMemberIds.mockResolvedValue(new Set(['emp_other3', 'emp_other4']));
 
     const exportHandler = getRouteHandler(contactsRouter, '/export', 'get');
     const res = mockRes();
     await exportHandler({ query: {}, user: TEAM_LEAD }, res, jest.fn());
     const body = res.json.mock.calls[0][0];
 
-    // Exactly the 3 leads assigned to emp_tl (lead0/1/2) — never the 4
-    // assigned to other employees. This is "own only", not "team" (see
-    // TECHNICAL_DEBT.md's note on the doc/code RBAC mismatch) -- but it
-    // definitely never reaches company-wide.
-    expect(body.total).toBe(3);
-    expect(body.contacts.every((c) => c.assignedTo === 'emp_tl')).toBe(true);
-    expect(body.contacts.map((c) => c.id).sort()).toEqual(['lead0', 'lead1', 'lead2']);
+    expect(TeamScopeService.getTeamMemberIds).toHaveBeenCalledWith(CID, 'emp_tl');
+    expect(body.total).toBe(5);
+    expect(body.contacts.map((c) => c.id).sort()).toEqual(['lead0', 'lead1', 'lead2', 'lead3', 'lead4']);
+  });
+
+  test('team_lead never sees leads assigned outside their own id + team (not company-wide)', async () => {
+    const leads = makeLeads();
+    mockDynamoForLeads(leads);
+    // Only emp_other3 is on the team — emp_other5/emp_other6 (lead5/lead6) are not.
+    TeamScopeService.getTeamMemberIds.mockResolvedValue(new Set(['emp_other3']));
+
+    const exportHandler = getRouteHandler(contactsRouter, '/export', 'get');
+    const res = mockRes();
+    await exportHandler({ query: {}, user: TEAM_LEAD }, res, jest.fn());
+    const body = res.json.mock.calls[0][0];
+
+    expect(body.contacts.map((c) => c.id)).not.toEqual(expect.arrayContaining(['lead5', 'lead6']));
+  });
+
+  test('admin bypasses TeamScopeService entirely — no team lookup at all', async () => {
+    const leads = makeLeads();
+    mockDynamoForLeads(leads);
+
+    const exportHandler = getRouteHandler(contactsRouter, '/export', 'get');
+    const res = mockRes();
+    await exportHandler({ query: {}, user: ADMIN }, res, jest.fn());
+
+    expect(TeamScopeService.getTeamMemberIds).not.toHaveBeenCalled();
   });
 
   test('team_lead export is a strict subset of what admin sees for the same data', async () => {
@@ -152,6 +203,7 @@ describe('GET /api/contacts/export — RBAC scoping matches the existing route (
     const adminIds = new Set(adminRes.json.mock.calls[0][0].contacts.map((c) => c.id));
 
     mockDynamoForLeads(leads);
+    TeamScopeService.getTeamMemberIds.mockResolvedValue(new Set(['emp_other3', 'emp_other4']));
     const tlRes = mockRes();
     await exportHandler({ query: {}, user: TEAM_LEAD }, tlRes, jest.fn());
     const tlBody = tlRes.json.mock.calls[0][0];
