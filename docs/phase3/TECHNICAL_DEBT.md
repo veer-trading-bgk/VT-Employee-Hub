@@ -651,6 +651,16 @@ Unprefixed `h-11` (44px) is the base/floor; `sm:h-8`/`sm:h-9` (Tailwind `sm` = 6
 
 **Priority:** Resolved — highest-leverage mobile fix in the M1 audit, confirmed live at both breakpoints with no regressions.
 
+## Inbox snapshot-panel entry point — real-user-reported reachability gap (2026-07-13) — RESOLVED
+
+**Issue:** Viir reported directly (not from the M1 audit) that on phone, tags and assign — both inside the conversation's contact/snapshot panel — were unreachable in practice. The panel's only trigger was tapping `ThreadPane`'s header avatar (`inbox/page.tsx`), which carries no visual affordance signaling it's tappable — a real user hit this in the field, not a synthetic finding. This is the exact gap class the M1 layout audit's viewport/breakpoint checks didn't catch, since the avatar element itself was always present and correctly sized — the miss was discoverability, not layout. The follow-up audit pass (M1.5) is scoped specifically to catch this class of gap going forward.
+
+**Fix (commit `4949c2b`):** added an explicit Info-icon `<Button>` to the thread header's right-side action group, alongside Resolve/Call/More. `xl:hidden` — matches the panel's own wrapper breakpoint exactly (`'hidden xl:block' unless snapshotOpen`, verified against the real class before use, not assumed), so the button is redundant and hidden once the panel is already visible side-by-side at `xl`+. `onClick` reuses `onOpenSnapshot` directly — the same handler the avatar tap already calls, not a second mechanism. Avatar tap is untouched.
+
+**Verification:** real-browser pass (no-login mock harness, `e2e/smoke/inboxInfoBtnVerify.spec.ts`, deleted after use) — at 375px: button visible in the header (44.0px, meets the M2-A touch floor for free since it's a `Button` `size="sm"`), tap opens the panel with Tags/Assigned To reachable, close returns to the thread cleanly, and the avatar tap independently confirmed still working; at 1280px (xl): button absent, panel already visible side-by-side, desktop layout unchanged. Negative-control pass: the "button visible" test was re-run against the fix temporarily stashed out and confirmed to fail cleanly (`element(s) not found`), then the real fix restored — proving the test catches the exact reported gap.
+
+**Priority:** Resolved — real customer-facing reachability bug (tags/assign genuinely unreachable on phone), reported directly by the product owner.
+
 ## B4 — AI Admin Module Audit (2026-07-13) — 11 findings, 7 resolved this batch (5 code, 2 doc-fix), 4 open
 
 **Source:** a read-only UI/UX + RBAC audit of every AI-related admin/superadmin surface — Settings > AI (`AISection.tsx`), the AI Administration module (`ai-admin/` — General/Conversation/Compliance/Prompt Management/Future, 5 tabs, not 4 as originally scoped; Prompt Management shipped later, Era 26/PR2), Knowledge Center, Platform > AI Costs (`AiCostsTab.tsx`), and the (since-removed) approval queue — conducted via 4 parallel read-only agents (static reads + backend cross-checks) plus live role-scoped Playwright verification (the CORS-credentialed-request trap from the M1 mobile audit re-confirmed and avoided from the start) in a separate Claude Code session/instance, not this one. This entry documents the fix batch implemented here from that audit's findings, following the same S1/S2 pattern as the B3 Settings audit.
