@@ -218,7 +218,8 @@ function Contact360Shell({ contactId }: { contactId: string }) {
             )}
           >
             <span aria-hidden>{TAB_ICONS[tab.id]}</span>
-            {tab.label}
+            <span className="sm:hidden">{tab.mobileLabel}</span>
+            <span className="hidden sm:inline">{tab.label}</span>
           </button>
         ))}
       </div>
