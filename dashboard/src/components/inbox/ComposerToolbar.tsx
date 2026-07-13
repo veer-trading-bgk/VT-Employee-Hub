@@ -12,6 +12,7 @@ import { cn } from '@/lib/cn';
 import { apiFetch } from '@/lib/api';
 import { toast } from 'sonner';
 import type { Branch } from '@/components/automation/BranchSelect';
+import { useAutoOpenConvKeyRef } from '@/hooks/useAutoOpenConvKeyRef';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -195,13 +196,27 @@ export interface ComposerToolbarProps {
   onFileAccept: (accept: string) => void;
   onTemplateSent: () => void;
   disabled: boolean;
+  // Deep-link from the Templates module's Send button (?template={id} on
+  // /inbox) — auto-opens the Templates panel and runs the same
+  // handleTplSelect() path a manual click would, landing at the auto-fill/
+  // unresolved-variable step. Parent owns the query-param lifecycle; this
+  // component just reports completion via onAutoOpenHandled so the parent
+  // can clear it.
+  autoOpenTemplateId?: string | null;
+  onAutoOpenHandled?: () => void;
 }
 
 export function ComposerToolbar({
   conversation, draft, onDraftChange, onFileAccept, onTemplateSent, disabled,
+  autoOpenTemplateId, onAutoOpenHandled,
 }: ComposerToolbarProps) {
   const qc = useQueryClient();
-  const [panel, setPanel] = useState<Panel>(null);
+  // Deep-link (Templates module's Send button): if a template id arrived via
+  // props on first mount, open straight to the Templates panel — this only
+  // ever happens on the initial render (autoOpenTemplateId is set once from
+  // the URL by the parent and never flips from null to non-null afterward),
+  // so a lazy initializer is correct here, not an effect.
+  const [panel, setPanel] = useState<Panel>(() => (autoOpenTemplateId ? 'template' : null));
   const [recentEmojis, setRecentEmojis] = useState<string[]>([]);
   const [tplSearch, setTplSearch] = useState('');
   const [pendingTpl, setPendingTpl] = useState<WaTpl | null>(null);
@@ -434,6 +449,34 @@ export function ComposerToolbar({
     onDraftChange(cr.body.replace(/\{\{name\}\}/gi, name).replace(/\{\{customer\}\}/gi, name));
     closePanel();
   }
+
+  // ── Deep-link auto-open (Templates module's Send button) ───────────────────
+  // autoOpenConvKeyRef snapshots which conversation the auto-open was for
+  // (shared with ExpiredWindowSendBar's identical need — see
+  // hooks/useAutoOpenConvKeyRef.ts). If the active conversation changes
+  // before the template list finishes loading, the effect below detects the
+  // mismatch via this ref and skips the send entirely, rather than firing
+  // against whichever conversation happens to be open by the time the fetch
+  // settles. The parent additionally suppresses ConversationList's own
+  // auto-select-first-conversation behavior while a deep-link is pending
+  // (CommunicationsContent's suppressAutoSelect), so this ref is guaranteed
+  // to capture a conversation the employee actually picked, not an arbitrary
+  // one — see docs/phase3/TECHNICAL_DEBT.md for why that mattered.
+  const autoOpenConvKeyRef = useAutoOpenConvKeyRef(autoOpenTemplateId, convKey);
+
+  useEffect(() => {
+    if (!autoOpenTemplateId || panel !== 'template' || tplLoading) return;
+    if (autoOpenConvKeyRef.current === convKey) {
+      const match = (tplData?.templates ?? []).find((t) => t.id === autoOpenTemplateId);
+      // Reacting to the template list finishing its async load — this is the
+      // auto-send actually firing once data is ready, not a render-time
+      // derivation (established pattern: TemplateCreateDrawer.tsx:182,236).
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (match) handleTplSelect(match);
+    }
+    onAutoOpenHandled?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenTemplateId, panel, tplLoading, tplData, convKey]);
 
   // Indices where auto-fill couldn't resolve a value
   const unresolvedIdx = pendingTpl

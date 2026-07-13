@@ -3,6 +3,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo, Suspense } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
+import { useSearchParams, useRouter, usePathname } from 'next/navigation';
+import { useAutoOpenConvKeyRef } from '@/hooks/useAutoOpenConvKeyRef';
 import {
   MessageSquare, Search, Send, MoreHorizontal, Phone,
   CheckCheck, Check, Clock, AlertCircle, X, ChevronLeft,
@@ -426,11 +428,17 @@ function ConversationList({
   onTabChange,
   activeId,
   onSelect,
+  suppressAutoSelect,
 }: {
   activeTab: ConvTab;
   onTabChange: (t: ConvTab) => void;
   activeId?: string;
   onSelect: (conv: WaConversation) => void;
+  // Templates module's Send-button deep-link (/inbox?template={id}): a
+  // template must only ever auto-send to a conversation the employee
+  // deliberately picked, never to whatever this list would otherwise
+  // auto-open on its own. True while a template id is pending consumption.
+  suppressAutoSelect?: boolean;
 }) {
   const [search, setSearch] = useState('');
   const qc = useQueryClient();
@@ -449,11 +457,11 @@ function ConversationList({
 
   // Auto-open the latest conversation on first load
   useEffect(() => {
-    if (didAutoSelect.current || activeId || isLoading || conversations.length === 0) return;
+    if (didAutoSelect.current || activeId || isLoading || conversations.length === 0 || suppressAutoSelect) return;
     didAutoSelect.current = true;
     onSelect(conversations[0]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversations, activeId, isLoading]);
+  }, [conversations, activeId, isLoading, suppressAutoSelect]);
 
   // Request browser notification permission once
   useEffect(() => {
@@ -962,10 +970,21 @@ function MessageBubble({ message }: { message: WaMessage }) {
 
 // ── Expired-window template picker ───────────────────────────────────────────
 
-function ExpiredWindowSendBar({ conversation }: { conversation: WaConversation }) {
+function ExpiredWindowSendBar({
+  conversation,
+  autoOpenTemplateId,
+  onAutoOpenHandled,
+}: {
+  conversation: WaConversation;
+  autoOpenTemplateId?: string | null;
+  onAutoOpenHandled?: () => void;
+}) {
   const qc = useQueryClient();
   const convKey = conversation.leadId ?? conversation.phone;
-  const [showPicker, setShowPicker] = useState(false);
+  // Deep-link (Templates module's Send button): autoOpenTemplateId is set
+  // once from the URL by the parent and never flips from null to non-null
+  // after mount, so a lazy initializer is correct here, not an effect.
+  const [showPicker, setShowPicker] = useState(() => !!autoOpenTemplateId);
   const [selectedTmplId, setSelectedTmplId] = useState('');
 
   const { data: tmplData, isLoading: tmplLoading } = useQuery({
@@ -998,6 +1017,24 @@ function ExpiredWindowSendBar({ conversation }: { conversation: WaConversation }
     },
     onError: () => toast.error('Failed to send template. Check template configuration.'),
   });
+
+  // Deep-link auto-open (Templates module's Send button) — same shared guard
+  // as ComposerToolbar (hooks/useAutoOpenConvKeyRef.ts): never send to a
+  // conversation the deep-link wasn't actually opened for. This flow has no
+  // variable-fill step (pre-existing — see the zero-variableValues finding in
+  // docs/phase3/TECHNICAL_DEBT.md), so a matched template sends immediately
+  // rather than landing on an intermediate form.
+  const autoOpenConvKeyRef = useAutoOpenConvKeyRef(autoOpenTemplateId, convKey);
+
+  useEffect(() => {
+    if (!autoOpenTemplateId || !showPicker || tmplLoading) return;
+    if (autoOpenConvKeyRef.current === convKey) {
+      const match = templates.find((t) => t.id === autoOpenTemplateId);
+      if (match) sendTemplateMutation.mutate(match.id);
+    }
+    onAutoOpenHandled?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpenTemplateId, showPicker, tmplLoading, templates, convKey]);
 
   return (
     <div>
@@ -1074,9 +1111,13 @@ function ExpiredWindowSendBar({ conversation }: { conversation: WaConversation }
 function ThreadPane({
   conversation,
   onOpenSnapshot,
+  autoOpenTemplateId,
+  onAutoOpenHandled,
 }: {
   conversation: WaConversation;
   onOpenSnapshot: () => void;
+  autoOpenTemplateId?: string | null;
+  onAutoOpenHandled?: () => void;
 }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState('');
@@ -1378,7 +1419,11 @@ function ThreadPane({
       {/* Reply bar */}
       <div className="border-t border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-950">
         {windowExpired ? (
-          <ExpiredWindowSendBar conversation={conversation} />
+          <ExpiredWindowSendBar
+            conversation={conversation}
+            autoOpenTemplateId={autoOpenTemplateId}
+            onAutoOpenHandled={onAutoOpenHandled}
+          />
         ) : (
           <>
             {/* Upload progress indicator */}
@@ -1433,6 +1478,8 @@ function ThreadPane({
                 qc.invalidateQueries({ queryKey: ['wa-inbox'] });
               }}
               disabled={isUploading || sendMutation.isPending}
+              autoOpenTemplateId={autoOpenTemplateId}
+              onAutoOpenHandled={onAutoOpenHandled}
             />
 
             <div className="flex items-end gap-2">
@@ -2244,6 +2291,22 @@ function CommunicationsContent() {
   const [activeConv, setActiveConv] = useState<WaConversation | null>(null);
   const [snapshotOpen, setSnapshotOpen] = useState(false);
 
+  // Deep-link from the Templates module's Send button (/inbox?template={id}).
+  // Captured once via the lazy initializer — later URL changes (including our
+  // own cleanup below) must not re-read the param and re-trigger this.
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const [pendingSendTemplateId, setPendingSendTemplateId] = useState(() => searchParams.get('template'));
+
+  // No other query params live on this page today, so a full strip back to
+  // the bare pathname is safe — avoids closing over a searchParams snapshot
+  // that could go stale between this callback's creation and it firing.
+  const handleAutoOpenHandled = useCallback(() => {
+    setPendingSendTemplateId(null);
+    router.replace(pathname, { scroll: false });
+  }, [pathname, router]);
+
   const handleConvUpdate = useCallback((updates: Partial<WaConversation>) => {
     setActiveConv((prev) => prev ? { ...prev, ...updates } : null);
   }, []);
@@ -2278,6 +2341,7 @@ function CommunicationsContent() {
               onTabChange={setActiveTab}
               activeId={activeConv ? (activeConv.leadId ?? activeConv.phone) : undefined}
               onSelect={(conv) => { setActiveConv(conv); setSnapshotOpen(false); }}
+              suppressAutoSelect={!!pendingSendTemplateId}
             />
           </div>
 
@@ -2291,14 +2355,21 @@ function CommunicationsContent() {
                 <ChevronLeft className="h-4 w-4" aria-hidden />
                 Back
               </button>
-              <ThreadPane conversation={activeConv} onOpenSnapshot={() => setSnapshotOpen((o) => !o)} />
+              <ThreadPane
+                conversation={activeConv}
+                onOpenSnapshot={() => setSnapshotOpen((o) => !o)}
+                autoOpenTemplateId={pendingSendTemplateId}
+                onAutoOpenHandled={handleAutoOpenHandled}
+              />
             </div>
           ) : (
             <div className="hidden flex-1 items-center justify-center bg-neutral-50 dark:bg-neutral-900 md:flex">
               <EmptyState
                 icon={MessageSquare}
-                title="Select a conversation"
-                description="Choose a conversation from the left to start"
+                title={pendingSendTemplateId ? 'Choose who to send this template to' : 'Select a conversation'}
+                description={pendingSendTemplateId
+                  ? 'Pick a conversation from the left — the template will open there.'
+                  : 'Choose a conversation from the left to start'}
               />
             </div>
           )}
