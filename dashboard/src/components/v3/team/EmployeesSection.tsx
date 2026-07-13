@@ -626,12 +626,12 @@ export function EmployeesSection() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkPending, setBulkPending] = useState(false);
 
-  const { data, isLoading, refetch } = useQuery({
+  // No .catch() swallow — a failed fetch must surface as isError, not as a
+  // fake `{success:true, data:[]}` that renders indistinguishably from a
+  // company with genuinely zero employees (B3 audit finding #6).
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['v3-employees'],
-    queryFn: () =>
-      apiFetch<{ success: boolean; data: Employee[] }>('/api/admin/employees').catch(() => ({
-        success: true, data: [] as Employee[],
-      })),
+    queryFn: () => apiFetch<{ success: boolean; data: Employee[] }>('/api/admin/employees'),
   });
 
   const toggleStatusMutation = useMutation({
@@ -804,6 +804,15 @@ export function EmployeesSection() {
                     {[0,1,2,3,4,5,6].map((j) => <td key={j} className="px-4 py-3.5"><Skeleton className="h-3.5 w-full" /></td>)}
                   </tr>
                 ))
+              : isError
+              ? (
+                <tr>
+                  <td colSpan={7} className="py-12 text-center">
+                    <p className="text-sm text-error-600 dark:text-error-400">Failed to load employees</p>
+                    <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+                  </td>
+                </tr>
+              )
               : paginated.length === 0
               ? (
                 <tr>
