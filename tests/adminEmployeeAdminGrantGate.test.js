@@ -10,6 +10,18 @@
  * tests/automationsRoutes.test.js) — exercises the final route handler,
  * where this check lives, bypassing the router-level authMiddleware/
  * adminMiddleware/rateLimit that a real request would also pass through.
+ *
+ * 'superadmin' as a role value: confirmed NOT accepted by either schema
+ * (src/utils/validation.js — registerSchema.role:210, updateEmployeeSchema.
+ * role:232 — both `z.enum(['admin','manager','team_lead','agent',
+ * 'telecaller','intern'])`, no 'superadmin' member). A role:'superadmin'
+ * payload throws a ZodError before either route's handler body (where this
+ * fix's own check lives) ever runs — caught by the route's try/catch,
+ * passed to next(error), and mapped to a 400 by the global error handler
+ * (src/middleware/errorHandler.js:6-10: `err.name === 'ZodError' -> 400`).
+ * No code change needed for this; the two tests below exist so the schema
+ * can't silently widen to include 'superadmin' later without a test
+ * catching it.
  */
 
 jest.mock('../src/config/dynamodb', () => ({
@@ -71,6 +83,18 @@ describe('POST /api/admin/employees — admin-grant escalation gate', () => {
     expect(res.status).not.toHaveBeenCalledWith(403);
     expect(dynamodb.put).toHaveBeenCalledTimes(1);
   });
+
+  test('role: superadmin is rejected by schema validation (not by this fix\'s own check) — even a superadmin requester can\'t set it via this route', async () => {
+    const next = jest.fn();
+    const req = { body: validBody('superadmin'), user: { id: 'u1', role: 'superadmin', companyId: CID } };
+    const res = mockRes();
+    await handler()(req, res, next);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(next.mock.calls[0][0].name).toBe('ZodError');
+    expect(dynamodb.query).not.toHaveBeenCalled();
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
 });
 
 describe('PUT /api/admin/employees/:id — admin-grant escalation gate', () => {
@@ -123,5 +147,17 @@ describe('PUT /api/admin/employees/:id — admin-grant escalation gate', () => {
     await handler()(req, res, jest.fn());
     expect(res.status).not.toHaveBeenCalledWith(403);
     expect(dynamodb.update).toHaveBeenCalledTimes(1);
+  });
+
+  test('role: superadmin is rejected by schema validation (not by this fix\'s own check) — even a superadmin requester can\'t set it via this route', async () => {
+    const next = jest.fn();
+    const req = { params: { id: 'emp_target' }, body: { role: 'superadmin' }, user: { id: 'u1', role: 'superadmin', companyId: CID } };
+    const res = mockRes();
+    await handler()(req, res, next);
+    expect(res.status).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(next.mock.calls[0][0].name).toBe('ZodError');
+    expect(dynamodb.get).not.toHaveBeenCalled();
+    expect(dynamodb.update).not.toHaveBeenCalled();
   });
 });
