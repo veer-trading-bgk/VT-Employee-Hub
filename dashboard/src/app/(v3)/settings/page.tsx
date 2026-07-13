@@ -115,6 +115,19 @@ const SECTIONS: SectionDef[] = [
   { id: 'audit',         label: 'Audit Log',        description: 'Track all admin actions',                icon: <Activity className="h-5 w-5" />, adminOnly: true },
 ];
 
+// Single predicate shared by the sidebar filter and renderContent()'s own
+// gate (B3 audit finding #5) — before this, renderContent() didn't consult
+// visibility at all, so a role could reach any section's real component
+// (and its real API calls) just by navigating straight to its ?tab= value,
+// bypassing the sidebar that would otherwise never render that button for
+// them. `isAdmin` is threaded in rather than recomputed here since it's
+// itself derived from v3Role (a separate, already-tracked, harmless-per-
+// B3-finding-#10 style issue — not this fix's concern).
+function isSectionVisible(section: SectionDef, rawRole: Role | undefined, isAdmin: boolean): boolean {
+  if (section.visibleToRoles) return rawRole === 'superadmin' || (!!rawRole && section.visibleToRoles.includes(rawRole));
+  return !section.adminOnly || isAdmin;
+}
+
 // ── Profile section ───────────────────────────────────────────────────────────
 
 function ProfileSection() {
@@ -1259,6 +1272,13 @@ const TAG_PALETTE = [
 
 function TagsSection() {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  // Raw role, matching POST /api/tags's actual checkRole(['admin','manager',
+  // 'superadmin']) exactly (DL-021) — defense in depth for whoever reaches
+  // this component directly (e.g. B3 audit finding #5's ?tab= bypass, now
+  // fixed at the page level, but this holds even if that guard is ever
+  // removed or a future caller mounts TagsSection some other way).
+  const canCreateTags = user?.role === 'admin' || user?.role === 'manager' || user?.role === 'superadmin';
   const [search, setSearch] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [newColor, setNewColor] = useState('#6366f1');
@@ -1296,7 +1316,8 @@ function TagsSection() {
         <p className="text-sm text-neutral-500">Centrally manage all contact tags. Tags created here are available across Inbox, Contacts, Sales, and Automation.</p>
       </div>
 
-      {/* Create new tag */}
+      {/* Create new tag — hidden entirely for roles POST /api/tags would 403 (finding #7b) */}
+      {canCreateTags && (
       <Card>
         <p className="mb-3 text-sm font-semibold text-neutral-800 dark:text-neutral-200">Create New Tag</p>
         <div className="flex flex-wrap items-end gap-3">
@@ -1359,6 +1380,7 @@ function TagsSection() {
           </div>
         )}
       </Card>
+      )}
 
       {/* Tag list */}
       <Card noPadding>
@@ -1458,13 +1480,23 @@ function SettingsPageInner() {
     if (tab) setActiveSection(tab);
   }, [searchParams]);
 
-  const visibleSections = SECTIONS.filter((s) => {
-    if (s.visibleToRoles) return rawRole === 'superadmin' || (!!rawRole && s.visibleToRoles.includes(rawRole));
-    return !s.adminOnly || isAdmin;
-  });
+  const visibleSections = SECTIONS.filter((s) => isSectionVisible(s, rawRole, isAdmin));
+
+  // Graceful degradation (docs/v3/09_PERMISSION_MATRIX.md §13.6): a role
+  // that lands on an unauthorized ?tab= — the sidebar never renders that
+  // button for them, so this only happens via a direct/typed URL — falls
+  // back to the first section they can actually see, silently, no error
+  // screen. Pure derived value (not an effect + setState) so there's no
+  // flash of the unauthorized section's real content on the way to the
+  // fallback.
+  const requestedSection = SECTIONS.find((s) => s.id === activeSection);
+  const effectiveSection: SettingsSection =
+    requestedSection && isSectionVisible(requestedSection, rawRole, isAdmin)
+      ? activeSection
+      : (visibleSections[0]?.id ?? 'profile');
 
   function renderContent() {
-    switch (activeSection) {
+    switch (effectiveSection) {
       case 'profile':       return <ProfileSection />;
       case 'appearance':    return <AppearanceSection />;
       case 'employees':     return <EmployeesSection />;
@@ -1497,10 +1529,10 @@ function SettingsPageInner() {
             <button
               key={section.id}
               onClick={() => setActiveSection(section.id)}
-              aria-current={activeSection === section.id ? 'page' : undefined}
+              aria-current={effectiveSection === section.id ? 'page' : undefined}
               className={cn(
                 'flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm transition-colors',
-                activeSection === section.id
+                effectiveSection === section.id
                   ? 'bg-primary-50 font-medium text-primary-700 dark:bg-primary-900/30 dark:text-primary-300'
                   : 'text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800',
               )}
