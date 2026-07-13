@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo, useEffect, Suspense } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   User,
@@ -927,6 +927,11 @@ function TargetsSection() {
   const { metrics } = useMetricsConfig();
   const [form, setForm] = useState<Record<string, TargetEntry>>({});
   const [dirty, setDirty] = useState(false);
+  // Keys edited since the last time `form` was authoritatively in sync with
+  // the server (initial load, or a completed save/reset) — B3 audit finding
+  // #12. A ref, not state: it must survive across the background refetch
+  // this effect reacts to without itself triggering a re-render/re-run.
+  const touchedRef = useRef<Set<string>>(new Set());
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['admin-targets'],
@@ -934,32 +939,56 @@ function TargetsSection() {
     staleTime: 5 * 60_000,
   });
 
+  // Race this closes: save metric A -> onSuccess invalidates -> a background
+  // refetch (isLoading stays false the whole time, only isFetching flips, so
+  // the form never re-covers with a loading state) starts -> user edits
+  // metric B while it's in flight -> refetch lands -> this effect used to
+  // call setForm(merged) unconditionally, wholesale-replacing the form from
+  // the server response and silently discarding B's in-progress keystrokes
+  // (plus resetting `dirty` to false, so even the "Unsaved changes" label
+  // vanished with no trace). Now: any key touched since the last sync keeps
+  // its current local value instead of being overwritten, and `dirty` stays
+  // true if anything was actually preserved that way.
   useEffect(() => {
-    if (data?.data) {
-      const merged: Record<string, TargetEntry> = {};
-      metrics.forEach((m) => {
-        const stored = data.data[m.key];
-        merged[m.key] = {
-          target:       stored?.target       ?? m.target,
-          targetPeriod: (stored?.targetPeriod ?? m.targetPeriod) as TargetPeriod,
-          pointsWeight: stored?.pointsWeight  ?? m.pointsWeight,
-        };
-      });
-      setForm(merged);
-      setDirty(false);
-    }
+    if (!data?.data) return;
+    const merged: Record<string, TargetEntry> = {};
+    let anyPreserved = false;
+    metrics.forEach((m) => {
+      if (touchedRef.current.has(m.key) && form[m.key]) {
+        merged[m.key] = form[m.key];
+        anyPreserved = true;
+        return;
+      }
+      const stored = data.data[m.key];
+      merged[m.key] = {
+        target:       stored?.target       ?? m.target,
+        targetPeriod: (stored?.targetPeriod ?? m.targetPeriod) as TargetPeriod,
+        pointsWeight: stored?.pointsWeight  ?? m.pointsWeight,
+      };
+    });
+    setForm(merged);
+    if (!anyPreserved) setDirty(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.data]);
 
   const saveMut = useMutation({
     mutationFn: () => apiFetch('/api/admin/targets', { method: 'PUT', body: JSON.stringify({ targets: form }) }),
-    onSuccess: () => { toast.success('Targets saved'); setDirty(false); qc.invalidateQueries({ queryKey: ['admin-targets'] }); },
+    onSuccess: () => {
+      toast.success('Targets saved');
+      touchedRef.current.clear();
+      setDirty(false);
+      qc.invalidateQueries({ queryKey: ['admin-targets'] });
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 
   const resetMut = useMutation({
     mutationFn: () => apiFetch('/api/admin/targets', { method: 'DELETE' }),
-    onSuccess: () => { toast.success('Targets reset to defaults'); qc.invalidateQueries({ queryKey: ['admin-targets'] }); },
+    onSuccess: () => {
+      toast.success('Targets reset to defaults');
+      touchedRef.current.clear();
+      qc.invalidateQueries({ queryKey: ['admin-targets'] });
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -971,6 +1000,7 @@ function TargetsSection() {
 
   function updateField(key: string, field: keyof TargetEntry, value: string | number) {
     setForm((prev) => ({ ...prev, [key]: { ...prev[key], [field]: field === 'targetPeriod' ? value : Number(value) } }));
+    touchedRef.current.add(key);
     setDirty(true);
   }
 
