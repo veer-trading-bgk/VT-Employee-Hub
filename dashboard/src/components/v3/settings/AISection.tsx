@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
 import { Toggle } from '@/components/v3/ui/Toggle';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
+import { Button } from '@/components/v3/ui/Button';
 import { cn } from '@/lib/cn';
 
 interface AIConfigResponse {
@@ -39,7 +40,7 @@ const MODULES: Array<{ useCase: string; label: string; description: string }> = 
 export function AISection() {
   const qc = useQueryClient();
 
-  const { data: cfg, isLoading } = useQuery<AIConfigResponse>({
+  const { data: cfg, isLoading, isError, refetch } = useQuery<AIConfigResponse>({
     queryKey: ['ai-config'],
     queryFn: () => apiFetch<AIConfigResponse>('/api/ai/config'),
   });
@@ -76,7 +77,25 @@ export function AISection() {
     );
   }
 
-  const masterOn = cfg?.masterEnabled ?? true;
+  // Never render "AI features: ON" when the real state is unknown (B3 audit
+  // finding #6) — a company that deliberately turned AI off should never see
+  // it displayed as on just because this fetch happened to fail.
+  if (isError) {
+    return (
+      <div className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="py-4 text-center">
+          <p className="text-sm text-error-600 dark:text-error-400">Failed to load AI settings</p>
+          <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Fail-safe default: unknown must not render as enabled. This only
+  // matters for the residual case where the query succeeds but `cfg` itself
+  // is unexpectedly empty — a genuine failure is caught by isError above and
+  // never reaches this line.
+  const masterOn = cfg?.masterEnabled ?? false;
 
   return (
     <div className="space-y-6">
