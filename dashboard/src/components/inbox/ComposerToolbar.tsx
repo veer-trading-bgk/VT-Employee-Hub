@@ -451,8 +451,8 @@ export function ComposerToolbar({
   }
 
   // ── Deep-link auto-open (Templates module's Send button) ───────────────────
-  // autoOpenConvKeyRef snapshots which conversation the auto-open was for
-  // (shared with ExpiredWindowSendBar's identical need — see
+  // convKeyRef snapshots which conversation the auto-open was for (shared
+  // with ExpiredWindowSendBar's identical need — see
   // hooks/useAutoOpenConvKeyRef.ts). If the active conversation changes
   // before the template list finishes loading, the effect below detects the
   // mismatch via this ref and skips the send entirely, rather than firing
@@ -462,17 +462,27 @@ export function ComposerToolbar({
   // (CommunicationsContent's suppressAutoSelect), so this ref is guaranteed
   // to capture a conversation the employee actually picked, not an arbitrary
   // one — see docs/phase3/TECHNICAL_DEBT.md for why that mattered.
-  const autoOpenConvKeyRef = useAutoOpenConvKeyRef(autoOpenTemplateId, convKey);
+  //
+  // hasFiredRef makes the send idempotent by construction rather than by
+  // relying on how fast the parent clears autoOpenTemplateId: that clearing
+  // is an async prop round trip, and if tplData changes reference before it
+  // lands, convKeyRef.current alone would still match and let a second send
+  // through. hasFiredRef is set synchronously, before the send call, so even
+  // a same-tick re-entrant run of this effect can't double-fire.
+  const { convKeyRef: autoOpenConvKeyRef, hasFiredRef } = useAutoOpenConvKeyRef(autoOpenTemplateId, convKey);
 
   useEffect(() => {
     if (!autoOpenTemplateId || panel !== 'template' || tplLoading) return;
-    if (autoOpenConvKeyRef.current === convKey) {
+    if (autoOpenConvKeyRef.current === convKey && !hasFiredRef.current) {
       const match = (tplData?.templates ?? []).find((t) => t.id === autoOpenTemplateId);
-      // Reacting to the template list finishing its async load — this is the
-      // auto-send actually firing once data is ready, not a render-time
-      // derivation (established pattern: TemplateCreateDrawer.tsx:182,236).
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      if (match) handleTplSelect(match);
+      if (match) {
+        hasFiredRef.current = true;
+        // Reacting to the template list finishing its async load — this is the
+        // auto-send actually firing once data is ready, not a render-time
+        // derivation (established pattern: TemplateCreateDrawer.tsx:182,236).
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        handleTplSelect(match);
+      }
     }
     onAutoOpenHandled?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps

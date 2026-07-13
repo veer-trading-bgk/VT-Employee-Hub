@@ -1024,13 +1024,20 @@ function ExpiredWindowSendBar({
   // variable-fill step (pre-existing — see the zero-variableValues finding in
   // docs/phase3/TECHNICAL_DEBT.md), so a matched template sends immediately
   // rather than landing on an intermediate form.
-  const autoOpenConvKeyRef = useAutoOpenConvKeyRef(autoOpenTemplateId, convKey);
+  //
+  // hasFiredRef makes the send idempotent by construction rather than by
+  // relying on how fast the parent clears autoOpenTemplateId — see this
+  // hook's own doc comment and ComposerToolbar's identical use for why.
+  const { convKeyRef: autoOpenConvKeyRef, hasFiredRef } = useAutoOpenConvKeyRef(autoOpenTemplateId, convKey);
 
   useEffect(() => {
     if (!autoOpenTemplateId || !showPicker || tmplLoading) return;
-    if (autoOpenConvKeyRef.current === convKey) {
+    if (autoOpenConvKeyRef.current === convKey && !hasFiredRef.current) {
       const match = templates.find((t) => t.id === autoOpenTemplateId);
-      if (match) sendTemplateMutation.mutate(match.id);
+      if (match) {
+        hasFiredRef.current = true;
+        sendTemplateMutation.mutate(match.id);
+      }
     }
     onAutoOpenHandled?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
