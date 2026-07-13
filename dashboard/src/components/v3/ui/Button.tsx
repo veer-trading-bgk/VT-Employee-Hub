@@ -23,9 +23,14 @@ const variantStyles: Record<ButtonVariant, string> = {
   link:      'text-primary-600 hover:text-primary-700 underline-offset-2 hover:underline disabled:text-neutral-300 p-0',
 };
 
+// M2-A: sm(32px)/md(36px) sat under the 44px touch-target floor (M1 audit).
+// Mobile-first: unprefixed h-11 (44px) is the base/floor; sm:h-8/sm:h-9
+// (Tailwind sm = 640px) override back down to the existing desktop density
+// from 640px up. lg was already 44px everywhere — unchanged. Height only —
+// padding/text/gap intentionally untouched.
 const sizeStyles: Record<ButtonSize, string> = {
-  sm: 'h-8 px-3 text-sm gap-1.5',
-  md: 'h-9 px-4 text-sm gap-2',
+  sm: 'h-11 px-3 text-sm gap-1.5 sm:h-8',
+  md: 'h-11 px-4 text-sm gap-2 sm:h-9',
   lg: 'h-11 px-5 text-base gap-2',
 };
 
