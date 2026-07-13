@@ -457,7 +457,7 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Priority:** Resolved — was Low/Medium (no real data-mutation risk since the backend already rejected it, but a genuine UI-level RBAC gate failure on a surface meant to be fully locked down).
 
-## Settings Module Audit (B3, 2026-07-13) — 17 findings, 10 resolved across three sessions (#1, #2, #3, #5, #6, #7, #7b, #8, #11, #12), 1 doc-fix (#13), 6 open (#4, #9, #10 [analyzed, cleanup queued], #14, #15, #16)
+## Settings Module Audit (B3, 2026-07-13) — 17 findings, 13 resolved across four sessions (#1, #2, #3, #5, #6, #7, #7b, #8, #10, #11, #12, #14, #15), 1 doc-fix (#13), 3 open (#4, #9, #16)
 
 **Source:** a scoped read-only audit of the Settings module (`settings/page.tsx`'s tab-switcher and every inline section, all extracted section components under `dashboard/src/components/v3/settings/` and `dashboard/src/components/settings/`, and their backing backend routes) — 6 audit tasks given directly in chat: the DL-021 raw-role sweep on the 6 candidates tracked in `docs/PENDING_WORK.md`, a spec-vs-built matrix against `06_SCREEN_SPECIFICATIONS.md`/`02_INFORMATION_ARCHITECTURE.md`, a permission-matrix cross-check against `09_PERMISSION_MATRIX.md` §10, a backend gate audit, dead/stub UI + state-handling review, and real-browser role-scoped verification (admin/manager/team_lead/telecaller, plus a mobile-viewport check) via a temporary no-login Playwright harness, deleted after use. Findings #1, #2, #8 were fixed the same session as "Batch S1" (security-only fixes, each its own commit, held for review before push); #13 resolved as a doc-fix in the same batch. Findings #3-#7, #7b, #9-#12, #14-#16 remain open, tracked below and (selectively) in `docs/PENDING_WORK.md`.
 
@@ -529,7 +529,7 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Issue:** `src/routes/automations.js:108,163,240,358` (`GET /stats`, `/executions`, `/`, `/:id`) and `whatsapp.js:2454,2486` (Flows `POST`/`DELETE`) all used `checkRole(['admin','manager'])`, while `09_PERMISSION_MATRIX.md` §2/§9 and the Settings §10 WhatsApp row both state the entire module is Manager-Hidden.
 
-**Fix (commit `9eab2a1`):** product-confirmed docs win — all 6 routes tightened to `checkRole(['admin'])`. No manager-facing regression: the Automation nav entry was already hidden for manager (`V3Sidebar.tsx` `roles: ['owner','admin']`) and the main `/automation` page was already `ProtectedRoute allowedRoles={['admin']}`-gated; `WhatsAppFlowsPanel` only ever mounts when `WhatsAppSection`'s own (unchanged, already admin-only) config fetch succeeds, so it was already unreachable for a manager. One narrow pre-existing gap noted, not fixed here: the automation canvas sub-pages (`/automation/canvas/new`, `/automation/canvas/[id]`) have no `ProtectedRoute` of their own — a manager who already knew a workflow id and typed the canvas URL directly would have reached `GET /api/automations/:id` before this fix and now gets 403 — but this was never a nav-reachable path, so no currently-used workflow breaks. Flagged in `docs/PENDING_WORK.md`.
+**Fix (commit `9eab2a1`):** product-confirmed docs win — all 6 routes tightened to `checkRole(['admin'])`. No manager-facing regression: the Automation nav entry was already hidden for manager (`V3Sidebar.tsx` `roles: ['owner','admin']`) and the main `/automation` page was already `ProtectedRoute allowedRoles={['admin']}`-gated; `WhatsAppFlowsPanel` only ever mounts when `WhatsAppSection`'s own (unchanged, already admin-only) config fetch succeeds, so it was already unreachable for a manager. One narrow pre-existing gap noted, not fixed here at the time: the automation canvas sub-pages (`/automation/canvas/new`, `/automation/canvas/[id]`) had no `ProtectedRoute` of their own — a manager who already knew a workflow id and typed the canvas URL directly would have reached `GET /api/automations/:id` before this fix and gotten 403 — but this was never a nav-reachable path, so no currently-used workflow broke. **Closed 2026-07-13:** both sub-pages now wrap in the same `ProtectedRoute allowedRoles={['admin']}` the main `/automation` page uses.
 
 **Priority:** Resolved — was Medium, product-decision item (resolved by product confirming docs over code).
 
@@ -541,13 +541,13 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Priority:** Medium for the `whatsapp.js` pair (reachable, contradicts doc), Low for the `companies.js` pair (currently unreachable from any UI).
 
-### 10 — CLOSED-AS-ANALYZED: DL-021 raw-role sweep, all 6 tracked candidates
+### 10 — RESOLVED: DL-021 raw-role sweep, all 6 tracked candidates
 
-**Issue:** The 6 candidates tracked in `docs/PENDING_WORK.md` (`sales/page.tsx:1120`, `CampaignList.tsx:26-27`, `WorkflowList.tsx:25`, `entry/page.tsx:237-238`, `employees/page.tsx:14-15`, `settings/page.tsx:1447/1463`) all check only the `'owner'`/`'admin'` v3Role buckets — which are **singleton** buckets in `toV3Role()` (only raw `superadmin`/`admin` ever map into them) — so a v3Role-bucket check is structurally incapable of diverging from a raw-role check for 5 of the 6. The one exception: `entry/page.tsx:237-238`'s `canBulk` checks the **two-role** `'manager'` bucket (`manager`+`team_lead`), which only matches backend (`metrics.js`'s `CAN_ACT_FOR_OTHERS`) because the backend was deliberately written to mirror it — a real (if currently honored) dependency, not a structural guarantee, and the one to revisit if `team_lead` scope is ever split from `manager` the way `contacts.js` already has (OQ-006).
+**Issue:** The 6 candidates tracked in `docs/PENDING_WORK.md` (`sales/page.tsx:1120`, `CampaignList.tsx:26-27`, `WorkflowList.tsx:25`, `entry/page.tsx:237-238`, `employees/page.tsx:14-15`, `settings/page.tsx:1447/1463`) all check only the `'owner'`/`'admin'` v3Role buckets — which are **singleton** buckets in `toV3Role()` (only raw `superadmin`/`admin` ever map into them) — so a v3Role-bucket check is structurally incapable of diverging from a raw-role check for 5 of the 6. The one exception: `entry/page.tsx:237-238`'s `canBulk` checks the **two-role** `'manager'` bucket (`manager`+`team_lead`), which only matches backend (`metrics.js`'s `CAN_ACT_FOR_OTHERS`) because the backend was deliberately written to mirror it — a real (if currently honored) dependency, not a structural guarantee.
 
-**Fix:** None required — all 6 are harmless-but-noncompliant (style debt, not a bug), analyzed and closed as such. A cleanup pass (raw-role-ify all 6 call sites) is queued as low-priority follow-up work, not urgent.
+**Fix:** all 6 sites raw-role-ified. The 5 singleton-bucket sites became `rawRole === 'superadmin' || rawRole === 'admin'`, replacing `['owner','admin'].includes(v3Role)` — identical behavior. `entry/page.tsx` got an explicit raw-role `Set(['admin','manager','team_lead'])` (plus superadmin bypass) mirroring `metrics.js`'s `resolveTargetUserId()` `CAN_ACT_FOR_OTHERS` directly, rather than depending on `toV3Role()`'s incidental `team_lead`→`'manager'` mapping — closes the "revisit if `team_lead` scope is ever split from `manager`" risk this finding originally flagged, ahead of OQ-006 (now decided — see `docs/PENDING_WORK.md`). Now-unused `toV3Role` imports dropped in every file this left with no other caller.
 
-**Priority:** Low (analysis complete; cleanup itself queued, not scheduled).
+**Priority:** Resolved — was Low (style debt, not a bug).
 
 ### 11 — RESOLVED: `ProfileSection`'s "Save changes" was fake; "Change photo" was a dead button
 
@@ -581,21 +581,21 @@ Verified live (temporary harness, deleted after use): edited the name and saved 
 
 **Priority:** Resolved — was Low, resolved by correcting the doc to match intentional/acceptable code behavior rather than changing code.
 
-### 14 — OPEN: 10 dead imports in `settings/page.tsx`
+### 14 — RESOLVED: 10 dead imports in `settings/page.tsx`
 
 **Issue:** `useCallback`, `useMemo`, `UserPlus`, `api`, `Setup2FAResponse`, `formatDate`, `formatMetricValue`, `Textarea`, `ChevronDown`, `ChevronUp` — zero usages beyond the import line.
 
-**Fix:** Not yet scoped — trivial removal, bundle with any other pass through this file.
+**Fix:** 9 of the 10 removed (`useCallback`, `useMemo`, `UserPlus`, `ChevronDown`, `ChevronUp`, `Textarea`, `Setup2FAResponse`, `formatDate`, `formatMetricValue`). `api` is no longer dead — finding #11's Profile save/avatar-upload work (`d8a7625`) started calling `api.updateProfile()` after this finding was originally logged, so it stays.
 
-**Priority:** Low.
+**Priority:** Resolved — was Low.
 
-### 15 — OPEN: `SettingsPageInner`'s tab-sync `set-state-in-effect` is currently dead weight
+### 15 — RESOLVED: `SettingsPageInner`'s tab-sync `set-state-in-effect` is currently dead weight
 
-**Issue:** `settings/page.tsx:1456-1459`. On mount, `tab` always equals the value already used to seed `useState` — an `Object.is`-equal no-op, so no double-fetch/flicker happens today. The only in-app link to `/settings?tab=...` (`SendLocationEditor.tsx:22-28`) opens in a new tab, forcing a fresh mount anyway. Would only start mattering if a future same-tab in-app link to `/settings?tab=X` were added while this component stays mounted across it.
+**Issue:** `settings/page.tsx:1456-1459`. On mount, `tab` always equals the value already used to seed `useState` — an `Object.is`-equal no-op, so no double-fetch/flicker happens today. The only in-app link to `/settings?tab=...` (`SendLocationEditor.tsx:22-28`) opens in a new tab, forcing a fresh mount anyway. Would only start mattering if a future same-tab in-app link to `/settings?tab=X` were added while this component stays mounted across it. Also an active `react-hooks/set-state-in-effect` ESLint error.
 
-**Fix:** Not yet scoped — could be derived at render time instead of an effect, or removed; not urgent since nothing reachable triggers it today.
+**Fix:** removed rather than derived-at-render — `activeSection` is also set locally on sidebar tab clicks (`setActiveSection(section.id)`) with no URL change, so it can't be a pure derivation of `searchParams` alone; deriving it at render would still need the same click-vs-URL reconciliation the effect existed for, for a case nothing reachable triggers today. A future same-tab in-app tab-changing link will need its own sync mechanism (e.g. a `key={searchParams}` remount, the pattern already used by `canvas/[id]/page.tsx`'s `key={automation.id}`) if one is ever added.
 
-**Priority:** Low/informational.
+**Priority:** Resolved — was Low/informational.
 
 ### 16 — OPEN, informational: `whatsapp.js:232`'s `POST /_tick` is the one route missing an explicit `authMiddleware` token on its own line
 

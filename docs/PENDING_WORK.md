@@ -22,15 +22,14 @@ struck-through and left in place.
 
 ## Product decisions awaiting Viir's call
 
-- **Contacts module `team_lead` RBAC scope — own-only vs. team-wide.** `contacts.js`'s actual
-  check is binary (`isAdmin ? everything : own-assigned-only`) — `team_lead` currently gets the
-  same own-only scope as `agent`/`telecaller`/`intern`. But `docs/v3/09_PERMISSION_MATRIX.md`
-  documents `team_lead` as seeing "Team" contacts and being able to export team contacts. This is
-  a different file/finding from the already-resolved `team_lead` vs `manager` split in
-  `attendance.js`/`compensation.js`/`crm.js`/`metrics.js` (see DL-021,
-  `docs/v3/12_DECISION_LOG.md`) — that resolution does not cover Contacts. Needs a real product
-  call: implement team-scoping to match the documented intent, or correct the permission matrix to
-  state actual own-only behavior. Found 2026-07-09, still open.
+- **Contacts module `team_lead` RBAC scope — decided: team-wide, scoping in review.** Viir
+  decided 2026-07-13 (OQ-006, `docs/v3/12_DECISION_LOG.md`, resolved as "build it"): `team_lead`
+  should see team contacts, matching `docs/v3/09_PERMISSION_MATRIX.md`'s documented intent rather
+  than the current own-only behavior it shares with `agent`/`telecaller`/`intern`. A scoping
+  proposal (mechanism: a new `TeamScopeService` helper resolving team-member IDs via the
+  EMPLOYEES `companyIdIndex` GSI + in-memory `teamLeadId` filter, reused by both
+  `contacts.js`'s `fetchFilteredContacts()` and `tags.js`'s `PUT /contacts` own-only gate) has
+  been reported and is awaiting Viir's review before implementation. Not yet built.
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Contacts RBAC: team_lead sees team Is Documented But
   Not Implemented"; `docs/v3/12_DECISION_LOG.md` OQ-006; `docs/bible/19_DECISION_LOG.md` Era 44,
   open-questions item 20.
@@ -59,13 +58,6 @@ struck-through and left in place.
   gap class as the Templates/Broadcast finding already closed). Not started.
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Settings Module Audit" section intro (spec vs. built
   matrix).
-- **Automation canvas sub-pages have no `ProtectedRoute` of their own.** Found while tightening
-  `GET /api/automations/:id` to admin-only (B3 finding #8, commit `9eab2a1`): unlike the main
-  `/automation` page, `/automation/canvas/new` and `/automation/canvas/[id]` aren't wrapped in
-  `ProtectedRoute allowedRoles`. Not nav-reachable for a manager (no button links there), so no
-  currently-used workflow broke when the backend route tightened — but a manager who already knew a
-  workflow id and typed the canvas URL directly would now get a 403 where they previously got 200.
-  Small, same-pattern fix as the main page's own guard; not done.
 - **Phase 2 (Viir's chosen scope) — n8n-style automation builder features:** Condition/IF node,
   drag-to-connect canvas UX, dry-run/test mode. Scope chosen by Viir; not started.
 - **AI pricing placeholder fix** (`src/config/aiConfig.js`) — `PRICING` is a placeholder, not real
@@ -119,16 +111,6 @@ struck-through and left in place.
   reachable by an actual customer. No functional bug (`checkRole()`'s `superadmin` bypass already
   covers the intended behavior) — doc-clarity only.
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Templates Module Audit", finding #9.
-- **DL-021 raw-role audit — CLOSED-AS-ANALYZED, cleanup queued.** All 6 tracked candidates
-  (`sales/page.tsx:1120`, `CampaignList.tsx:26-27`, `WorkflowList.tsx:25`, `entry/page.tsx:237-238`,
-  `employees/page.tsx:14-15`, `settings/page.tsx:1447/1463`) were cross-checked against their
-  backend `checkRole()` gates during the B3 audit (2026-07-13) and found structurally harmless — all
-  6 use only v3Role buckets that can never diverge from a raw-role check for the roles in play
-  today (5 are singleton-bucket checks; the 6th, `entry/page.tsx`, depends on a backend mirror that
-  currently holds but is worth re-checking if `team_lead` scope is ever split from `manager`, per
-  OQ-006 above). A raw-role-ify cleanup pass across all 6 sites is queued as low-priority follow-up
-  work (batch "S3"), not urgent.
-  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Settings Module Audit", finding #10.
 
 ## External / waiting-on-Meta
 
