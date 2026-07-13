@@ -69,6 +69,17 @@ async function updateStage(companyId, { leadId, phone }, stage) {
   return { stage };
 }
 
+// ── Fetch a contact's current assignee (ownership check for callers) ────────
+// Used by tags.js's single-contact PUT /contacts route to enforce own-only
+// tagging for restricted roles. Read-only — resolves existence + assignedTo,
+// nothing else; the caller owns the actual role decision.
+async function getContactAssignee(companyId, { leadId, phone }) {
+  const Key = contactKey(companyId, { leadId, phone });
+  const r = await dynamodb.get({ TableName: TABLE, Key }).promise();
+  if (!r.Item) return { exists: false, assignedTo: null };
+  return { exists: true, assignedTo: r.Item.assignedTo ?? null };
+}
+
 // ── Add/remove tags ───────────────────────────────────────────────────────────
 // THE REAL RACE (2026-07-10 diagnosis correction): `tags` is stored as a plain
 // DynamoDB List (a JS array via the document client), not a native String Set
@@ -346,7 +357,7 @@ async function deleteContact(companyId, { leadId, phone }) {
 }
 
 module.exports = {
-  assignLead, updateStage, updateTags, contactKey,
+  assignLead, updateStage, updateTags, contactKey, getContactAssignee,
   deleteLead, deleteUnknownContact, deleteContact,
   NotFoundError,
 };

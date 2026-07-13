@@ -44,6 +44,26 @@ router.put('/contacts', authMiddleware, async (req, res, next) => {
     const companyId = req.user.companyId;
     if (!leadId && !phone) return res.status(400).json({ error: 'leadId or phone required' });
 
+    // RBAC (docs/v3/09_PERMISSION_MATRIX.md §5 Contacts bulk-actions: Owner/
+    // Admin all, Manager/Sales own-only, Support none) — raw role, not
+    // v3Role (DL-021). No extractable "team-scoped" mechanism exists
+    // anywhere in this codebase for Manager to reuse — contacts.js's own
+    // fetchFilteredContacts documents this as a known, deliberate gap
+    // (manager/team_lead both fall into a binary own-only bucket there,
+    // same as Sales) — so Manager gets own-only here too rather than
+    // inventing a new team-scoping implementation. OQ-006
+    // (docs/v3/12_DECISION_LOG.md) stays open, not resolved by this fix.
+    const NO_ACCESS_ROLES = new Set(['intern']);
+    const OWN_ONLY_ROLES = new Set(['manager', 'team_lead', 'agent', 'telecaller']);
+    if (NO_ACCESS_ROLES.has(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    if (OWN_ONLY_ROLES.has(req.user.role)) {
+      const { exists, assignedTo } = await ContactBulkOps.getContactAssignee(companyId, { leadId, phone });
+      if (!exists) return res.status(404).json({ error: 'Contact not found' });
+      if (assignedTo !== req.user.id) return res.status(403).json({ error: 'Forbidden' });
+    }
+
     const result = await ContactBulkOps.updateTags(companyId, { leadId, phone }, { add, remove });
     res.json({ success: true, ...result });
   } catch (err) { next(err); }
