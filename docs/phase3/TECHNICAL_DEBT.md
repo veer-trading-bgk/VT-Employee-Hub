@@ -661,6 +661,24 @@ Unprefixed `h-11` (44px) is the base/floor; `sm:h-8`/`sm:h-9` (Tailwind `sm` = 6
 
 **Priority:** Resolved — real customer-facing reachability bug (tags/assign genuinely unreachable on phone), reported directly by the product owner.
 
+## M1.5 Feature Parity Audit (2026-07-13) — summary, not fixed here
+
+**Source note:** conducted in a separate Claude Code session/instance, not this one, as the direct follow-up to the Inbox snapshot-panel gap immediately above — scoped specifically to catch mobile/desktop *feature parity* gaps (a capability entirely missing or blind on phone, not just a layout/viewport regression) the M1 layout audit's viewport/breakpoint checks weren't designed to find. This entry records the audit's summary counts and headline findings as relayed; the full per-surface writeup lives in that session's own record, not reproduced here.
+
+**Result: ~85% of the app's daily-use surface is reachable on phone.** Breakdown:
+
+- **4 IMPOSSIBLE** — a capability with genuinely no path to complete on phone, not just awkward:
+  1. Customer 360's CRM tab is `lg:hidden` — zero stage/score/source path on phone at all for a lead's CRM state.
+  2. Templates' create-flow Step 2 preview is `md:hidden` — a template is created blind below `md`, no way to see what's being submitted before saving.
+  3. Contacts import's column-mapping dialog overflows below its design width — the mapping step can't be completed on phone.
+  4. Kanban drag-and-drop has no touch equivalent — already tracked separately as M2-C (stage-picker proposal approved and banked, see `docs/PENDING_WORK.md`), not a new finding.
+- **9 HIDDEN** — reachable in principle but the entry point itself is hidden/undiscoverable below some breakpoint (the same gap *class* as the Inbox snapshot-panel fix immediately above, found systematically this time rather than by a single user report).
+- **2 DELIBERATE** — confirmed intentional scope decisions, not gaps (not itemized here — relayed as "2 deliberate," not further detail).
+
+**Fix:** not applied in this batch — this is a scoping/summary entry. See `docs/PENDING_WORK.md`'s M2 plan (M2-C expanded to cover the CRM-tab exposure alongside Kanban, M2-E expanded to cover the Templates preview + import-dialog overflow + the 9 hidden-entry-point quick wins) for the tracked follow-up work.
+
+**Priority:** High for the 4 IMPOSSIBLE items (genuine capability gaps, not cosmetic) — the two forming the bulk of daily agent work (CRM tab, Templates preview) are called out explicitly in the M2 plan's ordering rationale.
+
 ## B4 — AI Admin Module Audit (2026-07-13) — 11 findings, 7 resolved this batch (5 code, 2 doc-fix), 4 open
 
 **Source:** a read-only UI/UX + RBAC audit of every AI-related admin/superadmin surface — Settings > AI (`AISection.tsx`), the AI Administration module (`ai-admin/` — General/Conversation/Compliance/Prompt Management/Future, 5 tabs, not 4 as originally scoped; Prompt Management shipped later, Era 26/PR2), Knowledge Center, Platform > AI Costs (`AiCostsTab.tsx`), and the (since-removed) approval queue — conducted via 4 parallel read-only agents (static reads + backend cross-checks) plus live role-scoped Playwright verification (the CORS-credentialed-request trap from the M1 mobile audit re-confirmed and avoided from the start) in a separate Claude Code session/instance, not this one. This entry documents the fix batch implemented here from that audit's findings, following the same S1/S2 pattern as the B3 Settings audit.
