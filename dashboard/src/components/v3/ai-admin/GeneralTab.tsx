@@ -11,7 +11,7 @@ import { aiAdminKeys, fetchGeneralSettings, saveGeneralSettings, type GeneralSet
 type EditableFields = Omit<GeneralSettings, 'autoAssign'>;
 
 const ROWS: Array<{ key: keyof EditableFields; label: string; description: string }> = [
-  { key: 'conversationAgentEnabled', label: 'AI Conversation Agent', description: 'Lets the AI initiate and carry a multi-turn WhatsApp conversation with new customers before any human is involved.' },
+  { key: 'conversationAgentEnabled', label: 'AI Conversation Agent', description: 'Lets the AI initiate and carry a conversation with new customers on WhatsApp, handing off to a human when appropriate.' },
   { key: 'qualificationEnabled', label: 'AI Qualification', description: 'While the conversation agent runs, extract stated budget/timeline/product interest onto the lead record.' },
   { key: 'leadScoringEnabled', label: 'Lead Scoring', description: 'Recompute this company\'s lead priority score/tier on the regular scoring sweep.' },
   { key: 'summaryEnabled', label: 'AI Summary', description: 'Generate a short handoff summary for the human who picks up an AI conversation.' },
