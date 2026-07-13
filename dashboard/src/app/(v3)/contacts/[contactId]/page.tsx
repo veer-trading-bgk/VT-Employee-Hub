@@ -155,32 +155,39 @@ function Contact360Shell({ contactId }: { contactId: string }) {
 
       {/* Contact header */}
       <div className="border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950">
-        <div className="flex items-center gap-4">
-          <Avatar name={contact.name} size={48} />
-          <div className="min-w-0 flex-1">
-            <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-              {contact.name}
-            </h1>
-            <div className="flex flex-wrap items-center gap-3 mt-0.5">
-              <span className="text-sm text-neutral-500">{contact.phone}</span>
-              <Badge style={{ backgroundColor: stageColor + '20', color: stageColor }}>
-                {stageLabel}
-              </Badge>
-              {contact.assignedToName && (
-                <span className="text-xs text-neutral-400">
-                  Owner: {contact.assignedToName}
-                </span>
-              )}
-            </div>
-            {/* Always visible regardless of active tab — CrmTab also has its own
-                tag editor for the deal-context view, this is the quick-access one. */}
-            <div className="mt-1.5">
-              <ContactTags
-                tagIds={contact.tags ?? []}
-                leadId={contact.leadId}
-                phone={contact.phone}
-                onMutated={refresh}
-              />
+        {/* M2-B Fix 4: below sm, the avatar/name block and the action buttons
+            stack into two rows instead of fighting for space in one — at a
+            375px viewport the buttons' non-shrinking width left ~30% for the
+            name/phone/badges. From sm up this collapses back to the original
+            single-row layout. */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+          <div className="flex min-w-0 items-center gap-4 sm:flex-1">
+            <Avatar name={contact.name} size={48} />
+            <div className="min-w-0 flex-1">
+              <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+                {contact.name}
+              </h1>
+              <div className="flex flex-wrap items-center gap-3 mt-0.5">
+                <span className="text-sm text-neutral-500">{contact.phone}</span>
+                <Badge style={{ backgroundColor: stageColor + '20', color: stageColor }}>
+                  {stageLabel}
+                </Badge>
+                {contact.assignedToName && (
+                  <span className="text-xs text-neutral-400">
+                    Owner: {contact.assignedToName}
+                  </span>
+                )}
+              </div>
+              {/* Always visible regardless of active tab — CrmTab also has its own
+                  tag editor for the deal-context view, this is the quick-access one. */}
+              <div className="mt-1.5">
+                <ContactTags
+                  tagIds={contact.tags ?? []}
+                  leadId={contact.leadId}
+                  phone={contact.phone}
+                  onMutated={refresh}
+                />
+              </div>
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
