@@ -307,7 +307,9 @@ export function AiCostsTab() {
           Cost tagging (entityType/entityId/source) went live 2026-07-08. Real tagged data covers{' '}
           <strong>{data.meta.daysOfTaggedData} day{data.meta.daysOfTaggedData === 1 ? '' : 's'}</strong> so far
           ({data.meta.taggedAiUsageRecordsInRange} of {data.meta.totalAiUsageRecordsInRange} records in this range).
-          Numbers below are real, not placeholders — they will simply be small until more usage accumulates.
+          Numbers below are genuine usage records, not demo data — they will simply be small until more usage
+          accumulates. Per-token pricing is still provisional (see PENDING_WORK.md), so treat cost totals as
+          directionally correct, not final.
           Per Era 36: almost all data to date is <strong>Admin Test</strong>, not real customer traffic — the three
           buckets below are never blended, look at Production for genuine customer cost.
         </p>
