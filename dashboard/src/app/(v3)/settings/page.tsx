@@ -316,7 +316,7 @@ function WhatsAppSection() {
   const [testResult, setTestResult] = useState<WabaTestResult | null>(null);
   const [showTestRaw, setShowTestRaw] = useState(false);
 
-  const { data: cfg, isLoading, refetch } = useQuery<FullWabaConfig>({
+  const { data: cfg, isLoading, isError, refetch } = useQuery<FullWabaConfig>({
     queryKey: ['whatsapp-config-full'],
     queryFn: () => apiFetch<FullWabaConfig>('/api/whatsapp/config/full'),
     staleTime: 30_000,
@@ -508,6 +508,24 @@ function WhatsAppSection() {
       <div className="space-y-6">
         <Skeleton className="h-8 w-48" />
         <Skeleton className="h-80 w-full rounded-xl" />
+      </div>
+    );
+  }
+
+  // Never fall back to `connected = cfg?.connected ?? false` -> the full
+  // "Connect WhatsApp" onboarding form on a failed fetch (B3 audit finding
+  // #5/#6) — that misrepresents a real, already-connected WABA as
+  // unconfigured to whoever hit this failure (e.g. a transient error, or a
+  // non-admin who reached this component some other way), and exposes the
+  // manual-connect access-token fields for no reason.
+  if (isError) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">WhatsApp Business</h2>
+          <p className="text-sm text-neutral-500">Connect and configure your Meta WhatsApp Business API</p>
+        </div>
+        <Card><ErrorRetry message="Failed to load WhatsApp configuration" onRetry={refetch} /></Card>
       </div>
     );
   }
@@ -910,7 +928,7 @@ function TargetsSection() {
   const [form, setForm] = useState<Record<string, TargetEntry>>({});
   const [dirty, setDirty] = useState(false);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['admin-targets'],
     queryFn: () => apiFetch<TargetsResponse>('/api/admin/targets'),
     staleTime: 5 * 60_000,
@@ -976,6 +994,8 @@ function TargetsSection() {
 
       {isLoading ? (
         <div className="space-y-2">{[0,1,2].map((i) => <Skeleton key={i} className="h-16 w-full" />)}</div>
+      ) : isError ? (
+        <Card><ErrorRetry message="Failed to load metric targets" onRetry={refetch} /></Card>
       ) : (
         <Card noPadding>
           <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -1055,6 +1075,20 @@ const ACTION_LABELS: Record<string, string> = {
   suspicious_metric_entry: '⚠️ Suspicious Entry',
 };
 
+// Shared error-state pattern (B3 audit finding #6) — mirrors TagsSection's
+// existing isError block. A fetch failure must never silently render as
+// "clean"/"empty"/"nothing configured"; every consumer in this file that
+// previously fell through to an empty-looking default on failure now shows
+// this instead, gated ahead of that fallback.
+function ErrorRetry({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="py-8 text-center">
+      <p className="text-sm text-error-600 dark:text-error-400">{message}</p>
+      <Button size="sm" variant="secondary" className="mt-2" onClick={onRetry}>Retry</Button>
+    </div>
+  );
+}
+
 function AuditTable({ rows, suspicious }: { rows: AuditLog[]; suspicious?: boolean }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
@@ -1097,21 +1131,21 @@ function AuditSection() {
   const [search, setSearch] = useState('');
   const [actionFilter, setActionFilter] = useState('all');
 
-  const { data: logsData, isLoading: logsLoading } = useQuery({
+  const { data: logsData, isLoading: logsLoading, isError: logsError, refetch: refetchLogs } = useQuery({
     queryKey: ['audit-logs', hours],
     queryFn: () => apiFetch<{ success: boolean; data: AuditLog[]; totalRecords: number; timeRange: string }>(`/api/audit/logs?hours=${hours}&limit=500`),
     enabled: auditTab === 'logs',
     staleTime: 60_000,
   });
 
-  const { data: suspData, isLoading: suspLoading } = useQuery({
+  const { data: suspData, isLoading: suspLoading, isError: suspError, refetch: refetchSusp } = useQuery({
     queryKey: ['audit-suspicious', hours],
     queryFn: () => apiFetch<{ success: boolean; summary: { failedLogins: number; suspiciousMetrics: number; deletedEmployees: number; totalSuspicious: number }; details: AuditLog[] }>(`/api/audit/suspicious?hours=${hours}`),
     enabled: auditTab === 'suspicious',
     staleTime: 60_000,
   });
 
-  const { data: secData, isLoading: secLoading } = useQuery({
+  const { data: secData, isLoading: secLoading, isError: secError, refetch: refetchSec } = useQuery({
     queryKey: ['audit-security'],
     queryFn: () => apiFetch<{ success: boolean; statistics: { totalActions: number; successfulLogins: number; failedLogins: number; uniqueUsers: number; uniqueIPs: number; suspiciousActivities: number }; highRiskIPs: { ip: string; failedAttempts: number }[]; recommendations: string[]; generatedAt: string; timeRange: string }>('/api/audit/security-report'),
     enabled: auditTab === 'security',
@@ -1178,7 +1212,7 @@ function AuditSection() {
               {uniqueActions.map((a) => <option key={a} value={a}>{ACTION_LABELS[a] ?? a}</option>)}
             </select>
           </div>
-          {logsLoading ? <Skeleton className="h-48 w-full" /> : <AuditTable rows={filtered} />}
+          {logsLoading ? <Skeleton className="h-48 w-full" /> : logsError ? <ErrorRetry message="Failed to load audit logs" onRetry={refetchLogs} /> : <AuditTable rows={filtered} />}
           {logsData && <p className="text-xs text-neutral-400">Showing {filtered.length} of {logs.length} records · {logsData.timeRange}</p>}
         </>
       )}
@@ -1186,7 +1220,7 @@ function AuditSection() {
       {/* Suspicious tab */}
       {auditTab === 'suspicious' && (
         <>
-          {suspLoading ? <Skeleton className="h-48 w-full" /> : suspData && (
+          {suspLoading ? <Skeleton className="h-48 w-full" /> : suspError ? <ErrorRetry message="Failed to load suspicious-activity data" onRetry={refetchSusp} /> : suspData && (
             <>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 {[
@@ -1210,7 +1244,7 @@ function AuditSection() {
       {/* Security tab */}
       {auditTab === 'security' && (
         <>
-          {secLoading ? <Skeleton className="h-48 w-full" /> : secData && (
+          {secLoading ? <Skeleton className="h-48 w-full" /> : secError ? <ErrorRetry message="Failed to load security report" onRetry={refetchSec} /> : secData && (
             <div className="space-y-5">
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                 {[
