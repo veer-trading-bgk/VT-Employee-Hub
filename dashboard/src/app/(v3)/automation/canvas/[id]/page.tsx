@@ -9,6 +9,8 @@ import { apiFetch, ApiClientError } from '@/lib/api';
 import { WorkflowCanvas } from '@/components/automation/canvas/WorkflowCanvas';
 import type { AutomationResponse, GraphNode, GraphEdge, WorkflowTrigger, Workflow } from '@/types/automations';
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
+import { useMinViewportWidth } from '@/hooks/useMinViewportWidth';
+import { CanvasMobileGate } from '@/components/automation/canvas/CanvasMobileGate';
 
 // Default name a freshly-created workflow carries until renamed — must match
 // canvas/new/page.tsx's STARTER_BODY.name exactly (checked as part of the
@@ -109,9 +111,16 @@ function WorkflowCanvasEditPageInner() {
   // and immune to network latency/clock skew instead of an approximation.
   const [isJustCreated] = useState(() => searchParams.get('new') === '1');
 
+  // M2-D: below md, skip the fetch entirely (enabled: isDesktop) and never
+  // mount <WorkflowCanvas> (ReactFlow's node-graph setup) — not just hide it.
+  // docs/v3/06_SCREEN_SPECIFICATIONS.md:898 documents this as intended
+  // behavior; this implements it.
+  const isDesktop = useMinViewportWidth(768);
+
   const { data, isLoading, error } = useQuery<AutomationResponse>({
     queryKey: ['automation', params.id],
     queryFn:  () => apiFetch(`/api/automations/${params.id}`),
+    enabled: isDesktop,
   });
 
   // One-time URL cleanup so a later page refresh (F5) while still on this
@@ -175,7 +184,9 @@ function WorkflowCanvasEditPageInner() {
 
       {/* Canvas */}
       <div className="min-h-0 flex-1">
-        {isLoading ? (
+        {!isDesktop ? (
+          <CanvasMobileGate />
+        ) : isLoading ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-sm text-neutral-400">
             <Loader2 className="h-5 w-5 animate-spin text-primary-500" aria-hidden />
             <p>Loading workflow…</p>

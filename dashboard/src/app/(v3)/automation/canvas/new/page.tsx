@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import type { AutomationResponse } from '@/types/automations';
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
+import { useMinViewportWidth } from '@/hooks/useMinViewportWidth';
+import { CanvasMobileGate } from '@/components/automation/canvas/CanvasMobileGate';
 
 // "New" is a create-then-redirect page, not a standalone editor: it POSTs a minimal
 // starter draft (trigger → end, no branches yet) and immediately navigates to the
@@ -32,8 +34,13 @@ const STARTER_BODY = {
 function WorkflowCanvasNewPageInner() {
   const router = useRouter();
   const firedRef = useRef(false);
+  // M2-D: below md, don't fire the create-POST at all — a mobile visitor
+  // would otherwise create a real "New workflow" draft purely to be
+  // redirected straight into the same mobile gate on canvas/[id].
+  const isDesktop = useMinViewportWidth(768);
 
   useEffect(() => {
+    if (!isDesktop) return;
     if (firedRef.current) return;
     firedRef.current = true;
     apiFetch<AutomationResponse>('/api/automations', {
@@ -42,7 +49,9 @@ function WorkflowCanvasNewPageInner() {
     })
       .then((res) => router.replace(`/automation/canvas/${res.automation.id}?new=1`))
       .catch(() => router.replace('/automation'));
-  }, [router]);
+  }, [router, isDesktop]);
+
+  if (!isDesktop) return <CanvasMobileGate />;
 
   return (
     <div className="flex h-full w-full items-center justify-center text-sm text-neutral-400">
