@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import type { AutomationResponse } from '@/types/automations';
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 
 // "New" is a create-then-redirect page, not a standalone editor: it POSTs a minimal
 // starter draft (trigger → end, no branches yet) and immediately navigates to the
@@ -28,7 +29,7 @@ const STARTER_BODY = {
   entryNodeId: 'n-end',
 };
 
-export default function WorkflowCanvasNewPage() {
+function WorkflowCanvasNewPageInner() {
   const router = useRouter();
   const firedRef = useRef(false);
 
@@ -47,5 +48,13 @@ export default function WorkflowCanvasNewPage() {
     <div className="flex h-full w-full items-center justify-center text-sm text-neutral-400">
       Creating new workflow…
     </div>
+  );
+}
+
+export default function WorkflowCanvasNewPage() {
+  return (
+    <ProtectedRoute allowedRoles={['admin']}>
+      <WorkflowCanvasNewPageInner />
+    </ProtectedRoute>
   );
 }

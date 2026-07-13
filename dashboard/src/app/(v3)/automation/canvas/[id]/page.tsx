@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import { apiFetch, ApiClientError } from '@/lib/api';
 import { WorkflowCanvas } from '@/components/automation/canvas/WorkflowCanvas';
 import type { AutomationResponse, GraphNode, GraphEdge, WorkflowTrigger, Workflow } from '@/types/automations';
+import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 
 // Default name a freshly-created workflow carries until renamed — must match
 // canvas/new/page.tsx's STARTER_BODY.name exactly (checked as part of the
@@ -90,7 +91,7 @@ function WorkflowNameField({ automation, onSave, autoFocus }: { automation: Work
 // Full-bleed canvas route — the one deliberate exception to UI_GUIDELINES.md's
 // "use drawers for create/edit" rule (see that file's Drawers & Modals section).
 // Pan/zoom/drag-connect needs the full viewport, not a 600px slide-over.
-export default function WorkflowCanvasEditPage() {
+function WorkflowCanvasEditPageInner() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -204,5 +205,13 @@ export default function WorkflowCanvasEditPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function WorkflowCanvasEditPage() {
+  return (
+    <ProtectedRoute allowedRoles={['admin']}>
+      <WorkflowCanvasEditPageInner />
+    </ProtectedRoute>
   );
 }
