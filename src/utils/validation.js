@@ -240,6 +240,24 @@ const updateEmployeeSchema = z.object({
   autoAssignWeight: z.number().int().min(1).max(10).optional(),
 }).strict();
 
+// PUT /api/auth/me (B3 finding #11) — deliberately NOT
+// updateEmployeeSchema.pick(...): a purpose-built, explicit allowlist reads
+// unambiguously as "everything a user may set on their own record," without
+// a reader having to cross-reference the admin schema and mentally subtract
+// the excluded fields. .strict() rejects (not silently drops) any other key
+// — role/status/email/panNumber/aadhaarNumber/teamLeadId/baseSalary/
+// autoAssignEnabled/autoAssignWeight all 403/400 if present, not just get
+// ignored. panNumber/aadhaarNumber are admin-only by explicit product
+// decision (2026-07-13) — sensitive KYC identity fields, not self-service.
+// avatarKey isn't in updateEmployeeSchema at all (admin routes don't set
+// it); it's set exclusively via this self-service path.
+const selfProfileUpdateSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  mobileNumber: z.string().regex(/^\d{10}$/, 'Mobile must be exactly 10 digits').optional(),
+  homeAddress: z.string().max(300).optional(),
+  avatarKey: z.string().max(500).optional(),
+}).strict();
+
 const companySignupSchema = z.object({
   companyName: z.string().min(2, 'Office name must be at least 2 characters').max(100),
   broker: z.string().min(1, 'Select your broker').max(100),
@@ -409,6 +427,7 @@ module.exports = {
   verifyTotpSchema,
   verifyBackupSchema,
   updateEmployeeSchema,
+  selfProfileUpdateSchema,
   companySignupSchema,
   createLeadSchema,
   updateLeadSchema,

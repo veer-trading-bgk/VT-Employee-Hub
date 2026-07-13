@@ -2,13 +2,15 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const speakeasy = require('speakeasy');
-const { loginSchema, registerSchema, verifyTotpSchema, verifyBackupSchema, companySignupSchema } = require('../utils/validation');
+const { randomUUID } = require('crypto');
+const { loginSchema, registerSchema, verifyTotpSchema, verifyBackupSchema, companySignupSchema, selfProfileUpdateSchema } = require('../utils/validation');
 const { logAudit } = require('../utils/audit');
 const { encrypt, decrypt } = require('../utils/encryption');
 const { loginRateLimiter } = require('../middleware/rateLimiter');
 const { authMiddleware, fetchCompanyPlan } = require('../middleware/auth');
 const { totpRateLimitCheck, recordTotpFailure, clearTotpAttempts } = require('../middleware/totpRateLimiter');
 const dynamodb = require('../config/dynamodb');
+const { s3Client, MEDIA_BUCKET } = require('../config/s3');
 const bot = require('../config/telegram');
 const logger = require('../config/logger');
 
@@ -538,6 +540,94 @@ router.get('/me', authMiddleware, async (req, res) => {
   } catch {
     res.status(500).json({ error: 'Failed to fetch user' });
   }
+});
+
+// ── PUT /api/auth/me — self-service profile update (B3 finding #11) ──────────
+// Operates strictly on req.user.id from the verified JWT — never a
+// client-supplied id, so there is no path to editing someone else's
+// profile. Field allowlist is selfProfileUpdateSchema (name/mobileNumber/
+// homeAddress/avatarKey only) — role/status/email/panNumber/aadhaarNumber
+// and every other admin-managed field are rejected by .strict(), not
+// silently dropped. panNumber/aadhaarNumber are admin-only by explicit
+// product decision (2026-07-13) — see admin.js's PUT /employees/:id for
+// where those stay editable.
+router.put('/me', authMiddleware, async (req, res, next) => {
+  try {
+    const updates = selfProfileUpdateSchema.parse(req.body);
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No fields provided to update' });
+    }
+
+    const existing = await dynamodb.get({
+      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+      Key: { id: req.user.id },
+    }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'User not found' });
+
+    const setClauses = ['updatedAt = :updatedAt'];
+    const attrNames = {};
+    const attrValues = { ':updatedAt': new Date().toISOString() };
+    for (const [key, val] of Object.entries(updates)) {
+      attrNames[`#${key}`] = key;
+      setClauses.push(`#${key} = :${key}`);
+      attrValues[`:${key}`] = val;
+    }
+
+    const result = await dynamodb.update({
+      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+      Key: { id: req.user.id },
+      UpdateExpression: `SET ${setClauses.join(', ')}`,
+      ExpressionAttributeNames: attrNames,
+      ExpressionAttributeValues: attrValues,
+      ReturnValues: 'ALL_NEW',
+    }).promise();
+
+    const { password, totpSecret, backupCodes, ...safe } = result.Attributes;
+
+    logAudit(req.user.id, 'self_profile_updated', req.user.email, 'success', req.ip, {
+      changes: Object.keys(updates),
+    }, req.user.companyId).catch((err) => logger.error('Audit log failed for self_profile_updated', err));
+
+    res.json({ success: true, employee: safe });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── GET /api/auth/me/avatar-upload-url — presigned S3 PUT URL for own photo ──
+// Purpose-built, not a reuse of GET /api/whatsapp/upload-url (B3 finding
+// #11) — that route's MIME allowlist/size limit are WhatsApp/Meta-specific
+// (5MB, video/audio/documents allowed), wider than a profile photo needs.
+// Same key prefix (uploads/{companyId}/...) as the WhatsApp upload flow on
+// purpose, so the existing GET /api/whatsapp/s3-url resolver (which only
+// accepts uploads/{cid}/* and inbound/{cid}/* keys) can serve the avatar
+// back for display too, with zero changes there.
+const AVATAR_ALLOWED_MIME = new Set(['image/jpeg', 'image/png']);
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024; // 2MB — matches ProfileSection's own "JPG, PNG up to 2MB" copy
+
+router.get('/me/avatar-upload-url', authMiddleware, async (req, res, next) => {
+  try {
+    const { mimeType, filename, fileSize } = req.query;
+    if (!mimeType || !filename) return res.status(400).json({ error: 'mimeType and filename required' });
+    if (!MEDIA_BUCKET) return res.status(500).json({ error: 'WA_MEDIA_BUCKET env var not set' });
+    if (!AVATAR_ALLOWED_MIME.has(mimeType)) return res.status(400).json({ error: 'Only JPG and PNG images are allowed' });
+    if (fileSize && Number(fileSize) > AVATAR_MAX_BYTES) {
+      return res.status(400).json({ error: 'Avatar must be under 2 MB' });
+    }
+
+    const ext = filename.split('.').pop()?.toLowerCase() ?? 'jpg';
+    const key = `uploads/${req.user.companyId}/${randomUUID()}.${ext}`;
+
+    const uploadUrl = s3Client.getSignedUrl('putObject', {
+      Bucket: MEDIA_BUCKET,
+      Key: key,
+      ContentType: mimeType,
+      Expires: 300,
+    });
+
+    res.json({ success: true, uploadUrl, key });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;

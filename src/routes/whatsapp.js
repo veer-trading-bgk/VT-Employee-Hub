@@ -2,7 +2,7 @@ const express = require('express');
 const { randomUUID } = require('crypto');
 const { dedupPut } = require('../utils/dedupPut');
 const axios = require('axios');
-const S3 = require('aws-sdk/clients/s3');
+const { s3Client, MEDIA_BUCKET } = require('../config/s3');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
@@ -32,12 +32,6 @@ function getGraphUrl(cfg) {
   if (cfg?.graphApiVersion) return `https://graph.facebook.com/${cfg.graphApiVersion}`;
   return GRAPH;
 }
-const MEDIA_BUCKET = process.env.WA_MEDIA_BUCKET;
-if (!MEDIA_BUCKET) {
-  throw new Error('WA_MEDIA_BUCKET env var is required but not set — refusing to start');
-}
-const s3Client = new S3({ region: process.env.AWS_REGION ?? 'ap-south-1' });
-
 function mediaTypeFromMime(mimeType) {
   if (mimeType.startsWith('image/')) return 'image';
   if (mimeType.startsWith('video/')) return 'video';
