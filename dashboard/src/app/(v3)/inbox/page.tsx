@@ -2038,7 +2038,7 @@ function CustomerSnapshotPanel({
                                 {note.editedAt ? ' (edited)' : ''}
                               </p>
                               {canModify && (
-                                <div className="flex shrink-0 gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+                                <div className="flex shrink-0 gap-2 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100">
                                   <button
                                     type="button"
                                     onClick={() => startEdit(note)}

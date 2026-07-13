@@ -661,7 +661,7 @@ function TemplateRow({
           {selected ? (
             <CheckSquare className="h-4 w-4 text-primary-600" aria-hidden />
           ) : (
-            <Square className="h-4 w-4 opacity-0 group-hover:opacity-100" aria-hidden />
+            <Square className="h-4 w-4 sm:opacity-0 sm:group-hover:opacity-100" aria-hidden />
           )}
         </button>
       </td>

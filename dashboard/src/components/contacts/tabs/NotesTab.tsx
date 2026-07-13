@@ -124,7 +124,7 @@ function NotesPanel() {
                           {fmtRelTime(note.timestamp)}{note.editedAt ? ' (edited)' : ''}
                         </time>
                         {canModify && !isEditing && (
-                          <div className="flex gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+                          <div className="flex gap-1.5 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100">
                             <button
                               onClick={() => startEdit(note)}
                               className="text-[10px] font-medium text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400"
