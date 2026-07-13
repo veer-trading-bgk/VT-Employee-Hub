@@ -22,17 +22,8 @@ struck-through and left in place.
 
 ## Product decisions awaiting Viir's call
 
-- **Contacts module `team_lead` RBAC scope — decided: team-wide, scoping in review.** Viir
-  decided 2026-07-13 (OQ-006, `docs/v3/12_DECISION_LOG.md`, resolved as "build it"): `team_lead`
-  should see team contacts, matching `docs/v3/09_PERMISSION_MATRIX.md`'s documented intent rather
-  than the current own-only behavior it shares with `agent`/`telecaller`/`intern`. A scoping
-  proposal (mechanism: a new `TeamScopeService` helper resolving team-member IDs via the
-  EMPLOYEES `companyIdIndex` GSI + in-memory `teamLeadId` filter, reused by both
-  `contacts.js`'s `fetchFilteredContacts()` and `tags.js`'s `PUT /contacts` own-only gate) has
-  been reported and is awaiting Viir's review before implementation. Not yet built.
-  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Contacts RBAC: team_lead sees team Is Documented But
-  Not Implemented"; `docs/v3/12_DECISION_LOG.md` OQ-006; `docs/bible/19_DECISION_LOG.md` Era 44,
-  open-questions item 20.
+*(none currently — see `docs/v3/12_DECISION_LOG.md` OQ-006 for the most recently resolved item:
+Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
 
 ## Queued technical work
 

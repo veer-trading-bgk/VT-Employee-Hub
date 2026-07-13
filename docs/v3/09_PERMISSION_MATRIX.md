@@ -21,6 +21,18 @@ The **"Manager"** column throughout this document describes team-*scoped* behavi
 
 ---
 
+## ⚠️ Correction (2026-07-13) — Section 5 (Customers/Contacts): team_lead team-scoping resolved, but not as this table's "Manager" column implies
+
+OQ-006 (`docs/v3/12_DECISION_LOG.md`) — "does `team_lead` get team-scoped Contacts, matching this table's aspirational rows below, or does the table get corrected to own-only?" — is now resolved: **team-scoped, implemented 2026-07-13** (`TeamScopeService.getTeamMemberIds()`, `src/routes/contacts.js`'s `fetchFilteredContacts()`, `src/routes/tags.js`'s `PUT /contacts`). But per the correction above, this table's single "Manager" column conflates raw `manager` and raw `team_lead`, and the real implementation does **not** grant both roles the same thing:
+
+- **Data Visibility → "View team contacts"; Import/Export → "Export team contacts":** now **true for raw `team_lead`** (own + `TeamScopeService`-resolved team members' assigned leads, on `GET /`, `GET /export`, and `GET /all`). **Still false for raw `manager`** — `manager` was never in scope for OQ-006 and remains own-assigned-only, exactly like `agent`/`telecaller`/`intern`. `contacts.js`'s own code comment states this explicitly.
+- **Bulk Actions table (all four "✓" rows for Manager — Bulk assign, Bulk tag, Bulk stage change, Bulk send campaign):** **raw `team_lead` gets none of these** — a deliberate product decision (Viir, 2026-07-13, "Option A" of the Contacts team-scoping proposal): `team_lead` stays entirely out of `POST /api/contacts/bulk-update`'s `checkRole(['admin', 'manager'])`, unchanged. Raw `manager`'s bulk access is real but was never team-scoped to begin with, despite the "(team)" annotation on "Bulk assign" — it's the same company-wide `checkRole(['admin', 'manager'])` gate as every other bulk-action route in this file, consistent with the general Manager-bucket correction above, not a new finding.
+- **`PUT /api/tags/contacts`'s own-only gate** (the mechanism behind "Add/remove tags" in the Create/Edit table above) upgraded the same way: `team_lead` team-scoped, `manager` unchanged own-only.
+
+As with the rest of this document: **the code is authoritative, not this table.** See `docs/v3/12_DECISION_LOG.md`'s OQ-006 resolution entry for the full decision record.
+
+---
+
 ## 1. Role Definitions
 
 APForce V3 has five *display* roles used for navigation/sidebar grouping. A user has exactly one *raw* role at any time (`superadmin`, `admin`, `manager`, `team_lead`, `agent`, `telecaller`, `intern`) — see the correction above for how raw roles map to these five, and why "Manager" below does not correspond 1:1 to the raw `manager` role's actual backend permissions.

@@ -443,6 +443,33 @@ The only place any merge actually happened is the frontend *display* layer: `toV
 
 ---
 
+### [DL-022] Resolves OQ-006 — `team_lead` Contacts Scope Is Team-Wide, Implemented
+**Date:** 2026-07-13
+**Status:** Approved
+**Decided by:** Viir
+
+**Context:** OQ-006 (below) asked whether `contacts.js`'s `team_lead` scope should be **own-only** (the real, undocumented behavior) or **team-wide** (as `09_PERMISSION_MATRIX.md` §5 aspirationally documents — "View team contacts," "Export team contacts"). Unlike DL-021 above, which ratified an existing behavioral split as intentional with no code change, this finding had no existing team-scoping mechanism anywhere in the codebase to ratify — `contacts.js`'s `fetchFilteredContacts()` was a strict binary (`isAdmin ? everything : own-assigned-only`), and `tags.js`'s `PUT /contacts` gate explicitly documented the same gap.
+
+**Decision:** Build team-wide scoping for `team_lead`, matching the documented intent. Scope, locked with this decision:
+- **Read + Export: team-wide.** `team_lead` sees/exports their own assigned leads plus every lead assigned to an employee whose `teamLeadId` points at them (`TeamScopeService.getTeamMemberIds()`, new — queries the EMPLOYEES table's `companyIdIndex` GSI scoped to `companyId`, then filters `teamLeadId` in memory since no GSI exists on that field). Applies to `GET /api/contacts`, `GET /api/contacts/export`, `GET /api/contacts/all` (all three share `fetchFilteredContacts()`), and `PUT /api/tags/contacts`'s ownership gate.
+- **Bulk mutation (`POST /api/contacts/bulk-update`): unchanged, "Option A."** `team_lead` stays entirely outside this route's `checkRole(['admin', 'manager'])` — no bulk-assign, bulk-tag, or any other bulk operation, team-scoped or otherwise. Explicitly chosen over the alternative (adding `team_lead` to the route with per-target-contact team-scoping threaded into `ContactBulkOpsService`'s mutation loop) as materially larger, separate work not requested here. `team_lead` can still mutate individual team contacts one at a time through routes that did get the team-scoped check (e.g. tagging, per above).
+- **Unclaimed `INBOX#` contact pool: stays admin-only, ratified.** Not extended to `team_lead`. Consistent with raw `manager`'s current behavior (also admin-only) — not an open question, a deliberate boundary: team-scoping extends to a `team_lead`'s team's *assigned* contacts, not the general unclaimed pool.
+- **`manager` is unaffected.** This decision resolves `team_lead` only, matching DL-021's precedent of not conflating the two raw roles. `manager` remains own-only on Contacts read/export/tag, and its `bulk-update` access (already granted, company-wide, not team-scoped) is unchanged.
+
+**Alternatives considered:**
+- Correct `09_PERMISSION_MATRIX.md` to state own-only instead of building the feature — rejected by Viir; product intent is genuinely team-wide, the doc wasn't wrong, the code was incomplete.
+- Also add `team_lead` to `bulk-update` (Option B in the proposal) — rejected for this batch as materially more implementation work than the read-scoping fix, not because it's undesirable; left open for a future decision if needed.
+- Extend `manager` to the same team-scoped mechanism at the same time — rejected; no product request drove it, and doing so would be exactly the unrequested scope-widening DL-021's own reasoning already argues against.
+
+**Rationale:** Team-scoped delegation (a team lead managing their own small team's contacts without full company-wide reach) is a real, previously-requested SMB sales pattern — the same rationale DL-021 already established for `team_lead`'s metrics/points scope. Building the mechanism once as a shared service (`TeamScopeService`) rather than duplicating a team-membership lookup per route keeps this consistent with the shared-service architecture rule (`CLAUDE.md` §4) and gives `tags.js` a real fix instead of a second copy of the same gap.
+
+**Consequences:**
+- New `src/services/TeamScopeService.js` (`getTeamMemberIds(companyId, teamLeadId)`) is now the single source of truth for team-membership resolution. `metrics.js`'s pre-existing `/my-team` route does the same lookup via an unindexed, cross-company `dynamodb.scan()` — a divergent, less-correct implementation of the same thing, logged in `docs/phase3/TECHNICAL_DEBT.md` as a follow-up, not migrated as part of this decision.
+- `09_PERMISSION_MATRIX.md` §5's "View team contacts"/"Export team contacts" rows are now accurate for raw `team_lead` specifically (not for raw `manager`, per the document's own standing Manager-bucket-conflation correction) — annotated there, not rewritten (frozen document).
+- If an inactive employee still has assigned contacts, those contacts drop out of their former `team_lead`'s view (visible to admin only) until reassigned — a direct effect of `getTeamMemberIds()`'s `status !== 'inactive'` filter, flagged at implementation time rather than shipped silently.
+
+---
+
 ## Open Questions (Unresolved as of 2026-06-29)
 
 | # | Question | Context | Status |
@@ -452,12 +479,12 @@ The only place any merge actually happened is the frontend *display* layer: `toV
 | OQ-003 | How many days of inactivity triggers the "Dormant" flag? Should it be configurable per lifecycle stage? | Lifecycle model | Open |
 | OQ-004 | Should the Customers > Import flow handle deduplication automatically (phone number match) or prompt the agent for each duplicate? | Import workflow | Open |
 | OQ-005 | Is the Relationship Score feature (DL-??? — new in this doc) worth implementing in Phase 3, or defer to Phase 4? | C360 header enhancement | Open |
-| OQ-006 | Should `team_lead`'s Contacts-module scope be **own-only** (current actual behavior, undocumented) or **team-wide** (as `09_PERMISSION_MATRIX.md` currently documents — "sees Team contacts," "can export team contacts")? Found 2026-07-09, still open as of 2026-07-12. Not the same finding as DL-021 (which resolved `team_lead` vs `manager` scope in `attendance.js`/`compensation.js`/`crm.js`/`metrics.js`) — this is `contacts.js` specifically, a different route with its own binary `isAdmin ? all : own-only` check and no team tier at all. | Contacts module RBAC | Open — awaiting Viir's product call; tracked in `docs/PENDING_WORK.md` |
+| OQ-006 | Should `team_lead`'s Contacts-module scope be **own-only** (current actual behavior, undocumented) or **team-wide** (as `09_PERMISSION_MATRIX.md` currently documents — "sees Team contacts," "can export team contacts")? Found 2026-07-09, still open as of 2026-07-12. Not the same finding as DL-021 (which resolved `team_lead` vs `manager` scope in `attendance.js`/`compensation.js`/`crm.js`/`metrics.js`) — this is `contacts.js` specifically, a different route with its own binary `isAdmin ? all : own-only` check and no team tier at all. | Contacts module RBAC | **Resolved 2026-07-13 — see [DL-022]** (team-wide, implemented) |
 
 **Note on DL-021 (team_lead/manager split):** DL-021 above resolved `team_lead`'s scope for
 `attendance.js`/`compensation.js`/`crm.js`/`metrics.js`. It did **not** cover `contacts.js` — that
-file's `team_lead` scoping is the separate, still-open OQ-006 immediately above. Do not read DL-021
-as having settled Contacts-module behavior; it hasn't.
+file's `team_lead` scoping was the separate OQ-006 immediately above, resolved on 2026-07-13 by
+[DL-022] (team-wide, implemented — see that entry, not this one, for Contacts-module behavior).
 
 ---
 
