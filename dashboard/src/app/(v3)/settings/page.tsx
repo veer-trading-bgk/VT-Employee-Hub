@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useMemo, useEffect, useRef, Suspense } from 'react';
+import { useState, useEffect, useRef, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import {
   User,
@@ -18,11 +18,8 @@ import {
   Sun,
   Moon,
   LogOut,
-  UserPlus,
   Search,
   RefreshCw,
-  ChevronDown,
-  ChevronUp,
   Copy,
   Eye,
   EyeOff,
@@ -38,18 +35,15 @@ import { Badge } from '@/components/v3/ui/Badge';
 import { Toggle } from '@/components/v3/ui/Toggle';
 import { Button } from '@/components/v3/ui/Button';
 import { Avatar } from '@/components/v3/ui/Avatar';
-import { Input, Textarea } from '@/components/v3/ui/Input';
+import { Input } from '@/components/v3/ui/Input';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
 import { cn } from '@/lib/cn';
 import { useAuth } from '@/context/AuthContext';
 import { useTheme } from '@/context/ThemeContext';
 import { apiFetch, api, apiErrorMessage } from '@/lib/api';
-import type { Setup2FAResponse } from '@/lib/api';
-import { formatDate } from '@/utils/formatters';
 import { uploadFileToS3 } from '@/lib/mediaUpload';
 import { useAvatarUrl } from '@/hooks/useAvatarUrl';
 import { useMetricsConfig } from '@/hooks/useMetricsConfig';
-import { formatMetricValue } from '@/lib/metrics.config';
 import type { Role } from '@/types';
 import { toast } from 'sonner';
 import { EmployeesSection } from '@/components/v3/team/EmployeesSection';
@@ -1589,12 +1583,6 @@ function SettingsPageInner() {
 
   const initialSection = (searchParams.get('tab') as SettingsSection | null) ?? 'profile';
   const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
-
-  // Sync tab when URL param changes (e.g. navigating from sidebar)
-  useEffect(() => {
-    const tab = searchParams.get('tab') as SettingsSection | null;
-    if (tab) setActiveSection(tab);
-  }, [searchParams]);
 
   const visibleSections = SECTIONS.filter((s) => isSectionVisible(s, rawRole, isAdmin));
 
