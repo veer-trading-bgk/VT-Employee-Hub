@@ -45,12 +45,12 @@ const WEEKDAYS: Weekday[] = ['monday', 'tuesday', 'wednesday', 'thursday', 'frid
  * never both fire.
  */
 export function WorkingHoursPanel() {
-  const { data: hoursData, isLoading: hoursLoading } = useQuery({
+  const { data: hoursData, isLoading: hoursLoading, isError: hoursError, refetch: refetchHours } = useQuery({
     queryKey: ['hours-config'],
     queryFn: () => apiFetch<{ config: HoursConfig }>('/api/whatsapp/hours-config'),
     staleTime: 30_000,
   });
-  const { data: oooData, isLoading: oooLoading } = useQuery({
+  const { data: oooData, isLoading: oooLoading, isError: oooError, refetch: refetchOoo } = useQuery({
     queryKey: ['ooo-config'],
     queryFn: () => apiFetch<{ config: OOOConfig }>('/api/whatsapp/ooo-config'),
     staleTime: 30_000,
@@ -60,6 +60,24 @@ export function WorkingHoursPanel() {
     return (
       <Card className="mt-4">
         <Skeleton className="h-24 w-full" />
+      </Card>
+    );
+  }
+
+  // Never mount the Form on a failed fetch of either config — its initial
+  // state defaults to fully blank/disabled for whichever one failed, and
+  // both toggles auto-save on flip with no confirmation step. Rendering the
+  // form here would let one click on an unrelated network blip silently
+  // overwrite a real, previously-configured schedule/OOO message with
+  // blanks (B3 audit finding #3). Same reference pattern as TagsSection's
+  // isError block (settings/page.tsx).
+  if (hoursError || oooError) {
+    return (
+      <Card className="mt-4">
+        <div className="py-4 text-center">
+          <p className="text-sm text-error-600 dark:text-error-400">Failed to load working hours settings</p>
+          <Button size="sm" variant="secondary" className="mt-2" onClick={() => { refetchHours(); refetchOoo(); }}>Retry</Button>
+        </div>
       </Card>
     );
   }

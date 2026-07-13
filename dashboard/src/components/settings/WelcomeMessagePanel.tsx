@@ -39,7 +39,7 @@ interface WaTemplateOption { id: string; templateName: string; status: string; }
  * URL CTA button (untrackable — Meta sends no webhook event for a CTA tap).
  */
 export function WelcomeMessagePanel() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['welcome-config'],
     queryFn: () => apiFetch<{ config: WelcomeConfig }>('/api/whatsapp/welcome-config'),
     staleTime: 30_000,
@@ -49,6 +49,24 @@ export function WelcomeMessagePanel() {
     return (
       <Card className="mt-4">
         <Skeleton className="h-24 w-full" />
+      </Card>
+    );
+  }
+
+  // Never mount the Form on a failed fetch — its initial state is
+  // `{...EMPTY_CONFIG, ...undefined}`, i.e. a fully blank/disabled config,
+  // and the toggle auto-saves on flip with no confirmation step. Rendering
+  // that form here would let one click on an unrelated network blip
+  // silently overwrite a real, previously-configured welcome message with
+  // blanks (B3 audit finding #3). Same reference pattern as TagsSection's
+  // isError block (settings/page.tsx).
+  if (isError) {
+    return (
+      <Card className="mt-4">
+        <div className="py-4 text-center">
+          <p className="text-sm text-error-600 dark:text-error-400">Failed to load welcome message settings</p>
+          <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+        </div>
       </Card>
     );
   }

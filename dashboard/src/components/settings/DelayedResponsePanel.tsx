@@ -32,7 +32,7 @@ const EMPTY_CONFIG: DelayedResponseConfig = {
  * config-only, same shape as WelcomeMessagePanel.tsx.
  */
 export function DelayedResponsePanel() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['delayed-response-config'],
     queryFn: () => apiFetch<{ config: DelayedResponseConfig }>('/api/whatsapp/delayed-response-config'),
     staleTime: 30_000,
@@ -42,6 +42,24 @@ export function DelayedResponsePanel() {
     return (
       <Card className="mt-4">
         <Skeleton className="h-24 w-full" />
+      </Card>
+    );
+  }
+
+  // Never mount the Form on a failed fetch — its initial state is
+  // `{...EMPTY_CONFIG, ...undefined}`, i.e. a fully blank/disabled config,
+  // and the toggle auto-saves on flip with no confirmation step. Rendering
+  // that form here would let one click on an unrelated network blip
+  // silently overwrite a real, previously-configured delayed response with
+  // blanks (B3 audit finding #3). Same reference pattern as TagsSection's
+  // isError block (settings/page.tsx).
+  if (isError) {
+    return (
+      <Card className="mt-4">
+        <div className="py-4 text-center">
+          <p className="text-sm text-error-600 dark:text-error-400">Failed to load delayed response settings</p>
+          <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+        </div>
       </Card>
     );
   }
