@@ -8,7 +8,7 @@ import { useAutoOpenConvKeyRef } from '@/hooks/useAutoOpenConvKeyRef';
 import {
   MessageSquare, Search, Send, MoreHorizontal, Phone,
   CheckCheck, Check, Clock, AlertCircle, X, ChevronLeft,
-  FileText, Download, ZoomIn, MapPin,
+  FileText, Download, ZoomIn, MapPin, Info,
   Loader2, ChevronDown, Lock, AlertTriangle,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -1381,6 +1381,22 @@ function ThreadPane({
           )}
           <Button variant="ghost" size="sm" iconLeft={<Phone className="h-4 w-4" />} aria-label="Call contact" />
           <Button variant="ghost" size="sm" iconLeft={<MoreHorizontal className="h-4 w-4" />} aria-label="More options" />
+          {/* Real-user-reported gap (Viir): the avatar tap that opens this panel
+              (below) has no visual affordance signaling it's tappable — on
+              phone, tags/assign (which live inside the panel) were
+              unreachable in practice. Explicit button, same xl breakpoint the
+              panel itself uses (column 3 wrapper below: 'hidden xl:block'
+              unless snapshotOpen) — redundant once the panel is always
+              visible side-by-side, so hidden there. Reuses onOpenSnapshot
+              directly — the exact same handler the avatar already calls, not
+              a second mechanism. Avatar tap keeps working unchanged. */}
+          <Button
+            variant="ghost" size="sm"
+            iconLeft={<Info className="h-4 w-4" />}
+            aria-label="View contact details"
+            onClick={onOpenSnapshot}
+            className="xl:hidden"
+          />
         </div>
       </div>
 
