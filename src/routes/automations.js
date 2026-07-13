@@ -105,7 +105,11 @@ function validateGraphShape(nodes, edges, entryNodeId) {
 }
 
 // ── GET /stats — must be before /:id ────────────────────────────────────────
-router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+// Admin-only (docs/v3/09_PERMISSION_MATRIX.md §2/§9: Automation is Manager-
+// Hidden) — B3 audit finding #8, tightened rather than the doc loosened;
+// nav (V3Sidebar.tsx roles: ['owner','admin']) and the main /automation page
+// (ProtectedRoute allowedRoles={['admin']}) were already manager-blocked.
+router.get('/stats', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
     const { companyId } = req.user;
     const [wfRes, execRes] = await Promise.all([
@@ -160,7 +164,8 @@ router.get('/stats', authMiddleware, checkRole(['admin', 'manager']), async (req
 //    (do/while below) — cost is bounded by the 90-day TTL on AUTO_EXEC#
 //    records (_startExecution, AutomationEngine.js), same bound item 7's
 //    "no backfill" note relies on.
-router.get('/executions', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+// Admin-only — see /stats above for the B3 finding #8 rationale.
+router.get('/executions', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
     const { companyId } = req.user;
     const { status, workflowId, q, limit, page, pageSize = '50', sortDir } = req.query;
@@ -237,7 +242,8 @@ router.post('/_tick', checkRole(['admin']), async (req, res, next) => {
 });
 
 // ── GET / ────────────────────────────────────────────────────────────────────
-router.get('/', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+// Admin-only — see /stats above for the B3 finding #8 rationale.
+router.get('/', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
     const result = await dynamodb.query({
       TableName: TABLE,
@@ -355,7 +361,8 @@ router.post('/:id/duplicate', authMiddleware, checkRole(['admin']), rateLimit(20
 });
 
 // ── GET /:id ──────────────────────────────────────────────────────────────────
-router.get('/:id', authMiddleware, checkRole(['admin', 'manager']), async (req, res, next) => {
+// Admin-only — see /stats above for the B3 finding #8 rationale.
+router.get('/:id', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
     const r = await dynamodb.get({
       TableName: TABLE,

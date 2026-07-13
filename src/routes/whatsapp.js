@@ -2451,7 +2451,11 @@ router.get('/flows', authMiddleware, async (req, res, next) => {
 });
 
 // ── POST /api/whatsapp/flows — register a Meta-created Flow by its Flow ID ────
-router.post('/flows', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
+// Admin-only (docs/v3/09_PERMISSION_MATRIX.md §10: WhatsApp is Manager-
+// Hidden) — B3 audit finding #8. No regression: WhatsAppFlowsPanel only
+// mounts when WhatsAppSection's own config fetch (already checkRole(['admin']))
+// succeeds, so it never reaches a manager today regardless of this route.
+router.post('/flows', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { flowId, name, bodyText, ctaLabel, screenId } = req.body;
     if (!flowId?.trim())    return res.status(400).json({ error: 'flowId required — copy it from WhatsApp Manager → Flows' });
@@ -2483,7 +2487,8 @@ router.post('/flows', authMiddleware, checkRole(['admin', 'manager']), rateLimit
 });
 
 // ── DELETE /api/whatsapp/flows/:flowId — unregister a Flow ────────────────────
-router.delete('/flows/:flowId', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
+// Admin-only — see POST /flows above for the B3 finding #8 rationale.
+router.delete('/flows/:flowId', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     await dynamodb.delete({
       TableName: TABLE,
