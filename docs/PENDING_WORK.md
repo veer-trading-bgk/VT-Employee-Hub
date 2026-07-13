@@ -27,6 +27,12 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
 
 ## Queued technical work
 
+- **M2 remaining batches (M1 mobile audit follow-up).** M2-B (Fixes 1-4) and M2-D are done
+  (`docs/phase3/TECHNICAL_DEBT.md` — "M1 Mobile Audit"). Still queued: **A** (Button.tsx design-
+  token pass), **E** (broader CSS sweep), **C** (Kanban stage-picker — proposal already approved
+  and banked, ready to implement), **F** (Settings content responsiveness — unblocked now that
+  M2-B/D are closed), **G** (sweep-up / remaining loose ends). Full batch detail lives in the M1
+  audit session's own record, not this repo's docs — not started here.
 - **B2 item 9 — execution-volume/trigger-breakdown charts for the Automation dashboard.** Deferred
   out of Track B2 Batches 1/2a explicitly ("stays queued for its own aggregation-strategy pass" —
   `f82f6d0`'s own commit message). Needs its own scoping pass before implementation — how to
