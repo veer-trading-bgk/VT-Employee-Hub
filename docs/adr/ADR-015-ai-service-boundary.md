@@ -172,6 +172,8 @@ Per `docs/bible/ROADMAP.md`'s guiding principle "AI as an assistant, not a repla
 
 **2026-07-05 — first real `customerFacing: true` use case (`inbox-template-suggestion`, "AI Template Suggestions in Chat").** Every use case before this one was `customerFacing: false` — this is the first to actually exercise Rule 6's gate for real, not just have it built and ready. Deliberately `autonomous: true` (not the stricter default): the agent who clicked "Suggest a reply" while looking at the conversation, and who then reviews the suggestion chip before an explicit Send click, already **is** the human-in-the-loop this rule exists to guarantee — routing every suggestion through a second human via Approval first would be redundant friction for the case the feature is built for. The model's own self-rated `confidence` (required in the schema, `confidenceThreshold: 0.75`) is the real per-call safety net for the harder cases: a low-confidence pick still force-routes to Approval exactly per Rule 6's existing mechanics, unmodified. Per the deliberate boundary above, that held suggestion does **not** get a send-from-Approval pipeline — it's logged for oversight only; the composer simply shows no suggestion for that click, same as if the agent had gotten no suggestion at all. This pairing (`autonomous: true` + a real confidence gate) is only a reasonable call *because* this use case is scoped to picking from pre-approved, human-vetted templates only — it never authors free text — see `src/config/aiConfig.js`'s own comment on this useCase for the full reasoning.
 
+**2026-07-06 — approval-queue mechanism removed entirely (Era 21, `docs/bible/19_DECISION_LOG.md`). The rule text and both addenda above are historical record, not current behavior.** `src/services/ApprovalService.js`, `src/routes/approvals.js`, and `dashboard/src/app/(v3)/approvals/page.tsx` (added 2026-07-05, immediately above) were deleted as dead weight, not left half-disabled, when `inbox-template-suggestion` switched to sending its chosen template directly instead of holding low-confidence picks for approval — `ApprovalService`'s hold, per its own code comment at the time, never actually released or sent anything even once approved (a standing, deliberate gap, consistent with the "Deliberate scope boundary" called out in the 2026-07-05 addendum above). This is not a reduction in human-in-the-loop coverage, just a change in mechanism: `customerFacing: true` useCases today are governed by content-level compliance rules baked into each useCase's own prompt, plus — for `conversational-sales-agent` (the `customerFacing: true` useCase added after this removal, Era 22) — `ConversationalAgentService`'s deterministic, keyword-based escalation check, deliberately never model-judgment-based. No approval-queue UI exists anywhere in the app today; do not point anyone at one.
+
 ---
 
 ## Rule 7 — Two-level AI control, checked fresh on every call
@@ -196,7 +198,7 @@ Per `docs/bible/ROADMAP.md`'s guiding principle "AI as an assistant, not a repla
 |---|---|---|
 | `CONFIG#AI#{companyId}` / `CURRENT` | Master switch + per-useCase module toggles (Rule 7) | `ai.js` (`GET`/`PUT /config`); read by `AIService` |
 | `AIUSAGE#{companyId}#{date}` / `{timestamp}#{useCase}` | Per-call usage log: tokens, cost, useCase, promptVersion, userId, overQuota flag | Written by `AIService` only |
-| `APPROVAL#{companyId}` / `{status}#{createdAt}#{approvalId}` | Human-in-the-loop approval queue (Rule 6) | `ApprovalService` |
+| ~~`APPROVAL#{companyId}` / `{status}#{createdAt}#{approvalId}`~~ | ~~Human-in-the-loop approval queue (Rule 6)~~ — REMOVED 2026-07-06 (Era 21, see Rule 6's addendum above) | ~~`ApprovalService`~~ |
 | `WALLET#{companyId}` / `CURRENT` + `TXN#{timestamp}#{txnId}` | Generic prepaid balance ("points") — deliberately not AI-specific in shape; backs any future metered feature via a `meterType`-tagged ledger. **Not debited by AI in this phase** — AI usage is fully covered by the subscription plan; this is the reusable foundation for WhatsApp Calling's real per-minute deduction. | `WalletService` |
 
 ### Constraints
@@ -236,14 +238,14 @@ Before merging any PR that touches AI/LLM functionality:
 ## Related
 
 - `src/services/AIService.js` — the implementation of this ADR; `src/config/aiConfig.js` — the useCase registry (Rule 3)
-- `src/services/ApprovalService.js` — human-in-the-loop routing (Rule 6), genuinely new logic — confirmed via audit that no prior leave-aware routing pattern existed anywhere in this codebase to reuse
+- ~~`src/services/ApprovalService.js` — human-in-the-loop routing (Rule 6)~~ — REMOVED 2026-07-06 (Era 21, see Rule 6's addendum above); this entry is historical, describing logic that existed 2026-07-04 through 2026-07-06 only
 - `src/services/WalletService.js` — generic prepaid balance, not wired to AI deduction yet (see Data model additions)
 - `src/utils/aiRedaction.js` — PII/sensitive-data redaction (field denylist + PAN/Aadhaar pattern scrub)
 - `src/routes/ai.js` — migrated (`POST /insights`, `POST /team-insights`); also owns `GET`/`PUT /config` and `GET /wallet`
 - `src/routes/whatsapp.js` `POST /inbox/suggest-reply` — AI Template Suggestions in Chat, the first real `customerFacing: true` useCase (Rule 6); reuses `WhatsAppSendService.resolveContact()` for target resolution and `conversationHistory` for the first time by any real useCase
 - `dashboard/src/components/inbox/ComposerToolbar.tsx` — the "Suggest a reply" toolbar button and suggestion chip
 - `dashboard/src/components/v3/settings/AISection.tsx` — Settings > AI tab (Rule 7's two-level control)
-- `dashboard/src/components/ai/InsightsPanel.tsx` — the existing frontend AI slot, currently unwired into Customer 360
+- ~~`dashboard/src/components/ai/InsightsPanel.tsx` — the existing frontend AI slot, currently unwired into Customer 360~~ — REMOVED 2026-07-05 (confirmed dead code, never mounted anywhere in the dashboard); correction consistent with `CODEBASE_AUDIT.md` and `docs/bible/08_MODULES.md`, both already corrected 2026-07-08 — this was the one remaining stale copy (B4 audit, 2026-07-13)
 - `src/config/metricsConfig.js` — the config-as-single-source-of-truth pattern this ADR's Rule 3 mirrors
 - `docs/bible/FUTURE.md` — AI Platform section (AI Inbox, AI Campaigns, AI Automation)
 - `docs/bible/ROADMAP.md` — Phase 3 (AI Inbox, Campaign Intelligence); "AI as an assistant, not a replacement" (Rule 6)
