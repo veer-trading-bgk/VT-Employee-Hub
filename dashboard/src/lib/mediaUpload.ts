@@ -8,27 +8,34 @@ export interface UploadedFileRef {
 }
 
 /**
- * Uploads a file to S3 via the existing presigned-URL flow (GET /api/whatsapp/
- * upload-url) and returns a reference to it — it deliberately stops there, one
- * step short of the Inbox's POST /api/whatsapp/upload-send (which sends
- * immediately). A canvas node config has no lead/target yet at config time, only
- * at real execution time, so sending now would be wrong; the reference gets
- * resolved to a Meta media_id later, by AutomationEngine's send_document/
- * send_buttons actions via WhatsAppSendService.resolveMediaId().
+ * Uploads a file to S3 via a presigned-URL flow and returns a reference to
+ * it — it deliberately stops there, one step short of the Inbox's
+ * POST /api/whatsapp/upload-send (which sends immediately). A canvas node
+ * config has no lead/target yet at config time, only at real execution
+ * time, so sending now would be wrong; the reference gets resolved to a
+ * Meta media_id later, by AutomationEngine's send_document/send_buttons
+ * actions via WhatsAppSendService.resolveMediaId().
  *
  * This is the same request sequence ChatPane.tsx/ConversationTab.tsx already use
  * (hash + presign in parallel, then a plain XHR PUT for upload-progress access) —
  * that logic is inlined in both of those, not exported, so this is a fresh
  * implementation of the same pattern rather than an import.
+ *
+ * presignEndpoint defaults to the WhatsApp media flow (its original, only
+ * caller); pass a different presigned-URL-generating endpoint — e.g.
+ * GET /api/auth/me/avatar-upload-url (B3 finding #11) — to reuse this same
+ * hash+upload+progress logic for a different upload surface with its own
+ * MIME/size policy, instead of adding another inline XHR copy.
  */
 export async function uploadFileToS3(
   file: File,
   onProgress?: (percent: number) => void,
+  presignEndpoint: string = '/api/whatsapp/upload-url',
 ): Promise<UploadedFileRef> {
   const [fileHash, urlData] = await Promise.all([
     computeHash(file),
     apiFetch<{ uploadUrl: string; key: string }>(
-      `/api/whatsapp/upload-url?mimeType=${encodeURIComponent(file.type)}&filename=${encodeURIComponent(file.name)}&fileSize=${file.size}`,
+      `${presignEndpoint}?mimeType=${encodeURIComponent(file.type)}&filename=${encodeURIComponent(file.name)}&fileSize=${file.size}`,
     ),
   ]);
 

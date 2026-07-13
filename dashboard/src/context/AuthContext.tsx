@@ -17,6 +17,11 @@ interface AuthContextValue {
   verifyTotp: (challenge: TotpChallenge, totpCode: string) => Promise<void>;
   verifyBackupCode: (tempToken: string, email: string, backupCode: string) => Promise<void>;
   logout: () => Promise<void>;
+  // Re-fetches /api/auth/me and updates `user` in place — B3 finding #11.
+  // Callers that mutate the current user's own record (profile save, avatar
+  // upload) call this afterward so displays reading `user` from context
+  // (e.g. V3Sidebar's name/avatar) update immediately, without a reload.
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -35,6 +40,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.push('/login');
   }, [router]);
 
+  // Shared by the mount-time session restore below and by refreshUser()
+  // (B3 finding #11) — re-fetches the current user and updates context
+  // state. Doesn't touch `loading`; the mount effect owns that separately
+  // so a mid-session refreshUser() call never flashes a loading state.
+  const refreshUser = useCallback(async () => {
+    try {
+      const me = await api.me() as UserShape & { token?: string };
+      if (me.token) setMemoryToken(me.token);
+      setUser(me as User);
+    } catch {
+      setUser(null);
+    }
+  }, []);
+
   // Restore session from cookie on load. The public marketing page
   // (apforce.in rewrites '/' to this route) is static and never needs auth
   // state — skip the call so it never sends a cross-origin request to the
@@ -42,17 +61,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (pathname === '/marketing') return;
     (async () => {
-      try {
-        const me = await api.me() as UserShape & { token?: string };
-        if (me.token) setMemoryToken(me.token);
-        setUser(me as User);
-      } catch {
-        setUser(null);
-      } finally {
-        setLoading(false);
-      }
+      await refreshUser();
+      setLoading(false);
     })();
-  }, [pathname]);
+  }, [pathname, refreshUser]);
 
   // Global handler: apiFetch dispatches this when a 401 survives even after a
   // token refresh attempt — meaning the refresh token is also expired/invalid.
@@ -127,7 +139,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [router]);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, verifyTotp, verifyBackupCode, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, verifyTotp, verifyBackupCode, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

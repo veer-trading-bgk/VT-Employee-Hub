@@ -134,6 +134,7 @@ export interface UserShape {
   email: string;
   role: string;
   name: string;
+  avatarKey?: string | null;
 }
 
 export type LoginResponse =
@@ -183,6 +184,16 @@ export const api = {
   logout: () => apiFetch('/api/auth/logout', { method: 'POST', retries: 0 }),
 
   me: () => apiFetch<UserShape>('/api/auth/me'),
+
+  // B3 finding #11 — self-service profile update. Field allowlist is
+  // enforced server-side (PUT /api/auth/me's selfProfileUpdateSchema);
+  // this type is just the client-side mirror of that same allowlist.
+  updateProfile: (data: { name?: string; mobileNumber?: string; homeAddress?: string; avatarKey?: string }) =>
+    apiFetch<{ success: true; employee: Record<string, unknown> }>('/api/auth/me', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+      retries: 0,
+    }),
 
   myMetrics: (days = 30) => apiFetch(`/api/metrics/my?days=${days}`),
   allMetrics: (days = 30) => apiFetch(`/api/metrics/all?days=${days}`),

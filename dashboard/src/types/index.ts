@@ -8,6 +8,10 @@ export interface User {
   companyId?: string | null;
   planStatus?: string | null;
   trialEndsAt?: string | null;
+  // S3 key (not a URL) for the user's own uploaded profile photo — B3 finding
+  // #11. Resolve to a displayable URL via useAvatarUrl(), same presigned-GET
+  // pattern Inbox media bubbles already use; never render this value directly.
+  avatarKey?: string | null;
 }
 
 export type VerificationStatus = 'pending' | 'approved' | 'rejected';

@@ -32,6 +32,7 @@ import { cn } from '@/lib/cn';
 import { Avatar } from '@/components/v3/ui/Avatar';
 import { Badge } from '@/components/v3/ui/Badge';
 import { useAuth } from '@/context/AuthContext';
+import { useAvatarUrl } from '@/hooks/useAvatarUrl';
 import { toV3Role, V3_ROLE_LABELS, type V3Role } from '@/types/v3';
 
 interface NavItem {
@@ -100,6 +101,7 @@ function V3SidebarInner({
 }: V3SidebarProps) {
   const pathname = usePathname();
   const { user, logout } = useAuth();
+  const avatarUrl = useAvatarUrl(user?.avatarKey);
   const [collapsed, setCollapsed] = useState(false);
   const [teamOpen, setTeamOpen] = useState(true);
 
@@ -257,7 +259,7 @@ function V3SidebarInner({
         </button>
 
         <div className={cn('flex items-center gap-2 rounded-lg px-2 py-2', collapsed ? 'justify-center' : '')}>
-          <Avatar name={user?.name ?? '?'} size={32} />
+          <Avatar src={avatarUrl} name={user?.name ?? '?'} size={32} />
           {!collapsed && (
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium text-neutral-900 dark:text-neutral-100">

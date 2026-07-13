@@ -44,9 +44,11 @@ import { cn } from '@/lib/cn';
 import { useAuth } from '@/context/AuthContext';
 import { useTheme } from '@/context/ThemeContext';
 import { toV3Role } from '@/types/v3';
-import { apiFetch, api } from '@/lib/api';
+import { apiFetch, api, apiErrorMessage } from '@/lib/api';
 import type { Setup2FAResponse } from '@/lib/api';
 import { formatDate } from '@/utils/formatters';
+import { uploadFileToS3 } from '@/lib/mediaUpload';
+import { useAvatarUrl } from '@/hooks/useAvatarUrl';
 import { useMetricsConfig } from '@/hooks/useMetricsConfig';
 import { formatMetricValue } from '@/lib/metrics.config';
 import type { Role } from '@/types';
@@ -130,17 +132,58 @@ function isSectionVisible(section: SectionDef, rawRole: Role | undefined, isAdmi
 
 // ── Profile section ───────────────────────────────────────────────────────────
 
+// B3 finding #11: name/photo only, matching what was already exposed here —
+// backend's PUT /api/auth/me also accepts mobileNumber/homeAddress (see
+// selfProfileUpdateSchema), but adding input fields for those is a separate
+// UI-scope decision this fix doesn't make on its own.
+const AVATAR_ALLOWED_MIME = new Set(['image/jpeg', 'image/png']);
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+
 function ProfileSection() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const [name, setName] = useState(user?.name ?? '');
   const [saving, setSaving] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const avatarUrl = useAvatarUrl(user?.avatarKey);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    await new Promise((r) => setTimeout(r, 600));
-    toast.success('Profile updated');
-    setSaving(false);
+    try {
+      await api.updateProfile({ name });
+      await refreshUser();
+      toast.success('Profile updated');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Failed to update profile'));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handlePhotoSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file (e.g. after a rejected one)
+    if (!file) return;
+    if (!AVATAR_ALLOWED_MIME.has(file.type)) {
+      toast.error('Only JPG and PNG images are allowed');
+      return;
+    }
+    if (file.size > AVATAR_MAX_BYTES) {
+      toast.error('Photo must be under 2MB');
+      return;
+    }
+    setUploadingPhoto(true);
+    try {
+      const { s3Key } = await uploadFileToS3(file, undefined, '/api/auth/me/avatar-upload-url');
+      await api.updateProfile({ avatarKey: s3Key });
+      await refreshUser();
+      toast.success('Photo updated');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Failed to upload photo'));
+    } finally {
+      setUploadingPhoto(false);
+    }
   }
 
   return (
@@ -151,9 +194,18 @@ function ProfileSection() {
       </div>
       <form onSubmit={handleSave} className="space-y-4">
         <div className="flex items-center gap-4">
-          <Avatar name={user?.name ?? '?'} size={64} />
+          <Avatar src={avatarUrl} name={user?.name ?? '?'} size={64} />
           <div>
-            <Button variant="secondary" size="sm" type="button">Change photo</Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/jpeg,image/png"
+              className="hidden"
+              onChange={handlePhotoSelect}
+            />
+            <Button variant="secondary" size="sm" type="button" loading={uploadingPhoto} onClick={() => fileInputRef.current?.click()}>
+              Change photo
+            </Button>
             <p className="mt-1 text-xs text-neutral-400">JPG, PNG up to 2MB</p>
           </div>
         </div>
