@@ -147,32 +147,36 @@ describe('ConversationalAgentService', () => {
     turnQueue.push({ ok: false, reason, detail });
   }
 
-  // ─── Full 10-turn flow, end to end ──────────────────────────────────────────
-  test('a full 10-turn conversation reaches handoff exactly at the cap when never qualified/escalated', async () => {
+  // ─── Full MAX_TURNS flow, end to end ────────────────────────────────────────
+  // Cap-agnostic on purpose: drives off agent.MAX_TURNS so a future cost-trial
+  // cap change (10 → 5 on 2026-07-14, and any later revert) never breaks this.
+  test('a full-length conversation reaches handoff exactly at the cap (MAX_TURNS) when never qualified/escalated', async () => {
+    const CAP = agent.MAX_TURNS;
     mockTurn(); // turn 1, via maybeStart
     const started = await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hi', timestamp: 't1', waMessageId: 'wam1' });
     expect(started).toBe(true);
     expect(conv.aiTurnCount).toBe(1);
     expect(ConversationService.handoffToHuman).not.toHaveBeenCalled();
 
-    for (let i = 2; i <= 9; i++) {
+    // Turns 2 .. CAP-1: continue, no handoff yet.
+    for (let i = 2; i <= CAP - 1; i++) {
       mockTurn();
       const handled = await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: `message ${i}`, timestamp: `t${i}` });
       expect(handled).toBe(true);
     }
-    expect(conv.aiTurnCount).toBe(9);
+    expect(conv.aiTurnCount).toBe(CAP - 1);
     expect(ConversationService.handoffToHuman).not.toHaveBeenCalled();
 
-    // Turn 10 — the cap. Still not qualified, still no escalation.
+    // Turn CAP — the cap. Still not qualified, still no escalation.
     mockTurn({ qualified: false });
-    const handledLast = await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'message 10', timestamp: 't10' });
+    const handledLast = await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: `message ${CAP}`, timestamp: `t${CAP}` });
     expect(handledLast).toBe(true);
-    expect(conv.aiTurnCount).toBe(10);
+    expect(conv.aiTurnCount).toBe(CAP);
     expect(ConversationService.handoffToHuman).toHaveBeenCalledTimes(1);
     expect(WASendSvc.sendText).toHaveBeenLastCalledWith(CID, { leadPK: LEAD_PK }, expect.stringContaining('senior relationship manager'), expect.objectContaining({ id: 'system' }));
 
-    // The conversation is now handed off — an 11th message must not be treated as a bot turn.
-    const handledAfterCap = await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'anything else?', timestamp: 't11' });
+    // The conversation is now handed off — the next message must not be treated as a bot turn.
+    const handledAfterCap = await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'anything else?', timestamp: `t${CAP + 1}` });
     expect(handledAfterCap).toBe(false);
   });
 

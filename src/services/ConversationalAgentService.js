@@ -52,7 +52,16 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
  * paths" when using automation, a platform condition, not a SEBI-specific ask.
  */
 
-const MAX_TURNS = 10;
+// 2026-07-14 cost trial: 10 → 5. Halves the worst-case per-conversation LLM
+// spend (the base system prompt is re-sent every turn and is ~90% of input —
+// see docs/bible/19_DECISION_LOG.md's cost-reduction entry). Single source of
+// truth: the prompt's "turn X of Y" pacing line reads this via context.maxTurns
+// (_runTurn), so the model re-paces itself to the new cap automatically.
+// MEASURED RISK: 43% of qualifications in the pre-change window landed after
+// turn 5; qualification-completion rate is being tracked (scripts/
+// measureQualificationRate.js) — revert to 10 if it drops to ≤29% or by ≥25%
+// relative within the first 50 conversations / 7 days.
+const MAX_TURNS = 5;
 
 const AI_ACTOR = { id: 'system', role: 'admin', name: 'AI Relationship Manager' };
 

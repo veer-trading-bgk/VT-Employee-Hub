@@ -267,7 +267,7 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
   // — see 19_DECISION_LOG.md). Unlike inbox-template-suggestion (agent clicks,
   // AI picks one of a fixed pre-approved template), this useCase generates
   // genuinely freeform text and both initiates and carries the conversation
-  // with zero human involvement, for up to 10 turns
+  // with zero human involvement, for up to a bounded number of turns
   // (ConversationalAgentService.MAX_TURNS). customerFacing: true — no approval
   // gate exists to route to (removed entirely in Era 21); the compliance rule
   // below is the content-level control, and ConversationalAgentService's
