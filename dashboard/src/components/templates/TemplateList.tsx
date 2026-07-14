@@ -341,7 +341,8 @@ export function TemplateList({ onSendTemplate, readOnly = false }: Props) {
               <button
                 type="button"
                 onClick={() => setSelected(new Set())}
-                className="text-xs text-neutral-500 hover:text-neutral-700 dark:text-neutral-400"
+                aria-label="Clear selection"
+                className="flex h-11 w-11 items-center justify-center text-xs text-neutral-500 hover:text-neutral-700 sm:h-6 sm:w-6 dark:text-neutral-400"
               >
                 <X className="h-3.5 w-3.5" aria-hidden />
               </button>
@@ -359,7 +360,7 @@ export function TemplateList({ onSendTemplate, readOnly = false }: Props) {
                 <button
                   type="button"
                   onClick={toggleAll}
-                  className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+                  className="-m-3.5 p-3.5 text-neutral-400 hover:text-neutral-700 sm:m-0 sm:p-0 dark:hover:text-neutral-200"
                   aria-label={selected.size === filtered.length ? 'Deselect all' : 'Select all'}
                 >
                   {selected.size > 0 && selected.size === filtered.length ? (
@@ -655,7 +656,7 @@ function TemplateRow({
         <button
           type="button"
           onClick={onToggle}
-          className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
+          className="-m-3.5 p-3.5 text-neutral-400 hover:text-neutral-700 sm:m-0 sm:p-0 dark:hover:text-neutral-200"
           aria-label={selected ? `Deselect ${t.name}` : `Select ${t.name}`}
         >
           {selected ? (
@@ -713,7 +714,7 @@ function TemplateRow({
             <button
               type="button"
               onClick={() => setMenuOpen((v) => !v)}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+              className="flex h-11 w-11 items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 sm:h-7 sm:w-7 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
               aria-label="More actions"
             >
               <MoreHorizontal className="h-4 w-4" aria-hidden />
@@ -757,7 +758,12 @@ function TemplateRow({
                 <div className="absolute right-0 z-20 mt-1 w-72 rounded-lg border border-neutral-200 bg-white shadow-xl dark:border-neutral-700 dark:bg-neutral-900">
                   <div className="flex items-center justify-between border-b border-neutral-100 px-3 py-2 dark:border-neutral-800">
                     <span className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Status History</span>
-                    <button type="button" onClick={() => setHistoryOpen(false)} className="text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200">
+                    <button
+                      type="button"
+                      onClick={() => setHistoryOpen(false)}
+                      aria-label="Close status history"
+                      className="flex h-11 w-11 items-center justify-center text-neutral-400 hover:text-neutral-700 sm:h-6 sm:w-6 dark:hover:text-neutral-200"
+                    >
                       <X className="h-3.5 w-3.5" />
                     </button>
                   </div>

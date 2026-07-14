@@ -115,7 +115,7 @@ function ToolBtn({
       title={label}
       aria-label={label}
       className={cn(
-        'flex h-7 w-7 items-center justify-center rounded-md text-neutral-400 transition-colors',
+        'flex h-11 w-11 items-center justify-center rounded-md text-neutral-400 transition-colors sm:h-7 sm:w-7',
         'hover:bg-neutral-100 hover:text-neutral-700 disabled:opacity-40',
         'dark:text-neutral-500 dark:hover:bg-neutral-800 dark:hover:text-neutral-300',
         active && 'bg-primary-50 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400',
@@ -130,7 +130,11 @@ function ToolBtn({
 
 function CloseBtn({ onClick }: { onClick: () => void }) {
   return (
-    <button onClick={onClick} className="text-neutral-400 transition-colors hover:text-neutral-600 dark:hover:text-neutral-200">
+    <button
+      onClick={onClick}
+      aria-label="Close"
+      className="flex h-11 w-11 items-center justify-center text-neutral-400 transition-colors hover:text-neutral-600 sm:h-6 sm:w-6 dark:hover:text-neutral-200"
+    >
       <X className="h-3.5 w-3.5" />
     </button>
   );
@@ -537,8 +541,8 @@ export function ComposerToolbar({
                 <p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-neutral-400">Recent</p>
                 <div className="mb-2 flex flex-wrap">
                   {recentEmojis.map((e) => (
-                    <button key={e} onClick={() => handleEmoji(e)}
-                      className="flex h-8 w-8 items-center justify-center rounded text-lg hover:bg-neutral-100 dark:hover:bg-neutral-800">
+                    <button key={e} onClick={() => handleEmoji(e)} aria-label={`Insert ${e} emoji`}
+                      className="flex h-11 w-11 items-center justify-center rounded text-lg hover:bg-neutral-100 sm:h-8 sm:w-8 dark:hover:bg-neutral-800">
                       {e}
                     </button>
                   ))}
@@ -550,8 +554,8 @@ export function ComposerToolbar({
               {EMOJI_GRID.map((row, ri) => (
                 <div key={ri} className="flex flex-wrap">
                   {row.map((e) => (
-                    <button key={e} onClick={() => handleEmoji(e)}
-                      className="flex h-8 w-8 items-center justify-center rounded text-lg hover:bg-neutral-100 dark:hover:bg-neutral-800">
+                    <button key={e} onClick={() => handleEmoji(e)} aria-label={`Insert ${e} emoji`}
+                      className="flex h-11 w-11 items-center justify-center rounded text-lg hover:bg-neutral-100 sm:h-8 sm:w-8 dark:hover:bg-neutral-800">
                       {e}
                     </button>
                   ))}
