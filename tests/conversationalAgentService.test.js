@@ -430,6 +430,86 @@ describe('ConversationalAgentService', () => {
     expect(AIService.generate).not.toHaveBeenCalled();
   });
 
+  // ─── startForLead: workflow-originated AI hand-off (2026-07-14) ─────────────
+  // Entry point for the Automation `start_ai_conversation` action. Unlike
+  // maybeStart, the lead already exists (leadPK known) and a free-text
+  // contextHint seeds turn 0. Guard: no-op if disabled / lead missing / human-
+  // owned (assignedTo) / already bot-engaged ('ai') / handed off
+  // ('pending_human'). handoffState defaults to 'human' for a never-engaged
+  // conversation, which is the only state that falls through to start.
+  describe('startForLead (workflow hand-off)', () => {
+    test('no-ops when the AI conversation agent is disabled', async () => {
+      dynamodb.get.mockImplementation((params) => {
+        if (params.Key.PK === `CONFIG#CONVAGENT#${CID}`) return resolved({ Item: { enabled: false } });
+        return resolved({});
+      });
+      const engaged = await agent.startForLead(CID, { leadPK: LEAD_PK, phone10: PHONE, name: 'Ravi', contextHint: 'Open Demat' });
+      expect(engaged).toBe(false);
+      expect(ConversationService.startBotHandling).not.toHaveBeenCalled();
+      expect(AIService.generate).not.toHaveBeenCalled();
+    });
+
+    test('no-ops when the lead cannot be loaded', async () => {
+      dynamodb.get.mockImplementation((params) => {
+        if (params.Key.PK === `CONFIG#CONVAGENT#${CID}`) return resolved({ Item: { enabled: true } });
+        return resolved({}); // LEAD_PK → no Item
+      });
+      const engaged = await agent.startForLead(CID, { leadPK: LEAD_PK, phone10: PHONE, name: 'Ravi', contextHint: 'Open Demat' });
+      expect(engaged).toBe(false);
+      expect(ConversationService.startBotHandling).not.toHaveBeenCalled();
+    });
+
+    test('no-ops when the lead is already assigned to a human (never hijacks a human-owned lead)', async () => {
+      dynamodb.get.mockImplementation((params) => {
+        if (params.Key.PK === `CONFIG#CONVAGENT#${CID}`) return resolved({ Item: { enabled: true } });
+        if (params.Key.PK === LEAD_PK) return resolved({ Item: { ...lead, assignedTo: 'emp_9' } });
+        return resolved({});
+      });
+      const engaged = await agent.startForLead(CID, { leadPK: LEAD_PK, phone10: PHONE, name: 'Ravi', contextHint: 'Open Demat' });
+      expect(engaged).toBe(false);
+      expect(ConversationService.startBotHandling).not.toHaveBeenCalled();
+      expect(AIService.generate).not.toHaveBeenCalled();
+    });
+
+    test("no-ops when the conversation is already bot-engaged (handoffState 'ai')", async () => {
+      conv.handoffState = 'ai';
+      const engaged = await agent.startForLead(CID, { leadPK: LEAD_PK, phone10: PHONE, name: 'Ravi', contextHint: 'Open Demat' });
+      expect(engaged).toBe(false);
+      expect(ConversationService.startBotHandling).not.toHaveBeenCalled();
+      expect(AIService.generate).not.toHaveBeenCalled();
+    });
+
+    test("no-ops when the conversation was handed off to a human (handoffState 'pending_human')", async () => {
+      conv.handoffState = 'pending_human';
+      const engaged = await agent.startForLead(CID, { leadPK: LEAD_PK, phone10: PHONE, name: 'Ravi', contextHint: 'Open Demat' });
+      expect(engaged).toBe(false);
+      expect(ConversationService.startBotHandling).not.toHaveBeenCalled();
+      expect(AIService.generate).not.toHaveBeenCalled();
+    });
+
+    test('engages a never-engaged, unassigned lead and seeds turn 0 with the context hint', async () => {
+      conv.handoffState = 'human'; // getConversation default for a never-engaged conversation
+      mockTurn({ reply: 'Great — a Demat account is a solid first step!' });
+      const engaged = await agent.startForLead(CID, { leadPK: LEAD_PK, phone10: PHONE, name: 'Ravi', contextHint: 'Open Demat' });
+      expect(engaged).toBe(true);
+      expect(ConversationService.startBotHandling).toHaveBeenCalledWith(CID, conv.conversationId);
+      expect(conv.aiTurnCount).toBe(1);
+      // the hint reached the AI as turn-0's latest message, so its first reply can reference it
+      const saCall = AIService.generate.mock.calls.find(([p]) => p.useCase === 'conversational-sales-agent');
+      expect(saCall[0].context.latestMessage).toBe('Open Demat');
+      expect(WASendSvc.sendText).toHaveBeenCalled(); // a reply was actually sent
+    });
+
+    test('falls back to a neutral "Hi" seed when no context hint is given', async () => {
+      conv.handoffState = 'human';
+      mockTurn();
+      const engaged = await agent.startForLead(CID, { leadPK: LEAD_PK, phone10: PHONE, name: 'Ravi', contextHint: '' });
+      expect(engaged).toBe(true);
+      const saCall = AIService.generate.mock.calls.find(([p]) => p.useCase === 'conversational-sales-agent');
+      expect(saCall[0].context.latestMessage).toBe('Hi');
+    });
+  });
+
   // ─── 2026-07-08 fix: lastMessageAt/lastInboundAt stamped on lead creation ──
   // Root cause of "1st message invisible in inbox" (docs/bible/19_DECISION_LOG.md):
   // _createCustomer()'s leadItem never set these fields, so a fresh lead was

@@ -16,6 +16,9 @@ jest.mock('../src/services/WhatsAppSendService', () => ({
 jest.mock('../src/services/DelayedResponseService', () => ({
   resume: jest.fn(),
 }));
+jest.mock('../src/services/ConversationalAgentService', () => ({
+  startForLead: jest.fn(),
+}));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
 }));
@@ -24,6 +27,7 @@ const dynamodb = require('../src/config/dynamodb');
 const PipelineService = require('../src/services/PipelineService');
 const WASendSvc = require('../src/services/WhatsAppSendService');
 const DelayedResponseService = require('../src/services/DelayedResponseService');
+const ConversationalAgentService = require('../src/services/ConversationalAgentService');
 const logger = require('../src/config/logger');
 const engine = require('../src/services/AutomationEngine');
 const { guardedUpdateMock } = require('./helpers/dynamoReservedWords');
@@ -1595,5 +1599,62 @@ describe('AutomationEngine — resumeOnButtonReply() phone matching (Fix 3, Wave
     expect(dynamodb.delete).not.toHaveBeenCalled();
     expect(resumeSpy).not.toHaveBeenCalled();
     resumeSpy.mockRestore();
+  });
+});
+
+// ── start_ai_conversation action (2026-07-14) ─────────────────────────────────
+// Terminal hand-off to ConversationalAgentService.startForLead. The action
+// resolves an optional {{name}}/{{phone}}/{{trait.*}} context hint and passes
+// ctx.phone through as phone10 (the automation context already carries the
+// normalized 10-digit form). ADR-015: the AI call happens inside the agent
+// service, never here.
+describe('AutomationEngine — start_ai_conversation action', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('hands off to startForLead with the resolved hint + phone10, returning { engaged }', async () => {
+    ConversationalAgentService.startForLead.mockResolvedValue(true);
+    const result = await engine._runAction(
+      CID,
+      { type: 'start_ai_conversation', config: { contextHint: 'Open Demat' } },
+      { leadPK: LEAD_PK, phone: '9000000000', name: 'Ravi' },
+    );
+    expect(ConversationalAgentService.startForLead).toHaveBeenCalledWith(CID, {
+      leadPK: LEAD_PK, phone10: '9000000000', name: 'Ravi', contextHint: 'Open Demat',
+    });
+    expect(result).toEqual({ engaged: true });
+  });
+
+  test('resolves {{name}} in the context hint before handing off', async () => {
+    ConversationalAgentService.startForLead.mockResolvedValue(true);
+    await engine._runAction(
+      CID,
+      { type: 'start_ai_conversation', config: { contextHint: 'Interested customer: {{name}}' } },
+      { leadPK: LEAD_PK, phone: '9000000000', name: 'Ravi' },
+    );
+    expect(ConversationalAgentService.startForLead).toHaveBeenCalledWith(
+      CID,
+      expect.objectContaining({ contextHint: 'Interested customer: Ravi' }),
+    );
+  });
+
+  test('passes an empty hint through untouched when none is configured', async () => {
+    ConversationalAgentService.startForLead.mockResolvedValue(false);
+    const result = await engine._runAction(
+      CID,
+      { type: 'start_ai_conversation', config: {} },
+      { leadPK: LEAD_PK, phone: '9000000000', name: 'Ravi' },
+    );
+    expect(ConversationalAgentService.startForLead).toHaveBeenCalledWith(
+      CID,
+      expect.objectContaining({ contextHint: '' }),
+    );
+    expect(result).toEqual({ engaged: false });
+  });
+
+  test('throws (no lead to hand off) when leadPK is missing', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'start_ai_conversation', config: { contextHint: 'x' } }, { phone: '9000000000' }),
+    ).rejects.toThrow('start_ai_conversation: leadPK required');
+    expect(ConversationalAgentService.startForLead).not.toHaveBeenCalled();
   });
 });
