@@ -8,7 +8,8 @@ export type TriggerType =
   | 'stage_change'       // legacy alias from crm.js
   | 'tag_added'
   | 'keyword_message'
-  | 'inbound_webhook';
+  | 'inbound_webhook'
+  | 'form_submitted';
 
 export type ActionType =
   | 'send_template'
@@ -363,6 +364,7 @@ export const TRIGGER_META: Record<string, { label: string; description: string }
   tag_added:                     { label: 'Tag Added',           description: 'A tag is added to a lead'              },
   keyword_message:               { label: 'Keyword / Button Tap', description: 'Customer types a matching phrase or taps a matching button' },
   inbound_webhook:               { label: 'Inbound Webhook',      description: 'An external system posts to this workflow\'s own URL'      },
+  form_submitted:                { label: 'Form Submitted',       description: 'A lead submits a form via the public API (traits available as {{trait.*}} variables)' },
 };
 
 export const ACTION_META: Record<ActionType, { label: string; description: string }> = {

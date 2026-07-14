@@ -24,12 +24,30 @@ const SUPPORTED_VARS = {
   '{{source}}': (ctx) => (ctx.source && (SOURCE_LABELS[ctx.source] ?? ctx.source)) || '',
 };
 
+// Dynamic form-trait tokens — {{trait.<key>}} resolves from ctx.traits (the
+// values a Public API form submission carried, see src/routes/public.js). The
+// key is namespaced under `trait.` deliberately: it never collides with the
+// fixed {{name}}/{{phone}}/{{source}} registry above (or any future reserved
+// token), and it keeps findUnsupportedTokens() below able to still reject a
+// genuinely-unknown token while allowing any trait the client chose to send.
+// A trait absent from THIS submission resolves to '' (an unprovided optional
+// field), not a literal leftover.
+const TRAIT_TOKEN_RE        = /^\{\{trait\.([\w-]+)\}\}$/;   // full-string match (params path)
+const TRAIT_TOKEN_GLOBAL_RE = /\{\{trait\.([\w-]+)\}\}/g;    // in-string replace (free-text path)
+
+function _resolveTrait(ctx, key) {
+  const v = ctx?.traits?.[key];
+  if (v == null) return '';
+  return Array.isArray(v) ? v.join(', ') : String(v);
+}
+
 function resolveWelcomeVariables(text, ctx) {
   if (!text) return text;
-  return Object.entries(SUPPORTED_VARS).reduce(
+  const withFixed = Object.entries(SUPPORTED_VARS).reduce(
     (acc, [token, resolve]) => acc.split(token).join(resolve(ctx ?? {})),
     text,
   );
+  return withFixed.replace(TRAIT_TOKEN_GLOBAL_RE, (_m, key) => _resolveTrait(ctx, key));
 }
 
 // Meta template positional-parameter resolution — same token registry as
@@ -42,9 +60,12 @@ function resolveWelcomeVariables(text, ctx) {
 // admin-authored prose" failure mode to guard against — each slot is chosen
 // from a fixed dropdown, not typed freehand).
 function resolveTemplateParams(variableValues, ctx) {
-  return (variableValues ?? []).map((v) => (
-    Object.prototype.hasOwnProperty.call(SUPPORTED_VARS, v) ? SUPPORTED_VARS[v](ctx ?? {}) : String(v)
-  ));
+  return (variableValues ?? []).map((v) => {
+    if (Object.prototype.hasOwnProperty.call(SUPPORTED_VARS, v)) return SUPPORTED_VARS[v](ctx ?? {});
+    const traitMatch = typeof v === 'string' && v.match(TRAIT_TOKEN_RE);
+    if (traitMatch) return _resolveTrait(ctx, traitMatch[1]);
+    return String(v);
+  });
 }
 
 // Finds {{...}} patterns in free-text that aren't in SUPPORTED_VARS — used by
@@ -55,7 +76,8 @@ const ANY_TOKEN_RE = /\{\{[^{}]*\}\}/g;
 function findUnsupportedTokens(text) {
   if (!text) return [];
   const found = text.match(ANY_TOKEN_RE) ?? [];
-  return [...new Set(found)].filter((t) => !Object.prototype.hasOwnProperty.call(SUPPORTED_VARS, t));
+  return [...new Set(found)].filter((t) =>
+    !Object.prototype.hasOwnProperty.call(SUPPORTED_VARS, t) && !TRAIT_TOKEN_RE.test(t));
 }
 
 module.exports = {

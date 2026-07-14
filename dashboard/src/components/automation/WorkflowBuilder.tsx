@@ -2,7 +2,7 @@
 
 import {
   MessageCircle, UserPlus, GitMerge, Tag, CheckSquare, Timer, Square,
-  Zap, Hash, Webhook, Copy, RefreshCw, X, Plus,
+  Zap, Hash, Webhook, Copy, RefreshCw, X, Plus, FileText,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/cn';
@@ -42,6 +42,7 @@ export const ACTION_ICONS: Record<string, React.ElementType> = {
   campaign_completed:           Zap,
   keyword_message:              Hash,
   inbound_webhook:              Webhook,
+  form_submitted:               FileText,
 };
 
 // ── Trigger editor ────────────────────────────────────────────────────────────
@@ -50,7 +51,7 @@ export const ACTION_ICONS: Record<string, React.ElementType> = {
 // TriggerNode has no config UI of its own, this is the only trigger editor.
 export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: WorkflowTrigger; onChange: (t: WorkflowTrigger) => void; workflowId?: string }) {
   const TRIGGER_OPTIONS: TriggerType[] = [
-    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added', 'keyword_message', 'inbound_webhook',
+    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added', 'keyword_message', 'inbound_webhook', 'form_submitted',
   ];
 
   function addCondition() {

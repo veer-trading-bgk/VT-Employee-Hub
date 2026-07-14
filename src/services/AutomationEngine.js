@@ -522,14 +522,17 @@ class AutomationEngine {
 
   // ── Action executor ──────────────────────────────────────────────────────
   async _runAction(companyId, step, ctx) {
-    const { leadPK, phone, name, leadId, assignedTo, source } = ctx;
+    const { leadPK, phone, name, leadId, assignedTo, source, traits } = ctx;
     const now = new Date().toISOString();
 
     switch (step.type) {
       case 'send_template': {
         const { templateName, language = 'en', variables = [] } = step.config ?? {};
         if (!templateName || !phone) throw new Error('send_template: templateName and phone required');
-        const params = resolveTemplateParams(variables, { name, phone, source });
+        // traits (from a form_submitted trigger's context) let a variable slot
+        // reference {{trait.<key>}} — resolved here via the same welcomeVariables
+        // registry, no second context-passing path invented.
+        const params = resolveTemplateParams(variables, { name, phone, source, traits });
         const target = leadPK
           ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
           : { phone };
@@ -555,7 +558,7 @@ class AutomationEngine {
         const target = leadPK
           ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
           : { phone };
-        const resolvedText = resolveWelcomeVariables(bodyText, { name, phone, source });
+        const resolvedText = resolveWelcomeVariables(bodyText, { name, phone, source, traits });
 
         let interactive;
         if (messageType === 'cta_buttons') {
@@ -612,7 +615,7 @@ class AutomationEngine {
         const target = leadPK
           ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
           : { phone };
-        const resolvedCaption = caption ? resolveWelcomeVariables(caption, { name, phone }) : undefined;
+        const resolvedCaption = caption ? resolveWelcomeVariables(caption, { name, phone, traits }) : undefined;
 
         const mediaId = url ? undefined : await WASendSvc.resolveMediaId(companyId, { s3Key, mimeType, filename });
 
@@ -638,7 +641,7 @@ class AutomationEngine {
         const target = leadPK
           ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
           : { phone };
-        const resolvedText = resolveWelcomeVariables(messageText, { name, phone });
+        const resolvedText = resolveWelcomeVariables(messageText, { name, phone, traits });
         const r = await WASendSvc.sendText(
           companyId, target, resolvedText,
           { id: 'system', role: 'admin', name: 'Automation' },
@@ -659,7 +662,7 @@ class AutomationEngine {
         const target = leadPK
           ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
           : { phone };
-        const resolvedText = resolveWelcomeVariables(bodyText, { name, phone, source });
+        const resolvedText = resolveWelcomeVariables(bodyText, { name, phone, source, traits });
         const interactive = {
           type: 'list',
           body: { text: resolvedText },
