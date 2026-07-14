@@ -18,6 +18,7 @@ import {
   Sun,
   Moon,
   LogOut,
+  ChevronLeft,
   Search,
   RefreshCw,
   Copy,
@@ -1767,6 +1768,17 @@ function SettingsPageInner() {
   const initialSection = (searchParams.get('tab') as SettingsSection | null) ?? 'profile';
   const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
 
+  // M2-F mobile section picker (B3 finding #4) — below md there was no way
+  // to switch sections at all, the sidebar was simply `hidden`. Starts
+  // "chosen" (content shown directly) whenever an explicit ?tab= was present
+  // on load — a deep link is intentional navigation to that section, same as
+  // tapping it from the list, not something that should force a detour
+  // through the list first. Back always returns to the list — it only
+  // flips this flag, never touches activeSection — so a user who lands
+  // directly on a section via URL can still browse to any other section
+  // afterward exactly like a user who opened the list first.
+  const [mobileSectionChosen, setMobileSectionChosen] = useState(() => searchParams.get('tab') !== null);
+
   const visibleSections = SECTIONS.filter((s) => isSectionVisible(s, rawRole, isAdmin));
 
   // Graceful degradation (docs/v3/09_PERMISSION_MATRIX.md §13.6): a role
@@ -1808,7 +1820,10 @@ function SettingsPageInner() {
 
   return (
     <div className="flex h-full">
-      <aside className="hidden w-[240px] shrink-0 flex-col border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950 md:flex">
+      <aside className={cn(
+        'shrink-0 flex-col border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950 md:flex md:w-[240px]',
+        mobileSectionChosen ? 'hidden' : 'flex w-full',
+      )}>
         <div className="border-b border-neutral-200 px-4 py-4 dark:border-neutral-800">
           <h1 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">Settings</h1>
         </div>
@@ -1816,7 +1831,7 @@ function SettingsPageInner() {
           {visibleSections.map((section) => (
             <button
               key={section.id}
-              onClick={() => setActiveSection(section.id)}
+              onClick={() => { setActiveSection(section.id); setMobileSectionChosen(true); }}
               aria-current={effectiveSection === section.id ? 'page' : undefined}
               className={cn(
                 'flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-sm transition-colors',
@@ -1841,7 +1856,17 @@ function SettingsPageInner() {
         </div>
       </aside>
 
-      <main className="scrollbar-thin flex-1 overflow-y-auto p-6">
+      <main className={cn(
+        'scrollbar-thin flex-1 overflow-y-auto p-6',
+        !mobileSectionChosen && 'hidden md:block',
+      )}>
+        <button
+          onClick={() => setMobileSectionChosen(false)}
+          className="mb-4 flex items-center gap-1 text-sm font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400 md:hidden"
+        >
+          <ChevronLeft className="h-4 w-4" aria-hidden />
+          Back
+        </button>
         {renderContent()}
       </main>
     </div>
