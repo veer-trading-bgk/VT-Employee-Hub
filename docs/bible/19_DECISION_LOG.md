@@ -2152,6 +2152,35 @@ until Meta responds.
 
 ---
 
+## Era 46 — full LLM provider migration: every useCase → Amazon Nova Lite (Bedrock), Claude retired from the active path (2026-07-14)
+
+**Decision (Viir's explicit call).** Switch **every** AI useCase off Claude and onto Amazon Nova Lite in a **single batch**, not staged — including `conversational-sales-agent`, the highest-risk (customer-facing, unsupervised, SEBI-exposed) useCase. Reason: cost. Nova Lite is ~14–17× cheaper per token than Haiku 4.5 and, in practice, also tokenizes this prompt to ~40% fewer input tokens.
+
+**Two decision gates cleared first (both required before any code):**
+- **Region.** `apac.amazon.nova-lite-v1:0` (the APAC inference profile) is reachable **from `ap-south-1`** — same region as the rest of the stack, ~860 ms/turn, **no** us-east-1 / cross-region latency or data-residency detour. (`us.amazon.nova-lite-v1:0` is a US profile that only runs in us-east-1; the bare `amazon.nova-lite-v1:0` isn't on-demand-invokable — needs a profile.)
+- **Compliance.** The exact 5-question adversarial suite `PromptTestService` uses (verbatim), through the real v8 `conversational-sales-agent` prompt, run **4 times** against `apac.amazon.nova-lite-v1:0`: **0 hard-fail across all 4 runs / 20 turns**, JSON-format 20/20, WhatsApp format-drift 0/20. Matches Claude Haiku 4.5's Era 32/45 profile (4 clean + 1 known guarantee-word false-positive per run) and repeats it four times.
+
+**Pricing (verified, not placeholder).** `PRICING.models['apac.amazon.nova-lite-v1:0'] = { input 0.071, output 0.284 }` per 1M — confirmed live against the AWS Pricing API (`AmazonBedrock`, `ap-south-1`: `APS3-NovaLite-input-tokens` $0.000071/1K, `APS3-NovaLite-output-tokens` $0.000284/1K). The APAC profile prices ~18% above the US base ($0.06/$0.24) — checked, not assumed.
+
+**What shipped (5 commits, each revertible):**
+1. `src/services/providers/BedrockNovaProvider.js` — Bedrock Converse (aws-sdk v2, already a dep; no new package), region ap-south-1, real `resp.usage.inputTokens/outputTokens`, coalesces adjacent same-role turns (Bedrock requires strict alternation where Anthropic merged). Interface `generate(systemPrompt, messages, {model, maxTokens}) -> {text, usage}`.
+2. The verified `PRICING.models` entry above.
+3. `AIService` provider dispatch — `_callModel({provider,...})` normalizes both providers to one internal shape; `provider` read from the useCase's aiConfig field, default `'anthropic'` → behavior-neutral until a useCase opts in. `_computeCost`/`_logUsage` untouched: same AIUSAGE# shape, same Era-40 rate snapshot, different model tag + real Nova tokens.
+4. Every useCase flipped: `provider:'bedrock-nova'` + `model:'apac.amazon.nova-lite-v1:0'`.
+5. This entry.
+
+**Claude/Anthropic is no longer in the active path for ANY useCase after commit 4.** The Anthropic code path (`_callAnthropic`) and both `claude-*` PRICING entries are **kept intact and dormant, NOT deleted** — reverting any useCase is a pure config change (`provider:'anthropic'` + `model` back to `claude-haiku-4-5-20251001`), no code needed, per the standing rule about not hard-deleting working code for a business-driven switch.
+
+**End-to-end validation through the REAL service (not the standalone gate script).** Ran the 5 adversarial questions through `AIService.generate({useCase:'conversational-sales-agent', source:'admin_test', ...})` against a synthetic company (no CONFIG#AI row → enabled): **5/5 service-ok, 5 clean-pass, 0 hard-fail** — exercised provider dispatch, the live Nova call, JSON-schema parsing of `{reply, qualified, productInterest, budgetAmount, timelineDays, reasoning}`, and cost logging with real Nova token counts (model tag `apac.amazon.nova-lite-v1:0`, ~1,200 in / ~90 out per turn, ~$0.00017 charged/turn). Full unit suite: 1630/1630.
+
+**Cost impact.** Per-turn charged cost dropped from ~₹0.41 (Haiku) to ~₹0.016 (Nova) — the 9-turn sample would go from ~₹3.95 to well under ₹0.3 charged, blowing past the ₹0.5–1 target the MAX_TURNS/prompt-trim work (Era 45) could only get to ~₹1.5–2. MAX_TURNS=5 and the v8 trim remain in place and compound with this.
+
+**Scope caveats (so this isn't oversold):** the adversarial compliance gate specifically covered `conversational-sales-agent` (the only customer-facing prose useCase); the other four are internal/structured (JSON classification/extraction) and lower-risk, validated via the routing/parse unit tests rather than a live adversarial run. A handful of passing runs is not a permanent guarantee (same non-determinism caveat as every prior live-model check) — real production traffic on Nova should be monitored, same discipline as Era 32's Haiku switch. Throwaway `scripts/testNovaCompliance.js` and a one-line additive export in `PromptTestService.js` (`isKnownGuaranteeFalsePositive`, to reuse the exact classifier) remain uncommitted, pending Viir's keep/revert call.
+
+**Reference:** `src/services/providers/BedrockNovaProvider.js`, `src/services/AIService.js` (`_callModel`), `src/config/aiConfig.js` (per-useCase `provider`/`model`, `PRICING.models`), Era 32/45 (Haiku switch, caching retraction, MAX_TURNS/trim), `docs/phase3/TECHNICAL_DEBT.md` (margin/FX PLACEHOLDER constants that scale the charged figures).
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or
