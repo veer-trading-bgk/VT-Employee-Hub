@@ -674,13 +674,13 @@ function AnalyticsPageInner() {
         </select>
       </div>
 
-      <div className="flex border-b border-neutral-200 bg-white px-6 dark:border-neutral-800 dark:bg-neutral-950">
+      <div className="flex overflow-x-auto border-b border-neutral-200 bg-white px-6 dark:border-neutral-800 dark:bg-neutral-950">
         {TABS.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             className={cn(
-              'border-b-2 px-4 py-3 text-sm font-medium transition-colors',
+              'shrink-0 whitespace-nowrap border-b-2 px-4 py-3 text-sm font-medium transition-colors',
               activeTab === tab.id
                 ? 'border-primary-600 text-primary-700 dark:text-primary-300'
                 : 'border-transparent text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300',
