@@ -1120,7 +1120,7 @@ function ManagePipelineDrawer({
               value={s.label}
               onChange={(e) => rename(i, e.target.value)}
               onBlur={(e) => handleLabelBlur(i, e.target.value)}
-              className="flex-1 rounded-lg border border-neutral-200 bg-transparent px-2.5 py-1.5 text-sm text-neutral-900 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-neutral-700 dark:text-neutral-100"
+              className="min-w-0 flex-1 rounded-lg border border-neutral-200 bg-transparent px-2.5 py-1.5 text-sm text-neutral-900 focus:border-primary-500 focus:outline-none focus:ring-1 focus:ring-primary-500 dark:border-neutral-700 dark:text-neutral-100"
               maxLength={40}
               placeholder="Stage name"
             />
@@ -1131,7 +1131,7 @@ function ManagePipelineDrawer({
               disabled={i === 0}
               onClick={() => move(i, -1)}
               aria-label="Move stage up"
-              className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 sm:h-7 sm:w-7 dark:hover:bg-neutral-800"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 sm:h-7 sm:w-7 dark:hover:bg-neutral-800"
               title="Move up"
             >
               <ArrowUp className="h-3.5 w-3.5" />
@@ -1143,7 +1143,7 @@ function ManagePipelineDrawer({
               disabled={i === stages.length - 1}
               onClick={() => move(i, 1)}
               aria-label="Move stage down"
-              className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 sm:h-7 sm:w-7 dark:hover:bg-neutral-800"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 sm:h-7 sm:w-7 dark:hover:bg-neutral-800"
               title="Move down"
             >
               <ArrowDown className="h-3.5 w-3.5" />
@@ -1155,7 +1155,7 @@ function ManagePipelineDrawer({
               onClick={() => remove(i)}
               disabled={stages.length <= 1}
               aria-label="Remove stage"
-              className="flex h-11 w-11 items-center justify-center rounded-lg text-error-500 hover:bg-error-50 disabled:opacity-30 sm:h-7 sm:w-7 dark:hover:bg-error-900/20"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-error-500 hover:bg-error-50 disabled:opacity-30 sm:h-7 sm:w-7 dark:hover:bg-error-900/20"
               title="Remove stage"
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -1370,7 +1370,7 @@ export default function SalesPage() {
             title={showKPIs ? 'Hide KPIs' : 'Show KPIs'}
             aria-label={showKPIs ? 'Hide KPIs' : 'Show KPIs'}
             className={cn(
-              'flex h-11 w-11 items-center justify-center rounded-lg border text-neutral-500 transition-colors sm:h-8 sm:w-8',
+              'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border text-neutral-500 transition-colors sm:h-8 sm:w-8',
               showKPIs
                 ? 'border-primary-200 bg-primary-50 text-primary-600 dark:border-primary-800 dark:bg-primary-900/20'
                 : 'border-neutral-200 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800',
@@ -1385,7 +1385,7 @@ export default function SalesPage() {
               onClick={() => setShowManagePipeline(true)}
               title="Manage pipeline stages"
               aria-label="Manage pipeline stages"
-              className="flex h-11 w-11 items-center justify-center rounded-lg border border-neutral-200 text-neutral-500 hover:bg-neutral-100 sm:h-8 sm:w-8 dark:border-neutral-700 dark:hover:bg-neutral-800 transition-colors"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-neutral-200 text-neutral-500 hover:bg-neutral-100 sm:h-8 sm:w-8 dark:border-neutral-700 dark:hover:bg-neutral-800 transition-colors"
             >
               <Settings className="h-4 w-4" />
             </button>
