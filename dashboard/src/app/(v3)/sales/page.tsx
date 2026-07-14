@@ -380,9 +380,13 @@ function KanbanColumn({
           the whole page (including the header/KPI/filter bar above) to scroll —
           Track A3, docs/phase3/TECHNICAL_DEBT.md. The droppable ref stays on
           the outer column div above, so drag-and-drop hit-testing is against
-          that unscrolled bounding box, unaffected by this inner scroll. */}
+          that unscrolled bounding box, unaffected by this inner scroll.
+          min-h floor is smaller below md (the row above is now flex-none
+          there, so this floor no longer fights for a squeezed budget — just
+          keeps an empty column from collapsing to nothing on a short phone
+          screen) and back to the original 200px from md up, unchanged. */}
       <div className={cn(
-        'flex-1 min-h-[200px] overflow-y-auto rounded-b-xl border border-neutral-200 bg-neutral-50/80 p-2 space-y-2',
+        'flex-1 min-h-[140px] md:min-h-[200px] overflow-y-auto rounded-b-xl border border-neutral-200 bg-neutral-50/80 p-2 space-y-2',
         'transition-colors duration-150',
         isOver
           ? 'bg-primary-50 border-primary-300 dark:bg-primary-900/15 dark:border-primary-700'
@@ -461,7 +465,16 @@ function KanbanBoard({
 
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-      <div className="flex gap-3 p-4 overflow-x-auto min-h-0 flex-1">
+      {/* flex-none below md: on a short mobile viewport the KPI/filter chrome
+          above already consumes most of the height, squeezing this row to a
+          sliver — flex-1 there forced every column into that sliver with no
+          way to scroll to the rest (M2-C investigation, real bug, pre-dates
+          this session). flex-none lets the row take its natural content
+          height instead, so the real overflow reaches #main-content's own
+          overflow-y-auto (layout.tsx) and the whole page scrolls to reveal
+          it. From md up this is untouched — flex-1 restores the existing
+          fixed-viewport-height board with each column scrolling internally. */}
+      <div className="flex gap-3 p-4 overflow-x-auto min-h-0 flex-none md:flex-1">
         {stages.map((stage) => (
           <KanbanColumn
             key={stage.key}
