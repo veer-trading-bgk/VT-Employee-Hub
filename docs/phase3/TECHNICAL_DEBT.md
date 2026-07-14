@@ -913,3 +913,28 @@ Both reported via real-device testing (not harness mock data), on `dashboard/src
 **Deferred (not this commit).** If the product ever wants Nova (or any Bedrock model) to be a genuine, saveable per-company override, three things move in lockstep: the backend `aiAdminFutureSchema` enum, the `api.ts` union, and `MODEL_OPTIONS` — **and** the `customModelSettings.model` value would need to actually be read at call time (today it is stored but never consumed), which is the larger "wire in custom model settings" item already flagged by this tab's banner.
 
 **Priority:** Fixed — Low (cosmetic/honesty of a preview-only control; no live-path impact).
+
+## INCIDENT — Nova migration broke every live AI turn: Lambda execution role lacked bedrock:InvokeModel (2026-07-14)
+
+**Severity:** Production AI outage (conversational-sales-agent), fully resolved same day. Real customer blast radius: effectively zero (see impact).
+
+**Symptom.** After the Era-46 Nova migration deployed, a real WhatsApp message to viir_trading produced **no `AIUSAGE#` record** despite the message genuinely arriving. AI agent sent no reply.
+
+**Root cause.** The deployed Lambda execution role `vt-employee-bot-lambda-role` was **never granted `bedrock:InvokeModel`**. Era 46 flipped every useCase to `apac.amazon.nova-lite-v1:0` (Bedrock) but added no IAM permission for the *deployed* role. Every `conversational-sales-agent` turn therefore reached `AIService → BedrockNovaProvider → Bedrock Converse` and got `AccessDeniedException` ("not authorized to perform: bedrock:InvokeModel on resource: …inference-profile/apac.amazon.nova-lite-v1:0 because no identity-based policy allows the bedrock:InvokeModel action"). The error is thrown **before** `_logUsage()`, which is exactly why no `AIUSAGE#` row was written — the missing record was the *symptom* of the auth failure, not a logging bug.
+
+**Why pre-deploy testing missed it.** The Era-46 end-to-end validation ran from a developer machine under the **personal `viir_admin` IAM user**, which has broad Bedrock access. That is a *different principal* from the Lambda's `vt-employee-bot-lambda-role`. The E2E proved the code + the model + the prompt worked; it never exercised the deployed role's permissions. Local-admin creds masked the role gap completely.
+
+**Trace (CloudWatch `/aws/lambda/vt-employee-bot-api`):** webhook received ✅ → companyId resolved ✅ → CIS created lead + conversation ✅ → conversational-sales-agent invoked ✅ → **Bedrock InvokeModel AccessDenied** ✗ → provider_error caught & logged WARN → no usage logged. Both AI gates (`CONFIG#AI` master + module, `CONFIG#CONVAGENT`) were ON — not implicated.
+
+**Impact window.** Nova code live at deploy `LastModified 2026-07-14T09:58:11Z`. No agent-triggering inbound between 09:58 and 10:30 (idle), so the **first failed turn was 10:30:07Z** and the **last before fix was 10:38:50Z** — **5 failed turns total**. IAM fix applied ~10:56Z (authorization confirmed via IAM policy simulator = `allowed`, and the "not authorized" errors stopped).
+
+**Customer blast radius: ~zero.** All 5 failed turns resolve to a **single phone number `9901251785` (contact "Viir Trading Support", conv `conv_01KX0PS1YP2YSWKJKQ6G7G80RN`)** — a 16-day-old internal test contact (first seen 2026-06-28), confirmed by operator as a known test line — 90 `conversation_created` events with no message content, tags, notes, or stage progression across its full history, consistent with repeated feature testing, not a real prospect. During the outage the lead was created→failed→`ContactBulkOps.deleteLead` purged→recreated 3× under lead IDs `f6df6ce1…`, `b24a66dd…`, `7123a5b6…`. No distinct external customer messaged in and got silence. No customer follow-up required.
+
+**Fix (applied via `aws iam put-role-policy`, no code change, no redeploy).** New inline policy `vt-employee-bot-bedrock-access` on `vt-employee-bot-lambda-role` granting `bedrock:InvokeModel` on the apac inference-profile ARN **and** the 6 underlying `amazon.nova-lite-v1:0` foundation-model ARNs the profile routes to — `ap-south-1, ap-southeast-1, ap-southeast-2, ap-northeast-1, ap-northeast-2, ap-northeast-3` (region list read from `aws bedrock get-inference-profile`, not guessed). Both resource classes are required: the profile ARN alone passes the first check but still 403s on the model resource.
+
+**NEW PRE-DEPLOY CHECKLIST ITEM (applies to any future provider/model migration):**
+> Before switching any useCase to a new LLM provider or model, **verify the DEPLOYED execution role's IAM permissions can invoke it** — via the IAM policy simulator against `vt-employee-bot-lambda-role` (not a personal/admin user) or an in-Lambda smoke test. E2E validation run under developer/admin credentials does NOT prove the Lambda role can make the call; the principal that runs in production is `vt-employee-bot-lambda-role`, and its policy must be updated in lockstep with the provider switch. New provider ⇒ new `Resource` ARNs ⇒ new IAM grant.
+
+**Reference:** `19_DECISION_LOG.md` Era 46; role `vt-employee-bot-lambda-role` inline policy `vt-employee-bot-bedrock-access`; `src/services/providers/BedrockNovaProvider.js`.
+
+**Priority:** Fixed and confirmed end-to-end. First successful live **production** Nova turn at `2026-07-14T11:06:22Z` (conv `conv_01KX19K3W0CZ4KSSB1MTQ8JRYP`): `inbox-intent-detection` + `conversational-sales-agent` both wrote real `apac.amazon.nova-lite-v1:0` production `AIUSAGE#` records (1829+76 tok, ~$0.00023 / ~₹0.02 for the turn), zero auth errors post-fix.
