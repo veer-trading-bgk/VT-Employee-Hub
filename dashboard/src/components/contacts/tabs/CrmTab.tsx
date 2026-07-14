@@ -339,8 +339,11 @@ function CrmPanel() {
           }
         >
           <div className="space-y-4">
-            {/* Stage (always interactive) + Assign (admin/manager/superadmin only) row */}
-            <div className="grid grid-cols-2 gap-3">
+            {/* Stage (always interactive) + Assign (admin/manager/superadmin only) row.
+                grid-cols-1 below sm — two native <select>s at grid-cols-2 were cramped
+                at a 375px viewport (M2-C polish pass); stacks to full-width below sm,
+                back to side-by-side from sm up. */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
                   Stage
