@@ -125,6 +125,27 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
   **multiple keys per company**, a **key-rotation policy**, and **per-key custom rate limits** (v1 is
   a single flat 60/min per key). Also queued: making form **traits a queryable lead attribute**
   (v1 stores them on the interaction/touch metadata only, not the `LEAD#` item). Not started.
+- **Outgoing webhooks (APForce → client's own system).** Distinct from the inbound Meta webhook
+  (already built, unrelated) and the Public API form-submission endpoint (already shipped — that's
+  client-to-APForce, this is the reverse direction). Scoped, not built — deferred until a real client
+  asks for it (e.g. "notify my CRM when a lead's stage changes to Won", "ping our Slack when a lead
+  replies").
+
+  Proposed shape (reuses the AutomationEngine trigger architecture built for the Public API — no new
+  architecture, one new action type):
+  - New automation action type `send_webhook`, alongside the existing `send_template` step type,
+    configured per-workflow same as any other action.
+  - Company-level webhook URL + a generated signing secret, in Settings (mirrors the API Keys
+    section's generate/reveal-once/revoke pattern).
+  - Outbound POST signed with HMAC-SHA256 (`X-Signature` header) so the client can verify the payload
+    genuinely came from APForce — same verification model Meta's own inbound webhook uses, mirrored
+    in reverse.
+  - Retry on failure: 3 attempts, exponential backoff — same resilience expectation as the inbound
+    webhook direction.
+
+  Estimated effort: ~1 session. Do NOT build until a real client's actual requirements are known
+  (payload shape, which events, retry expectations) — building speculatively risks guessing wrong and
+  redoing it.
 - **`ctwa_clid` / Meta ads click-to-WhatsApp attribution capture.** No Meta Ads API integration
   exists in this codebase today (CTWA campaigns are record-only — configured in Meta Ads Manager
   directly, not launched from APForce; see `docs/bible/20_CURRENT_STATE.md` §4). Needed before
