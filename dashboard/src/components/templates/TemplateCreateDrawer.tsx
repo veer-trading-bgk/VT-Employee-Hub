@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Plus,
   Trash2,
@@ -750,13 +751,50 @@ export function TemplateCreateDrawer({ open, onClose, editTemplate, aiDraft }: P
           </div>
         </div>
 
-        {/* ── Preview column ────────────────────────────────────────────── */}
+        {/* ── Preview column (md and up) ───────────────────────────────── */}
         {previewVisible && (
           <div className="hidden w-[320px] shrink-0 overflow-y-auto border-l border-neutral-200 p-4 dark:border-neutral-800 md:block">
             <WhatsAppPreview form={form} />
           </div>
         )}
       </div>
+
+      {/* ── Mobile preview overlay (below md) ────────────────────────────
+          Below md the side column above never shows (it's md:block), so
+          "Show Preview" used to be a dead button (M1.5 finding — templates
+          were created blind below md). Full-screen step instead of a side
+          pane; WhatsAppPreview is reused unmodified, just mounted here.
+          Portaled to document.body: Drawer.tsx's own panel is `fixed` +
+          `transition-transform`, and a CSS transform (even an identity
+          translate(0,0)) establishes a containing block for `position:
+          fixed` descendants — nesting the overlay inside the Drawer's JSX
+          tree confined "full-screen" to the Drawer's own 80vh box instead
+          of the real viewport (caught by real-browser verification). */}
+      {previewVisible && typeof document !== 'undefined' && createPortal(
+        <div
+          className="fixed inset-0 flex flex-col bg-white dark:bg-neutral-900 md:hidden"
+          style={{ zIndex: 310 }}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Template preview"
+        >
+          <div className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
+            <h2 className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Preview</h2>
+            <button
+              type="button"
+              onClick={() => setPreviewVisible(false)}
+              aria-label="Close preview"
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800"
+            >
+              <X className="h-4 w-4" aria-hidden />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4">
+            <WhatsAppPreview form={form} />
+          </div>
+        </div>,
+        document.body,
+      )}
     </Drawer>
   );
 }
