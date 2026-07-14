@@ -2205,6 +2205,25 @@ until Meta responds.
 
 ---
 
+## Era 48 — first-contact precedence: a whatsapp_conversation_started workflow now owns AI engagement (2026-07-14)
+
+**Decision.** The companion to Era 47, closing the gap it flagged. A company that builds an **active** `whatsapp_conversation_started` workflow now controls whether/how the AI engages a brand-new contact — the auto AI-start (`maybeStart`) no longer pre-empts that workflow. A company with **no** such workflow sees zero change: the AI auto-engages on first contact exactly as before.
+
+**The problem (from Era 47).** On first contact, `whatsapp.js` ran `maybeStart` first; if the AI engaged, `botEngaged` skipped the welcome message and every automation trigger, including `whatsapp_conversation_started`. So a "Trigger → Send Buttons → … → start_ai_conversation" workflow could never fire — the AI pre-empted it.
+
+**The fix (three parts).**
+1. **Shared lookup, extracted (reuse-first).** The query-plus-filter that lived inline inside `AutomationEngine.fireTrigger` — query `CONFIG#AUTO#{companyId}`, keep active workflows (status `active`, or legacy `enabled:true` when status is absent) whose trigger type matches — is extracted into `AutomationEngine._findActiveWorkflows(companyId, triggerType)`. `fireTrigger` now calls it and layers its keyword/condition filters on top (behaviour unchanged). A new public `hasActiveWorkflow(companyId, triggerType)` returns whether that list is non-empty. Generic over `triggerType`, reusable for any future trigger; no second scan mechanism exists.
+2. **Runtime guard.** At the `maybeStart` call site in `whatsapp.js`, `maybeStart` now runs only when it is a first-contact text message **and** `hasActiveWorkflow(companyId, 'whatsapp_conversation_started')` is false. The lookup runs only on genuine first-contact text (short-circuit AND). When suppressed, `botEngaged` stays false, so the existing `!botEngaged` gate fires the `whatsapp_conversation_started` workflow (which can hand off via a `start_ai_conversation` node). The guard adds NO warning logic or side effects — it is purely the boolean precedence check.
+3. **Save-time advisories (non-blocking).** On create/update of a `whatsapp_conversation_started` workflow, two warnings ride on the existing optional `warning` response field (the same field `auth.js`/`crm.js`/`whatsapp.js` already use — no new subsystem): (a) the workflow has no `start_ai_conversation` node, so the AI won't auto-engage while it's active; (b) the company already has another active `whatsapp_conversation_started` workflow (the check reuses `_findActiveWorkflows` and excludes the workflow being saved, `w.id !== wf.id`). Both are advisory — a failure to compute them never fails the save (`.catch(() => [])`).
+
+**Why backward-compatible by construction.** `hasActiveWorkflow` can only return true for a workflow that is (i) in this company's `CONFIG#AUTO#{companyId}` partition — the query PK scopes it, so cross-company matches are impossible — and (ii) active, and (iii) of the requested trigger type. For any company without a matching active `whatsapp_conversation_started` workflow, `_findActiveWorkflows` returns `[]` → `hasActiveWorkflow` returns false → the guard's `&&` runs `maybeStart` unchanged. The guard can only *remove* a `maybeStart` call, and only when a matching active workflow provably exists. Production confirmed 0 such workflows exist today, so the precedence change affects no one until a company opts in. A regression test proves the subtle case explicitly: a company with an active workflow of a *different* trigger type still gets `maybeStart` called (the trigger-type filter, not merely "no workflow at all").
+
+**Scope boundaries.** No behaviour beyond the precedence check was added to the runtime path — no warnings, no state. When the guard suppresses `maybeStart`, both the workflow and any welcome message can fire (both `!botEngaged`-gated); the intended model is that building such a workflow means the company owns first-contact, including whether AI engages (via a `start_ai_conversation` node) and whether a welcome also sends.
+
+**Reference:** `src/services/AutomationEngine.js` (`_findActiveWorkflows`, `hasActiveWorkflow`, `fireTrigger`), `src/routes/whatsapp.js` (first-contact guard), `src/routes/automations.js` (`conversationStartedSaveWarnings`, wired into POST `/` and PUT `/:id`), Era 47.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or
