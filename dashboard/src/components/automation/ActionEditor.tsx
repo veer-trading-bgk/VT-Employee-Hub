@@ -148,6 +148,23 @@ export function ActionEditor({ step, onChange }: { step: WorkflowStep; onChange:
       );
     }
 
+    case 'start_ai_conversation': {
+      return (
+        <Field
+          label="Context hint (optional)"
+          hint="Seeds the AI's first turn — e.g. a tapped button's category, so it can skip re-asking. Supports {{name}}/{{phone}}/{{trait.*}}. Leave blank for a neutral opener."
+        >
+          <textarea
+            rows={2}
+            value={String(cfg.contextHint ?? '')}
+            onChange={(e) => set('contextHint', e.target.value)}
+            placeholder="Customer is interested in: Demat Account"
+            className={cn(inputCls, 'resize-none')}
+          />
+        </Field>
+      );
+    }
+
     case 'wait': {
       return (
         <AmountUnitFields

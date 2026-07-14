@@ -2,7 +2,7 @@
 
 import {
   MessageCircle, UserPlus, GitMerge, Tag, CheckSquare, Timer, Square,
-  Zap, Hash, Webhook, Copy, RefreshCw, X, Plus, FileText,
+  Zap, Hash, Webhook, Copy, RefreshCw, X, Plus, FileText, Bot,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/cn';
@@ -32,6 +32,7 @@ export const ACTION_ICONS: Record<string, React.ElementType> = {
   change_stage:                 GitMerge,
   add_tag:                      Tag,
   create_task:                  CheckSquare,
+  start_ai_conversation:        Bot,
   wait:                         Timer,
   end:                          Square,
   whatsapp_conversation_started:MessageCircle,

@@ -4,6 +4,7 @@ import type {
   GraphNode, GraphEdge, NodeType, NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig,
   SendMessageConfig, SendListConfig, SendLocationConfig,
   SendTemplateConfig, AssignEmployeeConfig, ChangeStageConfig, AddTagConfig, CreateTaskConfig,
+  StartAiConversationConfig,
 } from '@/types/automations';
 
 // A synthetic, non-persisted node representing the workflow's trigger — always
@@ -154,6 +155,7 @@ export function summarizeNodeConfig(nodeType: NodeType, config: NodeConfig): str
     case 'change_stage':    return (config as ChangeStageConfig).stage || 'No stage selected';
     case 'add_tag':         return (config as AddTagConfig).tag || 'No tag selected';
     case 'create_task':     return `In ${(config as CreateTaskConfig).daysFromNow ?? 1} day(s)`;
+    case 'start_ai_conversation': return (config as StartAiConversationConfig).contextHint || 'Hand off to AI agent';
     default:                return '';
   }
 }

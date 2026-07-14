@@ -771,6 +771,31 @@ class AutomationEngine {
         return { date };
       }
 
+      // Hand off to the autonomous AI conversation agent. ADR-015: goes through
+      // ConversationalAgentService -> AIService, never a provider directly. This
+      // is a TERMINAL hand-off — once it engages, the conversation's handoffState
+      // becomes 'ai' and every later inbound message is carried by the AI engine
+      // (continueTurn), NOT by this workflow, which completes at this node. The
+      // action no-ops safely (engaged:false) when the agent is disabled, the lead
+      // is human-owned (assignedTo), or a bot conversation is already active /
+      // handed off — see ConversationalAgentService.startForLead's guard. Lazy
+      // require avoids any load-order coupling with the agent service.
+      case 'start_ai_conversation': {
+        if (!leadPK) throw new Error('start_ai_conversation: leadPK required');
+        const ConversationalAgentService = require('./ConversationalAgentService');
+        const { contextHint } = step.config ?? {};
+        // Optional free-text hint (e.g. a tapped button's category) — resolved
+        // through the same {{name}}/{{phone}}/{{trait.*}} registry the send_*
+        // actions use, so a hint can personalize the AI's turn-0 seed.
+        const resolvedHint = contextHint
+          ? resolveWelcomeVariables(contextHint, { name, phone, source, traits })
+          : '';
+        const engaged = await ConversationalAgentService.startForLead(companyId, {
+          leadPK, phone10: phone, name, contextHint: resolvedHint,
+        });
+        return { engaged };
+      }
+
       default:
         throw new Error(`Unknown action type: ${step.type}`);
     }

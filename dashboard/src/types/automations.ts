@@ -17,6 +17,7 @@ export type ActionType =
   | 'change_stage'
   | 'add_tag'
   | 'create_task'
+  | 'start_ai_conversation'
   | 'wait'
   | 'end';
 
@@ -91,12 +92,22 @@ export interface WaitConfig {
   unit:   'minutes' | 'hours' | 'days';
 }
 
+// Hand off to the autonomous AI conversation agent. A simple lead-action (like
+// add_tag) — no messaging config of its own, just an optional free-text hint
+// (e.g. a tapped button's category) passed as the AI's turn-0 seed so its first
+// question can reference it. The real work + guard live in the backend
+// (AutomationEngine `start_ai_conversation` -> ConversationalAgentService.startForLead).
+export interface StartAiConversationConfig {
+  contextHint?: string;
+}
+
 export type StepConfig =
   | SendTemplateConfig
   | AssignEmployeeConfig
   | ChangeStageConfig
   | AddTagConfig
   | CreateTaskConfig
+  | StartAiConversationConfig
   | WaitConfig
   | Record<string, never>;
 
@@ -373,6 +384,7 @@ export const ACTION_META: Record<ActionType, { label: string; description: strin
   change_stage:    { label: 'Change Stage',    description: 'Move the lead to a new pipeline stage'},
   add_tag:         { label: 'Add Tag',         description: 'Add a tag to the lead'               },
   create_task:     { label: 'Create Task',     description: 'Create a follow-up task'             },
+  start_ai_conversation: { label: 'Start AI Conversation', description: 'Hand off to the AI conversation agent' },
   wait:            { label: 'Wait',            description: 'Pause the workflow for a duration'   },
   end:             { label: 'End',             description: 'End the workflow'                    },
 };

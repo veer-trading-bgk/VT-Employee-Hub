@@ -576,6 +576,67 @@ async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessa
 }
 
 /**
+ * Start an AI conversation on an EXISTING lead, initiated from inside an
+ * Automation workflow (the `start_ai_conversation` action) rather than from the
+ * webhook's first-contact path. Unlike maybeStart(), the lead already exists
+ * (leadPK is known) and there is no triggering customer message, so a free-text
+ * `contextHint` (e.g. the category of a tapped welcome button) is passed as the
+ * AI's turn-0 seed, letting its first question reference it instead of
+ * re-asking. Empty hint falls back to a neutral "Hi" seed (turn-1's working
+ * shape).
+ *
+ * ADR-015: routes through _runTurn -> AIService, never a provider directly.
+ *
+ * No-op (returns false; the workflow just completes without a hand-off) when:
+ *   - the AI conversation agent is disabled for the company,
+ *   - the lead can't be loaded,
+ *   - the lead is already assigned to a human — don't hijack a human-owned lead
+ *     (same guard maybeStart() applies via lead.assignedTo), or
+ *   - the conversation is already bot-engaged (handoffState 'ai') or handed off
+ *     (handoffState 'pending_human') — never re-engage or restart.
+ *
+ * NOTE on the state check: handoffState defaults to 'human' for a never-engaged
+ * conversation (ConversationService.getConversation), so "already engaged/handed
+ * off" is the explicit 'ai'/'pending_human' states, while "a human owns it" is
+ * the lead's assignedTo — the two together are the safe start-gate. A plain
+ * default-'human', unassigned conversation is the genuine "not yet engaged" case
+ * and is the only one that starts.
+ *
+ * @returns {Promise<boolean>} true only if the AI turn actually engaged and a
+ *   reply was sent this call (see _runTurn()'s own @returns).
+ */
+async function startForLead(companyId, { leadPK, phone10, name, contextHint }) {
+  try {
+    const cfg = await _getConfig(companyId);
+    if (!cfg.enabled) return false;
+
+    const r = await dynamodb.get({ TableName: TABLE, Key: { PK: leadPK, SK: 'METADATA' } }).promise();
+    const lead = r.Item;
+    if (!lead) return false;
+    if (lead.assignedTo) return false; // human owns it — don't hijack (mirrors maybeStart's guard)
+
+    const seed = (contextHint && contextHint.trim()) ? contextHint.trim() : 'Hi';
+    const conv = await resolveForLead(companyId, leadPK, phone10, { text: seed, timestamp: new Date().toISOString() });
+    if (!conv?.conversationId) return false;
+
+    const conversation = await ConversationService.getConversation(companyId, conv.conversationId);
+    // 'ai' = already bot-engaged; 'pending_human' = handed off — never re-engage
+    // or restart either. String literals match continueTurn()'s own handoffState
+    // check just below; 'human' (the getConversation default for a never-engaged
+    // conversation) is the only state that falls through to start.
+    if (conversation && (conversation.handoffState === 'ai' || conversation.handoffState === 'pending_human')) {
+      return false;
+    }
+
+    await ConversationService.startBotHandling(companyId, conv.conversationId);
+    return await _runTurn(companyId, { leadPK, lead, conversationId: conv.conversationId, text: seed, turnCount: 0, cfg });
+  } catch (err) {
+    logger.error(`ConversationalAgentService.startForLead failed [${companyId}/${leadPK}]: ${err.message}`);
+    return false;
+  }
+}
+
+/**
  * Called from the webhook's known-lead branch on every inbound text message.
  * No-ops (returns false) for any lead whose conversation isn't an actively
  * bot-handled one — including leads that were always human-handled, and ones
@@ -613,6 +674,7 @@ module.exports = {
   isEscalationRequest,
   violatesGuardrail,
   maybeStart,
+  startForLead,
   continueTurn,
   HANDOFF_MESSAGE,
   GUARDRAIL_CATEGORIES,

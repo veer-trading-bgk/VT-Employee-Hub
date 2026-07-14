@@ -7,6 +7,7 @@ import { ACTION_ICONS } from '../WorkflowBuilder';
 const PALETTE_GROUPS: Array<{ label: string; types: NodeType[] }> = [
   { label: 'Messaging', types: ['send_template', 'send_message', 'send_buttons', 'send_list', 'send_document', 'send_location'] },
   { label: 'CRM Actions', types: ['assign_employee', 'change_stage', 'add_tag', 'create_task'] },
+  { label: 'AI', types: ['start_ai_conversation'] },
   { label: 'Logic', types: ['wait', 'condition', 'end'] },
 ];
 

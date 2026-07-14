@@ -18,6 +18,7 @@ export const nodeTypes: NodeTypes = {
   change_stage:    ActionNode,
   add_tag:         ActionNode,
   create_task:     ActionNode,
+  start_ai_conversation: ActionNode,
   wait:            WaitNode,
   condition:       ConditionNode,
   send_buttons:    SendButtonsNode,
