@@ -27,10 +27,12 @@ import {
   Send,
   Bot,
   BookOpen,
+  LogOut,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Avatar } from '@/components/v3/ui/Avatar';
 import { Badge } from '@/components/v3/ui/Badge';
+import { Button } from '@/components/v3/ui/Button';
 import { useAuth } from '@/context/AuthContext';
 import { useAvatarUrl } from '@/hooks/useAvatarUrl';
 import { toV3Role, V3_ROLE_LABELS, type V3Role } from '@/types/v3';
@@ -158,6 +160,15 @@ function V3SidebarInner({
     <aside
       className={cn(
         'flex h-screen flex-col border-r border-neutral-200 bg-white transition-all duration-300 dark:border-neutral-800 dark:bg-neutral-950',
+        // pb-14 below md — this same component also mounts as the mobile nav
+        // drawer's content (layout.tsx), which has no clearance of its own
+        // for V3BottomNav's fixed h-14 bar. Without this, the FIX-2 logout
+        // row (a new row added below the avatar/name row) lands underneath
+        // the bottom nav's higher z-index and is both invisible and
+        // unclickable there (real-browser verification caught this). md:pb-0
+        // reverts to the exact prior desktop spacing, where the bottom nav
+        // is hidden anyway.
+        'pb-14 md:pb-0',
         collapsed ? 'w-16' : 'w-60',
       )}
     >
@@ -268,17 +279,25 @@ function V3SidebarInner({
               <p className="text-[10px] text-neutral-400">{V3_ROLE_LABELS[v3Role]}</p>
             </div>
           )}
-          {!collapsed && (
-            <button
-              onClick={logout}
-              className="shrink-0 text-xs text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200"
-              aria-label="Logout"
-              title="Logout"
-            >
-              ×
-            </button>
-          )}
         </div>
+
+        {/* Logout — was an ~8x16px bare "x" glyph crammed into the row above,
+            effectively unreachable on phone (M2-C investigation). Own row,
+            real label, reuses Button's M2-A touch-floor (44px below the
+            sm=640px breakpoint, back to 32px from desktop viewport widths
+            up) instead of a hand-rolled size. */}
+        {!collapsed && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={logout}
+            iconLeft={<LogOut className="h-4 w-4" aria-hidden />}
+            className="w-full text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200"
+            aria-label="Logout"
+          >
+            Logout
+          </Button>
+        )}
       </div>
 
       {/* Collapse toggle */}
