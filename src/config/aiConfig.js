@@ -85,7 +85,8 @@ const AI_CONFIG = {
   // useCases). Triggered once per conversation (see IntentDetectionService),
   // never on every message — a cost/noise tradeoff, not a technical limit.
   'inbox-intent-detection': {
-    model: 'claude-haiku-4-5-20251001',
+    provider: 'bedrock-nova', // 2026-07-14 full Nova migration — see 19_DECISION_LOG.md
+    model: 'apac.amazon.nova-lite-v1:0', // was 'claude-haiku-4-5-20251001' (Anthropic path dormant; revert = provider:'anthropic' + that model)
     maxTokens: 60,
     promptVersion: 'v1',
     outputMode: 'json',
@@ -131,7 +132,8 @@ Respond with a JSON object: { "intent": "<one of the 8 categories above>", "conf
   // which this useCase touches — categorically an internal-analyst-output
   // case (same bucket as metrics-insights), never a customer-facing action.
   'template-creation': {
-    model: 'claude-haiku-4-5-20251001',
+    provider: 'bedrock-nova', // 2026-07-14 full Nova migration — see 19_DECISION_LOG.md
+    model: 'apac.amazon.nova-lite-v1:0', // was 'claude-haiku-4-5-20251001' (Anthropic path dormant; revert = provider:'anthropic' + that model)
     maxTokens: 700,
     promptVersion: 'v1',
     outputMode: 'json',
@@ -205,7 +207,8 @@ Respond with ONLY a single JSON object matching this shape: { "name": string, "c
   // still logged to the audit trail for oversight, but no longer gates or holds
   // anything — there is no "held for review" destination left to route to.
   'inbox-template-suggestion': {
-    model: 'claude-haiku-4-5-20251001',
+    provider: 'bedrock-nova', // 2026-07-14 full Nova migration — see 19_DECISION_LOG.md
+    model: 'apac.amazon.nova-lite-v1:0', // was 'claude-haiku-4-5-20251001' (Anthropic path dormant; revert = provider:'anthropic' + that model)
     maxTokens: 500,
     promptVersion: 'v2',
     outputMode: 'json',
@@ -289,7 +292,8 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
   // against the same 5-question adversarial suite with no regression before
   // making the change. See 19_DECISION_LOG.md.
   'conversational-sales-agent': {
-    model: 'claude-haiku-4-5-20251001', // 2026-07-08: switched from claude-sonnet-5 —
+    provider: 'bedrock-nova', // 2026-07-14 full Nova migration — revert = provider:'anthropic' + the prior model (path dormant, not deleted)
+    model: 'apac.amazon.nova-lite-v1:0', // 2026-07-14: was claude-haiku-4-5-20251001, which was — 2026-07-08: switched from claude-sonnet-5 —
     // deliberate, approved pre-launch cost trial (no real customers on this
     // useCase yet). 5-question adversarial suite re-verified against Haiku
     // with no regression vs. the Sonnet baseline. See 19_DECISION_LOG.md.
@@ -474,7 +478,8 @@ Respond with ONLY a single JSON object: { "reply": string, "qualified": boolean,
   // entry ... never a new method on AIService" — summarizing a finished
   // conversation is a distinct purpose from generating the next reply in one.
   'conversation-handoff-summary': {
-    model: 'claude-haiku-4-5-20251001',
+    provider: 'bedrock-nova', // 2026-07-14 full Nova migration — see 19_DECISION_LOG.md
+    model: 'apac.amazon.nova-lite-v1:0', // was 'claude-haiku-4-5-20251001' (Anthropic path dormant; revert = provider:'anthropic' + that model)
     maxTokens: 400,
     promptVersion: 'v1',
     outputMode: 'json',
