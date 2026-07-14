@@ -175,4 +175,9 @@ async function testKnowledgeEntry(companyId, candidateEntry) {
 
 module.exports = {
   testPromptAddendum, ADVERSARIAL_INPUTS, testKnowledgeEntry, MAX_TESTED_TRIGGERS,
+  // NOT dead code: as of 2026-07-14 this is imported by a SECOND consumer —
+  // scripts/testNovaCompliance.js (the standing pre-deploy Nova compliance gate) —
+  // so it can classify replies with the EXACT same known-false-positive logic
+  // this service uses, instead of reimplementing it. Keep exported.
+  isKnownGuaranteeFalsePositive,
 };
