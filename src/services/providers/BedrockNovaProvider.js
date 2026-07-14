@@ -1,6 +1,7 @@
 'use strict';
 
 const AWS = require('aws-sdk');
+const logger = require('../../config/logger');
 
 /**
  * BedrockNovaProvider — Amazon Nova (Bedrock Converse API) behind AIService's
@@ -50,9 +51,41 @@ function _coalesce(messages) {
   return out;
 }
 
+// Bedrock Converse has a SECOND hard rule beyond same-role alternation: the
+// message array MUST begin with a `user` turn. The Anthropic Messages API
+// tolerated an assistant-first history, so AIService can hand us a list whose
+// first element is an assistant turn — and in normal multi-turn flow it does:
+// the AI's own turn-1 reply is the first message ever written under a
+// freshly-created lead, so from turn 2 onward the fetched history starts with
+// an assistant turn. Left unstripped, Converse rejects the whole call with
+// "A conversation must start with a user message", silently breaking every
+// turn after the first. Strip any leading assistant turn(s) so the array
+// starts with user. (After _coalesce there is at most one leading assistant,
+// but the loop is defensive against being called on a non-coalesced array.)
+function _stripLeadingAssistant(messages) {
+  let i = 0;
+  while (i < messages.length && messages[i].role === 'assistant') i += 1;
+  return messages.slice(i);
+}
+
 async function generate(systemPrompt, messages, opts = {}) {
   const { model, maxTokens } = opts;
-  const converseMessages = _coalesce(messages).map((m) => ({
+  const coalesced = _coalesce(messages);
+  let normalized = _stripLeadingAssistant(coalesced);
+
+  // Only reachable if the ENTIRE input was assistant turns (no user message at
+  // all). AIService always appends the rendered prompt as the final user
+  // message, so this does not happen on the real path — but rather than send an
+  // empty array (Converse rejects it) or throw, degrade to a single user-role
+  // turn carrying the last message's content, matching turn-1's working
+  // prompt-only shape, and flag the anomaly for investigation.
+  if (normalized.length === 0) {
+    logger.warn('BedrockNovaProvider: no user turn after stripping leading assistant(s) — falling back to a single prompt-only user turn. This should not occur via AIService (which always appends a user prompt).');
+    const lastContent = coalesced.length ? coalesced[coalesced.length - 1].content : '';
+    normalized = [{ role: 'user', content: lastContent }];
+  }
+
+  const converseMessages = normalized.map((m) => ({
     role: m.role,
     content: [{ text: m.content }],
   }));
