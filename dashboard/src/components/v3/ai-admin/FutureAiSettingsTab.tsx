@@ -12,6 +12,14 @@ import { aiAdminKeys, fetchFutureSettings, saveFutureSettings, type FutureSettin
 
 type CustomModelSettings = FutureSettings['customModelSettings'];
 
+// These are OVERRIDE choices, not a mirror of what's live. As of Era 46 the
+// platform default is Amazon Nova Lite (see the Select placeholder) — the two
+// Claude models remain valid override targets because their code path is kept
+// dormant-not-deleted (19_DECISION_LOG.md Era 46), so a company could still be
+// pinned back to one. Nova is intentionally NOT a selectable option here: the
+// backend save enum (src/utils/validation.js aiAdminFutureSchema) allowlists
+// only these two + null, and null already means "use the platform default"
+// (= Nova). Adding Nova as a value would 400 on save until that enum widens.
 const MODEL_OPTIONS = [
   { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
   { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
@@ -84,7 +92,7 @@ export function FutureAiSettingsTab() {
         <div className={custom.enabled ? 'mt-4 grid gap-4 sm:grid-cols-2' : 'mt-4 grid gap-4 opacity-50 sm:grid-cols-2'}>
           <Select
             label="Model"
-            placeholder="Use platform default"
+            placeholder="Use platform default (Amazon Nova Lite)"
             options={MODEL_OPTIONS}
             value={custom.model ?? ''}
             onChange={(e) => setOverrides({ ...overrides, model: (e.target.value || null) as CustomModelSettings['model'] })}
