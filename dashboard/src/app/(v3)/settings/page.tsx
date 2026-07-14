@@ -28,6 +28,7 @@ import {
   X,
   Sparkles,
   FileText,
+  KeyRound,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card } from '@/components/v3/ui/Card';
@@ -72,7 +73,8 @@ type SettingsSection =
   | 'targets'
   | 'metric-config'
   | 'appearance'
-  | 'templates';
+  | 'templates'
+  | 'api-keys';
 
 interface SectionDef {
   id: SettingsSection;
@@ -104,6 +106,7 @@ const SECTIONS: SectionDef[] = [
   { id: 'tags',          label: 'Tags',             description: 'Manage contact tags',                    icon: <Tag className="h-5 w-5" />, visibleToRoles: ['admin', 'manager'] },
   { id: 'workflows',     label: 'Workflow settings',description: 'Manage and configure automations',       icon: <Zap className="h-5 w-5" />, adminOnly: true },
   { id: 'integrations',  label: 'Integrations',     description: 'Connect third-party tools',              icon: <Globe className="h-5 w-5" />, adminOnly: true },
+  { id: 'api-keys',      label: 'API Keys',         description: 'Keys for the public form-submission API', icon: <KeyRound className="h-5 w-5" />, adminOnly: true },
   { id: 'billing',       label: 'Billing & Plan',   description: 'Subscription, invoices, usage',          icon: <CreditCard className="h-5 w-5" />, adminOnly: true },
   { id: 'targets',       label: 'Metric Targets',   description: 'Set daily or monthly targets',           icon: <Activity className="h-5 w-5" />, adminOnly: true },
   { id: 'metric-config', label: 'Metric Config',    description: 'Edit metric labels, icons and weights',  icon: <Zap className="h-5 w-5" />, adminOnly: true },
@@ -1554,6 +1557,186 @@ function TagsSection() {
   );
 }
 
+// ── API Keys section ────────────────────────────────────────────────────────
+// Admin-only management of the long-lived keys that authenticate the PUBLIC
+// form-submission endpoint (POST /api/public/form-submission). Mirrors
+// TagsSection's list/isError/Retry pattern and EmployeesSection's one-time
+// secret-reveal (the full key is shown exactly once, never retrievable again).
+interface ApiKeyEntry {
+  keyId: string;
+  keyPrefix: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  status: 'active' | 'revoked';
+}
+
+function ApiKeysSection() {
+  const qc = useQueryClient();
+  const [newName, setNewName] = useState('');
+  const [freshKey, setFreshKey] = useState<{ key: string; name: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ['api-keys'],
+    queryFn: () => apiFetch<{ success: boolean; keys: ApiKeyEntry[] }>('/api/api-keys'),
+    staleTime: 30_000,
+  });
+  const keys = data?.keys ?? [];
+
+  const generateMut = useMutation({
+    mutationFn: (name: string) =>
+      apiFetch<{ success: boolean; key: string; name: string }>('/api/api-keys/generate', {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      }),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] });
+      setFreshKey({ key: res.key, name: res.name });
+      setNewName('');
+      setCopied(false);
+      toast.success('API key generated');
+    },
+    onError: (e: Error) => toast.error(apiErrorMessage(e, 'Failed to generate key')),
+  });
+
+  const revokeMut = useMutation({
+    mutationFn: (keyId: string) => apiFetch(`/api/api-keys/${keyId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['api-keys'] });
+      toast.success('API key revoked');
+    },
+    onError: (e: Error) => toast.error(apiErrorMessage(e, 'Failed to revoke key')),
+  });
+
+  const copyKey = () => {
+    if (!freshKey) return;
+    navigator.clipboard.writeText(freshKey.key)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); })
+      .catch(() => toast.error('Could not copy — copy it manually'));
+  };
+
+  const canGenerate = newName.trim().length > 0;
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-base font-semibold text-neutral-900 dark:text-neutral-100">API Keys</h2>
+        <p className="text-sm text-neutral-500">
+          Keys authenticate your landing page&apos;s server when it calls the public form-submission API. Store a key on your
+          server only — never expose it in a browser or public page. See the developer docs for the request format.
+        </p>
+      </div>
+
+      {/* One-time full-key reveal — shown once, never retrievable again */}
+      {freshKey && (
+        <Card>
+          <p className="text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+            New key “{freshKey.name}” — shown once
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <code className="flex-1 select-all break-all rounded-lg bg-neutral-100 px-3 py-2 font-mono text-sm text-neutral-800 dark:bg-neutral-800 dark:text-neutral-100">
+              {freshKey.key}
+            </code>
+            <Button size="sm" variant="secondary" onClick={copyKey}>
+              <Copy className="mr-1.5 h-3.5 w-3.5" />{copied ? 'Copied' : 'Copy'}
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-amber-600 dark:text-amber-400">
+            Save this now — it cannot be retrieved later. If you lose it, revoke it and generate a new one.
+          </p>
+          <Button size="sm" variant="ghost" className="mt-2" onClick={() => setFreshKey(null)}>
+            Done — I&apos;ve saved the key
+          </Button>
+        </Card>
+      )}
+
+      {/* Generate */}
+      <Card>
+        <p className="mb-3 text-sm font-semibold text-neutral-800 dark:text-neutral-200">Generate a New Key</p>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex-1 min-w-40">
+            <label className="mb-1 block text-xs font-medium text-neutral-500">Key name</label>
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && canGenerate && !generateMut.isPending) generateMut.mutate(newName.trim()); }}
+              placeholder="e.g. Landing page — Insta funnel"
+              maxLength={80}
+              className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary-600 focus:ring-1 focus:ring-primary-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
+            />
+          </div>
+          <Button
+            onClick={() => generateMut.mutate(newName.trim())}
+            disabled={!canGenerate || generateMut.isPending}
+            loading={generateMut.isPending}
+          >
+            Generate Key
+          </Button>
+        </div>
+      </Card>
+
+      {/* Existing keys */}
+      <Card noPadding>
+        <div className="flex items-center gap-3 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
+          <span className="flex-1 text-sm font-semibold text-neutral-800 dark:text-neutral-200">Your Keys</span>
+          <span className="shrink-0 text-xs text-neutral-400">{keys.length} keys</span>
+          <button onClick={() => refetch()} className="shrink-0 text-neutral-400 hover:text-neutral-600" title="Refresh">
+            <RefreshCw className="h-4 w-4" />
+          </button>
+        </div>
+
+        {isLoading && (
+          <div className="space-y-2 p-4">
+            {[0,1,2].map((i) => <Skeleton key={i} className="h-10 w-full" />)}
+          </div>
+        )}
+
+        {isError && (
+          <div className="py-8 text-center">
+            <p className="text-sm text-error-600 dark:text-error-400">Failed to load API keys</p>
+            <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+          </div>
+        )}
+
+        {!isLoading && !isError && (
+          <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">
+            {keys.length === 0 ? (
+              <li className="py-10 text-center text-sm text-neutral-400">No API keys yet — generate your first one above</li>
+            ) : (
+              keys.map((k) => (
+                <li key={k.keyId} className="flex items-center gap-3 px-4 py-3 hover:bg-neutral-50 dark:hover:bg-neutral-800/40">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-medium text-neutral-800 dark:text-neutral-200">{k.name}</span>
+                      {k.status === 'revoked' && <Badge variant="default">Revoked</Badge>}
+                    </div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-3 text-xs text-neutral-400">
+                      <span className="font-mono">{k.keyPrefix}…</span>
+                      <span>Created {new Date(k.createdAt).toLocaleDateString()}</span>
+                      <span>{k.lastUsedAt ? `Last used ${new Date(k.lastUsedAt).toLocaleDateString()}` : 'Never used'}</span>
+                    </div>
+                  </div>
+                  {k.status === 'active' && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => { if (window.confirm(`Revoke “${k.name}”? Any server still using it will start getting 401s immediately.`)) revokeMut.mutate(k.keyId); }}
+                      disabled={revokeMut.isPending}
+                    >
+                      Revoke
+                    </Button>
+                  )}
+                </li>
+              ))
+            )}
+          </ul>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 // ── Stub sections ─────────────────────────────────────────────────────────────
 
 function StubSection({ title, description }: { title: string; description: string }) {
@@ -1612,6 +1795,7 @@ function SettingsPageInner() {
       case 'organisation':  return <StubSection title="Organisation" description="Company name, logo, and timezone" />;
       case 'pipeline':      return <StubSection title="Pipeline Stages" description="Customise your sales pipeline stages" />;
       case 'tags':          return <TagsSection />;
+      case 'api-keys':      return <ApiKeysSection />;
       case 'workflows':     return <StubSection title="Workflow settings" description="Default workflow behaviour" />;
       case 'integrations':  return <StubSection title="Integrations" description="Connect to third-party tools" />;
       case 'billing':       return <StubSection title="Billing & Plan" description="Subscription and payment details" />;
