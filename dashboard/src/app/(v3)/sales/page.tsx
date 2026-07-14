@@ -269,12 +269,15 @@ function KanbanCard({
           equivalent, so tapping this pill opens a Drawer-based stage picker
           instead. Sibling of <Link>, same absolute-positioning slot pattern
           as the drag handle above, so it never conflicts with card navigation.
-          Always visible (not hover-gated) since touch devices have no hover. */}
+          md:hidden — per the approved design, desktop keeps its existing
+          hover-revealed drag handle as the only top-corner affordance;
+          this pill is mobile-only and (unlike the drag handle) not
+          hover-gated there, since touch devices have no hover. */}
       {!bulkMode && (
         <button
           type="button"
           onClick={() => onOpenStagePicker(contact)}
-          className="absolute left-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border-2 border-white shadow-sm dark:border-neutral-900"
+          className="absolute left-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border-2 border-white shadow-sm md:hidden dark:border-neutral-900"
           style={{ backgroundColor: stage.color }}
           aria-label={`Change stage — currently ${stage.label}`}
           title={`Stage: ${stage.label} — tap to change`}
