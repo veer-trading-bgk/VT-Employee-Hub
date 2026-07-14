@@ -119,6 +119,12 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
   — needs real business input to set actual values, plus the hardcoded `USD_TO_INR_RATE` FX snapshot
   (dated 2026-07-08, not auto-refreshed) needs a refresh mechanism. Viir's plate — not a code-only fix.
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "B4 — AI Admin Module Audit", finding #2.
+- **Public API — deferred v2 items (spec §11).** The public form-submission endpoint shipped
+  2026-07-14 (`docs/PUBLIC_API.md`, `docs/phase3/TECHNICAL_DEBT.md` — "Public API — Form-Submission
+  Endpoint"). Deliberately out of scope in v1, deferred until a real client's usage pattern is known:
+  **multiple keys per company**, a **key-rotation policy**, and **per-key custom rate limits** (v1 is
+  a single flat 60/min per key). Also queued: making form **traits a queryable lead attribute**
+  (v1 stores them on the interaction/touch metadata only, not the `LEAD#` item). Not started.
 - **`ctwa_clid` / Meta ads click-to-WhatsApp attribution capture.** No Meta Ads API integration
   exists in this codebase today (CTWA campaigns are record-only — configured in Meta Ads Manager
   directly, not launched from APForce; see `docs/bible/20_CURRENT_STATE.md` §4). Needed before

@@ -800,3 +800,30 @@ Unprefixed `h-11` (44px) is the base/floor; `sm:h-8`/`sm:h-9` (Tailwind `sm` = 6
 **Fix:** Not implemented — each is small; bundle as a low-priority sweep-up batch.
 
 **Priority:** Low.
+
+## Public API — Form-Submission Endpoint (shipped 2026-07-14)
+
+**What shipped:** A public, API-key-authenticated endpoint — `POST /api/public/form-submission` — that lets a company's own landing-page backend notify APForce when a lead submits a form, so APForce records the form data on the lead and fires a WhatsApp confirmation via the existing Automation engine. Full spec: `APForce_Public_API_Spec` (Draft v1). Client-facing contract: `docs/PUBLIC_API.md`. Scoped narrowly (spec §1): one endpoint, one new trigger type (`form_submitted`), reusing every send/identity/automation mechanism that already existed (CIS/ADR-013, WhatsAppSendService/ADR-012, AutomationEngine).
+
+**New surfaces:**
+- `src/services/ApiKeyService.js` — generate / verify / list / revoke. SHA-256 hash at rest, raw key returned once and never stored or logged.
+- `src/middleware/apiKeyAuth.js` — `X-API-Key` → verify → `req.company` (NOT `req.user`; no session).
+- `src/middleware/rateLimiter.js` — added `apiKeyRateLimit()` (60/min per key), reuses the existing `atomicIncrement` primitive.
+- `src/routes/public.js` — the endpoint. `src/routes/apiKeys.js` — admin generate/list/revoke (session-auth, admin-only).
+- Settings → API Keys section (admin-only) + automation canvas `form_submitted` trigger option.
+
+**Four design decisions taken during build (all confirmed with Viir before writing):**
+1. **Key→company resolution via an O(1) lookup item.** The main record is `CONFIG#APIKEY#{companyId}/KEY#{keyId}`, but `verify()` knows only the raw key, not the companyId. A companion item `CONFIG#APIKEY#LOOKUP#{keyHash}/LOOKUP → {companyId, keyId, status}` is written atomically alongside it (TransactWrite) so verification is a single GetItem by hash — avoiding a full-table Scan of the shared METRICS table on every public call. Both records revoke together.
+2. **Claim-first idempotency (not the spec's literal "write after success").** The `IDEMP#{companyId}/{idempotencyKey}` record is claimed atomically (`attribute_not_exists`) *before* processing → 409 on conflict. This is what actually prevents a double-click / slow-network retry from firing the confirmation template twice; a check-then-write-after-success leaves a TOCTOU window where both near-simultaneous submits pass the check. On a *processing* failure the claim is released so a genuinely failed submit stays retryable; once CIS commits, the claim is never released. 24h TTL.
+3. **Trait tokens are namespaced `{{trait.<key>}}`.** Resolved in `welcomeVariables.js` (both the template-params path and the free-text path), so they never collide with the fixed `{{name}}/{{phone}}/{{source}}` registry, and `findUnsupportedTokens()` still rejects genuinely-unknown tokens while allowing any trait the client sent.
+4. **Traits are stored on the interaction/touch metadata**, via CIS's existing `metadata` passthrough (`formTraits`), keeping CIS unmodified (spec §4) — they are visible in the lead's activity timeline, and separately carried in the automation context for `{{trait.*}}` resolution. They are **not** a first-class, queryable lead attribute (see debt below).
+
+**Known residual debt / limitations:**
+- **Traits are not queryable as a lead field.** Decision #4 stores them on the interaction metadata, not the LEAD# item. If a future need arises to filter/segment leads by a form trait, a persistent `formTraits` map on the lead record (a post-CIS write) would be required — deliberately deferred.
+- **`idempotencyKey` is required.** The endpoint depends on the client sending a stable key per logical submission for its double-submit guarantee to hold; a client that sends a fresh random key per retry gets no protection. Documented in `docs/PUBLIC_API.md`.
+- **Accepted limitation — a hard process/Lambda kill between the claim write and the complete-mark strands the claim.** The claim is released on a *caught* failure (`CIS.resolveOrCreate` throwing → `catch` deletes the claim), but a hard kill (Lambda timeout/OOM/crash) after the claim `put` succeeds and before either CIS commits or the complete-mark runs is not caught by any `catch`, so the `IDEMP#` record is left in `status: 'processing'` and blocks a retry of that exact `idempotencyKey` until its **24h TTL** expires. This is deliberately **accepted, not fixed**: the safe alternative (release-before-commit) would re-open the double-fire race the claim-first design exists to close, and the realistic blast radius is one stranded submission recoverable by the client with a new `idempotencyKey` or a 24h wait. A future hardening (a short claim TTL extended to 24h only on completion, so a stranded `processing` claim self-clears in minutes) is noted here should the tradeoff ever need revisiting.
+- **Out of scope (spec §11), tracked in `PENDING_WORK.md`:** multiple keys per company, key rotation policy, and per-key custom rate limits — deferred until a real client's usage pattern is known.
+
+**Validation:** `tests/apiKeyService.test.js`, `tests/apiKeyAuth.test.js`, `tests/publicFormSubmission.test.js`, `tests/formTraitVariables.test.js` — all green; full suite 1619/1619 passing, frontend `tsc --noEmit` clean. Not yet exercised against a real browser/live key (no staging key issued at build time).
+
+**Priority:** Shipped feature — this entry documents the design rationale and the deferred items, not an open defect.
