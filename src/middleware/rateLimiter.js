@@ -51,6 +51,32 @@ const rateLimit = (limit = 100, windowMs = WINDOW_MS) => {
   };
 };
 
+// ── Per-API-key rate limiter (public endpoint — spec §7) ──────────────────────
+// Same primitive as the IP limiter above, but keyed on req.apiKeyId (set by
+// apiKeyAuth) rather than req.ip, so one company's noisy key can never exhaust
+// another company's quota. MUST be mounted AFTER apiKeyAuth. Default 60/min.
+const apiKeyRateLimit = (limit = 60, windowMs = WINDOW_MS) => {
+  return async (req, res, next) => {
+    try {
+      const apiKeyId = req.apiKeyId;
+      // No resolved key (shouldn't happen behind apiKeyAuth) — don't block; auth
+      // already gates access, and failing open here matches the IP limiter's stance.
+      if (!apiKeyId) return next();
+      const windowKey = Math.floor(Date.now() / windowMs) * windowMs;
+      const pk = `apikey_limit#${apiKeyId}`;
+      const sk = `window#${windowKey}`;
+      const count = await atomicIncrement(pk, sk, windowMs);
+      if (count > limit) {
+        logger.warn(`API key rate limit exceeded for key ${apiKeyId}`);
+        return res.status(429).json({ error: 'Rate limit exceeded. Please retry shortly.' });
+      }
+    } catch (err) {
+      logger.error('API key rate limiter middleware error', err);
+    }
+    next();
+  };
+};
+
 // ── Per-email login rate limiter ──────────────────────────────────────────────
 const MAX_LOGIN_FAILS = 10;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
@@ -86,4 +112,4 @@ const loginRateLimiter = {
   },
 };
 
-module.exports = { rateLimit, loginRateLimiter, atomicIncrement, getCount };
+module.exports = { rateLimit, apiKeyRateLimit, loginRateLimiter, atomicIncrement, getCount };
