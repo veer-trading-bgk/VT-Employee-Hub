@@ -27,11 +27,10 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
 
 ## Queued technical work
 
-- **M2 remaining batches (M1 mobile audit follow-up).** M2-A, M2-B (Fixes 1-4), M2-D, and now
-  **M2-C + M2-E are done** (`docs/phase3/TECHNICAL_DEBT.md` — "M1 Mobile Audit" / "M2-A" / "M2-C +
-  M2-E — mobile parity batch"). M2 remaining is now just **F → G**:
-  - **F** — Settings content responsiveness, unchanged (unblocked now that M2-A/B/C/D/E are
-    closed; overlaps with B3 finding #4 below, coordinate scope before starting either).
+- **M2 remaining batches (M1 mobile audit follow-up).** M2-A, M2-B (Fixes 1-4), M2-D, M2-C, M2-E,
+  and now **M2-F (Settings mobile section picker, B3 finding #4) are all done**
+  (`docs/phase3/TECHNICAL_DEBT.md` — "M1 Mobile Audit" / "M2-A" / "M2-C + M2-E — mobile parity
+  batch" / "Settings Module Audit" finding #4). M2 remaining is now just **G**:
   - **G** — sweep-up / remaining loose ends, unchanged (still carrying the M2-A icon-only
     `h-8`/`h-7` touch-target heuristic list, see TECHNICAL_DEBT.md) — **plus two items carried
     over from E's original expanded scope that this batch did NOT cover, re-queued here rather
@@ -83,14 +82,6 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
   conversation drill-down + per-day counts, extends AI Administration's Compliance tab, reuses
   `queryAuditLogs()`), pre-onboarding priority, not yet implemented.
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "B4 — AI Admin Module Audit", findings #4/#5/#11.
-- **Settings mobile navigation build (B3 finding #4).** The documented mobile "two-screen"
-  Settings experience (section list → section content, back arrow returns) does not exist —
-  `settings/page.tsx`'s sidebar is simply `hidden ... md:flex` with no mobile equivalent, so below
-  768px there is no way to switch Settings sections through the UI at all (confirmed live). Needs a
-  real mobile nav (bottom sheet, hamburger, or a genuine two-screen router state) — a build item,
-  not a one-line fix. Overlaps with M2-F (Settings content responsiveness, above) — coordinate
-  scope before starting either. Not started.
-  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Settings Module Audit", finding #4.
 - **Bare (ungated) GET routes in `companies.js` and `whatsapp.js` (B3 finding #9).**
   `companies.js`'s `GET /profile`/`GET /trial` and `whatsapp.js`'s `GET /flows`/`GET /branches`
   have only `authMiddleware` — any role. Docs say Company Profile should exclude Sales/Support and

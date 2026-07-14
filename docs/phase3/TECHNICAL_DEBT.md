@@ -457,7 +457,7 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Priority:** Resolved — was Low/Medium (no real data-mutation risk since the backend already rejected it, but a genuine UI-level RBAC gate failure on a surface meant to be fully locked down).
 
-## Settings Module Audit (B3, 2026-07-13) — 17 findings, 13 resolved across four sessions (#1, #2, #3, #5, #6, #7, #7b, #8, #10, #11, #12, #14, #15), 1 doc-fix (#13), 3 open (#4, #9, #16)
+## Settings Module Audit (B3, 2026-07-13) — 17 findings, 14 resolved across five sessions (#1, #2, #3, #4, #5, #6, #7, #7b, #8, #10, #11, #12, #14, #15), 1 doc-fix (#13), 2 open (#9, #16)
 
 **Source:** a scoped read-only audit of the Settings module (`settings/page.tsx`'s tab-switcher and every inline section, all extracted section components under `dashboard/src/components/v3/settings/` and `dashboard/src/components/settings/`, and their backing backend routes) — 6 audit tasks given directly in chat: the DL-021 raw-role sweep on the 6 candidates tracked in `docs/PENDING_WORK.md`, a spec-vs-built matrix against `06_SCREEN_SPECIFICATIONS.md`/`02_INFORMATION_ARCHITECTURE.md`, a permission-matrix cross-check against `09_PERMISSION_MATRIX.md` §10, a backend gate audit, dead/stub UI + state-handling review, and real-browser role-scoped verification (admin/manager/team_lead/telecaller, plus a mobile-viewport check) via a temporary no-login Playwright harness, deleted after use. Findings #1, #2, #8 were fixed the same session as "Batch S1" (security-only fixes, each its own commit, held for review before push); #13 resolved as a doc-fix in the same batch. Findings #3-#7, #7b, #9-#12, #14-#16 remain open, tracked below and (selectively) in `docs/PENDING_WORK.md`.
 
@@ -485,13 +485,15 @@ Verified end-to-end for real: uploaded a real image via the actual presigned-S3 
 
 **Priority:** Resolved — was High.
 
-### 4 — OPEN: the documented mobile "two-screen" Settings experience does not exist
+### 4 — RESOLVED: the documented mobile "two-screen" Settings experience does not exist
 
 **Issue:** `settings/page.tsx:1489` — `<aside className="hidden w-[240px] ... md:flex">`, `<main>` has no responsive hiding at all. Confirmed live at 375px: the section-list sidebar is fully hidden, `<main>` renders the active section directly, and there is no back button, no section picker, no way to switch sections at all — stuck on whatever `?tab=` resolved to (default `profile`). Compounding this: `docs/v3/08_RESPONSIVE_GUIDELINES.md` describes a custom 4-tier breakpoint scale claimed to be "defined once in `design-tokens.css`" — that file/override doesn't exist; `globals.css`'s `@theme inline` block registers only fonts/colors, no breakpoints, so Tailwind v4's *default* scale is actually in effect (`md`=768px, not the doc's claimed 1280px "laptop" tier).
 
-**Fix:** Not yet scoped — needs a real mobile nav (bottom sheet, hamburger, or a genuine two-screen router state). Build item, not a one-line fix. Tracked in `docs/PENDING_WORK.md`.
+**Fix (M2-F, commit `25473e4`):** re-confirmed unchanged (read-only investigation first, real-browser check at 375px) before implementing — still exactly as found here, untouched by any commit between this finding and the fix. Reused Inbox's existing list↔detail↔Back pattern rather than inventing a new one (surveyed Customer 360's tab-bar-with-`mobileLabel` pattern too — doesn't fit; Settings has up to 18 sections with long labels, too long for a horizontal strip). New `mobileSectionChosen` state: the existing sidebar list renders full-width below `md` when nothing's chosen; picking a section shows its content full-width with a new `md:hidden` Back button above it. Back only flips `mobileSectionChosen`, never touches `activeSection` — so re-opening the list still shows the last-viewed section as current, and picking a different one works normally. A section reached via an explicit `?tab=` deep link renders its content directly (skips the list step, matching how the rest of the app treats deep links as intentional) but Back still returns to the full list, not browser history and not a Profile default. Single file, reused the existing role-filtered section list and `renderContent()` switch unchanged — no new components.
 
-**Priority:** High — confirmed live, fully broken experience for any mobile user not on the default Profile tab.
+**Verified in a real browser:** 375px — list renders full-width with all 18 admin-visible sections, tap opens content with Back visible, Back returns to list with the right section still `aria-current`, picking a different section from there works, `?tab=whatsapp` deep-link lands directly on content and Back still returns to list correctly. 1280px — aside (240px) and main render side-by-side simultaneously, unaffected by `mobileSectionChosen`, Back button not visible, byte-for-byte unchanged from before. The `08_RESPONSIVE_GUIDELINES.md` breakpoint-doc discrepancy noted in the original finding is unrelated to this fix and remains undocumented-doc-drift, not addressed here.
+
+**Priority:** Resolved — was High (confirmed live, fully broken experience for any mobile user not on the default Profile tab).
 
 ### 5 — RESOLVED: `renderContent()` had zero role gating — direct `?tab=` navigation rendered admin-only sections to any role
 
@@ -697,7 +699,7 @@ Unprefixed `h-11` (44px) is the base/floor; `sm:h-8`/`sm:h-9` (Tailwind `sm` = 6
 
 **tsc/ESLint/`next build`:** all clean — confirmed the 7 pre-existing ESLint errors/9 warnings elsewhere in `sales/page.tsx`/`contacts/page.tsx`/`analytics/page.tsx` are unchanged (same issues, shifted line numbers) by linting the pre-change committed versions side-by-side, not just eyeballing the diff.
 
-**Priority:** Resolved — closes M1.5's Kanban/Templates-preview IMPOSSIBLE items and the Contacts/Analytics HIDDEN-class quick wins. Per `docs/PENDING_WORK.md`'s M2 ordering rationale, this was explicitly called out as the bulk of daily agent mobile work; only M2-F (Settings mobile nav) and M2-G (sweep-up) remain queued.
+**Priority:** Resolved — closes M1.5's Kanban/Templates-preview IMPOSSIBLE items and the Contacts/Analytics HIDDEN-class quick wins. Per `docs/PENDING_WORK.md`'s M2 ordering rationale, this was explicitly called out as the bulk of daily agent mobile work. M2-F (Settings mobile nav) is now also resolved (see "Settings Module Audit" finding #4 below) — only M2-G (sweep-up) remains queued.
 
 ## Post-M2-C-push report: 3 items, 2 pre-existing bugs (not regressions), 1 false alarm — RESOLVED
 
