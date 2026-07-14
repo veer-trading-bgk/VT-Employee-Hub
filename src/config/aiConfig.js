@@ -526,6 +526,13 @@ const PRICING = {
     // logging keeps working if rollback to Sonnet ever happens (Era 32,
     // 19_DECISION_LOG.md) — must be bumped to $3/$15 after 2026-08-31.
     'claude-sonnet-5': { inputPerMillion: 2.0, outputPerMillion: 10.0 }, // PLACEHOLDER — intro rate, expires 2026-08-31
+    // Amazon Nova Lite via the apac (Mumbai/ap-south-1) inference profile.
+    // VERIFIED 2026-07-14 against the live AWS Pricing API (ServiceCode
+    // AmazonBedrock, regionCode ap-south-1): usagetype APS3-NovaLite-input-tokens
+    // = $0.000071/1K = $0.071/1M; APS3-NovaLite-output-tokens = $0.000284/1K =
+    // $0.284/1M. NOT a placeholder, and NOT the US base rate ($0.06/$0.24) —
+    // the Mumbai profile prices ~18% higher, confirmed rather than assumed.
+    'apac.amazon.nova-lite-v1:0': { inputPerMillion: 0.071, outputPerMillion: 0.284 },
   },
   marginMultiplier: 1.5, // PLACEHOLDER
   pointsPerUsd: 100,     // PLACEHOLDER — 1 wallet point = $0.01 at this rate
