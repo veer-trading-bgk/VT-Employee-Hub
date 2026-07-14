@@ -195,7 +195,7 @@ function Lightbox({ src, filename, mediaType = 'image', onClose }: {
           <button
             onClick={onClose}
             aria-label="Close lightbox"
-            className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/10 text-lg text-white hover:bg-white/20"
+            className="flex h-11 w-11 items-center justify-center rounded-lg bg-white/10 text-lg text-white hover:bg-white/20 sm:h-8 sm:w-8"
           >
             ✕
           </button>
@@ -934,7 +934,7 @@ function ConversationPane() {
                       setInputMode('reply');
                       inputRef.current?.focus();
                     }}
-                    className="mb-1 flex-shrink-0 rounded-full p-1 text-xs text-slate-300 hover:bg-slate-100 hover:text-indigo-600 dark:hover:bg-slate-700 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100"
+                    className="mb-1 flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full text-xs text-slate-300 hover:bg-slate-100 hover:text-indigo-600 sm:h-6 sm:w-6 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 dark:hover:bg-slate-700"
                     aria-label="Reply to this message"
                   >
                     ↩
@@ -1011,7 +1011,7 @@ function ConversationPane() {
               </div>
               <button
                 onClick={() => setReplyTo(null)}
-                className="mt-0.5 flex-shrink-0 text-sm leading-none text-slate-400 hover:text-red-500"
+                className="flex h-11 w-11 flex-shrink-0 items-center justify-center text-sm leading-none text-slate-400 hover:text-red-500 sm:h-6 sm:w-6"
                 aria-label="Cancel reply"
               >
                 ×
@@ -1118,7 +1118,7 @@ function ConversationPane() {
                   onClick={() => fileRef.current?.click()}
                   title="Attach image, video or document"
                   aria-label="Attach file"
-                  className="flex-shrink-0 rounded-xl border border-slate-200 px-3 py-2.5 text-slate-400 transition hover:text-indigo-600 dark:border-slate-700"
+                  className="flex-shrink-0 rounded-xl border border-slate-200 px-3 py-2.5 text-slate-400 transition hover:text-indigo-600 min-h-11 sm:min-h-0 dark:border-slate-700"
                 >
                   <Paperclip className="h-4 w-4" />
                 </button>
@@ -1155,7 +1155,7 @@ function ConversationPane() {
               <button
                 onClick={handleSend}
                 disabled={!canSend}
-                className={`rounded-xl px-4 py-2.5 text-sm font-bold text-white transition disabled:opacity-40 ${
+                className={`rounded-xl px-4 py-2.5 text-sm font-bold text-white transition disabled:opacity-40 min-h-11 sm:min-h-0 ${
                   inputMode === 'note' ? 'bg-amber-500 hover:bg-amber-600' : 'bg-indigo-600 hover:bg-indigo-700'
                 }`}
                 aria-label={inputMode === 'note' ? 'Post note' : 'Send message'}

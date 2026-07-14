@@ -331,7 +331,7 @@ function TimelinePanel() {
           {search && (
             <button
               onClick={() => setSearch('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300"
+              className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center text-xs text-slate-400 hover:text-slate-600 sm:h-6 sm:w-6 dark:hover:text-slate-300"
               aria-label="Clear search"
             >
               ✕
