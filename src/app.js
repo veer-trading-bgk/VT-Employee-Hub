@@ -26,7 +26,10 @@ const tagsRoutes = require('./routes/tags');
 const automationsRoutes = require('./routes/automations');
 const campaignsRoutes = require('./routes/campaigns');
 const formsRoutes = require('./routes/forms');
+const apiKeysRoutes = require('./routes/apiKeys');
+const publicRoutes = require('./routes/public');
 const { authMiddleware, subscriptionMiddleware } = require('./middleware/auth');
+const { apiKeyAuth } = require('./middleware/apiKeyAuth');
 const { errorHandler } = require('./middleware/errorHandler');
 
 const app = express();
@@ -99,6 +102,11 @@ app.post('/api/automations/webhook/:companyId/:workflowId/:token', automationsRo
 app.use('/api/automations', authMiddleware, subscriptionMiddleware, automationsRoutes);
 app.use('/api/campaigns',  authMiddleware, subscriptionMiddleware, campaignsRoutes);
 app.use('/api/forms', formsRoutes);
+// Session-authenticated admin management of API keys (generate/list/revoke).
+app.use('/api/api-keys', authMiddleware, subscriptionMiddleware, apiKeysRoutes);
+// Public, server-to-server endpoint — apiKeyAuth (X-API-Key), NOT authMiddleware.
+// The one place this diverges from every other route (spec §6.2).
+app.use('/api/public', apiKeyAuth, publicRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
