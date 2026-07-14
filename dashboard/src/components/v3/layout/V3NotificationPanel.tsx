@@ -106,7 +106,7 @@ export function V3NotificationPanel({
             <button
               onClick={onClose}
               aria-label="Close notifications"
-              className="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700 dark:hover:bg-neutral-800"
+              className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700 sm:h-8 sm:w-8 dark:hover:bg-neutral-800"
             >
               <X className="h-4 w-4" aria-hidden />
             </button>

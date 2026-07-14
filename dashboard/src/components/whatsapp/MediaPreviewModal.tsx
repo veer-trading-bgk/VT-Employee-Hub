@@ -48,7 +48,7 @@ export function MediaPreviewModal({
           <button
             onClick={onClose}
             aria-label="Close preview"
-            className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-lg leading-none text-white hover:bg-white/20"
+            className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-lg leading-none text-white hover:bg-white/20 sm:h-8 sm:w-8"
           >
             ✕
           </button>

@@ -139,10 +139,10 @@ function PaginationBar({ page, totalItems, pageSize, onPage }: {
       <span className="text-xs text-neutral-400 tabular-nums">{from}–{to} of {totalItems}</span>
       <div className="flex gap-1">
         <button onClick={() => onPage(page - 1)} disabled={page === 1} aria-label="Previous page"
-          className="flex h-7 w-7 items-center justify-center rounded border border-neutral-200 text-sm text-neutral-500 hover:bg-neutral-50 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800">‹</button>
+          className="flex h-11 w-11 items-center justify-center rounded border border-neutral-200 text-sm text-neutral-500 hover:bg-neutral-50 disabled:opacity-40 sm:h-7 sm:w-7 dark:border-neutral-700 dark:hover:bg-neutral-800">‹</button>
         <span className="flex h-7 items-center px-2.5 text-xs font-semibold text-neutral-700 dark:text-neutral-300">{page}/{totalPages}</span>
         <button onClick={() => onPage(page + 1)} disabled={page === totalPages} aria-label="Next page"
-          className="flex h-7 w-7 items-center justify-center rounded border border-neutral-200 text-sm text-neutral-500 hover:bg-neutral-50 disabled:opacity-40 dark:border-neutral-700 dark:hover:bg-neutral-800">›</button>
+          className="flex h-11 w-11 items-center justify-center rounded border border-neutral-200 text-sm text-neutral-500 hover:bg-neutral-50 disabled:opacity-40 sm:h-7 sm:w-7 dark:border-neutral-700 dark:hover:bg-neutral-800">›</button>
       </div>
     </div>
   );
@@ -181,7 +181,7 @@ function Setup2FAModal({ employee, onClose }: { employee: Employee; onClose: () 
             <h2 className="text-sm font-semibold text-neutral-900 dark:text-white">Enable 2FA</h2>
             <p className="text-xs text-neutral-500">{employee.name} · {employee.email}</p>
           </div>
-          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"><IcX /></button>
+          <button onClick={onClose} aria-label="Close" className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 sm:h-8 sm:w-8 dark:hover:bg-neutral-800"><IcX /></button>
         </div>
         <div className="px-6 py-5">
           {!result ? (
@@ -266,7 +266,7 @@ function ResetPasswordModal({ employee, onClose }: { employee: Employee; onClose
             <h2 className="text-sm font-semibold text-neutral-900 dark:text-white">Reset Password</h2>
             <p className="text-xs text-neutral-500">{employee.name} · {employee.email}</p>
           </div>
-          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"><IcX /></button>
+          <button onClick={onClose} aria-label="Close" className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 sm:h-8 sm:w-8 dark:hover:bg-neutral-800"><IcX /></button>
         </div>
         <div className="space-y-4 px-6 py-5">
           <div>
@@ -334,7 +334,7 @@ function Reset2FADialog({ employee, onClose }: { employee: Employee; onClose: ()
       <div className="w-full max-w-sm rounded-xl border border-neutral-200 bg-white shadow-2xl dark:border-neutral-700 dark:bg-neutral-900">
         <div className="flex items-center justify-between border-b border-neutral-100 px-6 py-4 dark:border-neutral-800">
           <h2 className="text-sm font-semibold text-neutral-900 dark:text-white">Reset 2FA</h2>
-          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"><IcX /></button>
+          <button onClick={onClose} aria-label="Close" className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 sm:h-8 sm:w-8 dark:hover:bg-neutral-800"><IcX /></button>
         </div>
         <div className="px-6 py-5">
           <p className="mb-4 text-sm text-neutral-600 dark:text-neutral-400">
@@ -402,7 +402,7 @@ function PerformanceReportModal({ employee, onClose }: { employee: Employee; onC
                 </button>
               ))}
             </div>
-            <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"><IcX /></button>
+            <button onClick={onClose} aria-label="Close" className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 sm:h-8 sm:w-8 dark:hover:bg-neutral-800"><IcX /></button>
           </div>
         </div>
         <div className="flex-1 overflow-y-auto px-6 py-5">
@@ -507,7 +507,7 @@ function AddEmployeeModal({ onClose, onSuccess }: { onClose: () => void; onSucce
             <h2 className="text-sm font-semibold text-neutral-900 dark:text-white">Add Employee</h2>
             <p className="text-xs text-neutral-500">Fill in the details below to create an account.</p>
           </div>
-          <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"><IcX /></button>
+          <button onClick={onClose} aria-label="Close" className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 sm:h-8 sm:w-8 dark:hover:bg-neutral-800"><IcX /></button>
         </div>
         <div className="overflow-y-auto px-6 py-5">
           <div className="space-y-4">
@@ -551,7 +551,8 @@ function AddEmployeeModal({ onClose, onSuccess }: { onClose: () => void; onSucce
                     </button>
                   </div>
                   <button type="button" onClick={() => setForm(f => ({ ...f, password: generatePassword() }))}
-                    className="shrink-0 rounded-lg border border-neutral-200 bg-white px-2.5 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+                    aria-label="Regenerate password"
+                    className="shrink-0 rounded-lg border border-neutral-200 bg-white px-2.5 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-50 min-h-11 sm:min-h-0 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
                     title="Regenerate">↺</button>
                 </div>
               </div>
