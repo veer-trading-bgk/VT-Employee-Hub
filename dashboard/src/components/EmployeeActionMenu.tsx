@@ -38,7 +38,7 @@ const IcDots   = () => (
 );
 
 const ib = [
-  'flex h-7 w-7 items-center justify-center rounded-md transition-colors',
+  'flex h-11 w-11 items-center justify-center rounded-md transition-colors sm:h-7 sm:w-7',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:ring-offset-1',
 ].join(' ');
 

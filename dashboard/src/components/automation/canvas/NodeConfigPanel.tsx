@@ -68,7 +68,7 @@ export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose, o
         <div className="flex shrink-0 items-center gap-1">
           <button
             onClick={onDelete}
-            className="rounded-lg p-1.5 text-neutral-400 hover:bg-error-50 hover:text-error-600 dark:hover:bg-error-900/20"
+            className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-400 hover:bg-error-50 hover:text-error-600 sm:h-8 sm:w-8 dark:hover:bg-error-900/20"
             aria-label="Delete node"
             title="Delete node"
           >
@@ -76,7 +76,7 @@ export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose, o
           </button>
           <button
             onClick={onClose}
-            className="rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+            className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 sm:h-8 sm:w-8 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
             aria-label="Close panel"
           >
             <X className="h-4 w-4" aria-hidden />

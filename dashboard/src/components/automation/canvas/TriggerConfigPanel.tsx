@@ -40,7 +40,7 @@ export function TriggerConfigPanel({ trigger, onChange, onClose, workflowId }: T
         </div>
         <button
           onClick={onClose}
-          className="shrink-0 rounded-lg p-1.5 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-neutral-500 hover:bg-neutral-100 hover:text-neutral-800 sm:h-8 sm:w-8 dark:hover:bg-neutral-800 dark:hover:text-neutral-200"
           aria-label="Close panel"
         >
           <X className="h-4 w-4" aria-hidden />
