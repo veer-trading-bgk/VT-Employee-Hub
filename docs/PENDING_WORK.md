@@ -27,28 +27,30 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
 
 ## Queued technical work
 
-- **M2 remaining batches (M1 mobile audit follow-up).** M2-A, M2-B (Fixes 1-4), and M2-D are done
-  (`docs/phase3/TECHNICAL_DEBT.md` — "M1 Mobile Audit" / "M2-A"). Order: **C → E → F → G**. Still
-  queued:
-  - **C (EXPANDED)** — Kanban stage-picker (proposal already approved and banked, ready to
-    implement) **+** Customer 360 CRM tab's mobile exposure (currently `lg:hidden` — zero stage/
-    score/source path on phone at all; M1.5 audit finding, one of 4 IMPOSSIBLE items).
-  - **E (EXPANDED)** — broader CSS sweep **+** Templates create-flow Step 2 preview (currently
-    `md:hidden` — templates are created blind below `md`; M1.5 IMPOSSIBLE item) **+** Contacts
-    import's column-mapping dialog overflow (can't complete the mapping step on phone; M1.5
-    IMPOSSIBLE item) **+** M1.5's 9 HIDDEN-entry-point quick wins (same gap class as the Inbox
-    snapshot-panel fix above, found systematically this time).
-  - **F** — Settings content responsiveness, unchanged (unblocked now that M2-A/B/D are closed;
-    overlaps with B3 finding #4 below, coordinate scope before starting either).
+- **M2 remaining batches (M1 mobile audit follow-up).** M2-A, M2-B (Fixes 1-4), M2-D, and now
+  **M2-C + M2-E are done** (`docs/phase3/TECHNICAL_DEBT.md` — "M1 Mobile Audit" / "M2-A" / "M2-C +
+  M2-E — mobile parity batch"). M2 remaining is now just **F → G**:
+  - **F** — Settings content responsiveness, unchanged (unblocked now that M2-A/B/C/D/E are
+    closed; overlaps with B3 finding #4 below, coordinate scope before starting either).
   - **G** — sweep-up / remaining loose ends, unchanged (still carrying the M2-A icon-only
-    `h-8`/`h-7` touch-target heuristic list, see TECHNICAL_DEBT.md).
+    `h-8`/`h-7` touch-target heuristic list, see TECHNICAL_DEBT.md) — **plus two items carried
+    over from E's original expanded scope that this batch did NOT cover, re-queued here rather
+    than silently dropped:** Contacts import's column-mapping dialog overflow (M1.5 IMPOSSIBLE
+    item #3 — the mapping step still can't be completed on phone) and the remainder of M1.5's 9
+    HIDDEN-entry-point quick wins (this batch closed 3 of them — the Contacts "New Contact"
+    clipping, the Owner/Tags scroll-shadow affordance, and the Analytics tab-bar overflow — the
+    other ~6 were out of this batch's assigned scope and still need triage against that audit
+    session's own record, not reproduced in this repo's docs).
 
-  **After C+E ship, all daily jobs are completable on phone** — the 4 M1.5 IMPOSSIBLE items are
-  the last real capability gaps (Kanban drag has no touch equivalent, CRM tab/Templates preview/
-  import mapping are each blind or unreachable below their hidden breakpoint), everything else is
-  either already fixed or a discoverability/CSS-sweep item, not a missing capability. Full batch
-  detail (M1, M1.5) lives in that audit session's own record, not this repo's docs — not started
-  here.
+  **CRM tab correction:** M1.5 listed Customer 360's CRM tab as `lg:hidden` (IMPOSSIBLE item #1).
+  This did not reproduce when M2-C started — `CrmTab.tsx` had no breakpoint gate at all, already
+  fully reachable and interactive at any width. See the M2-C entry in TECHNICAL_DEBT.md for the
+  correction and the real (smaller) polish fix done instead.
+
+  **After M2-C/E, the daily-blocking capability gaps (Kanban drag, Templates preview, CRM tab) are
+  closed** — the two re-queued items above (import mapping, remaining hidden quick wins) are real
+  but narrower gaps, not blockers for the bulk of daily agent work. Full batch detail (M1, M1.5)
+  lives in that audit session's own record, not this repo's docs.
 - **`team_lead` bulk-update access — deferred, not rejected (Option B from the OQ-006 proposal).**
   OQ-006's resolution (`docs/v3/12_DECISION_LOG.md`, [DL-022]) extended `team_lead` to team-wide
   Contacts read/export/tag scoping but deliberately left `bulk-update` out of that batch —
