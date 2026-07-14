@@ -2353,7 +2353,21 @@ function CommunicationsContent() {
           <BroadcastSection />
         </div>
       ) : (
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-col flex-1 overflow-hidden">
+          {/* Mobile-only Back bar — pure navigation (thread/snapshot → list),
+              gated ONLY on activeConv, never on snapshotOpen or role. Lives
+              ABOVE the columns so opening the Info/snapshot panel (which hides
+              the thread column below xl) can no longer take Back with it. */}
+          {activeConv && (
+            <button
+              onClick={() => setActiveConv(null)}
+              className="flex shrink-0 items-center gap-1 border-b border-neutral-200 px-3 py-2 text-sm text-primary-600 md:hidden dark:border-neutral-800"
+            >
+              <ChevronLeft className="h-4 w-4" aria-hidden />
+              Back
+            </button>
+          )}
+          <div className="flex flex-1 overflow-hidden">
           {/* Column 1: Conversation list */}
           <div className={cn(
             'w-[280px] shrink-0',
@@ -2371,13 +2385,6 @@ function CommunicationsContent() {
           {/* Column 2: Thread */}
           {activeConv ? (
             <div className={cn('flex min-w-0 flex-1 flex-col', snapshotOpen ? 'hidden xl:flex' : 'flex')}>
-              <button
-                onClick={() => setActiveConv(null)}
-                className="flex items-center gap-1 px-3 py-2 text-sm text-primary-600 md:hidden"
-              >
-                <ChevronLeft className="h-4 w-4" aria-hidden />
-                Back
-              </button>
               <ThreadPane
                 conversation={activeConv}
                 onOpenSnapshot={() => setSnapshotOpen((o) => !o)}
@@ -2403,6 +2410,7 @@ function CommunicationsContent() {
               <CustomerSnapshotPanel conversation={activeConv} onClose={() => setSnapshotOpen(false)} onConvUpdate={handleConvUpdate} onTabSwitch={setActiveTab} />
             </div>
           )}
+          </div>
         </div>
       )}
     </div>
