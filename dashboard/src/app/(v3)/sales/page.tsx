@@ -804,7 +804,7 @@ function SalesFilterBar({
           className="h-8 w-full rounded-lg border border-neutral-200 bg-white pl-8 pr-3 text-xs text-neutral-700 placeholder:text-neutral-400 focus:border-primary-600 focus:outline-none dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
         />
         {filters.search && (
-          <button onClick={() => onChange({ search: '' })} className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600">
+          <button onClick={() => onChange({ search: '' })} aria-label="Clear search" className="absolute right-0 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center text-neutral-400 hover:text-neutral-600 sm:h-6 sm:w-6">
             <X className="h-3 w-3" />
           </button>
         )}
@@ -1130,7 +1130,8 @@ function ManagePipelineDrawer({
               type="button"
               disabled={i === 0}
               onClick={() => move(i, -1)}
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
+              aria-label="Move stage up"
+              className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 sm:h-7 sm:w-7 dark:hover:bg-neutral-800"
               title="Move up"
             >
               <ArrowUp className="h-3.5 w-3.5" />
@@ -1141,7 +1142,8 @@ function ManagePipelineDrawer({
               type="button"
               disabled={i === stages.length - 1}
               onClick={() => move(i, 1)}
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 dark:hover:bg-neutral-800"
+              aria-label="Move stage down"
+              className="flex h-11 w-11 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 disabled:opacity-30 sm:h-7 sm:w-7 dark:hover:bg-neutral-800"
               title="Move down"
             >
               <ArrowDown className="h-3.5 w-3.5" />
@@ -1152,7 +1154,8 @@ function ManagePipelineDrawer({
               type="button"
               onClick={() => remove(i)}
               disabled={stages.length <= 1}
-              className="flex h-7 w-7 items-center justify-center rounded-lg text-error-500 hover:bg-error-50 disabled:opacity-30 dark:hover:bg-error-900/20"
+              aria-label="Remove stage"
+              className="flex h-11 w-11 items-center justify-center rounded-lg text-error-500 hover:bg-error-50 disabled:opacity-30 sm:h-7 sm:w-7 dark:hover:bg-error-900/20"
               title="Remove stage"
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -1365,8 +1368,9 @@ export default function SalesPage() {
           <button
             onClick={() => setShowKPIs((v) => !v)}
             title={showKPIs ? 'Hide KPIs' : 'Show KPIs'}
+            aria-label={showKPIs ? 'Hide KPIs' : 'Show KPIs'}
             className={cn(
-              'flex h-8 w-8 items-center justify-center rounded-lg border text-neutral-500 transition-colors',
+              'flex h-11 w-11 items-center justify-center rounded-lg border text-neutral-500 transition-colors sm:h-8 sm:w-8',
               showKPIs
                 ? 'border-primary-200 bg-primary-50 text-primary-600 dark:border-primary-800 dark:bg-primary-900/20'
                 : 'border-neutral-200 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800',
@@ -1380,7 +1384,8 @@ export default function SalesPage() {
             <button
               onClick={() => setShowManagePipeline(true)}
               title="Manage pipeline stages"
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-neutral-200 text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-800 transition-colors"
+              aria-label="Manage pipeline stages"
+              className="flex h-11 w-11 items-center justify-center rounded-lg border border-neutral-200 text-neutral-500 hover:bg-neutral-100 sm:h-8 sm:w-8 dark:border-neutral-700 dark:hover:bg-neutral-800 transition-colors"
             >
               <Settings className="h-4 w-4" />
             </button>

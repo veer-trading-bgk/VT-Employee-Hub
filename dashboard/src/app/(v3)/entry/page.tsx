@@ -179,6 +179,7 @@ function PerformerPicker({
             <span className="flex-1 font-medium text-neutral-900 dark:text-neutral-100 truncate">{selected.name}</span>
             <button
               onClick={(e) => { e.stopPropagation(); onSelect(null); }}
+              aria-label="Clear selected employee"
               className="text-xs text-neutral-400 hover:text-neutral-700"
             >✕</button>
           </>
@@ -348,7 +349,7 @@ export default function EntryPage() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => { qc.invalidateQueries({ queryKey: ['entry-metrics'] }); }}
-            className="flex h-8 w-8 items-center justify-center rounded-lg border border-neutral-200 text-neutral-500 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-800"
+            className="flex h-11 w-11 items-center justify-center rounded-lg border border-neutral-200 text-neutral-500 hover:bg-neutral-50 sm:h-8 sm:w-8 dark:border-neutral-700 dark:hover:bg-neutral-800"
             aria-label="Refresh"
           >
             <RefreshCw className="h-3.5 w-3.5" />

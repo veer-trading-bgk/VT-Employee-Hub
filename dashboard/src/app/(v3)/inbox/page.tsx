@@ -256,14 +256,16 @@ function Lightbox({ item, onClose }: { item: LightboxItem; onClose: () => void }
         <a
           href={item.url}
           download={item.filename ?? 'media'}
-          className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+          aria-label="Download"
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 sm:h-9 sm:w-9"
           title="Download"
         >
           <Download className="h-4 w-4" />
         </a>
         <button
           onClick={onClose}
-          className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20"
+          aria-label="Close"
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/20 sm:h-9 sm:w-9"
           title="Close (Esc)"
         >
           <X className="h-4 w-4" />
@@ -1872,7 +1874,7 @@ function CustomerSnapshotPanel({
         <button
           onClick={onClose}
           aria-label="Close panel"
-          className="xl:hidden flex h-7 w-7 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+          className="xl:hidden flex h-11 w-11 items-center justify-center rounded-lg text-neutral-400 hover:bg-neutral-100 sm:h-7 sm:w-7 dark:hover:bg-neutral-800"
         >
           <X className="h-4 w-4" aria-hidden />
         </button>
@@ -2170,7 +2172,7 @@ function BroadcastSection() {
               <p className="text-sm font-bold text-neutral-900 dark:text-white">Broadcast Complete</p>
               <p className="text-xs text-neutral-500">{result.sent} sent · {result.failed} failed · {result.total} matched</p>
             </div>
-            <button onClick={() => setResult(null)} className="text-neutral-400 hover:text-neutral-600">×</button>
+            <button onClick={() => setResult(null)} aria-label="Dismiss" className="flex h-11 w-11 items-center justify-center text-neutral-400 hover:text-neutral-600 sm:h-6 sm:w-6">×</button>
           </div>
           {result.errors.length > 0 && (
             <details className="mt-2">
