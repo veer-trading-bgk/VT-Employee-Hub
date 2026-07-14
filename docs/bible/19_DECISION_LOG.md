@@ -2181,6 +2181,30 @@ until Meta responds.
 
 ---
 
+## Era 47 — `start_ai_conversation` Automation action: workflow-driven hand-off to the AI conversation agent (2026-07-14)
+
+**What shipped.** A new Automation Engine action type, `start_ai_conversation`, that hands a lead off to the autonomous AI conversation agent from inside a workflow (canvas: Trigger → Send Buttons → wait/branch → **Start AI Conversation**). The wait/branch/timeout half of that flow already existed — a `send_buttons`/`condition` node pauses on "button tap OR configurable timeout, whichever first" (`AutomationEngine._runGraph`, `__timeout__` handle), so the only new piece is the terminal hand-off action.
+
+**Entry point — a new `ConversationalAgentService.startForLead()`, NOT `maybeStart()`.** `maybeStart()` is webhook-shaped (CIS `resolveOrCreate` with a `waMessageId` idempotency key, seeded by the customer's inbound text) and — critically — does **no `handoffState` check** before starting, so reusing it from a workflow would re-engage/restart a conversation that was already bot-active or already handed off. `startForLead(companyId, { leadPK, phone10, name, contextHint })` instead composes the existing primitives (`_getConfig` → load lead → `resolveForLead` → `getConversation` → guard → `startBotHandling` → shared `_runTurn(turnCount: 0)`), reusing the exact multi-turn core every entry point shares.
+
+**The guard (decided against the real state machine, not the scoping report's assumption).** `ConversationService.getConversation` defaults `handoffState` to `'human'` for a never-engaged conversation — there is **no distinct "not engaged" state**, so `'human'` is ambiguous between "never touched" and "a human is actively handling." The safe start-gate is therefore two signals together: **no-op if the lead is assigned (`assignedTo`)** (human-owned — same guard `maybeStart` applies) **OR `handoffState ∈ {'ai','pending_human'}`** (already bot-engaged / handed off — never re-engage). Only a default-`'human'`, unassigned conversation falls through and starts. The "skip if assigned" half was an explicit product decision (mirrors auto-first-contact behaviour; trade-off is that auto-assigned leads won't get a workflow-driven AI start).
+
+**Hand-off is a clean terminal step.** `startBotHandling` sets `handoffState='ai'`; every later inbound message is then carried by `continueTurn` (webhook known-lead branch), **not** by the workflow, which completes at this node. Subsequent AI turns are separate `AIUSAGE#`/conversation records — the workflow and the AI engine stay decoupled through `handoffState`.
+
+**ADR-015 compliant.** The action calls `ConversationalAgentService` → `AIService.generate` → provider; never a provider directly.
+
+**Context hint.** An optional free-text field on the node (`{{name}}/{{phone}}/{{trait.*}}`-resolvable via the same `welcomeVariables` registry the `send_*` actions use) becomes `_runTurn`'s turn-0 `text` → the prompt's `latestMessage`, so the AI's first question can reference the tapped button's category instead of re-asking. Empty hint falls back to a neutral `'Hi'` seed (turn-1's working shape).
+
+**Frontend.** `start_ai_conversation` added as an `ActionType` (a simple lead-action like `add_tag`, so it reuses the generic `ActionNode`/`ActionEditor` shell rather than a bespoke node) — type union + `StartAiConversationConfig` + `ACTION_META` + `ACTION_ICONS` (Bot) + `nodeTypes` registry + a new "AI" palette group + an `ActionEditor` context-hint field + a `summarizeNodeConfig` case. `tsc --noEmit` clean.
+
+**Tests.** `startForLead` guard matrix (disabled / lead-missing / assigned / `'ai'` / `'pending_human'` all no-op; never-engaged unassigned starts and seeds the hint; empty hint → `'Hi'`) and the action's dispatch (resolves `{{name}}`, passes `phone` as `phone10`, returns `{ engaged }`, throws without `leadPK`). Full suite green.
+
+**KNOWN DEPENDENCY — not shipped here, still required for the button-first-on-first-contact flow.** The auto-first-contact AI (`maybeStart` at `whatsapp.js`) fires on a customer's first text and, when it engages, **skips the welcome message and all automation triggers** (`botEngaged` gate). So a `Trigger(whatsapp_conversation_started) → Send Buttons → … → start_ai_conversation` workflow **will not fire on genuine first contact today** — the AI pre-empts it. This action is necessary but not sufficient for that specific flow; it needs a companion per-company "let workflows drive first-contact AI" toggle (suppress the auto `maybeStart`). That companion decision was scoped out of this change and remains open (see below). The action is still immediately useful for any workflow that hands off outside the first-contact race (non-first-contact triggers, keyword flows, or once the companion toggle ships).
+
+**Reference:** `src/services/AutomationEngine.js` (`_runAction` `start_ai_conversation` case), `src/services/ConversationalAgentService.js` (`startForLead`), `src/services/ConversationService.js` (`HANDOFF_STATE`, `startBotHandling`), `src/routes/whatsapp.js:1765` (the auto-first-contact pre-emption), dashboard automation canvas.
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or
