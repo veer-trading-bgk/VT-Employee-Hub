@@ -56,6 +56,7 @@ jest.mock('../src/services/DelayedResponseService', () => ({
 jest.mock('../src/services/AutomationEngine', () => ({
   fireTrigger:         jest.fn().mockResolvedValue(undefined),
   resumeOnButtonReply: jest.fn().mockResolvedValue(undefined),
+  hasActiveWorkflow:   jest.fn().mockResolvedValue(false), // default: no conversation-started workflow → maybeStart runs as today
 }));
 jest.mock('../src/services/CustomerIdentityService', () => ({
   resolveOrCreate: jest.fn(),
@@ -160,5 +161,29 @@ describe('POST /api/whatsapp/webhook — unknown-contact branch: botEngaged gate
     expect(WASendSvc.sendTemplate).not.toHaveBeenCalled();
     expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
     expect(AutomationEngine.fireTrigger).not.toHaveBeenCalledWith(CID, 'whatsapp_conversation_started', expect.anything());
+  });
+
+  // ── Era 48: a company that owns first-contact via a whatsapp_conversation_started
+  //    workflow suppresses the auto AI-start, so the workflow drives engagement. ──
+  test('active whatsapp_conversation_started workflow present — maybeStart is SKIPPED and the workflow fires instead', async () => {
+    AutomationEngine.hasActiveWorkflow.mockResolvedValue(true); // this company owns first-contact via a workflow
+
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'text', text: { body: 'Hi' } }) }, mockRes(), jest.fn());
+
+    expect(AutomationEngine.hasActiveWorkflow).toHaveBeenCalledWith(CID, 'whatsapp_conversation_started');
+    expect(ConversationalAgentService.maybeStart).not.toHaveBeenCalled();      // AI did NOT pre-empt the workflow
+    expect(AutomationEngine.fireTrigger).toHaveBeenCalledWith(CID, 'whatsapp_conversation_started', expect.anything()); // workflow drives it
+  });
+
+  test('no whatsapp_conversation_started workflow (default) — maybeStart runs exactly as today', async () => {
+    AutomationEngine.hasActiveWorkflow.mockResolvedValue(false); // no such workflow
+    ConversationalAgentService.maybeStart.mockResolvedValue(false);
+
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'text', text: { body: 'Hi' } }) }, mockRes(), jest.fn());
+
+    expect(AutomationEngine.hasActiveWorkflow).toHaveBeenCalledWith(CID, 'whatsapp_conversation_started');
+    expect(ConversationalAgentService.maybeStart).toHaveBeenCalledTimes(1);    // unchanged from today
   });
 });

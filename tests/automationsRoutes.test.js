@@ -16,9 +16,11 @@ jest.mock('../src/config/logger', () => ({
 }));
 jest.mock('../src/services/AutomationEngine', () => ({
   fireTrigger: jest.fn(),
+  _findActiveWorkflows: jest.fn().mockResolvedValue([]), // Era 48 duplicate-check lookup
 }));
 
 const dynamodb = require('../src/config/dynamodb');
+const AutomationEngine = require('../src/services/AutomationEngine');
 const automationsRouter = require('../src/routes/automations');
 
 function getRouteHandler(router, path, method) {
@@ -446,5 +448,104 @@ describe('GET /api/automations/executions — pagination', () => {
     await handler({ query: { page: '1', pageSize: '50' }, user: USER }, res2, jest.fn());
     const payload2 = res2.json.mock.calls[0][0];
     expect(payload2.executions.map((e) => e.executionId)).toEqual(['exec-3', 'exec-1', 'exec-2']);
+  });
+});
+
+// ── Era 48: save-time advisories for whatsapp_conversation_started workflows ───
+// Non-blocking warnings on a successful create/update, on the existing optional
+// `warning` response field. Two triggers: (a) no start_ai_conversation hand-off
+// node; (b) another active conversation-started workflow already exists.
+describe('POST/PUT /api/automations — Era 48 save-time advisories', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    AutomationEngine._findActiveWorkflows.mockResolvedValue([]); // no other active workflow by default
+  });
+
+  const post = () => getRouteHandler(automationsRouter, '/', 'post');
+  const put  = () => getRouteHandler(automationsRouter, '/:id', 'put');
+
+  test('conversation-started workflow WITH a start_ai_conversation step + no duplicate → NO warning', async () => {
+    const res = mockRes();
+    await post()({ user: USER, body: {
+      name: 'Greeter', trigger: { type: 'whatsapp_conversation_started' },
+      steps: [{ id: 's1', type: 'start_ai_conversation', config: {} }],
+    } }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(201);
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.success).toBe(true);
+    expect(payload.warning).toBeUndefined();
+  });
+
+  test('conversation-started workflow WITHOUT a start_ai_conversation step → warns about no AI hand-off', async () => {
+    const res = mockRes();
+    await post()({ user: USER, body: {
+      name: 'Tagger', trigger: { type: 'whatsapp_conversation_started' },
+      steps: [{ id: 's1', type: 'add_tag', config: { tag: 'new' } }],
+    } }, res, jest.fn());
+    expect(res.json.mock.calls[0][0].warning).toMatch(/Start AI Conversation/i);
+  });
+
+  test('conversation-started workflow when another ACTIVE one already exists → warns about duplicate', async () => {
+    AutomationEngine._findActiveWorkflows.mockResolvedValue([{ id: 'other-active' }]);
+    const res = mockRes();
+    await post()({ user: USER, body: {
+      name: 'Second', trigger: { type: 'whatsapp_conversation_started' },
+      steps: [{ id: 's1', type: 'start_ai_conversation', config: {} }],
+    } }, res, jest.fn());
+    expect(res.json.mock.calls[0][0].warning).toMatch(/already has another active/i);
+  });
+
+  test('a NON-conversation-started workflow never warns (helper early-returns before any scan)', async () => {
+    const res = mockRes();
+    await post()({ user: USER, body: {
+      name: 'On lead created', trigger: { type: 'lead_created' },
+      steps: [{ id: 's1', type: 'add_tag', config: { tag: 'x' } }],
+    } }, res, jest.fn());
+    expect(res.json.mock.calls[0][0].warning).toBeUndefined();
+    expect(AutomationEngine._findActiveWorkflows).not.toHaveBeenCalled();
+  });
+
+  test('duplicate check EXCLUDES the workflow being saved (PUT re-saving the only active one → no duplicate warning)', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: {
+      id: 'wf-self', companyId: CID, trigger: { type: 'whatsapp_conversation_started' },
+      steps: [{ id: 's1', type: 'start_ai_conversation', config: {} }], status: 'active',
+    } }) });
+    AutomationEngine._findActiveWorkflows.mockResolvedValue([{ id: 'wf-self' }]); // only itself
+    const res = mockRes();
+    await put()({ params: { id: 'wf-self' }, user: USER, body: { name: 'Renamed' } }, res, jest.fn());
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.success).toBe(true);
+    expect(payload.warning).toBeUndefined(); // self excluded → no dup; has the AI node → no missing-node warning
+  });
+
+  test('PUT with a genuine SECOND active conversation-started workflow → duplicate warning (self excluded, other remains)', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: {
+      id: 'wf-self', companyId: CID, trigger: { type: 'whatsapp_conversation_started' },
+      steps: [{ id: 's1', type: 'start_ai_conversation', config: {} }], status: 'active',
+    } }) });
+    AutomationEngine._findActiveWorkflows.mockResolvedValue([{ id: 'wf-self' }, { id: 'other-active' }]);
+    const res = mockRes();
+    await put()({ params: { id: 'wf-self' }, user: USER, body: { name: 'Renamed' } }, res, jest.fn());
+    expect(res.json.mock.calls[0][0].warning).toMatch(/already has another active/i);
+  });
+
+  test('PUT clearing all steps (steps: []) on a conversation-started workflow → no-AI-node warning fires (present-but-empty is NOT treated as absent)', async () => {
+    // Pre-edit the workflow HAS a start_ai_conversation step; the caller clears
+    // it with steps: []. The effective-shape check uses `steps !== undefined`, so
+    // the empty array is used as-is (not fallen back to the stored steps), leaving
+    // zero hand-off nodes → the no-AI-node warning must fire.
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: {
+      id: 'wf-self', companyId: CID, trigger: { type: 'whatsapp_conversation_started' },
+      steps: [{ id: 's1', type: 'start_ai_conversation', config: {} }], status: 'active',
+    } }) });
+    AutomationEngine._findActiveWorkflows.mockResolvedValue([]); // no duplicate → isolate the no-AI-node warning
+    const res = mockRes();
+    await put()({ params: { id: 'wf-self' }, user: USER, body: { steps: [] } }, res, jest.fn());
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.success).toBe(true);
+    expect(payload.warning).toMatch(/Start AI Conversation/i);
   });
 });

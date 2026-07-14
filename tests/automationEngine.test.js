@@ -1658,3 +1658,52 @@ describe('AutomationEngine — start_ai_conversation action', () => {
     expect(ConversationalAgentService.startForLead).not.toHaveBeenCalled();
   });
 });
+
+// ── hasActiveWorkflow / _findActiveWorkflows (Era 48) ─────────────────────────
+// The shared lookup extracted from fireTrigger, used by both fireTrigger and the
+// webhook first-contact guard (and the save-time duplicate check). Company-scoped
+// by the PK; keeps only active workflows whose trigger type matches.
+describe('AutomationEngine — hasActiveWorkflow / _findActiveWorkflows', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const mockWorkflows = (items) =>
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: items }) });
+
+  test('true when an active whatsapp_conversation_started workflow exists', async () => {
+    mockWorkflows([{ id: 'w1', status: 'active', trigger: { type: 'whatsapp_conversation_started' } }]);
+    expect(await engine.hasActiveWorkflow(CID, 'whatsapp_conversation_started')).toBe(true);
+  });
+
+  test('FALSE when the only active workflow is a DIFFERENT trigger type (the real regression case)', async () => {
+    mockWorkflows([{ id: 'w1', status: 'active', trigger: { type: 'keyword_message' } }]);
+    expect(await engine.hasActiveWorkflow(CID, 'whatsapp_conversation_started')).toBe(false);
+  });
+
+  test('false when a matching workflow exists but is NOT active (draft/paused)', async () => {
+    mockWorkflows([{ id: 'w1', status: 'draft', trigger: { type: 'whatsapp_conversation_started' } }]);
+    expect(await engine.hasActiveWorkflow(CID, 'whatsapp_conversation_started')).toBe(false);
+  });
+
+  test('legacy enabled:true with no status field counts as active (bare-string trigger too)', async () => {
+    mockWorkflows([{ id: 'w1', enabled: true, trigger: 'whatsapp_conversation_started' }]);
+    expect(await engine.hasActiveWorkflow(CID, 'whatsapp_conversation_started')).toBe(true);
+  });
+
+  test('query is scoped to the company partition (company isolation by construction)', async () => {
+    mockWorkflows([]);
+    await engine.hasActiveWorkflow('other_co', 'whatsapp_conversation_started');
+    expect(dynamodb.query).toHaveBeenCalledWith(expect.objectContaining({
+      ExpressionAttributeValues: expect.objectContaining({ ':pk': 'CONFIG#AUTO#other_co' }),
+    }));
+  });
+
+  test('_findActiveWorkflows returns only the active, trigger-matching workflows', async () => {
+    mockWorkflows([
+      { id: 'w1', status: 'active', trigger: { type: 'whatsapp_conversation_started' } },
+      { id: 'w2', status: 'draft',  trigger: { type: 'whatsapp_conversation_started' } },
+      { id: 'w3', status: 'active', trigger: { type: 'keyword_message' } },
+    ]);
+    const found = await engine._findActiveWorkflows(CID, 'whatsapp_conversation_started');
+    expect(found.map((w) => w.id)).toEqual(['w1']);
+  });
+});
