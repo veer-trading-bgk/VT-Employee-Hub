@@ -448,8 +448,11 @@ function ContactsContent() {
   return (
     <>
       <div className="flex h-full flex-col">
-        {/* Page header */}
-        <div className="flex items-center justify-between border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950">
+        {/* Page header — flex-wrap so the actions row (Import/Export/New Contact)
+            drops below the title instead of clipping "New Contact" past the
+            375px edge (M1.5 finding), same wrap-not-squish approach as
+            Customer 360's header fix (M2-B Fix 4). */}
+        <div className="flex flex-wrap items-center justify-between gap-y-2 border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950">
           <div>
             <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Contacts</h1>
             {data && (

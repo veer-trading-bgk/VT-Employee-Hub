@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, ReactNode } from 'react';
+import { Fragment, ReactNode, useEffect, useRef, useState } from 'react';
 import { ChevronUp, ChevronDown, ChevronsUpDown } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { Checkbox } from './Checkbox';
@@ -67,6 +67,25 @@ export function Table<T>({
   const allSelected = allIds.length > 0 && allIds.every((id) => selectedIds.has(id));
   const someSelected = !allSelected && allIds.some((id) => selectedIds.has(id));
 
+  // Scroll-shadow affordance — columns like Owner/Tags have no other visible
+  // cue that the table scrolls horizontally on narrow viewports (M2-E finding).
+  // Edge fades only render while there's actually more to scroll to on that side.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [scrollShadow, setScrollShadow] = useState({ left: false, right: false });
+
+  function updateScrollShadow() {
+    const el = scrollRef.current;
+    if (!el) return;
+    setScrollShadow({
+      left: el.scrollLeft > 0,
+      right: el.scrollLeft + el.clientWidth < el.scrollWidth - 1,
+    });
+  }
+
+  useEffect(() => {
+    updateScrollShadow();
+  }, [columns, data]);
+
   function toggleAll() {
     if (!onSelectChange) return;
     if (allSelected) {
@@ -106,7 +125,8 @@ export function Table<T>({
       )}
 
       {/* Scroll wrapper */}
-      <div className="overflow-x-auto">
+      <div className="relative">
+        <div ref={scrollRef} onScroll={updateScrollShadow} className="overflow-x-auto">
         <table className="w-full text-sm" aria-label="Data table">
           <thead
             className={cn(
@@ -205,6 +225,19 @@ export function Table<T>({
             )}
           </tbody>
         </table>
+        </div>
+        {scrollShadow.left && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 left-0 z-20 w-6 bg-gradient-to-r from-black/10 to-transparent dark:from-white/10"
+          />
+        )}
+        {scrollShadow.right && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 right-0 z-20 w-6 bg-gradient-to-l from-black/10 to-transparent dark:from-white/10"
+          />
+        )}
       </div>
     </div>
   );
