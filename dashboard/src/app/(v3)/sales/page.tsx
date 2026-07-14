@@ -29,6 +29,7 @@ import { cn } from '@/lib/cn';
 import { apiFetch, ApiClientError } from '@/lib/api';
 import type { Contact, Stage } from '@/types/v3';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
+import { useStageMutation } from '@/hooks/useStageMutation';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role } from '@/types/v3';
 import { canAssignOwner } from '@/lib/permissions';
@@ -201,13 +202,15 @@ function KanbanDragPreview({ contact, tagMap }: { contact: Contact; tagMap: Map<
 // ── Kanban Card ───────────────────────────────────────────────────────────────
 
 function KanbanCard({
-  contact, tagMap, bulkMode, selected, onSelect,
+  contact, tagMap, bulkMode, selected, onSelect, stage, onOpenStagePicker,
 }: {
   contact: Contact;
   tagMap: Map<string, Tag>;
   bulkMode: boolean;
   selected: boolean;
   onSelect: (id: string, checked: boolean) => void;
+  stage: PipelineStage;
+  onOpenStagePicker: (contact: Contact) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: contact.id,
@@ -260,6 +263,22 @@ function KanbanCard({
         >
           <GripVertical className="h-4 w-4" aria-hidden />
         </button>
+      )}
+
+      {/* Mobile stage-change entry point (M2-C) — dnd-kit drag has no touch
+          equivalent, so tapping this pill opens a Drawer-based stage picker
+          instead. Sibling of <Link>, same absolute-positioning slot pattern
+          as the drag handle above, so it never conflicts with card navigation.
+          Always visible (not hover-gated) since touch devices have no hover. */}
+      {!bulkMode && (
+        <button
+          type="button"
+          onClick={() => onOpenStagePicker(contact)}
+          className="absolute left-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border-2 border-white shadow-sm dark:border-neutral-900"
+          style={{ backgroundColor: stage.color }}
+          aria-label={`Change stage — currently ${stage.label}`}
+          title={`Stage: ${stage.label} — tap to change`}
+        />
       )}
 
       <Link
@@ -320,7 +339,7 @@ function KanbanCard({
 // ── Kanban Column ─────────────────────────────────────────────────────────────
 
 function KanbanColumn({
-  stage, contacts, tagMap, totalContacts, bulkMode, selectedIds, onSelect,
+  stage, contacts, tagMap, totalContacts, bulkMode, selectedIds, onSelect, onOpenStagePicker,
 }: {
   stage: PipelineStage;
   contacts: Contact[];
@@ -329,6 +348,7 @@ function KanbanColumn({
   bulkMode: boolean;
   selectedIds: Set<string>;
   onSelect: (id: string, checked: boolean) => void;
+  onOpenStagePicker: (contact: Contact) => void;
 }) {
   const { isOver, setNodeRef } = useDroppable({ id: stage.key });
   const pct = totalContacts > 0 ? Math.round((contacts.length / totalContacts) * 100) : 0;
@@ -373,6 +393,8 @@ function KanbanColumn({
             bulkMode={bulkMode}
             selected={selectedIds.has(c.id)}
             onSelect={onSelect}
+            stage={stage}
+            onOpenStagePicker={onOpenStagePicker}
           />
         ))}
         {contacts.length === 0 && (
@@ -402,34 +424,19 @@ function KanbanBoard({
   onSelect: (id: string, checked: boolean) => void;
   stages: PipelineStage[];
 }) {
-  const qc = useQueryClient();
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
+  const [stagePickerContact, setStagePickerContact] = useState<Contact | null>(null);
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
 
-  const stageMutation = useMutation({
-    mutationFn: async ({ contact, stageKey }: { contact: Contact; stageKey: string }) => {
-      if (contact.type === 'lead' || (contact.leadId ?? null) !== null) {
-        const leadId = contact.leadId ?? contact.id;
-        return apiFetch(`/api/crm/leads/${leadId}/stage`, { method: 'PUT', body: JSON.stringify({ stage: stageKey }) });
-      }
-      return apiFetch('/api/contacts/stage', { method: 'PUT', body: JSON.stringify({ phone: contact.phone, stage: stageKey }) });
-    },
-    onMutate: async ({ contact, stageKey }) => {
-      await qc.cancelQueries({ queryKey: ['sales-contacts'] });
-      const previous = qc.getQueryData<Contact[]>(['sales-contacts']);
-      qc.setQueryData<Contact[]>(['sales-contacts'], (old = []) =>
-        old.map((c) => (c.id === contact.id ? { ...c, stage: stageKey as Stage } : c)),
-      );
-      return { previous };
-    },
-    onError: (error, _vars, context) => {
-      if (context?.previous !== undefined) qc.setQueryData(['sales-contacts'], context.previous);
-      const is429 = error instanceof ApiClientError && error.status === 429;
-      toast.error(is429 ? 'Too many stage changes — wait a moment and try again' : 'Failed to update stage');
-    },
-    onSettled: () => qc.invalidateQueries({ queryKey: ['sales-contacts'] }),
-  });
+  const stageMutation = useStageMutation();
+
+  function handlePickStage(stageKey: string) {
+    if (stagePickerContact && stageKey !== stagePickerContact.stage) {
+      stageMutation.mutate({ contact: stagePickerContact, stageKey });
+    }
+    setStagePickerContact(null);
+  }
 
   function handleDragStart(event: DragStartEvent) {
     setActiveContact((event.active.data.current?.contact as Contact) ?? null);
@@ -462,9 +469,18 @@ function KanbanBoard({
             bulkMode={bulkMode}
             selectedIds={selectedIds}
             onSelect={onSelect}
+            onOpenStagePicker={setStagePickerContact}
           />
         ))}
       </div>
+
+      <StagePickerDrawer
+        contact={stagePickerContact}
+        stages={stages}
+        pending={stageMutation.isPending}
+        onClose={() => setStagePickerContact(null)}
+        onSelectStage={handlePickStage}
+      />
 
       <DragOverlay>
         {activeContact && (
@@ -474,6 +490,55 @@ function KanbanBoard({
         )}
       </DragOverlay>
     </DndContext>
+  );
+}
+
+// ── Mobile stage picker (M2-C) ───────────────────────────────────────────────
+// Bottom-sheet on mobile / right-side drawer on desktop (Drawer's own
+// max-md: breakpoint), listing every pipeline stage so a tap can do what
+// dnd-kit drag can't on a touchscreen. Uses the same useStageMutation() the
+// desktop Kanban drag calls — same optimistic update, same error toast.
+
+function StagePickerDrawer({
+  contact, stages, pending, onClose, onSelectStage,
+}: {
+  contact: Contact | null;
+  stages: PipelineStage[];
+  pending: boolean;
+  onClose: () => void;
+  onSelectStage: (stageKey: string) => void;
+}) {
+  return (
+    <Drawer
+      open={!!contact}
+      onClose={onClose}
+      title="Change Stage"
+      description={contact ? contactName(contact) : undefined}
+    >
+      <div className="flex flex-col gap-2">
+        {stages.map((s) => {
+          const isCurrent = contact?.stage === s.key;
+          return (
+            <button
+              key={s.key}
+              type="button"
+              disabled={pending}
+              onClick={() => onSelectStage(s.key)}
+              className={cn(
+                'flex items-center gap-3 rounded-xl border p-3 text-left text-sm font-medium transition-colors disabled:opacity-50',
+                isCurrent
+                  ? 'border-primary-300 bg-primary-50 dark:border-primary-700 dark:bg-primary-900/20'
+                  : 'border-neutral-200 hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800',
+              )}
+            >
+              <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: s.color }} aria-hidden />
+              <span className="text-neutral-900 dark:text-neutral-100">{s.label}</span>
+              {isCurrent && <span className="ml-auto text-xs text-primary-600 dark:text-primary-400">Current</span>}
+            </button>
+          );
+        })}
+      </div>
+    </Drawer>
   );
 }
 
