@@ -9,6 +9,7 @@ const { redactContext, scrubSensitivePatterns } = require('../utils/aiRedaction'
 // otherwise silently freeze whichever values existed the instant this module
 // first loaded.
 const aiConfig = require('../config/aiConfig');
+const BedrockNovaProvider = require('./providers/BedrockNovaProvider');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -66,6 +67,10 @@ async function _generate({
   entityType, entityId, source = 'production',
 }) {
   const useCaseCfg = aiConfig.AI_CONFIG[useCase];
+  // Which LLM provider serves this useCase. Absent → 'anthropic' (the original
+  // path), so this dispatch is byte-for-byte behavior-neutral until a useCase
+  // actually sets `provider: 'bedrock-nova'` in aiConfig.
+  const provider = useCaseCfg.provider ?? 'anthropic';
 
   // 1. Master switch, then module switch — read fresh every call, no caching, so
   //    toggling either off takes effect on the very next request.
@@ -133,7 +138,7 @@ async function _generate({
   try {
     if (useCaseCfg.outputMode === 'json') {
       const jsonResult = await _generateJsonWithRetry({
-        model: useCaseCfg.model, maxTokens: useCaseCfg.maxTokens, messages, schema: useCaseCfg.schema,
+        provider, model: useCaseCfg.model, maxTokens: useCaseCfg.maxTokens, messages, schema: useCaseCfg.schema,
       });
       inputTokens = jsonResult.inputTokens;
       outputTokens = jsonResult.outputTokens;
@@ -141,10 +146,10 @@ async function _generate({
       if (jsonResult.ok) data = jsonResult.data;
       else jsonFailed = true;
     } else {
-      const res = await _callAnthropic({ model: useCaseCfg.model, maxTokens: useCaseCfg.maxTokens, messages });
-      inputTokens = res.usage?.input_tokens ?? 0;
-      outputTokens = res.usage?.output_tokens ?? 0;
-      data = _extractText(res);
+      const res = await _callModel({ provider, model: useCaseCfg.model, maxTokens: useCaseCfg.maxTokens, messages });
+      inputTokens = res.inputTokens;
+      outputTokens = res.outputTokens;
+      data = res.text;
       attempts = 1; // text mode has no retry loop — always exactly one call
     }
   } catch (err) {
@@ -221,6 +226,23 @@ function _extractText(res) {
   return block?.text ?? '';
 }
 
+// Provider dispatch — normalizes both providers to ONE internal shape
+// { text, inputTokens, outputTokens } so the json-retry loop and the text path
+// are provider-agnostic. `provider` comes from the useCase's aiConfig `provider`
+// field ('anthropic' by default). The Anthropic path is kept intact and dormant
+// here — reachable again by flipping the useCase's provider back — rather than
+// deleted, so a revert of a business-driven model switch needs no code change.
+async function _callModel({ provider, model, maxTokens, messages }) {
+  if (provider === 'bedrock-nova') {
+    // AIService keeps the whole rendered prompt in the user message (the
+    // Anthropic path has no separate system block either), so systemPrompt is null.
+    const r = await BedrockNovaProvider.generate(null, messages, { model, maxTokens });
+    return { text: r.text, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens };
+  }
+  const res = await _callAnthropic({ model, maxTokens, messages });
+  return { text: _extractText(res), inputTokens: res.usage?.input_tokens ?? 0, outputTokens: res.usage?.output_tokens ?? 0 };
+}
+
 function _tryParseJson(text) {
   const cleaned = String(text ?? '').trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
   try {
@@ -239,16 +261,16 @@ const JSON_RETRY_CORRECTION = 'That was not valid JSON matching the required sch
  * actual retry rate per useCase directly instead of guessing from a doubled
  * output-token total.
  */
-async function _generateJsonWithRetry({ model, maxTokens, messages, schema }) {
+async function _generateJsonWithRetry({ provider, model, maxTokens, messages, schema }) {
   let workingMessages = messages;
   let cumulativeInput = 0;
   let cumulativeOutput = 0;
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await _callAnthropic({ model, maxTokens, messages: workingMessages });
-    cumulativeInput += res.usage?.input_tokens ?? 0;
-    cumulativeOutput += res.usage?.output_tokens ?? 0;
-    const rawText = _extractText(res);
+    const res = await _callModel({ provider, model, maxTokens, messages: workingMessages });
+    cumulativeInput += res.inputTokens;
+    cumulativeOutput += res.outputTokens;
+    const rawText = res.text;
 
     const parsed = _tryParseJson(rawText);
     if (parsed !== undefined) {
