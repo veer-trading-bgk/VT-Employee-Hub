@@ -35,28 +35,47 @@ const TIMEOUT_HANDLE_ID = '__timeout__';
 
 class AutomationEngine {
 
+  // ── Shared lookup: active workflows for a company matching a trigger type ──
+  // The single source of truth for "which live workflows react to this trigger",
+  // used by fireTrigger() (which then layers on its keyword/condition filters)
+  // AND by hasActiveWorkflow() below. The query is scoped to this company's
+  // CONFIG#AUTO# partition, so every returned workflow provably belongs to
+  // `companyId`; the filter then keeps only active ones (legacy workflows use
+  // enabled:true when status is absent) whose trigger type equals `triggerType`.
+  async _findActiveWorkflows(companyId, triggerType) {
+    const { Items: items = [] } = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: { ':pk': `CONFIG#AUTO#${companyId}`, ':sk': 'AUTO#' },
+    }).promise();
+    return items.filter((w) => {
+      const isActive = w.status === 'active' || (w.status == null && w.enabled === true);
+      if (!isActive) return false;
+      const wTrigger = typeof w.trigger === 'object' ? w.trigger.type : w.trigger;
+      return wTrigger === triggerType;
+    });
+  }
+
+  // Cheap boolean existence check over _findActiveWorkflows — generic over
+  // triggerType (reusable for any future trigger, not specialized). Used by the
+  // webhook first-contact guard to let a whatsapp_conversation_started workflow
+  // own AI engagement. Read-only: NEVER emits warnings or side effects.
+  async hasActiveWorkflow(companyId, triggerType) {
+    const matches = await this._findActiveWorkflows(companyId, triggerType);
+    return matches.length > 0;
+  }
+
   // ── Entry point ─────────────────────────────────────────────────────────
   async fireTrigger(companyId, triggerType, context) {
     try {
-      const { Items: items = [] } = await dynamodb.query({
-        TableName: TABLE,
-        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-        ExpressionAttributeValues: { ':pk': `CONFIG#AUTO#${companyId}`, ':sk': 'AUTO#' },
-      }).promise();
-
-      const workflows = items.filter((w) => {
-        // Only active workflows fire. Legacy workflows use enabled:true when status is absent.
-        const isActive = w.status === 'active' || (w.status == null && w.enabled === true);
-        if (!isActive) return false;
-        const wTrigger = typeof w.trigger === 'object' ? w.trigger.type : w.trigger;
-        if (wTrigger !== triggerType) return false;
-        // keyword_message's own config (which keyword(s)/mode) decides whether THIS
-        // workflow's trigger actually matches this specific event — unlike every other
-        // trigger type, where trigger.type alone is enough and trigger.conditions[]
-        // (still evaluated below, unaffected) is only ever an optional extra filter.
-        if (triggerType === 'keyword_message' && !this._matchesKeywordConfig(w.trigger?.config, context.messageText)) return false;
-        return true;
-      });
+      const matched = await this._findActiveWorkflows(companyId, triggerType);
+      // keyword_message's own config (which keyword(s)/mode) decides whether THIS
+      // workflow's trigger actually matches this specific event — unlike every other
+      // trigger type, where trigger.type alone is enough and trigger.conditions[]
+      // (still evaluated below, unaffected) is only ever an optional extra filter.
+      const workflows = triggerType === 'keyword_message'
+        ? matched.filter((w) => this._matchesKeywordConfig(w.trigger?.config, context.messageText))
+        : matched;
 
       if (workflows.length === 0) return;
 

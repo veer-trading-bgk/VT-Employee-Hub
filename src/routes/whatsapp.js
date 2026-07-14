@@ -1762,7 +1762,16 @@ router.post('/webhook', async (req, res) => {
           // not assumed. Checked BEFORE OOO/Welcome/keyword_message/
           // whatsapp_conversation_started so none of them stack a second,
           // unrelated automated reply on top of the AI's own first turn.
-          if (isFirstContact && type === 'text') {
+          // A company that has built an active whatsapp_conversation_started
+          // workflow OWNS first-contact: that workflow (fired below) decides
+          // whether/how the AI engages, via a start_ai_conversation node, so the
+          // AI must not auto-start here and pre-empt it. hasActiveWorkflow returns
+          // false for every company WITHOUT such a workflow (empty result), so this
+          // is a pure no-op for them and maybeStart runs exactly as before — the
+          // lookup itself only runs on a genuine first-contact text message
+          // (short-circuit AND). See 19_DECISION_LOG.md Era 48.
+          if (isFirstContact && type === 'text'
+              && !(await require('../services/AutomationEngine').hasActiveWorkflow(companyId, 'whatsapp_conversation_started'))) {
             botEngaged = await ConversationalAgentService.maybeStart(companyId, {
               phone10, waName, text, timestamp, waMessageId,
             });

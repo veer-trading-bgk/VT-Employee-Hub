@@ -24,6 +24,37 @@ async function runAutomations(companyId, triggerType, context) {
   return AutomationEngine.fireTrigger(companyId, triggerType, context);
 }
 
+// ── Non-blocking save-time advisories (Era 48) ──────────────────────────────
+// Purely advisory warnings surfaced on a SUCCESSFUL create/update, riding on the
+// same optional `warning` response field already used elsewhere (auth.js, crm.js,
+// whatsapp.js) — never blocks the save. Only whatsapp_conversation_started
+// workflows can ever produce one (returns [] for every other trigger type). The
+// duplicate check reuses AutomationEngine._findActiveWorkflows — the same single
+// source of truth the runtime guard uses — rather than a second scan. `wf` is the
+// effective post-save shape: { id, trigger, nodes, steps }.
+async function conversationStartedSaveWarnings(companyId, wf) {
+  const triggerType = typeof wf.trigger === 'object' ? wf.trigger?.type : wf.trigger;
+  if (triggerType !== 'whatsapp_conversation_started') return [];
+
+  const warnings = [];
+  const nodesAndSteps = [
+    ...(Array.isArray(wf.nodes) ? wf.nodes : []),
+    ...(Array.isArray(wf.steps) ? wf.steps : []),
+  ];
+  if (!nodesAndSteps.some((n) => n?.type === 'start_ai_conversation')) {
+    warnings.push('This first-contact workflow has no "Start AI Conversation" step, so the AI agent will not auto-engage new contacts while this workflow is active. Add a Start AI Conversation node if you want the AI to take over.');
+  }
+
+  // Another ACTIVE whatsapp_conversation_started workflow, EXCLUDING the one being
+  // saved (w.id !== wf.id) — so re-saving the only active one never warns about
+  // itself; only a genuine second active one does.
+  const active = await AutomationEngine._findActiveWorkflows(companyId, 'whatsapp_conversation_started');
+  if (active.some((w) => w.id !== wf.id)) {
+    warnings.push('This company already has another active workflow that triggers on a new WhatsApp conversation. Only one should be active at a time, or they may compete on first contact.');
+  }
+  return warnings;
+}
+
 // ── Validation for the keyword_message trigger's own config ─────────────────
 // Unlike every other trigger type, trigger.type alone doesn't define a
 // keyword_message trigger — its config (which keyword(s), which mode) does, so
@@ -301,7 +332,9 @@ router.post('/', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), as
 
     await dynamodb.put({ TableName: TABLE, Item: item }).promise();
     logger.info(`Automation created: "${item.name}" (${id}) by ${userId}`);
-    res.status(201).json({ success: true, automation: item });
+    // Advisory only — a failure to compute warnings must never fail a saved workflow.
+    const warnings = await conversationStartedSaveWarnings(companyId, item).catch(() => []);
+    res.status(201).json({ success: true, automation: item, ...(warnings.length && { warning: warnings.join(' ') }) });
   } catch (err) { next(err); }
 });
 
@@ -383,6 +416,7 @@ router.put('/:id', authMiddleware, checkRole(['admin']), async (req, res, next) 
     if (!existing.Item) return res.status(404).json({ error: 'Workflow not found' });
 
     const { name, description, trigger, steps, nodes, edges, entryNodeId, status } = req.body;
+    let effectiveTrigger = existing.Item.trigger; // for the post-save advisory below
     const expNames = {};
     const expVals  = { ':ua': new Date().toISOString() };
     const sets     = ['updatedAt = :ua'];
@@ -398,6 +432,7 @@ router.put('/:id', authMiddleware, checkRole(['admin']), async (req, res, next) 
       const triggerResult = buildTriggerForStorage(trigger, existing.Item.trigger);
       if (triggerResult.error) return res.status(400).json({ error: triggerResult.error });
       sets.push('#t = :t'); expNames['#t'] = 'trigger'; expVals[':t'] = triggerResult.trigger;
+      effectiveTrigger = triggerResult.trigger;
     }
     if (steps       !== undefined) { sets.push('steps = :steps');                             expVals[':steps'] = steps; }
     if (nodes       !== undefined) {
@@ -424,7 +459,15 @@ router.put('/:id', authMiddleware, checkRole(['admin']), async (req, res, next) 
       ExpressionAttributeValues: expVals,
     }).promise();
 
-    res.json({ success: true });
+    // Advisory only (Era 48) — computed on the effective post-save shape
+    // (incoming fields, falling back to the stored ones). Never fails the save.
+    const warnings = await conversationStartedSaveWarnings(companyId, {
+      id:      req.params.id,
+      trigger: effectiveTrigger,
+      nodes:   nodes !== undefined ? nodes : existing.Item.nodes,
+      steps:   steps !== undefined ? steps : existing.Item.steps,
+    }).catch(() => []);
+    res.json({ success: true, ...(warnings.length && { warning: warnings.join(' ') }) });
   } catch (err) { next(err); }
 });
 
