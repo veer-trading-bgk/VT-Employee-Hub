@@ -52,6 +52,7 @@ jest.mock('../src/services/WorkingHoursService', () => ({
 }));
 jest.mock('../src/services/DelayedResponseService', () => ({
   scheduleIfEnabled: jest.fn().mockResolvedValue(undefined),
+  cancelPending:     jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('../src/services/AutomationEngine', () => ({
   fireTrigger:         jest.fn().mockResolvedValue(undefined),
@@ -64,6 +65,7 @@ jest.mock('../src/services/CustomerIdentityService', () => ({
 jest.mock('../src/services/ConversationalAgentService', () => ({
   maybeStart:   jest.fn(),
   continueTurn: jest.fn(),
+  startForLead: jest.fn(),
 }));
 
 const dynamodb = require('../src/config/dynamodb');
@@ -71,6 +73,7 @@ const WASendSvc = require('../src/services/WhatsAppSendService');
 const AutomationEngine = require('../src/services/AutomationEngine');
 const ConversationalAgentService = require('../src/services/ConversationalAgentService');
 const DelayedResponseService = require('../src/services/DelayedResponseService');
+const WorkingHoursService = require('../src/services/WorkingHoursService');
 const whatsappRouter = require('../src/routes/whatsapp');
 
 function getRouteHandler(router, path, method) {
@@ -185,5 +188,135 @@ describe('POST /api/whatsapp/webhook — unknown-contact branch: botEngaged gate
 
     expect(AutomationEngine.hasActiveWorkflow).toHaveBeenCalledWith(CID, 'whatsapp_conversation_started');
     expect(ConversationalAgentService.maybeStart).toHaveBeenCalledTimes(1);    // unchanged from today
+  });
+
+  // ── Free text = engagement (2026-07-15, 19_DECISION_LOG.md) ──────────────────
+  // A typed message on an unengaged, unassigned conversation now starts the AI
+  // via startForLead(), in BOTH branches — not only on first contact (maybeStart)
+  // or an already-'ai' convo (continueTurn). startForLead()'s own guards
+  // (cfg.enabled / assignedTo / handoffState) are unit-tested in
+  // conversationalAgentService.test.js; here we test whatsapp.js's WIRING.
+  const LEAD_PK = `LEAD#${CID}#lead_1`;
+  const LEAD_ITEM = { PK: LEAD_PK, SK: 'METADATA', leadId: 'lead_1', companyId: CID, name: 'Ravi', phone: PHONE10, phoneNorm: PHONE10, stage: 'new_lead', assignedTo: null };
+  function existingContactGet() {
+    dynamodb.get.mockImplementation((params) => {
+      const pk = params?.Key?.PK ?? '';
+      let item;
+      if (pk.startsWith('CONFIG#PHONEID#')) item = { companyId: CID };
+      else if (pk.startsWith('CONFIG#WABA#')) item = { companyId: CID, phoneNumberId: PHONE_NUMBER_ID, accessToken: 'tok' };
+      else if (pk.startsWith('INBOX#') && params.Key.SK === 'CONTACT') item = { PK: pk, SK: 'CONTACT', phone: PHONE10 }; // exists -> isFirstContact false
+      else if (pk.startsWith('CONFIG#WELCOME#')) item = { enabled: true, messageType: 'template', templateName: 'hello_world', language: 'en' };
+      return { promise: () => Promise.resolve(item ? { Item: item } : {}) };
+    });
+  }
+  function knownLeadQuery() {
+    dynamodb.query.mockImplementation((params) => ({
+      promise: () => Promise.resolve({ Items: params?.IndexName === 'company-phone-index' ? [LEAD_ITEM] : [] }),
+    }));
+  }
+
+  test('unknown contact, NOT first contact, free text -> startForLead engages; welcome/keyword/conversation_started suppressed', async () => {
+    existingContactGet();
+    ConversationalAgentService.startForLead.mockResolvedValue(true);
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'text', text: { body: 'what are your charges?' } }) }, mockRes(), jest.fn());
+
+    expect(ConversationalAgentService.maybeStart).not.toHaveBeenCalled(); // not first contact
+    expect(ConversationalAgentService.startForLead).toHaveBeenCalledWith(CID, expect.objectContaining({
+      phone10: PHONE10, name: 'New Customer', contextHint: 'what are your charges?',
+    }));
+    // welcome/conversation_started are first-contact-gated (isFirstContact is false here),
+    // so the meaningful suppression on this later-turn path is keyword + delayed-response.
+    expect(AutomationEngine.fireTrigger).not.toHaveBeenCalledWith(CID, 'keyword_message', expect.anything());
+    expect(DelayedResponseService.cancelPending).toHaveBeenCalledWith(CID, PHONE10); // decision 4: EXPLICIT cancel on engagement
+  });
+
+  test('overrides a paused whatsapp_conversation_started workflow — later free text still engages via startForLead', async () => {
+    existingContactGet();
+    AutomationEngine.hasActiveWorkflow.mockResolvedValue(true); // a workflow owned first contact
+    ConversationalAgentService.startForLead.mockResolvedValue(true);
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'text', text: { body: 'actually can you help me directly' } }) }, mockRes(), jest.fn());
+
+    expect(ConversationalAgentService.startForLead).toHaveBeenCalledTimes(1); // not gated by the workflow (that only guards first-contact maybeStart)
+    expect(ConversationalAgentService.maybeStart).not.toHaveBeenCalled();
+    expect(DelayedResponseService.cancelPending).toHaveBeenCalledWith(CID, PHONE10);
+  });
+
+  test('unknown contact, later free text, startForLead declines (assigned/disabled) -> keyword_message still fires', async () => {
+    existingContactGet();
+    ConversationalAgentService.startForLead.mockResolvedValue(false);
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'text', text: { body: 'hello again' } }) }, mockRes(), jest.fn());
+
+    expect(ConversationalAgentService.startForLead).toHaveBeenCalledTimes(1);
+    expect(AutomationEngine.fireTrigger).toHaveBeenCalledWith(CID, 'keyword_message', expect.objectContaining({ messageText: 'hello again' }));
+    expect(DelayedResponseService.cancelPending).not.toHaveBeenCalled(); // declined -> no engagement -> no cancel
+  });
+
+  test('REGRESSION: a button_reply never triggers startForLead (type-gated) and the resume path still runs', async () => {
+    existingContactGet();
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'interactive', interactive: { type: 'button_reply', button_reply: { id: 'btn-1', title: 'Open Demat' } } }) }, mockRes(), jest.fn());
+
+    expect(ConversationalAgentService.startForLead).not.toHaveBeenCalled(); // not text
+    expect(AutomationEngine.resumeOnButtonReply).toHaveBeenCalledWith(CID, PHONE10, 'btn-1');
+  });
+
+  test('known lead never AI-engaged (continueTurn false), free text -> startForLead engages; OOO/keyword suppressed', async () => {
+    knownLeadQuery();
+    ConversationalAgentService.continueTurn.mockResolvedValue(false); // not already 'ai'
+    ConversationalAgentService.startForLead.mockResolvedValue(true);
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'text', text: { body: 'is there a fee?' } }) }, mockRes(), jest.fn());
+
+    expect(ConversationalAgentService.continueTurn).toHaveBeenCalledTimes(1);
+    expect(ConversationalAgentService.startForLead).toHaveBeenCalledWith(CID, expect.objectContaining({
+      leadPK: LEAD_PK, phone10: PHONE10, name: 'Ravi', contextHint: 'is there a fee?',
+    }));
+    expect(WorkingHoursService.shouldSendOOO).not.toHaveBeenCalled(); // OOO block skipped (botHandled)
+    expect(AutomationEngine.fireTrigger).not.toHaveBeenCalledWith(CID, 'keyword_message', expect.anything());
+    expect(DelayedResponseService.cancelPending).toHaveBeenCalledWith(CID, PHONE10); // decision 4: EXPLICIT cancel on engagement
+  });
+
+  test('known lead, continueTurn false, startForLead declines -> OOO/keyword fall through, no delayed-response cancel', async () => {
+    knownLeadQuery();
+    ConversationalAgentService.continueTurn.mockResolvedValue(false);
+    ConversationalAgentService.startForLead.mockResolvedValue(false);
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'text', text: { body: 'anyone there?' } }) }, mockRes(), jest.fn());
+
+    expect(ConversationalAgentService.startForLead).toHaveBeenCalledTimes(1);
+    expect(AutomationEngine.fireTrigger).toHaveBeenCalledWith(CID, 'keyword_message', expect.objectContaining({ messageText: 'anyone there?' }));
+    expect(DelayedResponseService.cancelPending).not.toHaveBeenCalled();
+  });
+
+  test('known lead already AI-carried (continueTurn true) -> startForLead NOT called (no double-engage)', async () => {
+    knownLeadQuery();
+    ConversationalAgentService.continueTurn.mockResolvedValue(true);
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'text', text: { body: 'thanks' } }) }, mockRes(), jest.fn());
+
+    expect(ConversationalAgentService.startForLead).not.toHaveBeenCalled();
+  });
+
+  test('REGRESSION (known lead): a button_reply never triggers startForLead; resume still runs', async () => {
+    knownLeadQuery();
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'interactive', interactive: { type: 'button_reply', button_reply: { id: 'btn-9', title: 'Yes' } } }) }, mockRes(), jest.fn());
+
+    expect(ConversationalAgentService.startForLead).not.toHaveBeenCalled();
+    expect(ConversationalAgentService.continueTurn).not.toHaveBeenCalled(); // not text
+    expect(AutomationEngine.resumeOnButtonReply).toHaveBeenCalledWith(CID, PHONE10, 'btn-9');
+  });
+
+  test('first contact: startForLead is NOT used — maybeStart still owns first contact, even when it declines', async () => {
+    AutomationEngine.hasActiveWorkflow.mockResolvedValue(false); // clearAllMocks doesn't reset mockResolvedValue — undo a prior test's true
+    ConversationalAgentService.maybeStart.mockResolvedValue(false); // default get -> isFirstContact true
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'text', text: { body: 'Hi' } }) }, mockRes(), jest.fn());
+
+    expect(ConversationalAgentService.maybeStart).toHaveBeenCalledTimes(1);
+    expect(ConversationalAgentService.startForLead).not.toHaveBeenCalled(); // isFirstContact gate
   });
 });

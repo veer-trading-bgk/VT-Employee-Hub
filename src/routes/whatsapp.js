@@ -1626,6 +1626,27 @@ router.post('/webhook', async (req, res) => {
               leadPK: lead.PK, lead, phone10, text, timestamp,
             });
           }
+          // Free text on an unengaged, unassigned lead counts as engagement
+          // (2026-07-15, 19_DECISION_LOG.md). continueTurn() only CONTINUES an
+          // already-'ai' conversation, so a lead that was never AI-engaged
+          // (handoffState 'human') would dead-end on every typed message. Route
+          // to startForLead() — Era 47's start mechanism — which no-ops on a
+          // human-assigned lead (assignedTo guard) or an already-engaged/handed-
+          // off conversation, so only a never-engaged, unassigned lead starts;
+          // the customer's own text seeds turn 0. Setting botHandled suppresses
+          // the OOO/keyword auto-replies below, exactly as continueTurn does.
+          if (!botHandled && type === 'text') {
+            botHandled = await ConversationalAgentService.startForLead(webhookCompanyId, {
+              leadPK: lead.PK, phone10, name: lead.name, contextHint: text,
+            });
+            // The AI conversation IS the response, so cancel any pending delayed-
+            // response — EXPLICITLY: the AI's reply is a 'system' send, and
+            // WhatsAppSendService._fireDelayedResponseCancel deliberately skips
+            // 'system' sends (so a delayed-response/welcome/automation blast can't
+            // cancel a genuine "no human replied" timer), so the AI's own reply
+            // never auto-cancels it. Era 49 decision 4.
+            if (botHandled) require('../services/DelayedResponseService').cancelPending(webhookCompanyId, phone10).catch(() => {});
+          }
           // Out of Office (Item 2) — a known lead never gets a Welcome message
           // (that's first-contact only, see the INBOX# branch below), so there
           // is no precedence conflict to resolve on this path: OOO just fires
@@ -1784,6 +1805,24 @@ router.post('/webhook', async (req, res) => {
             botEngaged = await ConversationalAgentService.maybeStart(companyId, {
               phone10, waName, text, timestamp, waMessageId,
             });
+          }
+          // Free text on a LATER turn engages the AI too (2026-07-15,
+          // 19_DECISION_LOG.md). A typed message after the welcome/buttons is the
+          // customer opting into conversation — engage regardless of a
+          // whatsapp_conversation_started workflow that owned only FIRST contact
+          // (this deliberately overrides a workflow paused at its buttons: the
+          // customer chose to type rather than tap). startForLead() resolve-or-
+          // creates the lead and no-ops if human-assigned or already engaged;
+          // setting botEngaged suppresses OOO/welcome/conversation_started/keyword
+          // below. First contact is unchanged — maybeStart owns it above.
+          if (!botEngaged && !isFirstContact && type === 'text') {
+            botEngaged = await ConversationalAgentService.startForLead(companyId, {
+              phone10, name: waName, contextHint: text,
+            });
+            // Cancel any pending delayed-response — EXPLICITLY (the AI reply is a
+            // 'system' send that WhatsAppSendService deliberately does NOT let
+            // cancel the timer; see the known-lead block above). Era 49 decision 4.
+            if (botEngaged) require('../services/DelayedResponseService').cancelPending(companyId, phone10).catch(() => {});
           }
           // A tap on a welcome-message reply button — fire its configured
           // follow-up, if any. Still possible here: the customer may still be
