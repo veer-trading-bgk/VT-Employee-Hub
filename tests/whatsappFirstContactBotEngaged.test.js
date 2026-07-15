@@ -55,9 +55,10 @@ jest.mock('../src/services/DelayedResponseService', () => ({
   cancelPending:     jest.fn().mockResolvedValue(undefined),
 }));
 jest.mock('../src/services/AutomationEngine', () => ({
-  fireTrigger:         jest.fn().mockResolvedValue(undefined),
-  resumeOnButtonReply: jest.fn().mockResolvedValue(undefined),
-  hasActiveWorkflow:   jest.fn().mockResolvedValue(false), // default: no conversation-started workflow → maybeStart runs as today
+  fireTrigger:            jest.fn().mockResolvedValue(undefined),
+  resumeOnButtonReply:    jest.fn().mockResolvedValue(undefined),
+  cancelButtonReplyWaits: jest.fn().mockResolvedValue(undefined),
+  hasActiveWorkflow:      jest.fn().mockResolvedValue(false), // default: no conversation-started workflow → maybeStart runs as today
 }));
 jest.mock('../src/services/CustomerIdentityService', () => ({
   resolveOrCreate: jest.fn(),
@@ -241,6 +242,9 @@ describe('POST /api/whatsapp/webhook — unknown-contact branch: botEngaged gate
     expect(ConversationalAgentService.startForLead).toHaveBeenCalledTimes(1); // not gated by the workflow (that only guards first-contact maybeStart)
     expect(ConversationalAgentService.maybeStart).not.toHaveBeenCalled();
     expect(DelayedResponseService.cancelPending).toHaveBeenCalledWith(CID, PHONE10);
+    // Finding 1: engaging over a paused conversation-started workflow also cancels
+    // that workflow's paused button-reply wait, so a later stray tap can't double-fire it.
+    expect(AutomationEngine.cancelButtonReplyWaits).toHaveBeenCalledWith(CID, PHONE10);
   });
 
   test('unknown contact, later free text, startForLead declines (assigned/disabled) -> keyword_message still fires', async () => {
@@ -289,6 +293,7 @@ describe('POST /api/whatsapp/webhook — unknown-contact branch: botEngaged gate
     expect(ConversationalAgentService.startForLead).toHaveBeenCalledTimes(1);
     expect(AutomationEngine.fireTrigger).toHaveBeenCalledWith(CID, 'keyword_message', expect.objectContaining({ messageText: 'anyone there?' }));
     expect(DelayedResponseService.cancelPending).not.toHaveBeenCalled();
+    expect(AutomationEngine.cancelButtonReplyWaits).not.toHaveBeenCalled(); // declined -> no engagement -> nothing to cancel
   });
 
   test('known lead already AI-carried (continueTurn true) -> startForLead NOT called (no double-engage)', async () => {

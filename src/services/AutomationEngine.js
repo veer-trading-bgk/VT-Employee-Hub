@@ -539,6 +539,51 @@ class AutomationEngine {
     }
   }
 
+  // ── Cancel a contact's paused button-reply waits, WITHOUT resuming ────────
+  // Finding 1 (Era 49, 2026-07-15). Free text on an unengaged, unassigned
+  // conversation engages the AI and overrides a whatsapp_conversation_started
+  // workflow paused at its buttons. The paused AUTO_WAIT# would otherwise
+  // survive and let a LATER stray button tap resume that overridden workflow via
+  // resumeOnButtonReply() — a double action on a conversation the AI now owns.
+  // This claims and DELETES those waits without resuming, so a late tap finds
+  // nothing to fire. Called from whatsapp.js ONLY when startForLead() actually
+  // engaged (returned true), so an assigned/declined lead's paused workflow is
+  // left untouched. Scoped to awaitReply (button-tappable) waits: delayed_response
+  // waits are cancelled separately (DelayedResponseService.cancelPending) and
+  // time-only delay waits aren't button-tappable, so both are correctly ignored.
+  // Same whole-partition Query + conditional-delete claim as resumeOnButtonReply();
+  // fire-and-forget, never throws.
+  async cancelButtonReplyWaits(companyId, phone10) {
+    try {
+      const { Items = [] } = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk',
+        ExpressionAttributeValues: { ':pk': `AUTO_WAIT#${companyId}` },
+        Limit: 100,
+      }).promise();
+
+      const candidates = Items.filter((item) =>
+        item.awaitReply && to10Digit(item.awaitReply.phone) === phone10,
+      );
+
+      await Promise.all(candidates.map((item) =>
+        dynamodb.delete({
+          TableName: TABLE,
+          Key: { PK: item.PK, SK: item.SK },
+          ConditionExpression: 'attribute_exists(PK)',
+        }).promise().catch((e) => {
+          // Already claimed (e.g. a concurrent timeout sweep or a genuine reply
+          // that raced this cancel) — nothing left to cancel, not an error.
+          if (e.code !== 'ConditionalCheckFailedException') {
+            logger.warn(`AutomationEngine.cancelButtonReplyWaits: claim failed for ${item.executionId}: ${e.message}`);
+          }
+        }),
+      ));
+    } catch (e) {
+      logger.warn(`AutomationEngine.cancelButtonReplyWaits: ${e.message}`);
+    }
+  }
+
   // ── Action executor ──────────────────────────────────────────────────────
   async _runAction(companyId, step, ctx) {
     const { leadPK, phone, name, leadId, assignedTo, source, traits } = ctx;

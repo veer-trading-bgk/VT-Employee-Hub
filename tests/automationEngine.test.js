@@ -1645,6 +1645,83 @@ describe('AutomationEngine — resumeOnButtonReply() phone matching (Fix 3, Wave
   });
 });
 
+// ── cancelButtonReplyWaits() — Finding 1 (2026-07-15) ─────────────────────────
+// Free text on an unengaged, unassigned conversation engages the AI and overrides
+// a whatsapp_conversation_started workflow paused at its buttons (Era 49). The
+// paused AUTO_WAIT# must be cancelled so a LATER stray button tap can't resume the
+// overridden workflow — a double-action on a conversation the AI now owns. Proven
+// end-to-end: cancel claims+deletes the wait, and a subsequent resumeOnButtonReply()
+// for the same contact then finds nothing and resumes no execution.
+describe('AutomationEngine — cancelButtonReplyWaits() (Finding 1: no double-action on a late tap)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  const pausedWait = {
+    PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-07-15T00:00:00.000Z#exec_pausedwf',
+    executionId: 'exec_pausedwf', workflowId: 'wf_conv_started', nodeId: 'n_buttons', graph: true,
+    awaitReply: { phone: '9876543210', expectedButtonIds: ['OPEN_DEMAT', 'LEARN_MORE'] },
+  };
+
+  test('claims and deletes a contact\'s paused button-reply wait, without resuming it', async () => {
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [pausedWait] }) });
+    dynamodb.delete.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const resumeSpy = jest.spyOn(engine, 'resumeExecution').mockResolvedValue(undefined);
+
+    await engine.cancelButtonReplyWaits(CID, '9876543210');
+
+    expect(dynamodb.delete).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: pausedWait.PK, SK: pausedWait.SK },
+      ConditionExpression: 'attribute_exists(PK)',
+    }));
+    expect(resumeSpy).not.toHaveBeenCalled(); // cancelled, deliberately never resumed
+    resumeSpy.mockRestore();
+  });
+
+  test('paused workflow + free-text engagement + a LATE button tap -> the old workflow does NOT fire', async () => {
+    // Phase 1 (free-text engagement): whatsapp.js calls cancelButtonReplyWaits, which
+    // claims+deletes the paused wait. Phase 2 (the customer later taps the stale
+    // button): resumeOnButtonReply now finds nothing and resumes no execution.
+    dynamodb.query
+      .mockReturnValueOnce({ promise: () => Promise.resolve({ Items: [pausedWait] }) }) // phase 1: cancel sees the wait
+      .mockReturnValueOnce({ promise: () => Promise.resolve({ Items: [] }) });           // phase 2: late tap sees it gone
+    dynamodb.delete.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const resumeSpy = jest.spyOn(engine, 'resumeExecution').mockResolvedValue(undefined);
+
+    await engine.cancelButtonReplyWaits(CID, '9876543210');            // engagement cancels the paused wait
+    expect(dynamodb.delete).toHaveBeenCalledTimes(1);
+
+    await engine.resumeOnButtonReply(CID, '9876543210', 'OPEN_DEMAT'); // LATE stray tap on the stale button
+
+    expect(resumeSpy).not.toHaveBeenCalled();         // no double-action: the overridden workflow never resumes
+    expect(dynamodb.delete).toHaveBeenCalledTimes(1); // still only the cancel's delete — the tap claimed nothing
+    resumeSpy.mockRestore();
+  });
+
+  test('leaves a DIFFERENT contact\'s paused wait untouched (phone-scoped)', async () => {
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [pausedWait] }) });
+    dynamodb.delete.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    await engine.cancelButtonReplyWaits(CID, '9111111111'); // some other customer's engagement
+
+    expect(dynamodb.delete).not.toHaveBeenCalled();
+  });
+
+  test('ignores a delayed_response wait (no awaitReply) — that path is cancelled separately', async () => {
+    const delayedWait = {
+      PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-07-15T00:00:00.000Z#dr_1',
+      waitType: 'delayed_response', delayedResponse: { phone: '9876543210', messageText: 'hi' },
+    };
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [delayedWait] }) });
+    dynamodb.delete.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    await engine.cancelButtonReplyWaits(CID, '9876543210');
+
+    expect(dynamodb.delete).not.toHaveBeenCalled(); // only awaitReply (button-tappable) waits are in scope
+  });
+});
+
 // ── start_ai_conversation action (2026-07-14) ─────────────────────────────────
 // Terminal hand-off to ConversationalAgentService.startForLead. The action
 // resolves an optional {{name}}/{{phone}}/{{trait.*}} context hint and passes

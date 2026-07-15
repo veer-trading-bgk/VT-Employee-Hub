@@ -1645,7 +1645,16 @@ router.post('/webhook', async (req, res) => {
             // 'system' sends (so a delayed-response/welcome/automation blast can't
             // cancel a genuine "no human replied" timer), so the AI's own reply
             // never auto-cancels it. Era 49 decision 4.
-            if (botHandled) require('../services/DelayedResponseService').cancelPending(webhookCompanyId, phone10).catch(() => {});
+            if (botHandled) {
+              require('../services/DelayedResponseService').cancelPending(webhookCompanyId, phone10).catch(() => {});
+              // Finding 1 (Era 49, 2026-07-15) — also cancel any workflow button-
+              // reply wait still paused for this contact, so a LATER stray button
+              // tap can't resume the now-overridden whatsapp_conversation_started
+              // workflow (double-action on a conversation the AI now owns). Gated on
+              // botHandled: an assigned/declined lead (startForLead returned false)
+              // never engaged, so its paused workflow is deliberately left intact.
+              require('../services/AutomationEngine').cancelButtonReplyWaits(webhookCompanyId, phone10).catch(() => {});
+            }
           }
           // Out of Office (Item 2) — a known lead never gets a Welcome message
           // (that's first-contact only, see the INBOX# branch below), so there
@@ -1822,7 +1831,13 @@ router.post('/webhook', async (req, res) => {
             // Cancel any pending delayed-response — EXPLICITLY (the AI reply is a
             // 'system' send that WhatsAppSendService deliberately does NOT let
             // cancel the timer; see the known-lead block above). Era 49 decision 4.
-            if (botEngaged) require('../services/DelayedResponseService').cancelPending(companyId, phone10).catch(() => {});
+            if (botEngaged) {
+              require('../services/DelayedResponseService').cancelPending(companyId, phone10).catch(() => {});
+              // Finding 1 (Era 49, 2026-07-15) — see the known-lead branch above:
+              // cancel the paused workflow button-reply wait so a late stray tap
+              // can't double-fire the overridden conversation-started workflow.
+              require('../services/AutomationEngine').cancelButtonReplyWaits(companyId, phone10).catch(() => {});
+            }
           }
           // A tap on a welcome-message reply button — fire its configured
           // follow-up, if any. Still possible here: the customer may still be
