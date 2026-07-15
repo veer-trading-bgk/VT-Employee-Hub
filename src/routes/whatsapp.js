@@ -1643,19 +1643,28 @@ router.post('/webhook', async (req, res) => {
             } catch (e) { logger.warn('OOO message failed: ' + e.message); }
           }
           // A tap on a welcome-message reply button — fire its configured
-          // follow-up, if any (see fireButtonFollowUp's own internal try/catch).
+          // follow-up, if any (welcome follow-ups are reply-button only; see
+          // fireButtonFollowUp's own internal try/catch).
           if (buttonReply) {
             await fireButtonFollowUp(webhookCompanyId, { leadPK: lead.PK }, buttonReply.id, { id: 'system', role: 'admin', name: 'System' });
-            // Independent of welcome-message follow-ups: resume any paused automation
-            // graph execution whose button_reply condition node is waiting on this exact
-            // tap (branching automation builder, Phase 1 — see AutomationEngine.js).
-            // Awaited (bounded) since 2026-07-06 — see 19_DECISION_LOG.md Era 20: an
-            // un-awaited resume can freeze mid-flight when the Lambda execution context
-            // suspends right after this response resolves.
+          }
+          // Independent of welcome-message follow-ups: resume any paused automation
+          // graph execution whose send_buttons OR send_list node is waiting on this
+          // exact tap. BOTH interactive reply shapes can pause an execution — a
+          // send_buttons node (button_reply) and a send_list node (list_reply) — and
+          // a tapped row id is a valid handle id in expectedButtonIds exactly like a
+          // button id (see AutomationEngine._replyOptionIds), so list replies must
+          // resume too. Previously button_reply only, which silently stranded every
+          // send_list wait for the entire life of the Message+List node. Awaited
+          // (bounded) since 2026-07-06 — see 19_DECISION_LOG.md Era 20: an un-awaited
+          // resume can freeze mid-flight when the Lambda execution context suspends
+          // right after this response resolves.
+          const replyOptionId = buttonReply?.id ?? listReply?.id;
+          if (replyOptionId) {
             await withTimeout(
               require('../services/AutomationEngine')
-                .resumeOnButtonReply(webhookCompanyId, phone10, buttonReply.id)
-                .catch((e) => logger.warn('automation button-reply resume failed: ' + e.message)),
+                .resumeOnButtonReply(webhookCompanyId, phone10, replyOptionId)
+                .catch((e) => logger.warn('automation reply resume failed: ' + e.message)),
               'resumeOnButtonReply',
             );
           }
@@ -1782,14 +1791,18 @@ router.post('/webhook', async (req, res) => {
           // between the welcome send and the reply.
           if (!botEngaged && buttonReply) {
             await fireButtonFollowUp(companyId, { phone: phone10 }, buttonReply.id, { id: 'system', role: 'admin', name: 'System' });
-            // Independent of welcome-message follow-ups: resume any paused automation
-            // graph execution whose button_reply condition node is waiting on this exact
-            // tap (branching automation builder, Phase 1 — see AutomationEngine.js).
-            // Awaited (bounded) since 2026-07-06 — see 19_DECISION_LOG.md Era 20.
+          }
+          // Resume any paused automation graph execution waiting on this tap —
+          // send_buttons (button_reply) AND send_list (list_reply); see the
+          // identical lead-path block above for the full reasoning. Previously
+          // button_reply only, which stranded every send_list wait. Awaited
+          // (bounded) since 2026-07-06 — see 19_DECISION_LOG.md Era 20.
+          const replyOptionId = buttonReply?.id ?? listReply?.id;
+          if (!botEngaged && replyOptionId) {
             await withTimeout(
               require('../services/AutomationEngine')
-                .resumeOnButtonReply(companyId, phone10, buttonReply.id)
-                .catch((e) => logger.warn('automation button-reply resume failed: ' + e.message)),
+                .resumeOnButtonReply(companyId, phone10, replyOptionId)
+                .catch((e) => logger.warn('automation reply resume failed: ' + e.message)),
               'resumeOnButtonReply',
             );
           }

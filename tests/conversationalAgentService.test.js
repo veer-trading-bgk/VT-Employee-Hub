@@ -431,12 +431,14 @@ describe('ConversationalAgentService', () => {
   });
 
   // ─── startForLead: workflow-originated AI hand-off (2026-07-14) ─────────────
-  // Entry point for the Automation `start_ai_conversation` action. Unlike
-  // maybeStart, the lead already exists (leadPK known) and a free-text
-  // contextHint seeds turn 0. Guard: no-op if disabled / lead missing / human-
-  // owned (assignedTo) / already bot-engaged ('ai') / handed off
-  // ('pending_human'). handoffState defaults to 'human' for a never-engaged
-  // conversation, which is the only state that falls through to start.
+  // Entry point for the Automation `start_ai_conversation` action. A free-text
+  // contextHint seeds turn 0. leadPK is OPTIONAL: the keyword_message known-lead
+  // path passes one; the whatsapp_conversation_started path fires for unknown
+  // INBOX# contacts with NO leadPK, so startForLead resolve-or-creates the lead
+  // itself (CIS, ADR-013) — covered in its own block below. Guard: no-op if
+  // disabled / lead missing / human-owned (assignedTo) / already bot-engaged
+  // ('ai') / handed off ('pending_human'). handoffState defaults to 'human' for a
+  // never-engaged conversation, which is the only state that falls through.
   describe('startForLead (workflow hand-off)', () => {
     test('no-ops when the AI conversation agent is disabled', async () => {
       dynamodb.get.mockImplementation((params) => {
@@ -507,6 +509,92 @@ describe('ConversationalAgentService', () => {
       expect(engaged).toBe(true);
       const saCall = AIService.generate.mock.calls.find(([p]) => p.useCase === 'conversational-sales-agent');
       expect(saCall[0].context.latestMessage).toBe('Hi');
+    });
+
+    // ── startForLead WITHOUT a leadPK — the whatsapp_conversation_started fix ──
+    // The whatsapp_conversation_started trigger fires for unknown INBOX# contacts
+    // that have no lead yet, so the start_ai_conversation node hands off with
+    // phone10 and NO leadPK. Before this fix the node threw "leadPK required" and
+    // the AI never engaged (silent, no customer-visible error). startForLead now
+    // resolve-or-creates a real CRM lead via CIS (ADR-013), exactly like maybeStart.
+    describe('no leadPK (unknown contact — whatsapp_conversation_started)', () => {
+      test('resolve-or-creates the lead via CIS (skipAutoAssign, source whatsapp) then engages', async () => {
+        conv.handoffState = 'human';
+        mockTurn({ reply: 'Great — let us open your Demat account.' });
+        // Default CIS mock returns action:'created' with the `lead` fixture (assignedTo null).
+        const engaged = await agent.startForLead(CID, { phone10: PHONE, name: 'Ravi', contextHint: 'Demat' });
+        expect(engaged).toBe(true);
+        expect(CustomerIdentityService.resolveOrCreate).toHaveBeenCalledWith(
+          CID,
+          expect.objectContaining({ phone: PHONE, name: 'Ravi', source: 'whatsapp', skipAutoAssign: true }),
+          expect.objectContaining({ createdBy: 'webhook' }),
+        );
+        expect(ConversationService.startBotHandling).toHaveBeenCalledWith(CID, conv.conversationId);
+        const saCall = AIService.generate.mock.calls.find(([p]) => p.useCase === 'conversational-sales-agent');
+        expect(saCall[0].context.latestMessage).toBe('Demat'); // the tapped button's hint seeds turn 0
+      });
+
+      // Review-pass test-gap fix: pin the CREATED-branch leadPK derivation. On
+      // action:'created', startForLead derives resolvedLeadPK = result.lead.PK and
+      // threads it into resolveForLead + _runTurn + WASendSvc.sendText. Without
+      // this assertion the created test would stay green even if resolvedLeadPK
+      // regressed to the (undefined) leadPK param — routing the first AI reply to
+      // the wrong/empty DynamoDB partition.
+      test('threads the freshly-CREATED lead PK downstream (not a stale/undefined leadPK)', async () => {
+        conv.handoffState = 'human';
+        mockTurn({ reply: 'On it.' });
+        // Default CIS mock: action:'created', result.lead.PK === LEAD_PK.
+        await agent.startForLead(CID, { phone10: PHONE, name: 'Ravi', contextHint: 'Demat' });
+        expect(resolveForLead).toHaveBeenCalledWith(CID, LEAD_PK, PHONE, expect.any(Object));
+        expect(WASendSvc.sendText).toHaveBeenCalledWith(CID, { leadPK: LEAD_PK }, expect.any(String), expect.anything());
+      });
+
+      test('an ENRICHED CIS hit (no lead field on the result) reads the lead by leadId, then engages', async () => {
+        conv.handoffState = 'human';
+        // CIS's contract: result.lead is present ONLY on a fresh create. An enriched
+        // (existing) or idempotent-replayed hit returns leadId only — must be read back.
+        CustomerIdentityService.resolveOrCreate.mockResolvedValue({
+          existed: true, leadId: 'lead_1', action: 'enriched', interactionId: 'int_2',
+        });
+        mockTurn();
+        const engaged = await agent.startForLead(CID, { phone10: PHONE, name: 'Ravi', contextHint: 'Demat' });
+        expect(engaged).toBe(true);
+        expect(dynamodb.get).toHaveBeenCalledWith(expect.objectContaining({ Key: { PK: LEAD_PK, SK: 'METADATA' } }));
+        expect(ConversationService.startBotHandling).toHaveBeenCalledWith(CID, conv.conversationId);
+      });
+
+      test('never creates a lead when the AI agent is disabled (cfg gate runs before CIS)', async () => {
+        dynamodb.get.mockImplementation((params) => {
+          if (params.Key.PK === `CONFIG#CONVAGENT#${CID}`) return resolved({ Item: { enabled: false } });
+          return resolved({});
+        });
+        const engaged = await agent.startForLead(CID, { phone10: PHONE, name: 'Ravi', contextHint: 'Demat' });
+        expect(engaged).toBe(false);
+        expect(CustomerIdentityService.resolveOrCreate).not.toHaveBeenCalled();
+      });
+
+      test('does not hijack when CIS resolves to an already-human-assigned lead', async () => {
+        conv.handoffState = 'human';
+        CustomerIdentityService.resolveOrCreate.mockResolvedValue({
+          existed: true, leadId: 'lead_1', action: 'enriched', interactionId: 'int_3',
+        });
+        dynamodb.get.mockImplementation((params) => {
+          if (params.Key.PK === `CONFIG#CONVAGENT#${CID}`) return resolved({ Item: { enabled: true } });
+          if (params.Key.PK === LEAD_PK) return resolved({ Item: { ...lead, assignedTo: 'emp_9' } });
+          return resolved({});
+        });
+        const engaged = await agent.startForLead(CID, { phone10: PHONE, name: 'Ravi', contextHint: 'Demat' });
+        expect(engaged).toBe(false);
+        expect(ConversationService.startBotHandling).not.toHaveBeenCalled();
+        expect(AIService.generate).not.toHaveBeenCalled();
+      });
+
+      test('returns false without creating anything when there is neither leadPK nor phone10', async () => {
+        const engaged = await agent.startForLead(CID, { name: 'Ravi', contextHint: 'Demat' });
+        expect(engaged).toBe(false);
+        expect(CustomerIdentityService.resolveOrCreate).not.toHaveBeenCalled();
+        expect(ConversationService.startBotHandling).not.toHaveBeenCalled();
+      });
     });
   });
 

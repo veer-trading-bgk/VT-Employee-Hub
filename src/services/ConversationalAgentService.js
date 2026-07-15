@@ -576,22 +576,34 @@ async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessa
 }
 
 /**
- * Start an AI conversation on an EXISTING lead, initiated from inside an
- * Automation workflow (the `start_ai_conversation` action) rather than from the
- * webhook's first-contact path. Unlike maybeStart(), the lead already exists
- * (leadPK is known) and there is no triggering customer message, so a free-text
+ * Start an AI conversation for a lead, initiated from inside an Automation
+ * workflow (the `start_ai_conversation` action) rather than from the webhook's
+ * first-contact path. There is no triggering customer message, so a free-text
  * `contextHint` (e.g. the category of a tapped welcome button) is passed as the
  * AI's turn-0 seed, letting its first question reference it instead of
  * re-asking. Empty hint falls back to a neutral "Hi" seed (turn-1's working
  * shape).
  *
+ * leadPK is OPTIONAL. The whatsapp_conversation_started trigger fires for
+ * unknown INBOX# contacts that have no lead yet, so when leadPK is absent this
+ * resolve-or-creates a real CRM lead from phone10 via CustomerIdentityService
+ * (ADR-013, skipAutoAssign) — the SAME identity path maybeStart() uses on the
+ * autonomous first-contact path. A caller that already has a leadPK (e.g. the
+ * keyword_message known-lead path) passes it and skips the create. Customer
+ * creation lives here in the agent service, so AutomationEngine stays a pure
+ * reader (its ADR-013 'reads existing leads only' boundary is unchanged). Fixes
+ * the "start_ai_conversation: leadPK required" silent failure that made every
+ * whatsapp_conversation_started -> start_ai_conversation flow fail for unknown
+ * (never-a-lead) contacts.
+ *
  * ADR-015: routes through _runTurn -> AIService, never a provider directly.
  *
  * No-op (returns false; the workflow just completes without a hand-off) when:
- *   - the AI conversation agent is disabled for the company,
- *   - the lead can't be loaded,
- *   - the lead is already assigned to a human — don't hijack a human-owned lead
- *     (same guard maybeStart() applies via lead.assignedTo), or
+ *   - the AI conversation agent is disabled for the company (checked BEFORE any
+ *     lead is created, so a disabled company never creates a lead here),
+ *   - there is neither a leadPK nor a phone10 to resolve a lead from,
+ *   - the resolved/created lead is already assigned to a human — don't hijack a
+ *     human-owned lead (same guard maybeStart() applies via lead.assignedTo), or
  *   - the conversation is already bot-engaged (handoffState 'ai') or handed off
  *     (handoffState 'pending_human') — never re-engage or restart.
  *
@@ -608,15 +620,34 @@ async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessa
 async function startForLead(companyId, { leadPK, phone10, name, contextHint }) {
   try {
     const cfg = await _getConfig(companyId);
-    if (!cfg.enabled) return false;
+    if (!cfg.enabled) return false; // checked first — a disabled company never creates a lead below
 
-    const r = await dynamodb.get({ TableName: TABLE, Key: { PK: leadPK, SK: 'METADATA' } }).promise();
-    const lead = r.Item;
+    let resolvedLeadPK = leadPK;
+    let lead;
+    if (resolvedLeadPK) {
+      const r = await dynamodb.get({ TableName: TABLE, Key: { PK: resolvedLeadPK, SK: 'METADATA' } }).promise();
+      lead = r.Item;
+    } else {
+      // whatsapp_conversation_started fires for unknown INBOX# contacts with no
+      // leadPK — resolve-or-create a real CRM lead here, the SAME CIS path
+      // (ADR-013, skipAutoAssign so a never-engaged bot lead is never handed to a
+      // human) maybeStart() uses. Nothing to resolve a lead from without a phone.
+      if (!phone10) return false;
+      const result = await CustomerIdentityService.resolveOrCreate(companyId, {
+        phone: phone10, name: name || undefined, source: 'whatsapp', skipAutoAssign: true,
+      }, { createdBy: 'webhook' });
+      // result.lead is only set on a fresh create (CIS's own contract) — an
+      // enriched or idempotent-replayed hit returns leadId only, so one direct-key
+      // read by leadPK covers both cases (the identical idiom the inbound_webhook
+      // route and maybeStart already use).
+      lead = result.lead ?? (await dynamodb.get({ TableName: TABLE, Key: { PK: `LEAD#${companyId}#${result.leadId}`, SK: 'METADATA' } }).promise()).Item;
+      resolvedLeadPK = lead?.PK ?? `LEAD#${companyId}#${result.leadId}`;
+    }
     if (!lead) return false;
     if (lead.assignedTo) return false; // human owns it — don't hijack (mirrors maybeStart's guard)
 
     const seed = (contextHint && contextHint.trim()) ? contextHint.trim() : 'Hi';
-    const conv = await resolveForLead(companyId, leadPK, phone10, { text: seed, timestamp: new Date().toISOString() });
+    const conv = await resolveForLead(companyId, resolvedLeadPK, phone10, { text: seed, timestamp: new Date().toISOString() });
     if (!conv?.conversationId) return false;
 
     const conversation = await ConversationService.getConversation(companyId, conv.conversationId);
@@ -629,9 +660,9 @@ async function startForLead(companyId, { leadPK, phone10, name, contextHint }) {
     }
 
     await ConversationService.startBotHandling(companyId, conv.conversationId);
-    return await _runTurn(companyId, { leadPK, lead, conversationId: conv.conversationId, text: seed, turnCount: 0, cfg });
+    return await _runTurn(companyId, { leadPK: resolvedLeadPK, lead, conversationId: conv.conversationId, text: seed, turnCount: 0, cfg });
   } catch (err) {
-    logger.error(`ConversationalAgentService.startForLead failed [${companyId}/${leadPK}]: ${err.message}`);
+    logger.error(`ConversationalAgentService.startForLead failed [${companyId}/${leadPK ?? phone10}]: ${err.message}`);
     return false;
   }
 }

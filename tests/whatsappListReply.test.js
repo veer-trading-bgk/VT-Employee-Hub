@@ -190,6 +190,63 @@ describe('POST /api/whatsapp/webhook — known-lead branch: list_reply / text / 
     expect(AutomationEngine.fireTrigger).not.toHaveBeenCalledWith(CID, 'keyword_message', expect.anything());
   });
 
+  // ── Reply-driven automation RESUME must fire for BOTH interactive shapes ──
+  // Bug: only button_reply reached resumeOnButtonReply(), so a paused send_list
+  // node's wait was silently stranded — a tapped row never resumed its execution.
+  // A row id is a valid handle id in expectedButtonIds exactly like a button id
+  // (AutomationEngine._replyOptionIds), so list_reply must resume too.
+  test('a list_reply tap resumes a paused automation execution with the tapped ROW id', async () => {
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    const req = { body: webhookBody({
+      type: 'interactive',
+      interactive: { type: 'list_reply', list_reply: { id: 'row-1', title: 'Open Demat Account', description: '' } },
+    }) };
+    await handler(req, mockRes(), jest.fn());
+
+    expect(AutomationEngine.resumeOnButtonReply).toHaveBeenCalledWith(CID, PHONE10, 'row-1');
+  });
+
+  test('a button_reply tap still resumes a paused automation execution with the tapped BUTTON id', async () => {
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    const req = { body: webhookBody({
+      type: 'interactive',
+      interactive: { type: 'button_reply', button_reply: { id: 'btn-1', title: 'Yes please' } },
+    }) };
+    await handler(req, mockRes(), jest.fn());
+
+    expect(AutomationEngine.resumeOnButtonReply).toHaveBeenCalledWith(CID, PHONE10, 'btn-1');
+  });
+
+  test('a plain text / media message (no reply id) never calls the reply-resume path', async () => {
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody({ type: 'text', text: { body: 'just a message' } }) }, mockRes(), jest.fn());
+    await handler({ body: webhookBody({ type: 'image', image: { id: 'media-1', mime_type: 'image/jpeg' } }) }, mockRes(), jest.fn());
+
+    expect(AutomationEngine.resumeOnButtonReply).not.toHaveBeenCalled();
+  });
+
+  test('unknown (INBOX#) contact branch: a list_reply tap also resumes via the same reply path — the branch today’s bug occurred in', async () => {
+    // No lead for this phone → the webhook takes the unknown-contact else-branch.
+    dynamodb.query.mockImplementation(() => ({ promise: () => Promise.resolve({ Items: [] }) }));
+    // Existing CONTACT so isFirstContact is false — avoids the first-contact
+    // welcome / whatsapp_conversation_started fire, isolating the resume path.
+    dynamodb.get.mockImplementation((params) => {
+      const pk = params?.Key?.PK ?? '';
+      if (pk.startsWith('CONFIG#PHONEID#')) return { promise: () => Promise.resolve({ Item: { companyId: CID } }) };
+      if (pk.startsWith('CONFIG#WABA#')) return { promise: () => Promise.resolve({ Item: { companyId: CID, phoneNumberId: PHONE_NUMBER_ID, accessToken: 'tok' } }) };
+      if (pk.startsWith('INBOX#') && params.Key.SK === 'CONTACT') return { promise: () => Promise.resolve({ Item: { PK: pk, SK: 'CONTACT', phone: PHONE10 } }) };
+      return { promise: () => Promise.resolve({}) };
+    });
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    const req = { body: webhookBody({
+      type: 'interactive',
+      interactive: { type: 'list_reply', list_reply: { id: 'row-7', title: 'Mutual funds', description: '' } },
+    }) };
+    await handler(req, mockRes(), jest.fn());
+
+    expect(AutomationEngine.resumeOnButtonReply).toHaveBeenCalledWith(CID, PHONE10, 'row-7');
+  });
+
   // Proves the ordering fix from the 2026-07-06 incident (19_DECISION_LOG.md Era 20):
   // fireTrigger('keyword_message') used to be fire-and-forget, so res.sendStatus(200)
   // could resolve before it ran at all — a real customer's automated reply was

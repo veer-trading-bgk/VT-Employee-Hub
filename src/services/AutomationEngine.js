@@ -800,7 +800,15 @@ class AutomationEngine {
       // handed off — see ConversationalAgentService.startForLead's guard. Lazy
       // require avoids any load-order coupling with the agent service.
       case 'start_ai_conversation': {
-        if (!leadPK) throw new Error('start_ai_conversation: leadPK required');
+        // leadPK is NOT required here: whatsapp_conversation_started fires for
+        // unknown INBOX# contacts with none, so startForLead() itself resolve-or-
+        // creates the lead (via CIS, ADR-013) when leadPK is absent — customer
+        // creation lives in the agent service, so AutomationEngine keeps its
+        // "reads existing leads only" boundary (line ~25) intact and simply passes
+        // leadPK through (undefined for a conversation_started context). phone is
+        // the one hard requirement: there's nothing to resolve a lead from without
+        // it, and startForLead needs it as phone10 either way.
+        if (!phone) throw new Error('start_ai_conversation: phone required');
         const ConversationalAgentService = require('./ConversationalAgentService');
         const { contextHint } = step.config ?? {};
         // Optional free-text hint (e.g. a tapped button's category) — resolved

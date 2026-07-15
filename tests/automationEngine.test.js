@@ -1255,6 +1255,49 @@ describe('AutomationEngine — send_buttons/send_list opt-in reply handles', () 
     expect(vals[':path'][0]).toMatchObject({ status: 'replied', branchKey: 'BTN_YES' });
   });
 
+  // Review-pass test-gap fix: end-to-end proof that a tapped LIST ROW id resumes
+  // a paused send_list wait (not just a button id). The webhook now passes
+  // list_reply.id to resumeOnButtonReply; this pins the engine end — a row id in
+  // expectedButtonIds is claimed and resolved directly as the branch key, exactly
+  // like a button id, advancing the execution into the matched row branch.
+  test('resumeOnButtonReply matches a tapped ROW id against a paused send_list wait and resumes into that row branch', async () => {
+    const workflow = {
+      id: 'wf-sl-2', name: 'Resume send_list workflow', status: 'active', entryNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'send_list', config: { bodyText: 'Pick one', buttonText: 'View', rows: [{ id: 'r1', title: 'Demat' }, { id: 'r2', title: 'Trading' }] } },
+        { id: 'n2', type: 'add_tag', config: { tag: 'wants-demat' } },
+        { id: 'n3', type: 'end', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'n1', target: 'n2', sourceHandle: 'r1' },
+        { id: 'e2', source: 'n1', target: 'n3', sourceHandle: '__timeout__' },
+      ],
+    };
+    const context  = { leadPK: LEAD_PK, phone: '9000000000' };
+    const execItem = makeExecItem({ SK: 'EXEC#2026-01-01T00:00:00.000Z#exec-sl', executionId: 'exec-sl', path: [{ nodeId: 'n1', type: 'send_list', status: 'waiting_reply' }] });
+    const waitItem = {
+      PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-02-01T00:00:00.000Z#exec-sl',
+      executionId: 'exec-sl', workflowId: workflow.id, execSK: execItem.SK,
+      graph: true, nodeId: 'n1', context,
+      awaitReply: { phone: '9000000000', expectedButtonIds: ['r1', 'r2'] },
+    };
+
+    dynamodb.query.mockReturnValue(resolved({ Items: [waitItem] }));
+    dynamodb.delete.mockReturnValue(resolved({}));
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK.startsWith('CONFIG#AUTO#')) return resolved({ Item: workflow });
+      if (params.Key.PK.startsWith('AUTO_EXEC#'))   return resolved({ Item: execItem });
+      return resolved({});
+    });
+
+    await engine.resumeOnButtonReply(CID, '9000000000', 'r1');
+
+    expect(dynamodb.delete).toHaveBeenCalled(); // the send_list wait was claimed by the row tap
+    const vals = finalPatch();
+    expect(vals[':path'].map((p) => p.nodeId)).toEqual(['n1', 'n2']);
+    expect(vals[':path'][0]).toMatchObject({ status: 'replied', branchKey: 'r1' });
+  });
+
   test('resumeExecution follows the reserved timeout handle when no reply arrives in time', async () => {
     const workflow = {
       id: 'wf-sb-5', name: 'Timeout workflow', status: 'active', entryNodeId: 'n1',
@@ -1651,10 +1694,25 @@ describe('AutomationEngine — start_ai_conversation action', () => {
     expect(result).toEqual({ engaged: false });
   });
 
-  test('throws (no lead to hand off) when leadPK is missing', async () => {
+  test('hands off with NO leadPK (unknown-contact conversation_started) — does not throw; startForLead resolve-or-creates the lead itself', async () => {
+    ConversationalAgentService.startForLead.mockResolvedValue(true);
+    const result = await engine._runAction(
+      CID,
+      { type: 'start_ai_conversation', config: { contextHint: 'Demat' } },
+      { phone: '9000000000', name: 'Ravi' }, // the real whatsapp_conversation_started context shape: no leadPK
+    );
+    // AutomationEngine stays a pure reader — it just passes leadPK through as
+    // undefined; the lead resolve-or-create happens inside startForLead (CIS).
+    expect(ConversationalAgentService.startForLead).toHaveBeenCalledWith(CID, {
+      leadPK: undefined, phone10: '9000000000', name: 'Ravi', contextHint: 'Demat',
+    });
+    expect(result).toEqual({ engaged: true });
+  });
+
+  test('throws only when phone is also missing (nothing to resolve a lead from)', async () => {
     await expect(
-      engine._runAction(CID, { type: 'start_ai_conversation', config: { contextHint: 'x' } }, { phone: '9000000000' }),
-    ).rejects.toThrow('start_ai_conversation: leadPK required');
+      engine._runAction(CID, { type: 'start_ai_conversation', config: { contextHint: 'x' } }, {}),
+    ).rejects.toThrow('start_ai_conversation: phone required');
     expect(ConversationalAgentService.startForLead).not.toHaveBeenCalled();
   });
 });
