@@ -318,7 +318,15 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
                      // _extractText fix); starving the total budget to enforce
                      // conciseness risks truncating the actual JSON reply
                      // before it's even written.
-    promptVersion: 'v8', // v8 (2026-07-14): base-prompt cost trim — STYLE, PRODUCT
+    promptVersion: 'v9', // v9 (2026-07-15): KNOWN SO FAR re-anchor tightened — the
+                         // "confirm it in passing / still the plan?" clause that
+                         // sanctioned re-asking already-known product interest (the
+                         // root of the viir_trading re-ask loop, 19_DECISION_LOG.md)
+                         // is replaced with a firm "do NOT re-ask / re-confirm /
+                         // re-offer options for anything listed here." The PROVISIONAL
+                         // latest-message-wins guard and ALL HARD COMPLIANCE RULE text
+                         // are byte-identical to v8.
+                         // v8 (2026-07-14): base-prompt cost trim — STYLE, PRODUCT
                          // SCOPE, and the WHO-YOU-ARE examples were compressed to cut
                          // per-turn input tokens (re-sent every turn). The 5 HARD
                          // COMPLIANCE RULES + their preamble + closing sentence, and
@@ -443,7 +451,7 @@ REFERENCE DOCUMENT EXCERPTS (from uploaded documents, not admin-reviewed Q&A) �
 ${documentExcerpts.map((d) => `- ${d.text}`).join('\n')}
 ` : '';
       // Re-anchor block (extracted-but-not-recalled fix). PROVISIONAL by design:
-      // presented as "mentioned earlier, confirm if changed", never as fixed fact,
+      // presented as "already answered — don't re-ask; latest message still wins",
       // so a later "actually, mutual funds instead" is followed rather than being
       // overridden by stale structured state. This closes the read-back gap
       // (_applyExtractedSignals persists these; nothing ever read them back into
@@ -455,7 +463,7 @@ ${documentExcerpts.map((d) => `- ${d.text}`).join('\n')}
         knownState.closureDeadline ? `- Previously suggested a rough timeline (around ${knownState.closureDeadline})` : null,
       ].filter(Boolean) : [];
       const knownStateSection = knownLines.length ? `
-KNOWN SO FAR — things this customer mentioned EARLIER in this conversation. Treat these as PROVISIONAL, not confirmed fact: use them ONLY so you don't re-ask what they've already told you. The CUSTOMER'S MOST RECENT MESSAGE below is always authoritative — if it changes, narrows, or contradicts anything here, follow the newer message and do NOT stay anchored to older items. If one of these still matters and you're not certain it holds, confirm it in passing ("you'd mentioned X earlier — still the plan?") rather than assuming it.
+KNOWN SO FAR — things this customer ALREADY TOLD YOU earlier in this conversation. Treat these as PROVISIONAL, not confirmed fact, in ONE sense only: the CUSTOMER'S MOST RECENT MESSAGE below is always authoritative — if it changes, narrows, or contradicts anything here, follow the newer message and do NOT stay anchored to older items. Otherwise everything here is ANSWERED — do NOT re-ask it, do NOT re-confirm it, and do NOT re-offer product options for it (their interest, amount, or timeline). Acknowledge it and move straight to the next UNanswered step; re-asking something already listed here reads as if you weren't paying attention.
 ${knownLines.join('\n')}
 ` : '';
       return `You are a professional relationship manager for VT Trading, an Angel One-affiliated fintech, messaging a real customer directly on WhatsApp. No human reviews your reply before they see it. Getting this wrong has real regulatory and legal consequences for a SEBI-registered Authorized Person, not just a bad customer experience.
