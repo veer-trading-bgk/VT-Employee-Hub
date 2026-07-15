@@ -13,6 +13,15 @@ const EMBEDDING_CONFIG = {
   provider: 'voyage',
   model: 'voyage-finance-2',
   apiUrl: 'https://api.voyageai.com/v1/embeddings',
+  // 2026-07-15: was a hardcoded 10_000 inside EmbeddingService. On a live
+  // WhatsApp turn the embed is on the critical path — its vector feeds the
+  // prompt (ConversationalAgentService._fetchKnowledgeContext) — so a slow
+  // Voyage response adds this many ms of dead wait BEFORE we fall back to
+  // keyword search. Capped short deliberately: a healthy single-query embed
+  // returns in well under a second (verified 42/42 clean on 2026-07-14), so 5s
+  // is a generous ceiling that halves the old 10s worst-case wait. Tunable
+  // here per ADR-017 (provider settings live in config, never at a call site).
+  timeoutMs: 5_000,
 };
 
 module.exports = { EMBEDDING_CONFIG };

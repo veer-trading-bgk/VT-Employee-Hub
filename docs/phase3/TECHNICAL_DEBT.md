@@ -1,5 +1,17 @@
 # Phase 3 — Technical Debt
 
+## Embedding Provider Timeout — Alerting Gap for a Pure Connection-Level Outage
+
+**Context (2026-07-15):** `EmbeddingService.embed()` calls Voyage on the live WhatsApp turn's critical path (its vector feeds the prompt via `ConversationalAgentService._fetchKnowledgeContext`). A morning of intermittent Voyage latency produced ~27% query-embed timeouts for `viir_trading` (6 of 22 attempts; 0 the prior day), each firing a `logger.error` → Telegram "Production Error" page even though the turn recovered fine (callers degrade to keyword matching). Two things were fixed: the timeout was cut 10s→5s (moved to `embeddingConfig.js.timeoutMs`, ADR-017 home) to halve the worst-case dead wait, and the catch path was changed to route by **error class** — a response-bearing error (401 bad key, 429, 4xx/5xx) still pages immediately via `logger.error`; a timeout / connection failure (no HTTP response) logs `logger.warn` only (CloudWatch, no page).
+
+**Why not a volume tripwire:** the first attempt used an in-memory "≥5 failures in 10 min" counter to page on a sustained outage. An adversarial multi-agent review (9 agents, 5 confirmed findings) showed it can essentially never fire at this service's real traffic (~1–2 embeds/hour, per-warm-Lambda-container counter that a 10-min window and cold-start reclaim both defeat) — so it would have silently swallowed exactly the hard failures the old `logger.error` used to page on. Removed in favor of the error-class split above.
+
+**Issue (residual gap):** a *pure connection-level* Voyage outage — where requests time out with no HTTP response at all, rather than returning a 5xx — now only produces `warn` logs and does **not** page. Most real provider faults (bad/rotated key, rate-limit, server errors) return a response and still page on the first occurrence; a total connection blackout is the one class that goes to CloudWatch only.
+
+**Fix:** add a CloudWatch metric-filter + alarm on the `EmbeddingService: embed timed out / unreachable` warn line (e.g. alarm on N such lines in M minutes). This is the correct cross-container, cold-start-durable signal for a timeout-based outage — an ops/infra config, not in-process state, which is precisely why the in-memory counter was the wrong tool.
+
+**Priority:** Low — retrieval degrades gracefully to keyword matching during such an outage (customers still get replies), and the more common response-bearing faults already page. This only closes the blind spot for a total Voyage connection blackout.
+
 ## GSI Pollution — leadsByCompany
 
 **Issue:** `leadsByCompany` GSI contains METRICS, CONV, CONTACT, and CONFIG records because all share the `companyId` attribute. The GSI indexes every record that has `companyId`, not just leads.

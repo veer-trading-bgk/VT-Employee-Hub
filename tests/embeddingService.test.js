@@ -21,6 +21,8 @@ process.env.VOYAGE_API_KEY = 'test-voyage-key';
 
 const axios = require('axios');
 const dynamodb = require('../src/config/dynamodb');
+const logger = require('../src/config/logger');
+const { EMBEDDING_CONFIG } = require('../src/config/embeddingConfig');
 const { embed } = require('../src/services/EmbeddingService');
 
 const CID = 'comp_test';
@@ -101,11 +103,40 @@ describe('EmbeddingService.embed', () => {
   });
 
   test('a provider error returns { ok: false, reason }, never throws', async () => {
-    axios.post.mockRejectedValue({ response: { data: { error: 'rate limit exceeded' } } });
+    axios.post.mockRejectedValue({ response: { status: 429, data: { error: 'rate limit exceeded' } } });
     const result = await embed({ texts: ['x'], companyId: CID, inputType: 'query' });
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('embedding_failed');
     expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('uses the configured timeout from embeddingConfig, not a hardcoded value', async () => {
+    mockVoyageResponse([[0.1, 0.2]]);
+    await embed({ texts: ['x'], companyId: CID, inputType: 'query' });
+    const [, , options] = axios.post.mock.calls[0];
+    expect(options.timeout).toBe(EMBEDDING_CONFIG.timeoutMs);
+    expect(EMBEDDING_CONFIG.timeoutMs).toBeLessThan(10_000); // the fix: down from the old 10s
+  });
+
+  // Error-CLASS routing (2026-07-15): a timeout is the recoverable, self-healing
+  // case that was spamming the alert channel → warn (no page). A response-bearing
+  // error (bad key, 4xx/5xx) is a real fault a human must act on → error (page),
+  // on the FIRST occurrence. This replaced a volume tripwire that couldn't fire
+  // at this service's real traffic.
+  test('a timeout (no HTTP response) logs at warn, never error — so it does NOT page Telegram', async () => {
+    axios.post.mockRejectedValue({ code: 'ECONNABORTED', message: 'timeout of 5000ms exceeded' });
+    const result = await embed({ texts: ['x'], companyId: CID, inputType: 'query' });
+    expect(result.ok).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('degraded to keyword fallback'));
+    expect(logger.error).not.toHaveBeenCalled(); // logger.error pages — must not fire on a recovered timeout
+  });
+
+  test('a response-bearing error (e.g. 401 bad key) logs at error — so it DOES page, on the first occurrence', async () => {
+    axios.post.mockRejectedValue({ response: { status: 401, data: { detail: 'Provided API key is invalid.' } } });
+    const result = await embed({ texts: ['x'], companyId: CID, inputType: 'query' });
+    expect(result.ok).toBe(false);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('HTTP 401'));
+    expect(logger.warn).not.toHaveBeenCalled(); // a hard fault must not be silently downgraded to warn
   });
 
   test('a usage-log failure does not fail the embed call itself', async () => {

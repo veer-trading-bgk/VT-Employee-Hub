@@ -64,7 +64,7 @@ async function _embed({ texts, companyId, inputType, entityType, entityId }) {
       input: texts, model: EMBEDDING_CONFIG.model, input_type: inputType,
     }, {
       headers: { Authorization: `Bearer ${process.env.VOYAGE_API_KEY}`, 'Content-Type': 'application/json' },
-      timeout: 10_000,
+      timeout: EMBEDDING_CONFIG.timeoutMs,
     });
 
     // Voyage returns results possibly out of input order — index is
@@ -81,7 +81,33 @@ async function _embed({ texts, companyId, inputType, entityType, entityId }) {
     return { ok: true, data: { embeddings } };
   } catch (err) {
     const detail = err.response?.data ?? err.message;
-    logger.error(`EmbeddingService: embed failed for ${companyId} (inputType: ${inputType}): ${JSON.stringify(detail)}`);
+    // Classify by ERROR CLASS, not volume (2026-07-15). Both callers
+    // (KnowledgeService / DocumentChunkRetrievalService) degrade to keyword
+    // matching on any failure, so the customer turn always still replies — but
+    // whether a human should be PAGED depends on which kind of failure this is:
+    //
+    //  - Voyage answered with an HTTP error (err.response present: 401 bad/rotated
+    //    key, 403, 429 rate-limit, 5xx server fault) → a real, actionable fault a
+    //    human must see. logger.error → Telegram page, exactly as before this
+    //    change. These page on the FIRST occurrence; no volume threshold to reach.
+    //  - No response at all (a timeout — err.code ECONNABORTED/ETIMEDOUT — or a
+    //    connection-level failure) → the transient case that (a) recovers on its
+    //    own, (b) was spamming the alert channel, and (c) degrades gracefully.
+    //    logger.warn → CloudWatch only, no page.
+    //
+    // This replaces the earlier in-memory "5-failures-in-10-min" tripwire, which
+    // an adversarial review showed can essentially never fire at this service's
+    // real traffic (~1-2 embeds/hour, per-warm-container counter) — so it would
+    // have silently swallowed exactly the hard failures (bad key/config) the old
+    // logger.error used to page on. Known residual gap: a pure connection-level
+    // Voyage OUTAGE (no HTTP response) only warns; the correct cross-container
+    // signal for that is a CloudWatch metric-filter alarm on this warn line, not
+    // in-process state. See docs/phase3/TECHNICAL_DEBT.md.
+    if (err.response) {
+      logger.error(`EmbeddingService: embed failed for ${companyId} (inputType: ${inputType}) — Voyage returned HTTP ${err.response.status}: ${JSON.stringify(detail)}`);
+    } else {
+      logger.warn(`EmbeddingService: embed timed out / unreachable for ${companyId} (inputType: ${inputType}): ${JSON.stringify(detail)} — degraded to keyword fallback`);
+    }
     return { ok: false, reason: 'embedding_failed', detail };
   }
 }
