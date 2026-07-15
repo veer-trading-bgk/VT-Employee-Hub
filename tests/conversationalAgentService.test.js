@@ -598,6 +598,66 @@ describe('ConversationalAgentService', () => {
     });
   });
 
+  // ─── Re-anchor: known qualification state fed back into every turn ──────────
+  // Extracted-but-not-recalled fix. _applyExtractedSignals persists
+  // productInterest/expectedValue/closureDeadline onto the lead, but those fields
+  // were write-only — never read back into the prompt — so the AI re-inferred
+  // them from free text and inconsistently re-asked (e.g. a button-tap's "Demat"
+  // lost by turn 4). _runTurn now passes _buildKnownState(lead) into the turn
+  // context; aiConfig.js renders it as the PROVISIONAL "KNOWN SO FAR" block
+  // (prompt-level framing/precedence covered in aiConfig.test.js).
+  describe('known qualification state re-anchoring (extracted-but-not-recalled fix)', () => {
+    const TS = '2026-07-15T02:00:00.000Z';
+    function lastSalesContext() {
+      const calls = AIService.generate.mock.calls.filter(([p]) => p.useCase === 'conversational-sales-agent');
+      return calls[calls.length - 1][0].context;
+    }
+
+    test('(a) button-tap round-trip: contextHint seed → extracted+persisted → recalled as knownState the next turn', async () => {
+      conv.handoffState = 'human'; // never-engaged, so startForLead actually engages
+      mockTurn({ reply: 'Great, a Demat account it is. What is your name?', productInterest: ['demat account'] });
+      await agent.startForLead(CID, { leadPK: LEAD_PK, phone10: PHONE, name: 'Ravi', contextHint: 'Demat' });
+      // Turn 0 knew nothing yet (extraction happens AFTER generate)...
+      expect(lastSalesContext().knownState).toBeNull();
+      // ...and the seed-derived interest got persisted onto the lead.
+      expect(lead.productInterest).toEqual(['demat account']);
+
+      // A later real turn: the interest must now be recalled, so the AI won't re-ask it.
+      mockTurn({ reply: 'Thanks Ravi! Which city are you in?' });
+      await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'Ravi', timestamp: TS });
+      expect(lastSalesContext().knownState).toEqual({ productInterest: ['demat account'], expectedValue: null, closureDeadline: null });
+    });
+
+    test('(b) organic: interest volunteered mid-conversation (no button) is persisted then recalled a later turn', async () => {
+      mockTurn({ reply: 'Mutual funds are a solid start. SIP or lumpsum?', productInterest: ['mutual funds'] });
+      await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'I want to invest in mutual funds', timestamp: TS });
+      expect(lead.productInterest).toEqual(['mutual funds']);
+
+      // Several messages later — still recalled.
+      mockTurn({ reply: 'Got it.' });
+      await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'my city is Pune', timestamp: TS });
+      expect(lastSalesContext().knownState.productInterest).toEqual(['mutual funds']);
+    });
+
+    test('(c) correction (req 5): stale knownState is passed ALONGSIDE — never instead of — the corrective latest message', async () => {
+      const leadDemat = { ...lead, productInterest: ['demat account'] };
+      mockTurn({ reply: 'Sure, mutual funds it is.', productInterest: ['mutual funds'] });
+      await agent.continueTurn(CID, { leadPK: LEAD_PK, lead: leadDemat, phone10: PHONE, text: 'actually, mutual funds instead', timestamp: TS });
+      const ctx = lastSalesContext();
+      // Both reach the model. The PROVISIONAL framing (asserted in aiConfig.test.js)
+      // routes authority to the latest message, so the AI follows the correction
+      // rather than anchoring to the stale "demat account".
+      expect(ctx.knownState.productInterest).toEqual(['demat account']);
+      expect(ctx.latestMessage).toBe('actually, mutual funds instead');
+    });
+
+    test('with no captured signals yet, knownState is null (no block — byte-identical baseline)', async () => {
+      mockTurn();
+      await agent.continueTurn(CID, { leadPK: LEAD_PK, lead, phone10: PHONE, text: 'hello', timestamp: TS });
+      expect(lastSalesContext().knownState).toBeNull();
+    });
+  });
+
   // ─── 2026-07-08 fix: lastMessageAt/lastInboundAt stamped on lead creation ──
   // Root cause of "1st message invisible in inbox" (docs/bible/19_DECISION_LOG.md):
   // _createCustomer()'s leadItem never set these fields, so a fresh lead was

@@ -339,6 +339,48 @@ describe('aiConfig — conversational-sales-agent useCase (Conversation-tab adju
     expect(prompt).not.toContain('ADDITIONAL COMPANY GUIDANCE');
   });
 
+  // Re-anchor (extracted-but-not-recalled fix) — the PROVISIONAL "KNOWN SO FAR"
+  // block. Same backward-compat guarantee as every other optional section:
+  // null/absent/empty renders nothing, byte-identical to before.
+  test('with no knownState, the prompt is byte-identical to the no-field case (backward compat)', () => {
+    const withNull = cfg.promptTemplate({ ...BASE_CONTEXT, knownState: null });
+    const withNoField = cfg.promptTemplate(BASE_CONTEXT);
+    expect(withNull).toBe(withNoField);
+    expect(withNull).not.toContain('KNOWN SO FAR');
+  });
+
+  test('a knownState with an all-empty shape renders nothing (no block for zero captured signals)', () => {
+    const prompt = cfg.promptTemplate({ ...BASE_CONTEXT, knownState: { productInterest: [], expectedValue: null, closureDeadline: null } });
+    expect(prompt).not.toContain('KNOWN SO FAR');
+  });
+
+  test('a knownState renders productInterest, amount and timeline as a delineated KNOWN SO FAR block', () => {
+    const prompt = cfg.promptTemplate({
+      ...BASE_CONTEXT,
+      knownState: { productInterest: ['demat account', 'mutual funds'], expectedValue: 50000, closureDeadline: '2026-08-14' },
+    });
+    expect(prompt).toContain('KNOWN SO FAR');
+    expect(prompt).toContain('demat account, mutual funds');
+    expect(prompt).toContain('50000');
+    expect(prompt).toContain('2026-08-14');
+  });
+
+  test('the KNOWN SO FAR block is framed as PROVISIONAL and defers to the latest message (stale-state-override guard)', () => {
+    const prompt = cfg.promptTemplate({ ...BASE_CONTEXT, knownState: { productInterest: ['demat account'], expectedValue: null, closureDeadline: null } });
+    expect(prompt).toMatch(/PROVISIONAL, not confirmed fact/);
+    expect(prompt).toMatch(/MOST RECENT MESSAGE below is always authoritative/);
+    expect(prompt).toMatch(/follow the newer message/i);
+    // It must sit ABOVE the authoritative latest-message section so precedence reads correctly.
+    expect(prompt.indexOf('KNOWN SO FAR')).toBeLessThan(prompt.indexOf("CUSTOMER'S MOST RECENT MESSAGE"));
+  });
+
+  test('a partial knownState (interest only) renders just that line, no amount/timeline lines', () => {
+    const prompt = cfg.promptTemplate({ ...BASE_CONTEXT, knownState: { productInterest: ['term insurance'], expectedValue: null, closureDeadline: null } });
+    expect(prompt).toContain('Previously mentioned interest in: term insurance');
+    expect(prompt).not.toContain('Previously mentioned an approximate amount');
+    expect(prompt).not.toContain('Previously suggested a rough timeline');
+  });
+
   // Phase 2A / PR 3 — Structured Knowledge Center entries. Same backward-
   // compat guarantee: absent/empty renders nothing, byte-identical to v4.
   test('with no knowledgeEntries, the prompt is byte-identical to the no-field case (backward compat)', () => {

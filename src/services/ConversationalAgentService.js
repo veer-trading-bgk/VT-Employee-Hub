@@ -263,6 +263,30 @@ async function _applyExtractedSignals(companyId, leadPK, lead, data) {
   }).promise();
 }
 
+/**
+ * The read-back counterpart of _applyExtractedSignals: builds the "known
+ * qualification state" object fed into every turn's prompt (aiConfig.js renders
+ * it as the PROVISIONAL "KNOWN SO FAR" section). Reads the SAME lead fields
+ * _applyExtractedSignals writes — productInterest / expectedValue /
+ * closureDeadline — no new storage. Fixes the extracted-but-not-recalled gap:
+ * those fields were write-only, so the AI had to re-infer them from free-text
+ * history every turn and inconsistently re-asked (e.g. losing a button-tap's
+ * "Demat" context by turn 4). The lead here is complete: maybeStart/startForLead
+ * pass a fresh GetItem, and continueTurn's lead comes from the company-phone-index
+ * GSI, which is ProjectionType ALL — both carry these attributes.
+ *
+ * Returns null when nothing is known yet (turn 0, or a conversation with no
+ * captured signals) — aiConfig.js then renders no block, byte-identical to before.
+ */
+function _buildKnownState(lead) {
+  if (!lead) return null;
+  const productInterest = Array.isArray(lead.productInterest) ? lead.productInterest.filter(Boolean) : [];
+  const expectedValue = (typeof lead.expectedValue === 'number' && lead.expectedValue > 0) ? lead.expectedValue : null;
+  const closureDeadline = (typeof lead.closureDeadline === 'string' && lead.closureDeadline.trim()) ? lead.closureDeadline : null;
+  if (productInterest.length === 0 && expectedValue === null && closureDeadline === null) return null;
+  return { productInterest, expectedValue, closureDeadline };
+}
+
 async function _writeHandoffSummary(companyId, leadPK, lead, reason, turnCount, conversationId) {
   const transcript = await _fetchTranscriptText(companyId, leadPK);
   const result = await AIService.generate({
@@ -438,6 +462,11 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
       promptAddendum,
       knowledgeEntries: knowledgeContext.knowledgeEntries,
       documentExcerpts: knowledgeContext.documentExcerpts,
+      // Re-anchor the AI to qualification signals it already extracted+persisted
+      // (built from the same lead record _applyExtractedSignals writes). Rendered
+      // as the PROVISIONAL "KNOWN SO FAR" block — computed BEFORE generate, so it
+      // reflects what was known going INTO this turn; the latest message still wins.
+      knownState: _buildKnownState(lead),
     },
     conversationHistory,
     user: AI_ACTOR,

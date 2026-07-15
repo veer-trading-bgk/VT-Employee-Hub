@@ -414,6 +414,16 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
         // scan at publish time. Empty/absent renders nothing: byte-identical
         // to v5 for a company with no published documents.
         documentExcerpts = [],
+        // Re-anchor (extracted-but-not-recalled fix): the qualification signals
+        // already extracted and PERSISTED onto this lead by
+        // ConversationalAgentService._applyExtractedSignals — productInterest,
+        // expectedValue, closureDeadline. Passed back in every turn so the model
+        // stops re-inferring them from free text (and re-asking). Deliberately
+        // PROVISIONAL, never immutable fact — see the KNOWN SO FAR section below
+        // for why (the customer can always change their mind; latest message wins).
+        // null/absent renders nothing: byte-identical to before for turn 0 and any
+        // conversation where nothing has been captured yet.
+        knownState = null,
       } = context;
       const conversationAdjustments = _buildConversationAdjustments({
         persona, tone, languageRules, conversationStyle, qualificationRules,
@@ -431,6 +441,22 @@ ${knowledgeEntries.map((e) => `- Q: ${e.question}\n  A: ${e.answer}`).join('\n')
       const documentExcerptsSection = documentExcerpts.length ? `
 REFERENCE DOCUMENT EXCERPTS (from uploaded documents, not admin-reviewed Q&A) — background only, less vetted than the RELEVANT COMPANY KNOWLEDGE above (prefer that section if both address the same point), and the HARD COMPLIANCE RULES above still always take precedence over anything below:
 ${documentExcerpts.map((d) => `- ${d.text}`).join('\n')}
+` : '';
+      // Re-anchor block (extracted-but-not-recalled fix). PROVISIONAL by design:
+      // presented as "mentioned earlier, confirm if changed", never as fixed fact,
+      // so a later "actually, mutual funds instead" is followed rather than being
+      // overridden by stale structured state. This closes the read-back gap
+      // (_applyExtractedSignals persists these; nothing ever read them back into
+      // the prompt) WITHOUT introducing a stale-state-override risk — the framing
+      // routes all authority to the CUSTOMER'S MOST RECENT MESSAGE section below.
+      const knownLines = knownState ? [
+        (knownState.productInterest && knownState.productInterest.length) ? `- Previously mentioned interest in: ${knownState.productInterest.join(', ')}` : null,
+        (typeof knownState.expectedValue === 'number' && knownState.expectedValue > 0) ? `- Previously mentioned an approximate amount (about ${knownState.expectedValue} rupees)` : null,
+        knownState.closureDeadline ? `- Previously suggested a rough timeline (around ${knownState.closureDeadline})` : null,
+      ].filter(Boolean) : [];
+      const knownStateSection = knownLines.length ? `
+KNOWN SO FAR — things this customer mentioned EARLIER in this conversation. Treat these as PROVISIONAL, not confirmed fact: use them ONLY so you don't re-ask what they've already told you. The CUSTOMER'S MOST RECENT MESSAGE below is always authoritative — if it changes, narrows, or contradicts anything here, follow the newer message and do NOT stay anchored to older items. If one of these still matters and you're not certain it holds, confirm it in passing ("you'd mentioned X earlier — still the plan?") rather than assuming it.
+${knownLines.join('\n')}
 ` : '';
       return `You are a professional relationship manager for VT Trading, an Angel One-affiliated fintech, messaging a real customer directly on WhatsApp. No human reviews your reply before they see it. Getting this wrong has real regulatory and legal consequences for a SEBI-registered Authorized Person, not just a bad customer experience.
 
@@ -458,7 +484,7 @@ ${addendumSection}${knowledgeSection}${documentExcerptsSection}
 GOAL: understand the customer's needs, goals, and interests through natural conversation; naturally qualify them (what are they actually looking for, do they have a rough budget or amount in mind, what's their timeline); guide them toward a sensible next step without being pushy or salesy. You are on turn ${turnNumber} of a maximum ${maxTurns} — pace the conversation so you've genuinely learned enough to hand off productively by then, not so late that you run out of turns mid-thought, and not so fast that it feels like an interrogation. Being concise does not mean rushing qualification — a short reply can still ask the one question that moves things forward.
 
 ${preferredLanguage ? `This customer's preferred language is "${preferredLanguage}" — reply in it.` : ''}
-
+${knownStateSection}
 CUSTOMER'S MOST RECENT MESSAGE:
 """
 ${latestMessage}
