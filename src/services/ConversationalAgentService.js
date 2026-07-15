@@ -16,6 +16,7 @@ const { getAutoAssignConfig, pickNextEmployee } = require('../utils/autoAssign')
 const { resolveForLead } = require('../utils/conversationResolver');
 const { logAudit } = require('../utils/audit');
 const { updateLeadLastMessage } = require('../utils/updateLeadLastMessage');
+const { fetchConversationHistory, fetchTranscriptText } = require('../utils/conversationTranscript');
 const { aiAdminConversationSchema, stripStorageMetadata } = require('../utils/validation');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -175,32 +176,10 @@ async function _getConfig(companyId) {
   return r.Item ?? { enabled: false };
 }
 
-// Same non-text-type summary convention as whatsapp.js's own _messageSummary —
-// kept as a small local copy rather than importing from a route file (a
-// service must not depend backward on a route).
-function _messageSummary(m) {
-  if (!m.type || m.type === 'text') return m.content ?? '';
-  return m.content || `[${m.type}]`;
-}
-
-async function _fetchConversationHistory(companyId, leadPK, limit = 20) {
-  const { Items = [] } = await dynamodb.query({
-    TableName: TABLE,
-    KeyConditionExpression: 'PK = :pk AND begins_with(SK, :pfx)',
-    ExpressionAttributeValues: { ':pk': leadPK, ':pfx': 'MSG#' },
-    ScanIndexForward: false,
-    Limit: limit,
-  }).promise();
-  return Items.slice().reverse().map((m) => ({
-    role: m.direction === 'inbound' ? 'user' : 'assistant',
-    content: _messageSummary(m),
-  }));
-}
-
-async function _fetchTranscriptText(companyId, leadPK) {
-  const history = await _fetchConversationHistory(companyId, leadPK, 40);
-  return history.map((m) => `${m.role === 'user' ? 'Customer' : 'AI'}: ${m.content}`).join('\n');
-}
+// _messageSummary/fetchConversationHistory/fetchTranscriptText moved to
+// src/utils/conversationTranscript.js (2026-07-15) — ConversationTagSummaryService
+// needed the same transcript-fetch logic and a service must not depend on
+// another service's private internals.
 
 async function _fetchPreferredLanguage(companyId, lead) {
   if (!lead?.contactId) return null;
@@ -297,7 +276,7 @@ function _buildKnownState(lead) {
 }
 
 async function _writeHandoffSummary(companyId, leadPK, lead, reason, turnCount, conversationId) {
-  const transcript = await _fetchTranscriptText(companyId, leadPK);
+  const transcript = await fetchTranscriptText(companyId, leadPK);
   const result = await AIService.generate({
     useCase: 'conversation-handoff-summary',
     companyId,
@@ -455,7 +434,7 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
   }
 
   const [conversationHistory, preferredLanguage, conversationSettings, promptAddendum, knowledgeContext] = await Promise.all([
-    _fetchConversationHistory(companyId, leadPK),
+    fetchConversationHistory(companyId, leadPK),
     _fetchPreferredLanguage(companyId, lead),
     _fetchConversationSettings(companyId),
     _fetchPromptAddendum(companyId),
