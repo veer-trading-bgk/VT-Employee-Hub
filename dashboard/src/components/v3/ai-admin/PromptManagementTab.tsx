@@ -50,7 +50,10 @@ export function PromptManagementTab() {
   });
 
   const publishMutation = useMutation({
-    mutationFn: publishPromptAddendum,
+    // Publish the EXACT on-screen text (same source Run Test uses via `text`),
+    // mirroring testMutation's closure above — never let publish re-source the
+    // text from a separate server-side field the UI didn't just validate.
+    mutationFn: () => publishPromptAddendum(text),
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: aiAdminKeys.promptAddendum() });
       qc.invalidateQueries({ queryKey: aiAdminKeys.promptAddendumVersions() });

@@ -372,31 +372,93 @@ describe('POST /api/ai-admin/prompt-addendum/publish', () => {
   const handler = getRouteHandler(aiAdminRouter, '/prompt-addendum/publish', 'post');
   beforeEach(() => jest.clearAllMocks());
 
-  test('re-tests the CURRENT draft even when a stale lastTestResult already exists — the specific regression this design is for', async () => {
+  test('re-tests the EXACT text from req.body even when a stale lastTestResult already exists — the specific regression this design is for', async () => {
     dynamodb.get.mockReturnValue(resolved({
-      Item: { draftText: 'new edited text', activeVersion: 2, lastTestResult: { allPassed: true, results: [], testedAt: 'stale' } },
+      Item: { draftText: '', activeVersion: 2, lastTestResult: { allPassed: true, results: [], testedAt: 'stale' } },
     }));
     testPromptAddendum.mockResolvedValue({ allPassed: true, results: [], testedAt: 'fresh' });
     dynamodb.put.mockReturnValue(resolved({}));
     dynamodb.update.mockReturnValue(resolved({}));
 
-    await handler({ user: USER, body: {}, ip: '1.1.1.1' }, mockRes(), jest.fn());
+    await handler({ user: USER, body: { text: 'new edited text' }, ip: '1.1.1.1' }, mockRes(), jest.fn());
 
     expect(testPromptAddendum).toHaveBeenCalledWith(CID, 'new edited text');
     expect(testPromptAddendum).toHaveBeenCalledTimes(1);
   });
 
-  test('blocks publish (422, itemized body) when the gate reports a failure — writes nothing', async () => {
-    dynamodb.get.mockReturnValue(resolved({ Item: { draftText: 'risky text', activeVersion: 0 } }));
+  test('publishes the req.body text, NOT cfg.draftText — the exact prod bug: draftText was empty while the tested text was correct', async () => {
+    // Reproduce the production state: draftText persisted empty (Save Draft
+    // never clicked), but the admin typed + tested a real 267-char addendum.
+    const realText = 'A'.repeat(267);
+    dynamodb.get.mockReturnValue(resolved({ Item: { draftText: '', activeVersion: 1 } }));
+    testPromptAddendum.mockResolvedValue({ allPassed: true, results: [], testedAt: 't' });
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockReturnValue(resolved({}));
+
+    await handler({ user: USER, body: { text: realText }, ip: '1.1.1.1' }, mockRes(), jest.fn());
+
+    // Re-tested + persisted the real body text, never the empty stored draft.
+    expect(testPromptAddendum).toHaveBeenCalledWith(CID, realText);
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({ SK: 'VERSION#000002', version: 2, text: realText }),
+    }));
+  });
+
+  test('persists the published text as BOTH activeText and draftText (not empty, not the stale draft) — one source of truth post-publish', async () => {
+    const realText = 'Always disclose our SEBI registration number when asked about credentials.';
+    dynamodb.get.mockReturnValue(resolved({ Item: { draftText: 'STALE DIFFERENT DRAFT', activeVersion: 4 } }));
+    testPromptAddendum.mockResolvedValue({ allPassed: true, results: [], testedAt: 't' });
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockReturnValue(resolved({}));
+
+    await handler({ user: USER, body: { text: realText }, ip: '1.1.1.1' }, mockRes(), jest.fn());
+
+    const updateArg = dynamodb.update.mock.calls[0][0];
+    // Single value :t drives both activeText and draftText — they can't drift.
+    expect(updateArg.UpdateExpression).toContain('activeText = :t');
+    expect(updateArg.UpdateExpression).toContain('draftText = :t');
+    expect(updateArg.ExpressionAttributeValues[':t']).toBe(realText);
+    expect(updateArg.ExpressionAttributeValues[':v']).toBe(5);
+    // The old ':empty' clear-the-draft value must be gone.
+    expect(updateArg.ExpressionAttributeValues).not.toHaveProperty(':empty');
+  });
+
+  test('re-runs the compliance test server-side and BLOCKS (422) even for a well-formed publish the client believes passed — the fresh server run is the SOLE authorization to go live', async () => {
+    // The publish body has ONLY a `text` field (strict schema) — there is no
+    // channel for a client to supply a "passed" result and no reading of a
+    // stored lastTestResult. Whatever the client saw, this fresh server-side
+    // run is the only thing that authorizes going live, and here it fails.
+    dynamodb.get.mockReturnValue(resolved({ Item: { draftText: '', activeVersion: 0 } }));
     const failResult = { allPassed: false, results: [{ input: 'x', passed: false, reply: 'bad', reason: 'matched' }], testedAt: 't' };
     testPromptAddendum.mockResolvedValue(failResult);
     const res = mockRes();
 
-    await handler({ user: USER, body: {}, ip: '1.1.1.1' }, res, jest.fn());
+    await handler({ user: USER, body: { text: 'risky text' }, ip: '1.1.1.1' }, res, jest.fn());
 
+    expect(testPromptAddendum).toHaveBeenCalledWith(CID, 'risky text');
     expect(res.status).toHaveBeenCalledWith(422);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ testResult: failResult }));
     expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(dynamodb.update).not.toHaveBeenCalled();
+  });
+
+  test('rejects (400) any publish body carrying extra keys (e.g. a smuggled testResult) — strict schema, so a client cannot inject a forged pass', async () => {
+    const res = mockRes();
+    await handler({ user: USER, body: { text: 'risky text', testResult: { allPassed: true } }, ip: '1.1.1.1' }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(testPromptAddendum).not.toHaveBeenCalled();
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('400s when req.body has no text — publish can NEVER silently fall back to a server-side draft (the bug source is structurally impossible now)', async () => {
+    const res = mockRes();
+    await handler({ user: USER, body: {}, ip: '1.1.1.1' }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(testPromptAddendum).not.toHaveBeenCalled();
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(dynamodb.update).not.toHaveBeenCalled();
   });
 
   test('on success, writes a new VERSION# item and updates CURRENT', async () => {
@@ -406,7 +468,7 @@ describe('POST /api/ai-admin/prompt-addendum/publish', () => {
     dynamodb.update.mockReturnValue(resolved({}));
 
     const res = mockRes();
-    await handler({ user: USER, body: {}, ip: '1.1.1.1' }, res, jest.fn());
+    await handler({ user: USER, body: { text: 'good text' }, ip: '1.1.1.1' }, res, jest.fn());
 
     expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
       Item: expect.objectContaining({ PK: `CONFIG#PROMPTADDENDUM#${CID}`, SK: 'VERSION#000003', version: 3, text: 'good text', restoredFrom: null }),

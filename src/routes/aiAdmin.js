@@ -243,14 +243,24 @@ router.post('/prompt-addendum/test', PROMPT_TEST_RATE_LIMIT, async (req, res, ne
 
 router.post('/prompt-addendum/publish', PROMPT_TEST_RATE_LIMIT, async (req, res, next) => {
   try {
+    // Publish the EXACT text the client just validated (same source as /test),
+    // NOT a separately-stored cfg.draftText. The two used to be disconnected:
+    // "Run Test" tested the on-screen text via req.body while publish re-read
+    // draftText — which only "Save Draft" ever wrote — so a type→test→publish
+    // flow (never touching Save Draft) published an empty draftText even though
+    // the tested text was correct. Same shape validation as the draft route.
+    const parsed = promptAddendumDraftSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.issues });
+
     const companyId = req.user.companyId;
+    const candidateText = parsed.data.text;
+
     const r = await dynamodb.get({ TableName: TABLE, Key: promptAddendumConfigKey(companyId) }).promise();
     const cfg = r.Item ?? {};
-    const candidateText = cfg.draftText ?? '';
 
-    // Always re-test the CURRENT draft here — never trust a client-supplied
-    // "it already passed" claim, and never trust cfg.lastTestResult either
-    // (the draft may have been edited again since that test ran).
+    // Always re-test THIS text server-side — never trust a client-reported
+    // "it already passed" (or cfg.lastTestResult): the only authorization to
+    // go live is a fresh pass here, on the exact text about to be persisted.
     const testResult = await testPromptAddendum(companyId, candidateText);
     if (!testResult.allPassed) {
       await logAudit(req.user.id, 'ai_admin_prompt_publish', companyId, 'blocked', req.ip, { allPassed: false }, companyId);
@@ -269,12 +279,15 @@ router.post('/prompt-addendum/publish', PROMPT_TEST_RATE_LIMIT, async (req, res,
       },
     }).promise();
 
+    // Persist the published text as BOTH activeText (what live turns read) and
+    // draftText (so the draft reflects what's live post-publish, not a cleared
+    // field) — one source of truth, no drift.
     await dynamodb.update({
       TableName: TABLE,
       Key: promptAddendumConfigKey(companyId),
-      UpdateExpression: 'SET activeText = :t, activeVersion = :v, draftText = :empty, lastTestResult = :tr, updatedBy = :ub, updatedAt = :ua',
+      UpdateExpression: 'SET activeText = :t, activeVersion = :v, draftText = :t, lastTestResult = :tr, updatedBy = :ub, updatedAt = :ua',
       ExpressionAttributeValues: {
-        ':t': candidateText, ':v': newVersion, ':empty': '', ':tr': testResult, ':ub': req.user.id, ':ua': now,
+        ':t': candidateText, ':v': newVersion, ':tr': testResult, ':ub': req.user.id, ':ua': now,
       },
     }).promise();
 

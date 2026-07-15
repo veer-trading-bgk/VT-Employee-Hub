@@ -135,8 +135,10 @@ export async function testPromptAddendum(text?: string): Promise<TestResult> {
   });
 }
 
-export async function publishPromptAddendum(): Promise<{ success: boolean; version: number; testResult: TestResult }> {
-  return apiFetch(`${BASE}/prompt-addendum/publish`, { method: 'POST', body: JSON.stringify({}) });
+export async function publishPromptAddendum(text: string): Promise<{ success: boolean; version: number; testResult: TestResult }> {
+  // Same body shape as testPromptAddendum — the server re-tests THIS exact text
+  // (never a stale server-side draft) before it can go live.
+  return apiFetch(`${BASE}/prompt-addendum/publish`, { method: 'POST', body: JSON.stringify({ text }) });
 }
 
 export async function fetchPromptAddendumVersions(): Promise<{ versions: PromptAddendumVersion[] }> {
