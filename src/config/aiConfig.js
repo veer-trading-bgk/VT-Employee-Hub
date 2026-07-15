@@ -318,7 +318,17 @@ Respond with ONLY a single JSON object: { "hasSuggestion": boolean, "templateId"
                      // _extractText fix); starving the total budget to enforce
                      // conciseness risks truncating the actual JSON reply
                      // before it's even written.
-    promptVersion: 'v9', // v9 (2026-07-15): KNOWN SO FAR re-anchor tightened — the
+    promptVersion: 'v10', // v10 (2026-07-15, Era 50): adds the STRICT QUALIFICATION
+                         // BOUNDARY block — exactly 5 steps in order (interest, name,
+                         // city, amount, urgency); a city name completes the city step
+                         // (never ask area/locality); invent no question outside the 5;
+                         // never re-ask a name that already appears above. Paired with
+                         // MAX_TURNS 5→7 (ConversationalAgentService.js). Prompted by a
+                         // live trace (viir_trading, 2026-07-15) where the model asked
+                         // for a finer locality after the city was given and invented an
+                         // off-script question, then re-asked a name already in use. HARD
+                         // COMPLIANCE RULE text byte-identical to v9.
+                         // v9 (2026-07-15): KNOWN SO FAR re-anchor tightened — the
                          // "confirm it in passing / still the plan?" clause that
                          // sanctioned re-asking already-known product interest (the
                          // root of the viir_trading re-ask loop, 19_DECISION_LOG.md)
@@ -492,6 +502,12 @@ ${addendumSection}${knowledgeSection}${documentExcerptsSection}
 GOAL: understand the customer's needs, goals, and interests through natural conversation; naturally qualify them (what are they actually looking for, do they have a rough budget or amount in mind, what's their timeline); guide them toward a sensible next step without being pushy or salesy. You are on turn ${turnNumber} of a maximum ${maxTurns} — pace the conversation so you've genuinely learned enough to hand off productively by then, not so late that you run out of turns mid-thought, and not so fast that it feels like an interrogation. Being concise does not mean rushing qualification — a short reply can still ask the one question that moves things forward.
 
 As you qualify, treat every question as "ask ONLY if it isn't already answered above." Before each step — name, city, interest, urgency, amount — check whether the customer has already told you; if so, that step is DONE: acknowledge it and skip to the next UNanswered step. Never restart qualification from the top, and never ask for a name or city that already appears above.
+
+STRICT QUALIFICATION BOUNDARY — a hard limit on WHAT you may ask; it overrides any instinct to be thorough, detailed, or chatty:
+- Ask ONLY these five things, in this exact order, one per turn: (1) interest, (2) name, (3) city, (4) amount, (5) urgency/timeline. Nothing else counts as qualification.
+- A city NAME fully completes the city step. NEVER ask which area, locality, neighbourhood, sector, or "where in <city>" — a plain city name is enough; do not drill for finer location detail.
+- Do NOT invent, add, or substitute ANY question outside those five — no "financial goal", no "risk appetite", no occupation, no email, nothing else. Once all five are answered, STOP asking and let the conversation hand off; never manufacture a sixth question just to fill a turn.
+- Once a name has appeared ANYWHERE above — whether the customer typed it OR you used it in one of your own earlier replies — the name step is permanently DONE. NEVER ask "what's your name", "your full name", or "may I know your name" again, not even while you are addressing them by that very name. Re-asking a name you are already using is the single most damaging mistake you can make here.
 
 ${preferredLanguage ? `This customer's preferred language is "${preferredLanguage}" — reply in it.` : ''}
 ${knownStateSection}

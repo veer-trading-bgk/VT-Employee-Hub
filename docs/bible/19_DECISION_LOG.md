@@ -2249,6 +2249,31 @@ until Meta responds.
 
 ---
 
+## Era 50 — MAX_TURNS 5→7 + prompt v10 strict 5-step qualification boundary (2026-07-15)
+
+**Decision (Viir, 2026-07-15).** Two paired changes to the autonomous conversational-sales-agent, shipped in one commit, affecting **every company's** live AI behavior (base prompt + the shared turn cap, neither per-company configurable): (1) `ConversationalAgentService.MAX_TURNS` **5 → 7**, and (2) the base prompt bumped **v9 → v10** with a new **STRICT QUALIFICATION BOUNDARY** section.
+
+**This REVERSES a same-session decision.** Earlier today the cap was explicitly left at 5 (the 2026-07-14 Era 45 cost trial's value — see the `MAX_TURNS` comment history). That reversal is deliberate and the reason is **not cost**: it is live conversation evidence.
+
+**The evidence (a real traced transcript, not a hypothesis).** A live viir_trading conversation on 2026-07-15 (record identifiers kept in the internal audit log, out of this public doc), running on the just-deployed v9 prompt + the tightened `qualificationRules`, still failed — and failed structurally, not on wording:
+- The customer supplied everything qualifiable by turn 3: interest, name, city, and amount.
+- Turn 3 the model drilled for an **area/locality** the 5-step script never asks for, even though the city had already been given.
+- Turn 4 it asked for the customer's name again **while addressing them by that very name in the same sentence** (its own audit reasoning even used the name) — a pure model-level instruction-following miss (the name was in the conversation history it received; the never-re-ask rule was in the prompt, twice).
+- Turn 5 it **invented** an off-script question that is nowhere in the 5 steps.
+- Net: 3 of 5 turns spent on a re-ask + off-script improvisation, hit the cap (`turn_limit_reached`, guardrail never tripped), and handed off a fully-answered lead as **unqualified**.
+
+**Why 5→7 and not more prompt wording alone.** The root problem is the model (Nova Lite, Era 46) wandering off a bounded script and re-asking answered fields — a small-model instruction-adherence weakness already recorded as `docs/phase3/TECHNICAL_DEBT.md` INCIDENT #7 (~2% measured re-ask rate on Nova). v10's STRICT QUALIFICATION BOUNDARY attacks the wandering directly (see below); the wider cap is the **safety margin** so a single wasted turn no longer blows the whole budget before the 5 real steps finish. At 5 there was zero slack. Cost is a non-issue: on Nova Lite (`apac.amazon.nova-lite-v1:0`, ~₹0.071/₹0.284 per M in/out tokens) 7 turns runs ≈ ₹0.14/conversation total — the qualification-completion win dominates.
+
+**Prompt v10 — the STRICT QUALIFICATION BOUNDARY block** (added after the existing "ask ONLY if not already answered" paragraph; the 5 HARD COMPLIANCE RULES and their wording are **byte-identical to v9** — no compliance text was touched): (a) ask ONLY the five steps, in order — interest, name, city, amount, urgency; (b) a city NAME completes the city step — never ask area/locality/"where in <city>"; (c) invent no question outside the five (explicitly: no "financial goal", risk appetite, occupation, email) and once all five are answered STOP rather than manufacture a sixth; (d) once a name appears ANYWHERE above (customer's message OR the model's own earlier reply) the name step is permanently done — never re-ask it, even while addressing them by that name. Points (b)/(c)/(d) map one-to-one onto the three real failures above; (d) is the third, most emphatic restatement of a rule that was already present twice and still failed.
+
+**Stale measurement threshold — flagged, not silently left active.** `scripts/measureQualificationRate.js` was built for the 10→5 trial: it hard-codes a **39% baseline** (`7/18`), a **"revert to 10 if ≤29%"** trigger, and 10→5 framing throughout. None of that applies to a 5→7 change. The script's header docstring and the `MAX_TURNS` code comment now both carry an explicit STALE notice; the thresholds must be **re-baselined against MAX_TURNS=7** before its output means anything. Do not act on its revert trigger as-is.
+
+**Live verification (real model, not mocks).** Because the failure mode was only ever caught live (unit tests with mocked models never reproduced it), this change was verified by driving the **real Bedrock Nova Lite** endpoint with v10 + maxTurns=7 through the exact failure shape (interest → name+city → amount → …), via a direct `AIService.generate()` harness that accumulates extracted signals into `knownState` the same way `_runTurn`/`_buildKnownState` do. Result recorded with the commit. Full unit suite green (the end-to-end cap test in `conversationalAgentService.test.js` is cap-agnostic — `const CAP = agent.MAX_TURNS` — so it exercises 7 automatically).
+
+**Reference:** `src/services/ConversationalAgentService.js` (`MAX_TURNS`); `src/config/aiConfig.js` (`conversational-sales-agent` promptTemplate, `promptVersion: 'v10'`, STRICT QUALIFICATION BOUNDARY); `scripts/measureQualificationRate.js` (stale-threshold notice); `docs/phase3/TECHNICAL_DEBT.md` INCIDENT #7 (the ~2% Nova re-ask finding this builds on) and the continueTurn turn-race entry; Era 45 (10→5 cost trial this reverses), Era 46 (Nova migration).
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or

@@ -52,16 +52,25 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
  * paths" when using automation, a platform condition, not a SEBI-specific ask.
  */
 
-// 2026-07-14 cost trial: 10 → 5. Halves the worst-case per-conversation LLM
-// spend (the base system prompt is re-sent every turn and is ~90% of input —
-// see docs/bible/19_DECISION_LOG.md's cost-reduction entry). Single source of
-// truth: the prompt's "turn X of Y" pacing line reads this via context.maxTurns
-// (_runTurn), so the model re-paces itself to the new cap automatically.
-// MEASURED RISK: 43% of qualifications in the pre-change window landed after
-// turn 5; qualification-completion rate is being tracked (scripts/
-// measureQualificationRate.js) — revert to 10 if it drops to ≤29% or by ≥25%
-// relative within the first 50 conversations / 7 days.
-const MAX_TURNS = 5;
+// 2026-07-15 (Era 50): 5 → 7. REVERSES the same-session decision to leave the
+// 2026-07-14 cost trial's cap at 5. The reason is NOT cost — it is live
+// conversation evidence: a real traced viir_trading conversation (18:00 IST,
+// 2026-07-15) had the model wander off the 5-step script — asking for a finer
+// locality after the city was already given, then inventing an off-script
+// question — and re-ask a name it was already using, burning
+// 3 of 5 turns and hitting the cap with a fully-answered lead still marked
+// unqualified. A cap of 5 left no slack for even one wasted turn. On Nova Lite
+// the two extra turns are ~₹0.14/conversation total — cheap enough that the
+// qualification-completion win clearly dominates. Prompt v10's STRICT
+// QUALIFICATION BOUNDARY (aiConfig.js) is the paired change that curbs the
+// wandering itself; this wider cap is the safety margin behind it. Single source
+// of truth: the prompt's "turn X of Y" pacing line reads this via
+// context.maxTurns (_runTurn), so the model re-paces to 7 automatically.
+// STALE THRESHOLD NOTE: scripts/measureQualificationRate.js's 39% baseline and
+// "revert to 10 if ≤29%" trigger were defined for the 10→5 trial and DO NOT
+// apply to this 5→7 change — treat that script's thresholds as needing a
+// re-baseline against MAX_TURNS=7 before acting on them (see Era 50).
+const MAX_TURNS = 7;
 
 const AI_ACTOR = { id: 'system', role: 'admin', name: 'AI Relationship Manager' };
 

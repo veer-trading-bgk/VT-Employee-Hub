@@ -3,6 +3,14 @@
 /**
  * measureQualificationRate.js — MAX_TURNS 10→5 cost-trial measurement (2026-07-14).
  *
+ * STALE AS OF 2026-07-15 (Era 50): MAX_TURNS was raised 5→7 — a qualification-
+ * completion decision driven by live conversation evidence, not cost. The 39%
+ * baseline, the "revert to 10 if <=29%" trigger, and the whole 10→5 framing
+ * below were defined for the earlier 10→5 trial and DO NOT apply to the 5→7
+ * change. Do not act on this script's revert trigger as-is; it must be
+ * re-baselined against MAX_TURNS=7 before its output means anything. See
+ * docs/bible/19_DECISION_LOG.md Era 50.
+ *
  * Metric (approved plan, docs/bible/19_DECISION_LOG.md cost-reduction entry):
  *   qualification-completion rate =
  *     (# conversations with any ai_conversation_turn where qualified === true)
