@@ -13,6 +13,7 @@ const { notifyCompany } = require('../utils/wsNotify');
 const { resolveForInbox, resolveForLead, syncConvStatus, syncMarkRead } = require('../utils/conversationResolver');
 const ConversationService  = require('../services/ConversationService');
 const IntentDetectionService = require('../services/IntentDetectionService');
+const NoteService = require('../services/NoteService');
 const AIService = require('../services/AIService');
 const { sendAIError } = require('./ai');
 const WASendSvc            = require('../services/WhatsAppSendService');
@@ -2271,29 +2272,14 @@ router.put('/contact/name', authMiddleware, rateLimit(20, 60_000), async (req, r
 router.post('/inbox/:leadId/note', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { content } = req.body;
-    if (!content?.trim()) return res.status(400).json({ error: 'content required' });
-    const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
-    const timestamp = new Date().toISOString();
-    const mentionNames = [...content.matchAll(/@(\w+)/g)].map((m) => m[1]);
-    // Built as its own variable (not inline in the put()) so the same object
-    // that's persisted is also returned to the caller — Track A5 Fix 2: the
-    // frontend needs the real note (real SK/authorName) to reconcile its
-    // optimistic placeholder, not just a bare timestamp.
-    const note = {
-      PK, SK: `NOTE#${timestamp}`,
-      content: content.trim(),
-      authorId: req.user.id,
-      authorName: req.user.name,
-      type: 'note',
-      timestamp,
-      ...(mentionNames.length && { mentions: mentionNames }),
-    };
-    await dynamodb.put({ TableName: TABLE, Item: note }).promise();
-    if (mentionNames.length > 0) {
-      logger.alert(`📌 <b>${req.user.name}</b> mentioned ${mentionNames.map((n) => `@${n}`).join(', ')} in a note\nLead: <code>${req.params.leadId}</code>`);
-    }
+    const { timestamp, note } = await NoteService.createNote(req.user.companyId, req.params.leadId, {
+      content, authorId: req.user.id, authorName: req.user.name,
+    });
     res.json({ success: true, timestamp, note });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err instanceof NoteService.ValidationError) return res.status(400).json({ error: err.message });
+    next(err);
+  }
 });
 
 // Only the note's author or an admin/manager/superadmin may edit or delete it.
