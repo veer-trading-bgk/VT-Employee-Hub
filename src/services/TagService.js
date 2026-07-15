@@ -9,7 +9,7 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 /**
  * Fetch the company's tag catalog.
  * @param {string} companyId
- * @returns {Promise<Array<{id: string, label: string, color: string, createdAt?: string}>>}
+ * @returns {Promise<Array<{id: string, label: string, color: string, createdAt?: string, aiAssignable?: boolean}>>}
  */
 async function getCatalog(companyId) {
   const r = await dynamodb.get({

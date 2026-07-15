@@ -5,6 +5,7 @@ export interface Tag {
   label: string;
   color: string;
   createdAt?: string;
+  aiAssignable?: boolean;
 }
 
 interface TagBadgeProps {

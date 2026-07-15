@@ -1375,7 +1375,7 @@ function AuditSection() {
 
 // ── Tags section ──────────────────────────────────────────────────────────────
 
-interface TagEntry { id: string; label: string; color: string; }
+interface TagEntry { id: string; label: string; color: string; aiAssignable?: boolean; }
 
 const TAG_PALETTE = [
   '#ef4444', '#f97316', '#f59e0b', '#eab308',
@@ -1395,6 +1395,7 @@ function TagsSection() {
   const [search, setSearch] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [newColor, setNewColor] = useState('#6366f1');
+  const [newAiAssignable, setNewAiAssignable] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [creating, setCreating] = useState(false);
 
@@ -1407,15 +1408,26 @@ function TagsSection() {
   const filtered = tags.filter((t) => t.label.toLowerCase().includes(search.toLowerCase()));
 
   const createMut = useMutation({
-    mutationFn: ({ label, color }: { label: string; color: string }) =>
-      apiFetch('/api/tags', { method: 'POST', body: JSON.stringify({ label, color }) }),
+    mutationFn: ({ label, color, aiAssignable }: { label: string; color: string; aiAssignable: boolean }) =>
+      apiFetch('/api/tags', { method: 'POST', body: JSON.stringify({ label, color, aiAssignable }) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['tag-catalog'] });
       setNewLabel('');
+      setNewAiAssignable(false);
       setCreating(false);
       toast.success('Tag created');
     },
     onError: () => toast.error('Failed to create tag'),
+  });
+
+  // Separate, focused mutation — toggles only aiAssignable on an existing
+  // catalog tag. Not a general "edit tag" capability (label/color have no
+  // inline edit UI here today) — narrowly scoped to the one field this needs.
+  const aiAssignableMut = useMutation({
+    mutationFn: ({ id, aiAssignable }: { id: string; aiAssignable: boolean }) =>
+      apiFetch(`/api/tags/${id}`, { method: 'PUT', body: JSON.stringify({ aiAssignable }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['tag-catalog'] }),
+    onError: () => toast.error('Could not update tag'),
   });
 
   const canCreate =
@@ -1439,7 +1451,7 @@ function TagsSection() {
             <input
               value={newLabel}
               onChange={(e) => setNewLabel(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && canCreate && !creating) { setCreating(true); createMut.mutate({ label: newLabel.trim(), color: newColor }); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter' && canCreate && !creating) { setCreating(true); createMut.mutate({ label: newLabel.trim(), color: newColor, aiAssignable: newAiAssignable }); } }}
               placeholder="e.g. Hot Lead, VIP, Follow Up"
               className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary-600 focus:ring-1 focus:ring-primary-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-100"
             />
@@ -1473,8 +1485,14 @@ function TagsSection() {
               )}
             </div>
           </div>
+          <Toggle
+            label="AI may assign"
+            title="Allow the AI to apply this tag automatically based on conversation content"
+            checked={newAiAssignable}
+            onChange={(e) => setNewAiAssignable(e.target.checked)}
+          />
           <Button
-            onClick={() => { setCreating(true); createMut.mutate({ label: newLabel.trim(), color: newColor }); }}
+            onClick={() => { setCreating(true); createMut.mutate({ label: newLabel.trim(), color: newColor, aiAssignable: newAiAssignable }); }}
             disabled={!canCreate || createMut.isPending}
             loading={createMut.isPending}
           >
@@ -1544,6 +1562,16 @@ function TagsSection() {
                   </span>
                   <span className="flex-1 text-sm text-neutral-700 dark:text-neutral-300">{tag.label}</span>
                   <span className="font-mono text-[10px] text-neutral-300 dark:text-neutral-600">{tag.id?.slice(0, 8)}</span>
+                  {canCreateTags && (
+                    <Toggle
+                      size="sm"
+                      label="AI"
+                      title="Allow the AI to apply this tag automatically based on conversation content"
+                      checked={tag.aiAssignable === true}
+                      onChange={(e) => aiAssignableMut.mutate({ id: tag.id, aiAssignable: e.target.checked })}
+                      disabled={aiAssignableMut.isPending}
+                    />
+                  )}
                 </li>
               ))
             )}
