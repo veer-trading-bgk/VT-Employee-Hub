@@ -1171,3 +1171,7 @@ A truthy `err2` (our thrown `Error`) makes the package call `next(err2)` — rou
 **Reference:** `src/app.js:54-60` (the `corsMiddleware` definition); `src/middleware/errorHandler.js:24,27` (the paging + default-500 behavior); `node_modules/cors` v2.8.6 `lib/index.js` (confirmed rejection-propagation mechanism).
 
 **Priority:** Worth a real look, not just local-dev friction — this pages on every rejected-origin production request today. Low implementation cost (one-line change, `new Error(...)` → `false`), but flagging for deliberate review rather than a drive-by fix since it touches production error-handling/alerting behavior directly.
+
+## RESOLVED note: POST /api/auth/refresh's non-authMiddleware cookie path is still covered by enforceOrigin
+
+Flagged during the simple-request CORS audit (2026-07-16) as outside the audit's literal "behind authMiddleware" criteria (it manually reads a separate `refreshToken` cookie, not via `authMiddleware`) — no separate follow-up needed: `enforceOrigin` (`src/app.js:83`) is a global, unscoped `app.use()` mounted before every route, including `/api/auth`, so it covers this route identically to every other one regardless of its own auth mechanism.

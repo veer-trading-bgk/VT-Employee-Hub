@@ -31,6 +31,7 @@ const publicRoutes = require('./routes/public');
 const { authMiddleware, subscriptionMiddleware } = require('./middleware/auth');
 const { apiKeyAuth } = require('./middleware/apiKeyAuth');
 const { errorHandler } = require('./middleware/errorHandler');
+const { isOriginAllowed, enforceOrigin } = require('./utils/corsOrigin');
 
 const app = express();
 
@@ -51,16 +52,35 @@ const allowedOrigins = [
     .filter(Boolean),
 ].filter((v, i, a) => a.indexOf(v) === i); // dedupe
 
+// NODE_ENV !== 'production' relaxes the origin check to allow any
+// http://localhost:<port> (see utils/corsOrigin.js) — computed once here,
+// not per-request; NODE_ENV doesn't change at runtime.
+const isDev = process.env.NODE_ENV !== 'production';
+
 const corsMiddleware = cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    callback(new Error(`Origin ${origin} not allowed by CORS`));
+    if (isOriginAllowed(origin, allowedOrigins, isDev)) return callback(null, true);
+    // cors@2.8.6: callback(null, false) resolves the request/preflight
+    // cleanly (no Access-Control-Allow-Origin header, next(null) not
+    // next(err)) instead of throwing into errorHandler.js — which would
+    // 500 and page Telegram (logger.error) for every disallowed origin,
+    // including scanners/bots/misconfigured clients, not real incidents.
+    callback(null, false);
   },
   credentials: true,
 });
 
 // Security middleware
 app.use(helmet());
+// Server-side origin enforcement, ahead of the cors package — see
+// enforceOrigin's own doc comment (utils/corsOrigin.js) for why this is a
+// separate layer: cors only controls whether the browser can read a
+// response, it does not stop the server from processing a "simple" request
+// (plain GET, non-JSON POST) that never triggers a preflight. This closes
+// that gap with a clean 403, before any route handler runs. Same
+// allowedOrigins/isDev/isOriginAllowed the cors config below uses — one
+// decision, enforced twice, at two different layers.
+app.use(enforceOrigin(allowedOrigins, isDev));
 app.use(corsMiddleware);
 // verify captures the raw bytes onto req.rawBody — required for Meta webhook signature
 // verification (HMAC must be computed over the exact bytes Meta sent, not a re-serialization).
