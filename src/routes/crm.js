@@ -12,6 +12,7 @@ const LeadService = require('../services/LeadService');
 const CIS = require('../services/CustomerIdentityService');
 const PipelineService = require('../services/PipelineService');
 const ContactBulkOps = require('../services/ContactBulkOpsService');
+const TagService = require('../services/TagService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -46,43 +47,30 @@ async function scanAllLeads(companyId) {
 
 // Resolves an array of tag values (raw labels or IDs) to catalog IDs.
 // IDs already start with 't_' and pass through unchanged.
-// Unknown labels are auto-created in the catalog.
-async function resolveTagIds(companyId, rawTags, _retry = 0) {
+// Unknown labels are auto-created in the catalog via TagService.addLabelIfMissing()
+// (atomic list_append — see TagService.js — so this can never clobber a
+// concurrent write to some other tag's fields, e.g. the Settings page's
+// aiAssignable toggle).
+async function resolveTagIds(companyId, rawTags) {
   if (!rawTags || rawTags.length === 0) return [];
   const needsResolve = rawTags.filter((t) => !String(t).startsWith('t_'));
   if (needsResolve.length === 0) return rawTags;
-  const catResult = await dynamodb.get({
-    TableName: TABLE,
-    Key: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG' },
-  }).promise();
-  const catalog = catResult.Item?.tags ?? [];
-  const version = catResult.Item?.version ?? 0;
-  let dirty = false;
-  const resolved = rawTags.map((tag) => {
+
+  // Cache label lookups within this call so N occurrences of the same new
+  // label in one request only create one catalog entry (matches prior
+  // in-memory-array behavior) instead of racing addLabelIfMissing N times.
+  const byLabel = new Map();
+  const resolved = [];
+  for (const tag of rawTags) {
     const s = String(tag).trim();
-    if (s.startsWith('t_')) return s;
-    const found = catalog.find((t) => t.label.toLowerCase() === s.toLowerCase());
-    if (found) return found.id;
-    const newId = `t_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-    catalog.push({ id: newId, label: s, color: '#6366f1', createdAt: new Date().toISOString() });
-    dirty = true;
-    return newId;
-  });
-  if (dirty) {
-    try {
-      await dynamodb.put({
-        TableName: TABLE,
-        Item: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG', tags: catalog, version: version + 1 },
-        ConditionExpression: 'attribute_not_exists(#ver) OR #ver = :ver',
-        ExpressionAttributeNames: { '#ver': 'version' },
-        ExpressionAttributeValues: { ':ver': version },
-      }).promise();
-    } catch (e) {
-      if (e.code === 'ConditionalCheckFailedException' && _retry < 3) {
-        return resolveTagIds(companyId, rawTags, _retry + 1);
-      }
-      throw e;
+    if (s.startsWith('t_')) { resolved.push(s); continue; }
+    const key = s.toLowerCase();
+    let entry = byLabel.get(key);
+    if (!entry) {
+      entry = await TagService.addLabelIfMissing(companyId, s);
+      byLabel.set(key, entry);
     }
+    resolved.push(entry.id);
   }
   return [...new Set(resolved)];
 }
@@ -939,31 +927,22 @@ router.post('/import', authMiddleware, checkRole(['admin', 'manager']), rateLimi
       }
     }
 
+    // Resolved the same way resolveTagIds() does — TagService.addLabelIfMissing()'s
+    // atomic list_append, not a read-then-put of the whole catalog, so a large
+    // import can never clobber a concurrent aiAssignable toggle (or any other
+    // tag's fields) on the Settings page.
     let tagIdMap = {};
     if (allTagValues.size > 0) {
-      const catResult = await dynamodb.get({
-        TableName: TABLE,
-        Key: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG' },
-      }).promise();
-      const catalog = catResult.Item?.tags ?? [];
-      let catalogDirty = false;
+      const catalog = await TagService.getCatalog(companyId);
+      const byId = new Map(catalog.map((t) => [t.id, t]));
+      const byLabel = new Map(catalog.map((t) => [t.label.toLowerCase(), t]));
 
       for (const val of allTagValues) {
-        const byId = catalog.find((t) => t.id === val);
-        if (byId) { tagIdMap[val] = byId.id; continue; }
-        const byLabel = catalog.find((t) => t.label.toLowerCase() === val.toLowerCase());
-        if (byLabel) { tagIdMap[val] = byLabel.id; continue; }
-        const newId = `t_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-        catalog.push({ id: newId, label: val, color: '#6366f1', createdAt: new Date().toISOString() });
-        tagIdMap[val] = newId;
-        catalogDirty = true;
-      }
-
-      if (catalogDirty) {
-        await dynamodb.put({
-          TableName: TABLE,
-          Item: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG', tags: catalog },
-        }).promise();
+        const existing = byId.get(val) ?? byLabel.get(val.toLowerCase());
+        if (existing) { tagIdMap[val] = existing.id; continue; }
+        const created = await TagService.addLabelIfMissing(companyId, val);
+        byLabel.set(val.toLowerCase(), created);
+        tagIdMap[val] = created.id;
       }
     }
 

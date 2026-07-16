@@ -3,8 +3,23 @@
 const dynamodb = require('../config/dynamodb');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
+const MAX_CONFLICT_RETRIES = 3;
 
 // ─── Tag catalog (single source of truth: TAG_CATALOG#<companyId> / CATALOG) ──
+//
+// Every writer of this item shares ONE `version` attribute and conditions on
+// it: mutateCatalog()'s full-replace writes (tag create/edit/delete) and
+// addLabelIfMissing()'s list_append (auto-created labels from lead
+// create/update/import) both read it, both increment it, both retry on
+// ConditionalCheckFailedException. That's what lets either side detect the
+// other's concurrent write instead of silently overwriting it — without a
+// shared counter, a full-array write can't tell whether the array it read
+// is still current, and a concurrent append (or another full-replace) that
+// landed in between just vanishes when it writes back its stale snapshot.
+
+function catalogKey(companyId) {
+  return { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG' };
+}
 
 /**
  * Fetch the company's tag catalog.
@@ -12,23 +27,119 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
  * @returns {Promise<Array<{id: string, label: string, color: string, createdAt?: string, aiAssignable?: boolean}>>}
  */
 async function getCatalog(companyId) {
-  const r = await dynamodb.get({
-    TableName: TABLE,
-    Key: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG' },
-  }).promise();
+  const r = await dynamodb.get({ TableName: TABLE, Key: catalogKey(companyId) }).promise();
   return r.Item?.tags ?? [];
 }
 
 /**
- * Persist the company's tag catalog (full replace).
+ * Read-modify-write the catalog under optimistic concurrency. Replaces the
+ * old saveCatalog(companyId, tags) — a plain, unconditioned dynamodb.put —
+ * which every caller (tag create/edit/delete) used to call after its own
+ * getCatalog() read, with no version check at all. That was the second half
+ * of the tag-catalog race: a concurrent addLabelIfMissing() append (or
+ * another one of these same writes) landing between the read and the write
+ * would silently disappear when the stale snapshot got written back.
+ *
+ * `mutatorFn(tags)` receives the current catalog array and returns:
+ *  - `{ skipWrite: true, ...dataForCaller }` — no write should happen at all
+ *    (e.g. tag id not found, or a duplicate label) — returned immediately,
+ *    dynamodb is never touched.
+ *  - `{ tags: newArray, ...dataForCaller }` — replace the array with
+ *    `newArray` (e.g. delete's filter, create's append).
+ *  - `{ ...dataForCaller }` (no `tags` key) — the array was mutated in
+ *    place (e.g. edit's `tags[idx].field = ...`); that mutated array is
+ *    what gets written.
+ *
+ * On a version conflict (someone else — another mutateCatalog() call, or
+ * addLabelIfMissing() — wrote first), re-reads and re-runs mutatorFn against
+ * fresh data rather than failing the request; bounded to
+ * MAX_CONFLICT_RETRIES so a pathological hot tag can't retry forever.
+ *
  * @param {string} companyId
- * @param {Array<object>} tags
+ * @param {(tags: Array<object>) => ({ tags?: Array<object>, skipWrite?: boolean } & Record<string, unknown>)} mutatorFn
+ * @returns {Promise<object>} whatever mutatorFn returned
  */
-async function saveCatalog(companyId, tags) {
-  await dynamodb.put({
-    TableName: TABLE,
-    Item: { PK: `TAG_CATALOG#${companyId}`, SK: 'CATALOG', tags },
-  }).promise();
+async function mutateCatalog(companyId, mutatorFn, _retry = 0) {
+  const r = await dynamodb.get({ TableName: TABLE, Key: catalogKey(companyId) }).promise();
+  const tags = r.Item?.tags ?? [];
+  const version = r.Item?.version ?? 0;
+
+  const result = mutatorFn(tags) ?? {};
+  if (result.skipWrite) return result;
+
+  try {
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: { ...catalogKey(companyId), tags: result.tags ?? tags, version: version + 1 },
+      ConditionExpression: 'attribute_not_exists(#ver) OR #ver = :ver',
+      ExpressionAttributeNames: { '#ver': 'version' },
+      ExpressionAttributeValues: { ':ver': version },
+    }).promise();
+    return result;
+  } catch (e) {
+    if (e.code === 'ConditionalCheckFailedException' && _retry < MAX_CONFLICT_RETRIES) {
+      return mutateCatalog(companyId, mutatorFn, _retry + 1);
+    }
+    throw e;
+  }
+}
+
+/**
+ * Atomically ensure a label exists in the catalog, auto-creating it if not,
+ * and return its catalog entry (existing or newly created).
+ *
+ * Uses a `list_append` UpdateExpression rather than mutateCatalog()'s
+ * conditional full-replace: an append never needs to see or touch any OTHER
+ * tag's fields, so it reads the list's current value server-side at the
+ * moment THIS update commits and can never overwrite a field it didn't
+ * touch, no matter how it interleaves with a concurrent mutateCatalog()
+ * call. It shares mutateCatalog()'s exact `version` attribute (see the file
+ * header), so mutateCatalog() correctly sees this write and retries against
+ * fresh data instead of clobbering it, and vice versa.
+ * @param {string} companyId
+ * @param {string} label
+ * @param {string} [color]
+ * @returns {Promise<{id: string, label: string, color: string, createdAt: string}>}
+ */
+async function addLabelIfMissing(companyId, label, color = '#6366f1', _retry = 0) {
+  const trimmed = label.trim();
+  const r = await dynamodb.get({ TableName: TABLE, Key: catalogKey(companyId) }).promise();
+  const catalog = r.Item?.tags ?? [];
+  const version = r.Item?.version ?? 0;
+
+  const existing = catalog.find((t) => t.label.toLowerCase() === trimmed.toLowerCase());
+  if (existing) return existing;
+
+  const newTag = {
+    id: `t_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+    label: trimmed,
+    color,
+    createdAt: new Date().toISOString(),
+  };
+
+  try {
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: catalogKey(companyId),
+      UpdateExpression: 'SET tags = list_append(if_not_exists(tags, :empty), :newTag), #ver = :newVer',
+      ConditionExpression: 'attribute_not_exists(#ver) OR #ver = :ver',
+      ExpressionAttributeNames: { '#ver': 'version' },
+      ExpressionAttributeValues: {
+        ':empty': [],
+        ':newTag': [newTag],
+        ':ver': version,
+        ':newVer': version + 1,
+      },
+    }).promise();
+    return newTag;
+  } catch (e) {
+    if (e.code === 'ConditionalCheckFailedException' && _retry < MAX_CONFLICT_RETRIES) {
+      // Someone else appended (or this is the first write racing another
+      // first write) — re-read, re-check for the label, retry.
+      return addLabelIfMissing(companyId, label, color, _retry + 1);
+    }
+    throw e;
+  }
 }
 
 // ─── Filter matching ──────────────────────────────────────────────────────────
@@ -75,4 +186,4 @@ function matchesTagFilter(contactTags, acceptSet) {
   return (contactTags ?? []).some((t) => acceptSet.has(String(t).toLowerCase()));
 }
 
-module.exports = { getCatalog, saveCatalog, expandTagFilter, matchesTagFilter };
+module.exports = { getCatalog, mutateCatalog, addLabelIfMissing, expandTagFilter, matchesTagFilter };

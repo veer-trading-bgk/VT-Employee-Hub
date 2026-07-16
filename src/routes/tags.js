@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authMiddleware, checkRole } = require('../middleware/auth');
-const { getCatalog, saveCatalog } = require('../services/TagService');
+const { getCatalog, mutateCatalog } = require('../services/TagService');
 const ContactBulkOps = require('../services/ContactBulkOpsService');
 const TeamScopeService = require('../services/TeamScopeService');
 
@@ -23,13 +23,21 @@ router.post('/', authMiddleware, checkRole(['admin', 'manager', 'superadmin']), 
     const { label, color = '#6366f1', aiAssignable = false } = req.body;
     if (!label?.trim()) return res.status(400).json({ error: 'label required' });
     const companyId = req.user.companyId;
-    const tags = await getCatalog(companyId);
-    if (tags.some((t) => t.label.toLowerCase() === label.trim().toLowerCase())) {
-      return res.status(409).json({ error: 'Tag already exists' });
-    }
-    const newTag = { id: newTagId(), label: label.trim(), color, aiAssignable: !!aiAssignable, createdAt: new Date().toISOString() };
-    await saveCatalog(companyId, [...tags, newTag]);
-    res.json({ success: true, tag: newTag });
+    const trimmedLabel = label.trim();
+
+    // mutateCatalog re-runs this against a fresh read on a version conflict,
+    // so a duplicate that only appears because of a concurrent create still
+    // gets caught (409) instead of racing in a second copy of the label.
+    const result = await mutateCatalog(companyId, (tags) => {
+      if (tags.some((t) => t.label.toLowerCase() === trimmedLabel.toLowerCase())) {
+        return { skipWrite: true, conflict: true };
+      }
+      const newTag = { id: newTagId(), label: trimmedLabel, color, aiAssignable: !!aiAssignable, createdAt: new Date().toISOString() };
+      return { tags: [...tags, newTag], tag: newTag };
+    });
+
+    if (result.conflict) return res.status(409).json({ error: 'Tag already exists' });
+    res.json({ success: true, tag: result.tag });
   } catch (err) { next(err); }
 });
 
@@ -84,14 +92,18 @@ router.put('/:id', authMiddleware, checkRole(['admin', 'manager', 'superadmin'])
     const { id } = req.params;
     const { label, color, aiAssignable } = req.body;
     const companyId = req.user.companyId;
-    const tags = await getCatalog(companyId);
-    const idx = tags.findIndex((t) => t.id === id);
-    if (idx === -1) return res.status(404).json({ error: 'Tag not found' });
-    if (label !== undefined) tags[idx].label = label.trim();
-    if (color !== undefined) tags[idx].color = color;
-    if (aiAssignable !== undefined) tags[idx].aiAssignable = !!aiAssignable;
-    await saveCatalog(companyId, tags);
-    res.json({ success: true, tag: tags[idx] });
+
+    const result = await mutateCatalog(companyId, (tags) => {
+      const idx = tags.findIndex((t) => t.id === id);
+      if (idx === -1) return { skipWrite: true, notFound: true };
+      if (label !== undefined) tags[idx].label = label.trim();
+      if (color !== undefined) tags[idx].color = color;
+      if (aiAssignable !== undefined) tags[idx].aiAssignable = !!aiAssignable;
+      return { tag: tags[idx] };
+    });
+
+    if (result.notFound) return res.status(404).json({ error: 'Tag not found' });
+    res.json({ success: true, tag: result.tag });
   } catch (err) { next(err); }
 });
 
@@ -101,10 +113,14 @@ router.delete('/:id', authMiddleware, checkRole(['admin', 'superadmin']), async 
   try {
     const { id } = req.params;
     const companyId = req.user.companyId;
-    const tags = await getCatalog(companyId);
-    const filtered = tags.filter((t) => t.id !== id);
-    if (filtered.length === tags.length) return res.status(404).json({ error: 'Tag not found' });
-    await saveCatalog(companyId, filtered);
+
+    const result = await mutateCatalog(companyId, (tags) => {
+      const filtered = tags.filter((t) => t.id !== id);
+      if (filtered.length === tags.length) return { skipWrite: true, notFound: true };
+      return { tags: filtered };
+    });
+
+    if (result.notFound) return res.status(404).json({ error: 'Tag not found' });
     res.json({ success: true });
   } catch (err) { next(err); }
 });

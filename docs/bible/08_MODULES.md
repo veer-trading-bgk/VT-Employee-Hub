@@ -481,9 +481,11 @@ Everything else (`_normPhone`, `_findByPhone`, `_createCustomer`, `_enrichCustom
 
 **Owns:** Catalog reads/writes and the ID↔label tolerance rule: contacts store catalog tag IDs (`t_xxx`), but legacy records/filters may still hold label strings, so every filter value is expanded to accept both its ID and its label (case-insensitive).
 
-**Key exports:** `getCatalog(companyId)`, `saveCatalog(companyId, tags)`, `expandTagFilter(companyId, filterTags)` → lowercase accept-`Set`, `matchesTagFilter(contactTags, acceptSet)` → boolean.
+**Concurrency model (2026-07-16):** the `TAG_CATALOG#<companyId>` item has exactly one `version` attribute, and every writer conditions on it — `mutateCatalog()`'s full-replace writes and `addLabelIfMissing()`'s `list_append` both read/increment it and retry (bounded, 3 attempts) on `ConditionalCheckFailedException`. This replaced a prior unconditioned `saveCatalog(companyId, tags)` full-array `put` (removed) that let a concurrent writer's change — e.g. `routes/crm.js`'s lead-tagging flow auto-creating a label while an admin toggled `aiAssignable` in Settings — silently vanish depending on write order. Any future writer of this item must go through `mutateCatalog()` or `addLabelIfMissing()`, never a raw `dynamodb.put`/`get` pair, or the same class of lost-update bug reappears.
 
-**Depended on by:** `routes/tags.js` (catalog CRUD), `routes/campaigns.js` (`_buildAudience` tag filter), `routes/whatsapp.js` (broadcast segment filter), `routes/contacts.js` (list tag filter).
+**Key exports:** `getCatalog(companyId)`, `mutateCatalog(companyId, mutatorFn)` → optimistic-concurrency read-modify-write (see above), `addLabelIfMissing(companyId, label, color?)` → atomic auto-create-or-return, `expandTagFilter(companyId, filterTags)` → lowercase accept-`Set`, `matchesTagFilter(contactTags, acceptSet)` → boolean.
+
+**Depended on by:** `routes/tags.js` (catalog CRUD, via `mutateCatalog()`), `routes/crm.js` (`resolveTagIds()` and CSV import's label resolution, via `addLabelIfMissing()`), `routes/campaigns.js` (`_buildAudience` tag filter), `routes/whatsapp.js` (broadcast segment filter), `routes/contacts.js` (list tag filter).
 
 **Tests:** `tests/tagService.test.js`.
 
