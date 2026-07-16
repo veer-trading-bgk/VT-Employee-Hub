@@ -41,7 +41,7 @@ They must NOT become new Customer 360 tabs unless a future architecture review e
 
 | Capability | Where it integrates |
 |---|---|
-| AI | Activity Panel (health chip, next action), CRM (win probability), Timeline (ai event type), Conversation (draft suggestion slot) |
+| AI | Activity Panel (health chip, next action), CRM (win probability), Timeline (ai event type), Conversation (draft suggestion slot), Notes (AI-generated conversation summary, clearly marked "— Summarized by AI" — reuses the existing note data model and write path, no new UI) |
 | Automation | Timeline (workflow event type), CRM extension point, Tasks (auto-created tasks) |
 | Campaigns | Future separate module; extension `data-slot` points reserved in CRM and Timeline |
 | Analytics | Contact-level widgets in Profile and CRM; system-wide analytics in a separate Analytics module |

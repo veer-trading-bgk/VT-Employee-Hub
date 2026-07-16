@@ -29,6 +29,7 @@ const MODULES: Array<{ useCase: string; label: string; description: string }> = 
   { useCase: 'inbox-template-suggestion', label: 'AI Auto-Reply in Chat', description: 'When an agent clicks "Send AI reply," the AI picks an approved template and sends it to the customer immediately — there is no review step before it reaches them. Enabling this means unreviewed AI-generated messages will go out under this company’s WhatsApp identity.' },
   { useCase: 'conversational-sales-agent', label: 'AI Conversation Agent', description: 'Lets APForce’s AI respond to new customer enquiries on WhatsApp on your company’s behalf, following the same compliance rules as your team (no guaranteed-return claims, no buy/sell/hold advice). The conversation is automatically handed off to a member of your team when appropriate. This must also be turned on in AI Administration → General to take effect — both settings need to be enabled.' },
   { useCase: 'conversation-handoff-summary', label: 'AI Conversation Handoff Summary', description: 'Internal only — generates the 3-5 sentence summary an admin sees when an AI conversation (above) hands off to them. Never sent to the customer.' },
+  { useCase: 'conversation-tag-summary', label: 'AI Conversation Tagging & Summary', description: 'Applies tags marked "AI may assign" in Tag Manager and saves a short internal summary as a note on the contact, clearly marked as AI-generated. Internal only — never sent to the customer. Distinct from the handoff summary above.' },
 ];
 
 /**

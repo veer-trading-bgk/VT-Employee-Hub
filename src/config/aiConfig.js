@@ -562,6 +562,48 @@ Write a 3-5 sentence summary covering: what the customer is looking for, anythin
 Respond with ONLY a single JSON object: { "summary": string, "statedNeeds": string, "productInterest": string[], "budgetMentioned": string|null, "timelineMentioned": string|null, "handoffReason": "qualified"|"escalated"|"turn_limit_reached" }`;
     },
   },
+
+  // Tag + summary — fires once per conversation, same one-shot trigger point
+  // as inbox-intent-detection (first classifiable text message), gated by its
+  // own tagSummaryAt flag (not classifiedAt — a separate one-shot gate, see
+  // ConversationService.markTagSummaryGenerated). Tags are selected only from
+  // the aiAssignable-flagged subset of the company's catalog, server-validated
+  // against that same set after the model responds. The summary is saved as
+  // an internal note (LEAD# conversations only — ConversationTagSummaryService.js
+  // discards it for INBOX# unknown contacts, which get tags only). Distinct
+  // from conversation-handoff-summary above: different trigger, different
+  // schema, different persistence target (a NOTE#, not LEAD#METADATA/TL#) —
+  // see docs/bible/08_MODULES.md.
+  'conversation-tag-summary': {
+    provider: 'bedrock-nova',
+    model: 'apac.amazon.nova-lite-v1:0',
+    maxTokens: 350,
+    promptVersion: 'v1',
+    outputMode: 'json',
+    schema: z.object({
+      tagIds: z.array(z.string()).max(10).default([]),
+      summary: z.string().min(1).max(500),
+    }),
+    customerFacing: false, // internal — tags + note, never sent to the customer
+    localeAware: false,    // output is for an internal (English-speaking) admin
+    rateLimit: { limit: 20, windowMs: 60_000 }, // once per conversation, not per-turn — same cardinality as conversation-handoff-summary
+    promptTemplate: (context) => {
+      const { tagList, transcript } = context;
+      return `You are analyzing a WhatsApp conversation between a stock broking / trading services company and a customer, to help their team triage and track it.
+
+AVAILABLE TAGS (choose zero or more that genuinely apply — do not force a match):
+${tagList}
+
+CONVERSATION TRANSCRIPT:
+"""
+${transcript}
+"""
+
+Select any of the available tags above (by id) that clearly apply to this conversation, based only on what was actually said — never invent a tag that isn't in the list above. Then write a 3-5 sentence internal summary covering what the customer is looking for, their general sentiment/engagement, and anything notable so far. This is an internal note for the team, not a customer-facing message.
+
+Respond with ONLY a single JSON object: { "tagIds": string[], "summary": string }`;
+    },
+  },
 };
 
 // ── Cost/usage pricing ────────────────────────────────────────────────────────

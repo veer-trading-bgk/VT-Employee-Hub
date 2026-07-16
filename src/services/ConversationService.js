@@ -200,6 +200,19 @@ async function classifyIntent(companyId, conversationId, { intent, confidence })
 }
 
 /**
+ * Record that ConversationTagSummaryService has run for this conversation.
+ * One-shot gate, independent of classifyIntent's own classifiedAt.
+ * @param {string} companyId
+ * @param {string} conversationId
+ * @returns {{ tagSummaryAt: string }}
+ */
+async function markTagSummaryGenerated(companyId, conversationId) {
+  const tagSummaryAt = new Date().toISOString();
+  await repo.updateTagSummary(companyId, conversationId, tagSummaryAt);
+  return { tagSummaryAt };
+}
+
+/**
  * Assign a conversation to an employee.
  * Publishes CONVERSATION_ASSIGNED event (fans out to both CONV and CONTACT timelines).
  *
@@ -446,6 +459,7 @@ module.exports = {
   createConversation,
   getConversation,
   classifyIntent,
+  markTagSummaryGenerated,
   assignConversation,
   resolveConversation,
   reopenConversation,

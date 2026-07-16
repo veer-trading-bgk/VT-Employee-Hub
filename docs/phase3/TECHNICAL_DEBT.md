@@ -1107,3 +1107,33 @@ Decision: **accept it, do not stamp.** The only text available to stamp here is 
 **Fix (not scoped/implemented):** make the turn advance atomic and gate on it rather than trusting a pre-read count. Options: (a) an atomic DynamoDB `ADD aiTurnCount :1` with `ConditionExpression` on the expected prior value, using the returned new value to detect and drop the loser of the race before spending an `AIService.generate()` call; (b) per-conversation serialization/debounce of inbound text so back-to-back messages coalesce into one turn; (c) short idempotency/lock window keyed on `conversationId`. Any of these must still let genuinely distinct sequential turns proceed. Note the near-identical read-then-increment shape also exists conceptually for the double-send it produces — a fix here removes both the duplicate reply and the double turn-budget spend.
 
 **Priority:** Medium — not a crash and no data corruption, but it actively wastes a scarce (5-turn) budget and sends duplicate customer-facing messages on a completely normal user behavior (typing two quick messages), making premature turn-limit handoffs materially more likely. Higher real-world impact than most Low items here because the triggering behavior is common, not an edge case.
+
+## KNOWN GAP (deliberate, not a bug) — ConversationTagSummaryService: INBOX# (unknown contacts) get tags only, no AI summary/note (2026-07-15)
+
+**Severity:** Informational — a scoped product decision for the first version of this feature, not a defect.
+
+**What's scoped out.** `ConversationTagSummaryService.analyzeIfNeededForLead` (known `LEAD#` conversations) applies AI-selected tags **and** saves the generated summary as an internal note. `analyzeIfNeededForInbox` (unknown `INBOX#` contacts) applies tags only — the same AI call still returns a `summary` (tags and summary come from one prompt/schema), but the service discards it rather than persisting it anywhere.
+
+**Why.** There is no note-write target for an `INBOX#` contact today — `NoteService.createNote()` and the `POST /inbox/:leadId/note` route it backs are both keyed on a real `LEAD#{companyId}#{leadId}`, and an unknown contact has no `leadId` until/unless it's promoted to a lead. Building a parallel note surface for `INBOX#` contacts was out of scope for this pass.
+
+**Cost note:** the discarded summary is a real (small) token cost — Nova Lite, ~100-150 output tokens per unknown-contact conversation analyzed. Not gated separately since splitting into a second, tags-only useCase for the INBOX# path was judged not worth the added AI_CONFIG/AISection.tsx/AiCostsTab.tsx surface for the volume involved; revisit if INBOX# traffic/cost becomes material.
+
+**Revisit when:** an `INBOX#` contact gains a durable note surface (e.g. on promotion to a lead), or if the discarded-summary cost becomes worth avoiding — at that point, either backfill the note once the contact is promoted, or split into a dedicated tags-only useCase for the `INBOX#` path.
+
+**Reference:** `src/services/ConversationTagSummaryService.js` (`analyzeIfNeededForInbox`); `src/services/NoteService.js`; `docs/bible/08_MODULES.md` (`ConversationTagSummaryService.js` entry).
+
+**Priority:** Not planned — accepted scope boundary, not a defect to fix.
+
+## ConversationTagSummaryService / IntentDetectionService — Non-Atomic Gate Read Can Double-Fire on Rapid Back-to-Back Messages (Not Fixed, Theoretical — Same Race Class as continueTurn's aiTurnCount)
+
+**Issue (found 2026-07-15 during self-review of ConversationTagSummaryService, NOT fixed):** `ConversationTagSummaryService._analyze()` gates on a non-atomic read-then-write: it reads `conv.tagSummaryAt` (via `ConversationService.getConversation`), and only writes it (via `markTagSummaryGenerated`) after the AI call completes. If a customer sends two messages a couple of seconds apart, two webhook invocations can both read `tagSummaryAt` as unset before either has written it — both then proceed to call `AIService.generate()`, both apply tags (harmless — `ContactBulkOpsService.updateTags` is idempotent/race-safe), and both write a note via `NoteService.createNote()`, producing **two duplicate AI-generated notes** on the same conversation instead of one.
+
+**Same race class, not a new pattern.** `IntentDetectionService`'s own `classifiedAt` gate (`_classify()`) has the identical non-atomic read-then-write shape — this codebase already has one live-confirmed instance of this exact race class, documented above: the `continueTurn`/`aiTurnCount` entry (found the same day, 2026-07-15, with real production evidence of two webhook invocations processing the same logical turn). This entry is the theoretical counterpart for the tag/summary and intent-classification gates — not separately reproduced with live evidence, but the mechanism is identical and already proven to occur in production for a sibling gate.
+
+**Why it matters here specifically:** unlike a duplicate `aiTurnCount` increment (invisible extra cost + a burned turn) or a duplicate `classifiedAt` write (harmless, last-write-wins on the same two fields), a duplicate AI note is **directly visible** to a human reading the Notes tab — two near-identical "— Summarized by AI" entries on the same conversation, which reads as a bug even though no data is corrupted.
+
+**Fix (not scoped/implemented):** same options as the `continueTurn` entry — an atomic conditional write on the gate field (`ConditionExpression: attribute_not_exists(tagSummaryAt)` on `markTagSummaryGenerated`, with the loser detecting the condition failure and skipping its own tag/note writes), or per-conversation serialization of inbound messages. The conditional-write option is cheaper here than for `aiTurnCount` (no counter semantics to preserve, just a first-write-wins boolean-like gate) and would likely be the more natural fix for both this gate and `classifiedAt` if ever prioritized.
+
+**Reference:** `src/services/ConversationTagSummaryService.js` (`_analyze`); `src/services/IntentDetectionService.js` (`_classify`, same pattern); the `continueTurn`/`aiTurnCount` entry above (live-confirmed instance of this race class).
+
+**Priority:** Low — theoretical for this specific gate (not yet observed in production, unlike the `aiTurnCount` sibling), same low-frequency trigger condition (two messages within the gate's read-write window). Accepted as a known gap for this pass; revisit if duplicate AI notes are ever actually observed, or bundled with a fix to the sibling `aiTurnCount`/`classifiedAt` races if that work is ever prioritized.

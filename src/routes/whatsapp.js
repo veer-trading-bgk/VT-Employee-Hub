@@ -13,6 +13,7 @@ const { notifyCompany } = require('../utils/wsNotify');
 const { resolveForInbox, resolveForLead, syncConvStatus, syncMarkRead } = require('../utils/conversationResolver');
 const ConversationService  = require('../services/ConversationService');
 const IntentDetectionService = require('../services/IntentDetectionService');
+const ConversationTagSummaryService = require('../services/ConversationTagSummaryService');
 const NoteService = require('../services/NoteService');
 const AIService = require('../services/AIService');
 const { sendAIError } = require('./ai');
@@ -1603,7 +1604,8 @@ router.post('/webhook', async (req, res) => {
           resolveForLead(webhookCompanyId, lead.PK, phone10, { text, timestamp })
             .then((conv) => {
               if (conv?.conversationId && type === 'text') {
-                return IntentDetectionService.classifyIfNeededForLead(webhookCompanyId, conv.conversationId, lead.PK, text);
+                IntentDetectionService.classifyIfNeededForLead(webhookCompanyId, conv.conversationId, lead.PK, text).catch(() => {});
+                return ConversationTagSummaryService.analyzeIfNeededForLead(webhookCompanyId, conv.conversationId, lead.PK, lead.leadId);
               }
             })
             .catch(() => {});
@@ -1785,7 +1787,8 @@ router.post('/webhook', async (req, res) => {
           resolveForInbox(companyId, phone10, { inboxPK: PK, text, timestamp, waName })
             .then((conv) => {
               if (conv?.conversationId && type === 'text') {
-                return IntentDetectionService.classifyIfNeededForInbox(companyId, conv.conversationId, PK, text);
+                IntentDetectionService.classifyIfNeededForInbox(companyId, conv.conversationId, PK, text).catch(() => {});
+                return ConversationTagSummaryService.analyzeIfNeededForInbox(companyId, conv.conversationId, PK, phone10);
               }
             })
             .catch(() => {});

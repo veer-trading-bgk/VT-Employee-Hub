@@ -22,6 +22,7 @@ import type {
 const USE_CASE_LABELS: Record<string, string> = {
   'conversational-sales-agent': 'Conversation (AI sales agent)',
   'conversation-handoff-summary': 'Handoff summary',
+  'conversation-tag-summary': 'Tagging & summary',
   'inbox-template-suggestion': 'Suggested reply',
   'inbox-intent-detection': 'Intent detection',
   'template-creation': 'Template creation',

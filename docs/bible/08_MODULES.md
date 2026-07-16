@@ -489,6 +489,22 @@ Everything else (`_normPhone`, `_findByPhone`, `_createCustomer`, `_enrichCustom
 
 ---
 
+### `src/services/ConversationTagSummaryService.js` (AI tagging + summary, added 2026-07-15)
+
+**Purpose:** Second AI feature built on `AIService.generate()` (after `IntentDetectionService.js`) — tags a conversation from the company's `aiAssignable`-flagged tag catalog and, for known leads, saves a short summary as an internal note.
+
+**Owns:** The `conversation-tag-summary` useCase's context assembly (aiAssignable-filtered tag list + conversation transcript) and its own one-shot trigger gate (`tagSummaryAt` on the `CONV#` record, independent of `IntentDetectionService`'s `classifiedAt` — separate useCase, separate lifecycle, see `ConversationService.markTagSummaryGenerated`). Server-side re-validates every model-returned tag id against the same aiAssignable-filtered set before ever calling `updateTags` — a hallucinated or since-untoggled id is silently dropped, never trusted blind.
+
+**Key exports:** `analyzeIfNeededForLead(companyId, conversationId, leadPK, leadId)` — applies tags via `ContactBulkOpsService.updateTags()` and writes the summary via `NoteService.createNote()`, authored by `{ id: 'system', role: 'admin', name: 'AI Assistant' }` (mirrors `whatsapp.js`'s own local `AI_ACTOR` for the `inbox-template-suggestion` unreviewed-send path), text suffixed `— Summarized by AI`. `analyzeIfNeededForInbox(companyId, conversationId, inboxPK, phone)` — tags only; the model still returns a summary (tags+summary share one AI call, same useCase, same prompt), but it's discarded — there is no note target for an unknown (`INBOX#`) contact today. Known gap, tracked in `docs/phase3/TECHNICAL_DEBT.md`. Neither function takes the triggering message text — the AI call works off the fetched transcript (which already includes the latest message), unlike `IntentDetectionService`, which classifies from the single message directly.
+
+**Not the same feature as `conversation-handoff-summary`** (`ConversationalAgentService.js`'s `_writeHandoffSummary`): different trigger (first classifiable inbound message vs. AI-agent handoff), different schema, different persistence target (a `NOTE#` item here vs. `LEAD#METADATA.aiConversationSummary` + a `TL#` timeline event there). Both can produce a "summary" visible on the same lead — that's intentional, not a duplicate to be merged.
+
+**Depended on by:** `routes/whatsapp.js` (both webhook branches, chained alongside `IntentDetectionService` off the same `resolveForLead`/`resolveForInbox` `.then()`, fire-and-forget, never awaited on the response path).
+
+**Tests:** `tests/conversationTagSummaryService.test.js`.
+
+---
+
 ### `src/services/PipelineService.js` (single owner of the CRM pipeline + stage-key validation)
 
 **Purpose:** Single source of truth for the company's CRM pipeline (`CONFIG#CRM#<companyId>` / `PIPELINE`) and for validating a `stage` value against it before it's ever written.

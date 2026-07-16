@@ -235,6 +235,23 @@ async function updateClassification(companyId, conversationId, classification) {
 }
 
 /**
+ * Record that ConversationTagSummaryService has run for this conversation —
+ * a one-shot gate, same pattern as updateClassification's classifiedAt but
+ * independent of it (separate useCase, separate lifecycle).
+ * @param {string} companyId
+ * @param {string} conversationId
+ * @param {string} tagSummaryAt  ISO timestamp
+ */
+async function updateTagSummary(companyId, conversationId, tagSummaryAt) {
+  await dynamodb.update({
+    TableName: table(),
+    Key:       { PK: conversationPK(companyId, conversationId), SK: conversationSK() },
+    UpdateExpression:          'SET tagSummaryAt = :ts',
+    ExpressionAttributeValues: { ':ts': tagSummaryAt },
+  }).promise();
+}
+
+/**
  * Write bot-conversation state — isBotActive/handoffState/aiTurnCount. Same
  * no-version-check pattern as incrementUnread/updateLastMessage/
  * updateClassification: this is driven exclusively by the inbound webhook
@@ -268,5 +285,6 @@ module.exports = {
   incrementUnread,
   updateLastMessage,
   updateClassification,
+  updateTagSummary,
   updateBotState,
 };
