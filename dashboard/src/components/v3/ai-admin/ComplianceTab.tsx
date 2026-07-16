@@ -3,6 +3,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { ShieldCheck } from 'lucide-react';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
+import { Button } from '@/components/v3/ui/Button';
 import { aiAdminKeys, fetchComplianceInfo } from '@/lib/ai-admin/api';
 
 /**
@@ -11,7 +12,16 @@ import { aiAdminKeys, fetchComplianceInfo } from '@/lib/ai-admin/api';
  * behind a compliance-test-before-publish check that doesn't exist yet.
  */
 export function ComplianceTab() {
-  const { data, isLoading } = useQuery({ queryKey: aiAdminKeys.compliance(), queryFn: fetchComplianceInfo });
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: aiAdminKeys.compliance(), queryFn: fetchComplianceInfo });
+
+  if (isError) {
+    return (
+      <div className="py-8 text-center">
+        <p className="text-sm text-error-600 dark:text-error-400">Failed to load compliance info</p>
+        <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+      </div>
+    );
+  }
 
   if (isLoading || !data) {
     return (

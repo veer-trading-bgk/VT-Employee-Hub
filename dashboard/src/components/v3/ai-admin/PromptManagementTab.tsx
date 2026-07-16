@@ -18,8 +18,8 @@ const MAX_LENGTH = 1000;
 
 export function PromptManagementTab() {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({ queryKey: aiAdminKeys.promptAddendum(), queryFn: fetchPromptAddendum });
-  const { data: versionsData } = useQuery({ queryKey: aiAdminKeys.promptAddendumVersions(), queryFn: fetchPromptAddendumVersions });
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: aiAdminKeys.promptAddendum(), queryFn: fetchPromptAddendum });
+  const { data: versionsData, isError: isVersionsError, refetch: refetchVersions } = useQuery({ queryKey: aiAdminKeys.promptAddendumVersions(), queryFn: fetchPromptAddendumVersions });
 
   const [textOverride, setTextOverride] = useState<string | null>(null);
   const [liveResult, setLiveResult] = useState<TestResult | null>(null);
@@ -87,6 +87,15 @@ export function PromptManagementTab() {
     },
   });
 
+  if (isError) {
+    return (
+      <div className="py-8 text-center">
+        <p className="text-sm text-error-600 dark:text-error-400">Failed to load prompt addendum</p>
+        <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+      </div>
+    );
+  }
+
   if (isLoading || !data) {
     return <div className="space-y-3"><Skeleton className="h-64 w-full" /></div>;
   }
@@ -144,7 +153,12 @@ export function PromptManagementTab() {
         <p className="flex items-center gap-2 border-b border-neutral-200 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-neutral-400 dark:border-neutral-800">
           <History className="h-3.5 w-3.5" /> Version history
         </p>
-        {!versionsData?.versions.length ? (
+        {isVersionsError ? (
+          <div className="py-6 text-center">
+            <p className="text-sm text-error-600 dark:text-error-400">Failed to load version history</p>
+            <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetchVersions()}>Retry</Button>
+          </div>
+        ) : !versionsData?.versions.length ? (
           <p className="px-4 py-6 text-center text-sm text-neutral-400">No published versions yet.</p>
         ) : (
           <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">

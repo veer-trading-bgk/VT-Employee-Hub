@@ -7,6 +7,7 @@ import { AlertTriangle, Search, FlaskConical, ShieldCheck, HelpCircle } from 'lu
 import { Card } from '@/components/v3/ui/Card';
 import { Badge } from '@/components/v3/ui/Badge';
 import { Skeleton } from '@/components/v3/ui/Skeleton';
+import { Button } from '@/components/v3/ui/Button';
 import { Table, TableColumn } from '@/components/v3/ui/Table';
 import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { Toggle } from '@/components/v3/ui/Toggle';
@@ -281,10 +282,19 @@ export function AiCostsTab() {
     return { from: fromDate.toISOString(), to: toDate.toISOString() };
   }, [rangeDays]);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['platform-ai-costs', from, to],
     queryFn: () => api.platformAiCosts({ from, to }),
   });
+
+  if (isError) {
+    return (
+      <div className="py-8 text-center">
+        <p className="text-sm text-error-600 dark:text-error-400">Failed to load AI cost data</p>
+        <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+      </div>
+    );
+  }
 
   if (isLoading || !data) {
     return (

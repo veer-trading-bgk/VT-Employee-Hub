@@ -46,7 +46,7 @@ export function AISection() {
     queryFn: () => apiFetch<AIConfigResponse>('/api/ai/config'),
   });
 
-  const { data: wallet } = useQuery<{ balancePoints: number }>({
+  const { data: wallet, isError: isWalletError, refetch: refetchWallet } = useQuery<{ balancePoints: number }>({
     queryKey: ['ai-wallet'],
     queryFn: () => apiFetch<{ balancePoints: number }>('/api/ai/wallet'),
   });
@@ -153,9 +153,16 @@ export function AISection() {
             <p className="text-xs text-neutral-500">Not charged for AI yet — will also cover WhatsApp Calling minutes once that launches.</p>
           </div>
         </div>
-        <p className="text-lg font-bold tabular-nums text-neutral-900 dark:text-white">
-          {wallet?.balancePoints ?? 0} <span className="text-xs font-normal text-neutral-400">points</span>
-        </p>
+        {isWalletError ? (
+          <div className="text-right">
+            <p className="text-sm text-error-600 dark:text-error-400">Failed to load</p>
+            <Button size="sm" variant="secondary" className="mt-1" onClick={() => refetchWallet()}>Retry</Button>
+          </div>
+        ) : (
+          <p className="text-lg font-bold tabular-nums text-neutral-900 dark:text-white">
+            {wallet?.balancePoints ?? 0} <span className="text-xs font-normal text-neutral-400">points</span>
+          </p>
+        )}
       </div>
     </div>
   );

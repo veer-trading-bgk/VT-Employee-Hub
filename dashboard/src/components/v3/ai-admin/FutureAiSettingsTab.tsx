@@ -40,7 +40,7 @@ const MAX_TEMPERATURE = 0.5;
  */
 export function FutureAiSettingsTab() {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({ queryKey: aiAdminKeys.future(), queryFn: fetchFutureSettings });
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: aiAdminKeys.future(), queryFn: fetchFutureSettings });
   // Partial diff on top of server data, not a copy — no effect needed to
   // re-hydrate on load (react-hooks/set-state-in-effect).
   const [overrides, setOverrides] = useState<Partial<CustomModelSettings>>({});
@@ -54,6 +54,15 @@ export function FutureAiSettingsTab() {
     },
     onError: () => toast.error('Could not save — try again.'),
   });
+
+  if (isError) {
+    return (
+      <div className="py-8 text-center">
+        <p className="text-sm text-error-600 dark:text-error-400">Failed to load future AI settings</p>
+        <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+      </div>
+    );
+  }
 
   if (isLoading || !data) {
     return (

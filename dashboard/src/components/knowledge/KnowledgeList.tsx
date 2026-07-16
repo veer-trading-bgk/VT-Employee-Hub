@@ -17,7 +17,7 @@ function statusBadge(entry: KnowledgeEntry) {
 }
 
 export function KnowledgeList() {
-  const { data, isLoading } = useQuery({ queryKey: knowledgeKeys.list(), queryFn: fetchKnowledgeEntries });
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: knowledgeKeys.list(), queryFn: fetchKnowledgeEntries });
   const [search, setSearch] = useState('');
   const [drawerEntry, setDrawerEntry] = useState<KnowledgeEntry | null | undefined>(undefined); // undefined = closed
 
@@ -50,7 +50,12 @@ export function KnowledgeList() {
       </div>
 
       <div className="rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-        {isLoading ? (
+        {isError ? (
+          <div className="py-8 text-center">
+            <p className="text-sm text-error-600 dark:text-error-400">Failed to load knowledge entries</p>
+            <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+          </div>
+        ) : isLoading ? (
           <div className="space-y-2 p-4"><Skeleton className="h-12 w-full" /><Skeleton className="h-12 w-full" /></div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">

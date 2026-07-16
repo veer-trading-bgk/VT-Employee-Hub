@@ -45,7 +45,7 @@ export function KnowledgeEntryDrawer({ open, onClose, entry }: Props) {
   const currentSnapshot = JSON.stringify({ question, triggers, answer });
   const canPublish = liveResult?.allPassed === true && testedSnapshot === currentSnapshot;
 
-  const { data: versionsData } = useQuery({
+  const { data: versionsData, isError: isVersionsError, refetch: refetchVersions } = useQuery({
     queryKey: entry ? knowledgeKeys.versions(entry.entryId) : ['knowledge', 'versions', 'none'],
     queryFn: () => fetchKnowledgeEntryVersions(entry!.entryId),
     enabled: open && !isCreate,
@@ -241,7 +241,12 @@ export function KnowledgeEntryDrawer({ open, onClose, entry }: Props) {
               <p className="flex items-center gap-2 border-b border-neutral-200 px-4 py-3 text-xs font-semibold uppercase tracking-wide text-neutral-400 dark:border-neutral-800">
                 <History className="h-3.5 w-3.5" /> Version history
               </p>
-              {!versionsData?.versions.length ? (
+              {isVersionsError ? (
+                <div className="py-6 text-center">
+                  <p className="text-sm text-error-600 dark:text-error-400">Failed to load version history</p>
+                  <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetchVersions()}>Retry</Button>
+                </div>
+              ) : !versionsData?.versions.length ? (
                 <p className="px-4 py-6 text-center text-sm text-neutral-400">No published versions yet.</p>
               ) : (
                 <ul className="divide-y divide-neutral-100 dark:divide-neutral-800">

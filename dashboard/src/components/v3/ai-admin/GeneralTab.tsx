@@ -20,7 +20,7 @@ const ROWS: Array<{ key: keyof EditableFields; label: string; description: strin
 
 export function GeneralTab() {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({ queryKey: aiAdminKeys.general(), queryFn: fetchGeneralSettings });
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: aiAdminKeys.general(), queryFn: fetchGeneralSettings });
   // Local edits are tracked as a partial diff, never a copy of server state —
   // no effect is needed to "hydrate" this from data once it loads, so there's
   // nothing to cascade-render (react-hooks/set-state-in-effect).
@@ -35,6 +35,15 @@ export function GeneralTab() {
     },
     onError: () => toast.error('Could not save — try again.'),
   });
+
+  if (isError) {
+    return (
+      <div className="py-8 text-center">
+        <p className="text-sm text-error-600 dark:text-error-400">Failed to load general settings</p>
+        <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+      </div>
+    );
+  }
 
   if (isLoading || !data) {
     return (

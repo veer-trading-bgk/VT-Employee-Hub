@@ -52,7 +52,7 @@ function ComplianceAdvisoryPanel({ items }: { items: ComplianceAdvisoryItem[] })
 
 export function DocumentList() {
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({ queryKey: documentKeys.list(), queryFn: fetchDocuments });
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: documentKeys.list(), queryFn: fetchDocuments });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadingName, setUploadingName] = useState<string | null>(null);
   const [advisoryByDoc, setAdvisoryByDoc] = useState<Record<string, ComplianceAdvisoryItem[]>>({});
@@ -136,7 +136,12 @@ export function DocumentList() {
       </div>
 
       <div className="rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-        {isLoading ? (
+        {isError ? (
+          <div className="py-8 text-center">
+            <p className="text-sm text-error-600 dark:text-error-400">Failed to load documents</p>
+            <Button size="sm" variant="secondary" className="mt-2" onClick={() => refetch()}>Retry</Button>
+          </div>
+        ) : isLoading ? (
           <div className="space-y-2 p-4"><Skeleton className="h-12 w-full" /><Skeleton className="h-12 w-full" /></div>
         ) : !data?.documents.length ? (
           <div className="flex flex-col items-center gap-2 px-4 py-12 text-center">
