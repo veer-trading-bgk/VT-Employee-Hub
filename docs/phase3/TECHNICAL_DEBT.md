@@ -1137,3 +1137,37 @@ Decision: **accept it, do not stamp.** The only text available to stamp here is 
 **Reference:** `src/services/ConversationTagSummaryService.js` (`_analyze`); `src/services/IntentDetectionService.js` (`_classify`, same pattern); the `continueTurn`/`aiTurnCount` entry above (live-confirmed instance of this race class).
 
 **Priority:** Low — theoretical for this specific gate (not yet observed in production, unlike the `aiTurnCount` sibling), same low-frequency trigger condition (two messages within the gate's read-write window). Accepted as a known gap for this pass; revisit if duplicate AI notes are ever actually observed, or bundled with a fix to the sibling `aiTurnCount`/`classifiedAt` races if that work is ever prioritized.
+
+## CORS origin rejection throws instead of declining cleanly — pages Telegram on every disallowed-origin request in production, not just logs (found 2026-07-16, local-dev CORS debugging)
+
+**Issue (found while debugging a local-dev CORS failure, NOT fixed).** `src/app.js`'s CORS setup (`:54-60`) rejects a disallowed origin by calling `callback(new Error(\`Origin ${origin} not allowed by CORS\`))`:
+```js
+const corsMiddleware = cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    callback(new Error(`Origin ${origin} not allowed by CORS`));
+  },
+  credentials: true,
+});
+```
+That is a real `Error`, not the `cors` package's own documented rejection convention (`callback(null, false)`).
+
+**Root cause — confirmed against the actual installed `cors@2.8.6` source** (`node_modules/cors/lib/index.js`), not assumed from docs:
+```js
+originCallback(req.headers.origin, function (err2, origin) {
+  if (err2 || !origin) {
+    next(err2);
+  } else {
+    ...
+  }
+});
+```
+A truthy `err2` (our thrown `Error`) makes the package call `next(err2)` — routing straight into Express's error-handling chain instead of the package's own clean-decline path (set no `Access-Control-Allow-Origin` header, end the response). This happens identically for the OPTIONS preflight and any actual request from a disallowed origin. It lands in `src/middleware/errorHandler.js:27`: `res.status(err.status || 500).json({ error: err.message || 'Internal server error', ... })` — the thrown `Error` has no `.status` set, so every disallowed-origin request gets a **500**, not the semantically-correct 403/clean-decline.
+
+**Why this matters beyond local-dev friction.** `errorHandler.js:24` calls `logger.error('Error occurred', err)` on this path before the default-500 response — and per this codebase's own established logging convention (`logger.error`/`logger.alert` page Telegram, `logger.warn` doesn't — see the embed-timeout-fix entry elsewhere in this doc), **every rejected-origin request currently pages Telegram in production**, indistinguishable from a genuine server error. Any stray/scanning/misconfigured client hitting the production API with an unrecognized `Origin` header generates a production page, not a log line — live paging-noise risk, not just a local-dev inconvenience (this is how the bug was found: a local dev server on an unlisted port hit exactly this path).
+
+**Fix direction (not implemented in this pass).** Change the rejection to `callback(null, false)` instead of `callback(new Error(...))`. With `origin: false`, the `cors` package resolves the preflight/request cleanly (no `Access-Control-Allow-Origin` header, browser reports a CORS failure client-side) without ever calling `next(err)` — no `errorHandler` involvement, no 500, no Telegram page. `app.js` was deliberately not touched in this pass — this is local-dev CORS debugging that surfaced a separate, real production issue, not something to fix as a drive-by.
+
+**Reference:** `src/app.js:54-60` (the `corsMiddleware` definition); `src/middleware/errorHandler.js:24,27` (the paging + default-500 behavior); `node_modules/cors` v2.8.6 `lib/index.js` (confirmed rejection-propagation mechanism).
+
+**Priority:** Worth a real look, not just local-dev friction — this pages on every rejected-origin production request today. Low implementation cost (one-line change, `new Error(...)` → `false`), but flagging for deliberate review rather than a drive-by fix since it touches production error-handling/alerting behavior directly.

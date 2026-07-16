@@ -30,6 +30,7 @@ import {
   Sparkles,
   FileText,
   KeyRound,
+  Trash2,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card } from '@/components/v3/ui/Card';
@@ -1392,6 +1393,12 @@ function TagsSection() {
   // fixed at the page level, but this holds even if that guard is ever
   // removed or a future caller mounts TagsSection some other way).
   const canCreateTags = user?.role === 'admin' || user?.role === 'manager' || user?.role === 'superadmin';
+  // DELETE /api/tags/:id is gated tighter than POST/PUT — admin + superadmin
+  // only, no manager (src/routes/tags.js's DELETE route, checkRole(['admin',
+  // 'superadmin'])) — verified before writing this, does NOT match
+  // canCreateTags. A separate check is required: reusing canCreateTags here
+  // would show a manager a delete button that always 403s.
+  const canDeleteTags = user?.role === 'admin' || user?.role === 'superadmin';
   const [search, setSearch] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [newColor, setNewColor] = useState('#6366f1');
@@ -1428,6 +1435,15 @@ function TagsSection() {
       apiFetch(`/api/tags/${id}`, { method: 'PUT', body: JSON.stringify({ aiAssignable }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tag-catalog'] }),
     onError: () => toast.error('Could not update tag'),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => apiFetch(`/api/tags/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tag-catalog'] });
+      toast.success('Tag deleted');
+    },
+    onError: () => toast.error('Could not delete tag'),
   });
 
   const canCreate =
@@ -1566,11 +1582,27 @@ function TagsSection() {
                     <Toggle
                       size="sm"
                       label="AI"
+                      id={`tag-ai-${tag.id}`}
                       title="Allow the AI to apply this tag automatically based on conversation content"
                       checked={tag.aiAssignable === true}
                       onChange={(e) => aiAssignableMut.mutate({ id: tag.id, aiAssignable: e.target.checked })}
                       disabled={aiAssignableMut.isPending}
                     />
+                  )}
+                  {canDeleteTags && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`Delete tag "${tag.label}"? It will no longer be assignable. Contacts that already have this tag keep the reference, but it won't show as a badge anymore.`)) {
+                          deleteMut.mutate(tag.id);
+                        }
+                      }}
+                      disabled={deleteMut.isPending}
+                      className="shrink-0 text-neutral-400 hover:text-error-600 disabled:opacity-50"
+                      title={`Delete "${tag.label}"`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   )}
                 </li>
               ))
