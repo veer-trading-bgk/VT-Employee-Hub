@@ -131,9 +131,28 @@ For every task:
 
 Do not guess when code can be inspected.
 
+
 ------------------------------------------------------------------------
 
-# 10. Testing
+# 10. Model & Effort Selection
+
+Before starting any task, confirm the effort level matches complexity:
+
+-   Low: mechanical/single-line changes (renames, typos, lint fixes)
+-   Medium: standard bug fixes, precedented refactors, mechanical batches
+-   High: new feature implementation
+-   xhigh: security-sensitive files (auth, RBAC, send paths, CORS) or
+    correctness-critical work
+-   Max: architecture decisions, hard-to-reproduce bugs (races,
+    non-deterministic failures)
+
+Do not switch effort mid-session unless necessary — it resets the cache
+and forces a full-price re-read of the conversation.
+
+
+------------------------------------------------------------------------
+
+# 11. Testing
 
 Before merge:
 
@@ -147,7 +166,7 @@ Encourage Playwright for UI and API/unit tests for backend.
 
 ------------------------------------------------------------------------
 
-# 11. Deployment
+# 12. Deployment
 
 Backend: Git Push → GitHub Actions → AWS Lambda
 
@@ -157,7 +176,7 @@ Never deploy directly from Claude Code.
 
 ------------------------------------------------------------------------
 
-# 12. Documentation Updates
+# 13. Documentation Updates
 
 If architecture, APIs, database, or module ownership changes:
 
@@ -171,7 +190,7 @@ Documentation is part of the feature.
 
 ------------------------------------------------------------------------
 
-# 13. Anti-Patterns
+# 14. Anti-Patterns
 
 Never:
 
@@ -186,7 +205,7 @@ Never:
 
 ------------------------------------------------------------------------
 
-# 14. Code Review Checklist
+# 15. Code Review Checklist
 
 Verify:
 
@@ -202,7 +221,7 @@ Verify:
 
 ------------------------------------------------------------------------
 
-# 15. Definition of Done
+# 16. Definition of Done
 
 A feature is complete only when:
 
@@ -215,7 +234,7 @@ A feature is complete only when:
 
 ------------------------------------------------------------------------
 
-# 16. Read Order
+# 17. Read Order
 
 1.  docs/bible/20_CURRENT_STATE.md
 2.  docs/APFORCE_BIBLE.md
