@@ -18,6 +18,7 @@ const NoteService = require('../services/NoteService');
 const AIService = require('../services/AIService');
 const { sendAIError } = require('./ai');
 const WASendSvc            = require('../services/WhatsAppSendService');
+const FlowManagementService = require('../services/FlowManagementService');
 const TagService           = require('../services/TagService');
 const ContactService       = require('../services/ContactService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
@@ -29,11 +30,10 @@ const ConversationalAgentService = require('../services/ConversationalAgentServi
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
-const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0'}`;
-function getGraphUrl(cfg) {
-  if (cfg?.graphApiVersion) return `https://graph.facebook.com/${cfg.graphApiVersion}`;
-  return GRAPH;
-}
+// Graph URL/config helpers extracted to a shared module (also used by
+// WhatsAppSendService and FlowManagementService). resolveGraphUrl keeps its
+// historical local name so this file's ~40 call sites read unchanged.
+const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig } = require('../services/graphApiHelpers');
 function mediaTypeFromMime(mimeType) {
   if (mimeType.startsWith('image/')) return 'image';
   if (mimeType.startsWith('video/')) return 'video';
@@ -41,25 +41,9 @@ function mediaTypeFromMime(mimeType) {
   return 'document';
 }
 
-// ── Per-company WABA credentials ───────────────────────────────────────────────
-async function getWabaConfig(companyId) {
-  const result = await dynamodb.get({
-    TableName: TABLE,
-    Key: { PK: `CONFIG#WABA#${companyId}`, SK: 'CURRENT' },
-  }).promise();
-  return result.Item ?? null;
-}
-
-// Returns a human-readable issue string if the WABA config is structurally invalid, null if OK.
-// Key sentinel: phoneNumberId === wabaId means manual-connect stored the wrong value as the WABA ID.
-function detectInvalidWabaConfig(cfg) {
-  if (!cfg) return null;
-  if (!cfg.wabaId) return 'WABA ID is missing — reconnect via Settings → WhatsApp.';
-  if (cfg.phoneNumberId && cfg.wabaId === cfg.phoneNumberId) {
-    return 'WABA ID equals Phone Number ID — these must be different identifiers. Go to Settings → WhatsApp → Health Check and click "Repair Config" to auto-fix.';
-  }
-  return null;
-}
+// getWabaConfig / detectInvalidWabaConfig now live in services/graphApiHelpers.js
+// (imported above) — moved there so FlowManagementService can apply the same
+// credential gate without requiring this route module.
 
 // Compute a plain-English root cause from health-check state (shown in UI and logs).
 function computeRootCause(cfg, token, waba) {
@@ -2207,6 +2191,16 @@ async function sendRegisteredFlow(companyId, target, flowId, user) {
     err.status = 404;
     throw err;
   }
+  // Builder drafts are not sendable: Meta rejects an unpublished flow_id
+  // (this payload never sets mode:'draft'), and in the welcome-button
+  // follow-up path that rejection would surface only as a logger.warn —
+  // the customer would silently receive nothing. Manual register-by-ID
+  // rows (source absent) are Meta-published by definition and unaffected.
+  if ((flowCfg.Item.source ?? 'manual') === 'builder' && (flowCfg.Item.status ?? 'PUBLISHED') !== 'PUBLISHED') {
+    const err = new Error('This Flow is still a draft — publish it in the builder before sending');
+    err.status = 400;
+    throw err;
+  }
 
   const { bodyText, ctaLabel, screenId } = flowCfg.Item;
   const interactive = {
@@ -2540,7 +2534,24 @@ router.post('/flows', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000
       createdByName: req.user.name ?? null,
       createdAt: new Date().toISOString(),
     };
-    await dynamodb.put({ TableName: TABLE, Item: item }).promise();
+    // Guard against silently replacing a builder-authored row (same PK/SK
+    // keyspace): a full-item put would wipe its flowJson/status/statusHistory
+    // and, with source erased, permanently lock it out of the builder routes.
+    // Fresh registrations and re-registrations of manual rows (no source
+    // attribute) behave exactly as before.
+    try {
+      await dynamodb.put({
+        TableName: TABLE,
+        Item: item,
+        ConditionExpression: 'attribute_not_exists(SK) OR attribute_not_exists(#src)',
+        ExpressionAttributeNames: { '#src': 'source' },
+      }).promise();
+    } catch (e) {
+      if (e.code === 'ConditionalCheckFailedException') {
+        return res.status(409).json({ error: 'This Flow ID belongs to a Flow built in APForce — manage it from the builder instead of re-registering it' });
+      }
+      throw e;
+    }
     res.json({ success: true, flow: item });
   } catch (err) { next(err); }
 });
@@ -2555,6 +2566,265 @@ router.delete('/flows/:flowId', authMiddleware, checkRole(['admin']), rateLimit(
     }).promise();
     res.json({ success: true });
   } catch (err) { next(err); }
+});
+
+// ═══ Builder-managed Flows — created and authored inside APForce ══════════════
+// These routes wrap Meta's Flow *Management* API via FlowManagementService
+// (create → upload JSON → publish). Additive beside the register-by-ID routes
+// above, which remain the path for Flows built outside APForce. Builder rows
+// share the CONFIG#FLOW# entity (same PK/SK — Meta issues the flow_id at
+// create time, before upload/publish) extended with status/statusHistory/
+// source/flowJson, following the CONFIG#TMPL lifecycle pattern. Rows without
+// a source attribute (all pre-builder rows) are treated as source:'manual'.
+// Admin-only, same B3 finding #8 rationale as the register-by-ID routes.
+//
+// DELETE semantics (deliberate v1 decision): DELETE /flows/:flowId above
+// keeps its local-unregister-only behavior for builder rows too — the
+// Meta-side Flow survives on the WABA (recoverable via WhatsApp Manager or
+// re-registration by ID). Revisit if orphaned drafts ever approach Meta's
+// per-WABA flow limit; deleting drafts on Meta needs a FlowManagementService
+// method that does not exist yet.
+
+// Keep stored flowJson comfortably inside DynamoDB's 400KB item cap, which
+// counts UTF-8 BYTES — Indic-script copy is ~3 bytes/char, so this must be
+// measured with Buffer.byteLength, never string .length. 300KB leaves ≥100KB
+// of headroom for the row's other attributes and its capped statusHistory.
+// Realistic 8-screen Flow JSON is a few KB; hitting this cap means something
+// is wrong with the input, not that we should migrate storage.
+const MAX_FLOW_JSON_BYTES = 300_000;
+// statusHistory is bounded (unlike a naive list_append-forever): entries are
+// recorded only for status transitions and failed uploads — never for clean
+// no-op saves (CONFIG#TMPL precedent) — and both the entry count and the
+// embedded Meta validation errors are capped so iterative editing sessions
+// can't inflate the item toward the 400KB cap.
+const MAX_STATUS_HISTORY_ENTRIES = 20;
+const MAX_STORED_VALIDATION_ERRORS = 10;
+
+// DynamoDB rejects attribute values nested deeper than 32 levels; reject
+// early (and before the Meta upload) so the local write can never fail
+// AFTER Meta has already accepted the asset.
+const MAX_FLOW_JSON_DEPTH = 30;
+function exceedsDepth(value, limit, depth = 0) {
+  if (value === null || typeof value !== 'object') return depth > limit;
+  if (depth >= limit) return true;
+  return Object.values(value).some((v) => exceedsDepth(v, limit, depth + 1));
+}
+
+function sendTypedError(res, err) {
+  return res.status(err.status).json({
+    error: err.message,
+    ...(err.code && { code: err.code }),
+    ...(err.details !== undefined && { rawError: err.details }),
+  });
+}
+
+// ── POST /api/whatsapp/flows/builder — create a draft Flow on Meta ────────────
+// Meta-first sequencing: the local CONFIG#FLOW# row is only written after
+// Meta confirms creation and issues the flow_id — a Meta failure must never
+// leave a local row with no Meta-side Flow behind it.
+router.post('/flows/builder', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const { name, categories, bodyText, ctaLabel, screenId } = req.body;
+    // typeof checks, not just truthiness: a number/object here would throw
+    // TypeError on .trim() and surface as an alerting 500 instead of a 400.
+    // All validation runs BEFORE the Meta create — a post-create validation
+    // failure would orphan a Meta-side Flow with no local row.
+    if (typeof name !== 'string' || !name.trim())         return res.status(400).json({ error: 'name required (string)' });
+    if (typeof bodyText !== 'string' || !bodyText.trim()) return res.status(400).json({ error: 'bodyText required (string) — shown to the customer above the Flow button' });
+    if (typeof ctaLabel !== 'string' || !ctaLabel.trim()) return res.status(400).json({ error: 'ctaLabel required (string) — the Flow button text' });
+    if (ctaLabel.trim().length > 20) return res.status(400).json({ error: 'ctaLabel must be 20 characters or fewer (Meta limit)' });
+    if (screenId !== undefined && screenId !== null && typeof screenId !== 'string') {
+      return res.status(400).json({ error: 'screenId must be a string when provided' });
+    }
+    if (categories !== undefined && (!Array.isArray(categories) || categories.some((c) => typeof c !== 'string' || !c.trim()))) {
+      return res.status(400).json({ error: 'categories must be an array of non-empty strings when provided' });
+    }
+
+    const { flowId } = await FlowManagementService.createFlow(req.user.companyId, { name, categories });
+
+    const now = new Date().toISOString();
+    const item = {
+      PK: `CONFIG#FLOW#${req.user.companyId}`,
+      SK: `FLOW#${flowId}`,
+      companyId: req.user.companyId,
+      flowId,
+      name: name.trim(),
+      bodyText: bodyText.trim(),
+      ctaLabel: ctaLabel.trim(),
+      screenId: screenId?.trim() || null,
+      // Same reserved meaning as the register-by-ID route — trigger wiring,
+      // NOT provenance. Provenance is the new source field below.
+      context: 'manual',
+      source: 'builder',
+      status: 'DRAFT',
+      statusHistory: [{ status: 'DRAFT', ts: now, reason: null }],
+      flowJson: null,
+      createdBy: req.user.id,
+      createdByName: req.user.name ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await dynamodb.put({ TableName: TABLE, Item: item }).promise();
+    res.status(201).json({ success: true, flow: item });
+  } catch (err) {
+    if (err.status) return sendTypedError(res, err);
+    next(err);
+  }
+});
+
+// ── PUT /api/whatsapp/flows/builder/:flowId — save + upload Flow JSON ─────────
+// Meta accepts the asset upload at the HTTP level and returns validation
+// errors in the response body — they are stored on the statusHistory entry
+// and returned to the caller, never swallowed. success:false + 200 here
+// means "saved and uploaded, but Meta reported validation errors".
+router.put('/flows/builder/:flowId', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const { flowJson } = req.body;
+    if (!flowJson || typeof flowJson !== 'object' || Array.isArray(flowJson)) {
+      return res.status(400).json({ error: 'flowJson (the Flow JSON document object) is required' });
+    }
+    if (Buffer.byteLength(JSON.stringify(flowJson), 'utf8') > MAX_FLOW_JSON_BYTES) {
+      return res.status(400).json({ error: `flowJson exceeds ${MAX_FLOW_JSON_BYTES} bytes — too large to store` });
+    }
+    if (exceedsDepth(flowJson, MAX_FLOW_JSON_DEPTH)) {
+      return res.status(400).json({ error: `flowJson is nested deeper than ${MAX_FLOW_JSON_DEPTH} levels — flatten the document` });
+    }
+
+    const existing = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#FLOW#${req.user.companyId}`, SK: `FLOW#${req.params.flowId}` },
+    }).promise();
+    const flow = existing.Item;
+    if (!flow) return res.status(404).json({ error: 'Flow not found — create it via the builder first' });
+    if ((flow.source ?? 'manual') !== 'builder') {
+      return res.status(400).json({ error: 'This Flow was registered by ID, not built in APForce — edit it in Meta\'s Flow Builder instead' });
+    }
+    if (flow.status === 'PUBLISHED') {
+      return res.status(400).json({ error: 'Published Flows are immutable on Meta — create a new Flow to make changes' });
+    }
+
+    const { success, validationErrors } = await FlowManagementService.uploadFlowJson(
+      req.user.companyId, req.params.flowId, flowJson,
+    );
+
+    // History is recorded only for FAILED uploads (CONFIG#TMPL precedent:
+    // entries mark transitions/events, never clean no-op saves — updatedAt
+    // already records the save itself), with both the stored error list and
+    // the total history length capped so the item can't grow unboundedly.
+    const now = new Date().toISOString();
+    let newHistory = flow.statusHistory ?? [];
+    if (validationErrors.length) {
+      newHistory = [...newHistory, {
+        status: flow.status ?? 'DRAFT',
+        ts: now,
+        reason: `Meta reported ${validationErrors.length} validation error(s) on upload`,
+        validationErrors: validationErrors.slice(0, MAX_STORED_VALIDATION_ERRORS),
+      }].slice(-MAX_STATUS_HISTORY_ENTRIES);
+    }
+    // Version-conditioned write (same lost-update reasoning as the tag-catalog
+    // fix, c252243): updatedAt must still match what this request read, and
+    // the row must still exist and be unpublished — otherwise a concurrent
+    // save/publish/delete won the race. Without attribute_exists, an update
+    // racing DELETE would UPSERT a nameless ghost row.
+    try {
+      await dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: `CONFIG#FLOW#${req.user.companyId}`, SK: `FLOW#${req.params.flowId}` },
+        UpdateExpression: 'SET flowJson = :fj, updatedAt = :ua, statusHistory = :nh',
+        ConditionExpression: 'attribute_exists(PK) AND #s <> :published AND updatedAt = :expectedUa',
+        ExpressionAttributeNames: { '#s': 'status' },
+        ExpressionAttributeValues: {
+          ':fj': flowJson, ':ua': now, ':nh': newHistory,
+          ':published': 'PUBLISHED', ':expectedUa': flow.updatedAt,
+        },
+      }).promise();
+    } catch (e) {
+      if (e.code === 'ConditionalCheckFailedException') {
+        return res.status(409).json({ error: 'This Flow was modified, published, or deleted by another request — reload it and retry. Note: Meta has already received this upload.' });
+      }
+      throw e;
+    }
+
+    res.json({ success, validationErrors });
+  } catch (err) {
+    if (err.status) return sendTypedError(res, err);
+    next(err);
+  }
+});
+
+// ── POST /api/whatsapp/flows/builder/:flowId/publish — publish on Meta ────────
+router.post('/flows/builder/:flowId/publish', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const existing = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#FLOW#${req.user.companyId}`, SK: `FLOW#${req.params.flowId}` },
+    }).promise();
+    const flow = existing.Item;
+    if (!flow) return res.status(404).json({ error: 'Flow not found' });
+    if ((flow.source ?? 'manual') !== 'builder') {
+      return res.status(400).json({ error: 'This Flow was registered by ID, not built in APForce — publish it in Meta\'s Flow Builder instead' });
+    }
+    if (flow.status === 'PUBLISHED') {
+      return res.status(400).json({ error: 'Flow is already published' });
+    }
+
+    // Same "HTTP 200 is not success" rule as uploadFlowJson: Meta can answer
+    // 200 with success:false (or no success field). Flipping the local row on
+    // that would brick it — PUT rejects PUBLISHED rows as immutable and
+    // re-publish rejects "already published", with no recovery path.
+    const { success } = await FlowManagementService.publishFlow(req.user.companyId, req.params.flowId);
+    if (!success) {
+      return res.status(502).json({ error: 'Meta did not confirm the publish — the Flow is still a draft. Check for outstanding validation errors and try again.' });
+    }
+
+    const now = new Date().toISOString();
+    const newHistory = [...(flow.statusHistory ?? []), { status: 'PUBLISHED', ts: now, reason: null }]
+      .slice(-MAX_STATUS_HISTORY_ENTRIES);
+    // Conditioned like the PUT above: never resurrect a concurrently-deleted
+    // row, never double-append on a publish race, never clobber a save that
+    // landed after our read.
+    try {
+      await dynamodb.update({
+        TableName: TABLE,
+        Key: { PK: `CONFIG#FLOW#${req.user.companyId}`, SK: `FLOW#${req.params.flowId}` },
+        UpdateExpression: 'SET #s = :s, updatedAt = :ua, statusHistory = :nh',
+        ConditionExpression: 'attribute_exists(PK) AND #s <> :s AND updatedAt = :expectedUa',
+        ExpressionAttributeNames: { '#s': 'status' },
+        ExpressionAttributeValues: { ':s': 'PUBLISHED', ':ua': now, ':nh': newHistory, ':expectedUa': flow.updatedAt },
+      }).promise();
+    } catch (e) {
+      if (e.code === 'ConditionalCheckFailedException') {
+        return res.status(409).json({ error: 'This Flow was modified or deleted by another request during publish — reload it. Note: Meta has already published the Flow.' });
+      }
+      throw e;
+    }
+
+    res.json({ success: true, status: 'PUBLISHED' });
+  } catch (err) {
+    if (err.status) return sendTypedError(res, err);
+    next(err);
+  }
+});
+
+// ── GET /api/whatsapp/flows/builder/:flowId/preview — Meta web preview URL ────
+// The local-row check is the tenant-scoping gate: the flowId in the URL is a
+// Meta ID, so we only proxy previews for Flows registered to this company.
+router.get('/flows/builder/:flowId/preview', authMiddleware, checkRole(['admin']), rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const existing = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#FLOW#${req.user.companyId}`, SK: `FLOW#${req.params.flowId}` },
+    }).promise();
+    if (!existing.Item) return res.status(404).json({ error: 'Flow not found' });
+
+    const { previewUrl, expiresAt } = await FlowManagementService.getPreviewUrl(
+      req.user.companyId, req.params.flowId,
+    );
+    res.json({ success: true, previewUrl, expiresAt });
+  } catch (err) {
+    if (err.status) return sendTypedError(res, err);
+    next(err);
+  }
 });
 
 // ── GET /api/whatsapp/templates — list stored templates ───────────────────────

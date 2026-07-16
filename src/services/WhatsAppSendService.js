@@ -26,27 +26,23 @@ const logger              = require('../config/logger');
 const { to10Digit }       = require('../utils/phone');
 const ConversationService = require('./ConversationService');
 const { updateLeadLastMessage } = require('../utils/updateLeadLastMessage');
+// Shared Graph URL/config helpers — the WABA config cache (10-min TTL) and
+// its invalidation live in graphApiHelpers now; _graphUrl/_getConfig below
+// stay as thin delegates so this service's internal call sites are unchanged.
+const graphApiHelpers = require('./graphApiHelpers');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
-const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0'}`;
 const s3Client = new S3({ region: process.env.AWS_REGION ?? 'ap-south-1' });
 
 // Roles whose send permission is limited to their own assigned leads
 const RESTRICTED_ROLES = new Set(['telecaller', 'agent', 'intern']);
-
-// In-process WABA config cache — prevents N uncached DDB reads in broadcast loops.
-// Invalidated on disconnect/reconnect via invalidateConfigCache().
-const _cfgCache  = new Map(); // companyId → { data, ts }
-const CFG_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 class WhatsAppSendService {
 
   // ── Internal helpers ──────────────────────────────────────────────────────
 
   _graphUrl(cfg) {
-    return cfg?.graphApiVersion
-      ? `https://graph.facebook.com/${cfg.graphApiVersion}`
-      : GRAPH;
+    return graphApiHelpers.resolveGraphUrl(cfg);
   }
 
   _toE164(phone) {
@@ -63,20 +59,12 @@ class WhatsAppSendService {
   }
 
   async _getConfig(companyId) {
-    const hit = _cfgCache.get(companyId);
-    if (hit && Date.now() - hit.ts < CFG_TTL_MS) return hit.data;
-    const r = await dynamodb.get({
-      TableName: TABLE,
-      Key: { PK: `CONFIG#WABA#${companyId}`, SK: 'CURRENT' },
-    }).promise();
-    const data = r.Item ?? null;
-    _cfgCache.set(companyId, { data, ts: Date.now() });
-    return data;
+    return graphApiHelpers.getCachedWabaConfig(companyId);
   }
 
   /** Call when a company disconnects or reconnects WhatsApp so the cache is refreshed. */
   invalidateConfigCache(companyId) {
-    _cfgCache.delete(companyId);
+    graphApiHelpers.invalidateConfigCache(companyId);
   }
 
   async _requireConfig(companyId) {
