@@ -112,8 +112,16 @@ class AutomationEngine {
   // each one's conditions), a caller here already knows exactly which workflow to run
   // — e.g. the inbound webhook route, which resolves the workflow from its URL, not
   // from a trigger-type scan. Public precisely so routes never reach into
-  // _startExecution directly.
+  // _startExecution directly. Still runs the same trigger.conditions[] gate
+  // fireTrigger() applies (same _evalConditions() call, no second evaluator) —
+  // skipping straight to _startExecution() used to bypass it entirely. Unlike
+  // fireTrigger()'s extraction, no top-level wf.conditions fallback here: every
+  // writer of a workflow item (buildTriggerForStorage() in automations.js, the
+  // linear→graph migration script, every test fixture) nests conditions under
+  // trigger — nothing ever writes a top-level conditions field to fall back to.
   async runWorkflowDirect(companyId, workflow, context) {
+    const conditions = workflow.trigger?.conditions ?? [];
+    if (!this._evalConditions(conditions, context)) return;
     return this._startExecution(companyId, workflow, context, 'inbound_webhook');
   }
 
@@ -891,12 +899,16 @@ class AutomationEngine {
 
   _matchesOperator(actual, operator, value) {
     switch (operator) {
-      case 'equals':       return actual === value;
-      case 'not_equals':   return actual !== value;
+      // Array-shaped fields (currently only 'tags') need membership, not identity —
+      // an array is never === a string, so equals/not_equals silently always failed/
+      // passed for them until this Array.isArray branch (mirrors the contains/
+      // not_contains branches just below, which already had this right).
+      case 'equals':       return Array.isArray(actual) ? actual.includes(value) : actual === value;
+      case 'not_equals':   return Array.isArray(actual) ? !actual.includes(value) : actual !== value;
       case 'contains':     return Array.isArray(actual) ? actual.includes(value) : String(actual ?? '').includes(String(value ?? ''));
       case 'not_contains': return Array.isArray(actual) ? !actual.includes(value) : !String(actual ?? '').includes(String(value ?? ''));
       case 'exists':       return actual !== undefined && actual !== null && actual !== '';
-      case 'not_exists':   return actual === undefined  || actual === null  || actual === '';
+      case 'not_exists':   return actual === undefined || actual === null || actual === '' || (Array.isArray(actual) && actual.length === 0);
       default:             return false; // unknown operator → condition fails safely
     }
   }

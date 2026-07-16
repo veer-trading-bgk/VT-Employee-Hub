@@ -1586,6 +1586,79 @@ describe('AutomationEngine — runWorkflowDirect()', () => {
     expect(startSpy).toHaveBeenCalledWith(CID, workflow, context, 'inbound_webhook');
     startSpy.mockRestore();
   });
+
+  test('regression: an inbound_webhook workflow with an explicit empty conditions[] still starts execution unchanged', async () => {
+    const startSpy = jest.spyOn(engine, '_startExecution').mockResolvedValue(undefined);
+    const workflow = {
+      id: 'wf-hook-4', name: 'Webhook workflow (no conditions)',
+      trigger: { type: 'inbound_webhook', conditions: [] },
+      steps: [{ id: 's1', type: 'end', config: {} }],
+    };
+    const context = { leadId: 'lead_4', phone: '9000000003' };
+
+    await engine.runWorkflowDirect(CID, workflow, context);
+
+    expect(startSpy).toHaveBeenCalledWith(CID, workflow, context, 'inbound_webhook');
+    startSpy.mockRestore();
+  });
+
+  test('a failing trigger condition blocks execution — the same gate fireTrigger() uses, no longer bypassed', async () => {
+    const startSpy = jest.spyOn(engine, '_startExecution').mockResolvedValue(undefined);
+    const workflow = {
+      id: 'wf-hook-2', name: 'Webhook workflow (gated)',
+      trigger: { type: 'inbound_webhook', conditions: [{ field: 'stage', operator: 'equals', value: 'new' }] },
+      steps: [{ id: 's1', type: 'end', config: {} }],
+    };
+    const context = { leadId: 'lead_2', phone: '9000000001', stage: 'won' }; // condition wants 'new'
+
+    await engine.runWorkflowDirect(CID, workflow, context);
+
+    expect(startSpy).not.toHaveBeenCalled();
+    startSpy.mockRestore();
+  });
+
+  test('a passing trigger condition still starts execution normally', async () => {
+    const startSpy = jest.spyOn(engine, '_startExecution').mockResolvedValue(undefined);
+    const workflow = {
+      id: 'wf-hook-3', name: 'Webhook workflow (gated, passing)',
+      trigger: { type: 'inbound_webhook', conditions: [{ field: 'stage', operator: 'equals', value: 'new' }] },
+      steps: [{ id: 's1', type: 'end', config: {} }],
+    };
+    const context = { leadId: 'lead_3', phone: '9000000002', stage: 'new' };
+
+    await engine.runWorkflowDirect(CID, workflow, context);
+
+    expect(startSpy).toHaveBeenCalledWith(CID, workflow, context, 'inbound_webhook');
+    startSpy.mockRestore();
+  });
+});
+
+// ─── _evalConditions() — 'tags' field (array-shaped) vs. scalar fields ───────
+// tags is the one condition field whose ctx value is an array (see _ctxField()),
+// so equals/not_equals/not_exists need array-aware handling instead of the plain
+// identity/undefined checks that are correct for every scalar field.
+describe("AutomationEngine — _evalConditions() 'tags' field handling", () => {
+  test('equals matches via array membership, not array-vs-string identity', () => {
+    expect(engine._evalConditions([{ field: 'tags', operator: 'equals', value: 'vip' }], { tags: ['vip', 'hot'] })).toBe(true);
+    expect(engine._evalConditions([{ field: 'tags', operator: 'equals', value: 'cold' }], { tags: ['vip', 'hot'] })).toBe(false);
+  });
+
+  test('not_equals is the negation of array membership', () => {
+    expect(engine._evalConditions([{ field: 'tags', operator: 'not_equals', value: 'cold' }], { tags: ['vip', 'hot'] })).toBe(true);
+    expect(engine._evalConditions([{ field: 'tags', operator: 'not_equals', value: 'vip' }], { tags: ['vip', 'hot'] })).toBe(false);
+  });
+
+  test('equals/not_equals stay strict-identity for scalar fields (unchanged)', () => {
+    expect(engine._evalConditions([{ field: 'stage', operator: 'equals', value: 'new' }], { stage: 'new' })).toBe(true);
+    expect(engine._evalConditions([{ field: 'stage', operator: 'equals', value: 'new' }], { stage: 'won' })).toBe(false);
+    expect(engine._evalConditions([{ field: 'source', operator: 'not_equals', value: 'ivr' }], { source: 'website' })).toBe(true);
+  });
+
+  test('not_exists treats an empty tags array the same as no tags at all', () => {
+    expect(engine._evalConditions([{ field: 'tags', operator: 'not_exists' }], { tags: [] })).toBe(true);
+    expect(engine._evalConditions([{ field: 'tags', operator: 'not_exists' }], {})).toBe(true); // ctx.tags undefined
+    expect(engine._evalConditions([{ field: 'tags', operator: 'not_exists' }], { tags: ['vip'] })).toBe(false);
+  });
 });
 
 describe('AutomationEngine — _matchesKeywordConfig() unit cases', () => {
