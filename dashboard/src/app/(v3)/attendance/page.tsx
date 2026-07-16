@@ -96,6 +96,20 @@ function pctColor(pct: number) {
 function fmtDate(iso: string) {
   return new Date(iso + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
 }
+function fmtTime(hhmm: string) {
+  const [h, m] = hhmm.split(':').map(Number);
+  return new Date(2000, 0, 1, h, m).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
+}
+function approvedLeaveDates(leaves: LeaveRequest[]): Set<string> {
+  const out = new Set<string>();
+  for (const leave of leaves) {
+    if (leave.status !== 'approved') continue;
+    for (let d = new Date(leave.startDate + 'T00:00:00'); d <= new Date(leave.endDate + 'T00:00:00'); d.setDate(d.getDate() + 1)) {
+      out.add(d.toISOString().slice(0, 10));
+    }
+  }
+  return out;
+}
 
 // ── Month nav ─────────────────────────────────────────────────────────────────
 
@@ -118,7 +132,7 @@ function MonthNav({ month, onChange }: { month: string; onChange: (m: string) =>
 
 // ── Calendar heat-map ──────────────────────────────────────────────────────────
 
-function CalendarHeatmap({ month, presentDates }: { month: string; presentDates: Set<string> }) {
+function CalendarHeatmap({ month, presentDates, leaveDates }: { month: string; presentDates: Set<string>; leaveDates?: Set<string> }) {
   const days = buildDays(month);
   const today = new Date().toISOString().slice(0, 10);
   // Start weekday (0=Sun)
@@ -134,16 +148,18 @@ function CalendarHeatmap({ month, presentDates }: { month: string; presentDates:
       {cells.map((date, i) => {
         if (!date) return <div key={`empty-${i}`} />;
         const present = presentDates.has(date);
+        const onLeave = !present && (leaveDates?.has(date) ?? false);
         const future  = date > today;
         const isToday = date === today;
         return (
           <div
             key={date}
-            title={date}
+            title={`${date}${future ? '' : onLeave ? ' — On leave' : present ? ' — Present' : ' — Absent'}`}
             className={cn(
               'aspect-square rounded flex items-center justify-center text-[9px] font-medium',
               future  ? 'text-neutral-200 dark:text-neutral-800' :
               present ? 'bg-success-100 text-success-700 dark:bg-success-900/30 dark:text-success-400' :
+              onLeave ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-400' :
                         'bg-neutral-100 text-neutral-400 dark:bg-neutral-800',
               isToday && 'ring-1 ring-primary-600',
             )}
@@ -152,6 +168,16 @@ function CalendarHeatmap({ month, presentDates }: { month: string; presentDates:
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function CalendarLegend() {
+  return (
+    <div className="mt-3 flex items-center gap-4 text-[11px] text-neutral-500">
+      <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-success-100 dark:bg-success-900/30" /> Present</span>
+      <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-primary-100 dark:bg-primary-900/30" /> On leave</span>
+      <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-neutral-100 dark:bg-neutral-800" /> Absent</span>
     </div>
   );
 }
@@ -243,11 +269,12 @@ function EmployeeAttendanceView() {
 
   const presentDates = new Set((data?.records ?? []).map((r) => r.date));
   const myLeaves = leavesData?.leaves ?? [];
+  const leaveDates = approvedLeaveDates(myLeaves);
 
   return (
     <div className="space-y-5">
       {/* KPI row */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
         {[
           { label: 'Days Present',  value: isLoading ? '…' : String(data?.daysPresent ?? 0) },
           { label: 'Days in Month', value: isLoading ? '…' : String(data?.daysInMonth ?? 0) },
@@ -268,7 +295,10 @@ function EmployeeAttendanceView() {
         </div>
         <div className="p-4">
           {isLoading ? <Skeleton className="h-40 w-full" /> : (
-            <CalendarHeatmap month={month} presentDates={presentDates} />
+            <>
+              <CalendarHeatmap month={month} presentDates={presentDates} leaveDates={leaveDates} />
+              <CalendarLegend />
+            </>
           )}
         </div>
       </Card>
@@ -394,6 +424,8 @@ function AdminAttendanceView() {
 
   const detailPresentDates = new Set((detailData?.records ?? []).map((r) => r.date));
   const leaves = leavesData?.leaves ?? [];
+  const detailLeaveDates = approvedLeaveDates(leaves.filter((l) => l.userId === selectedUser));
+  const selectedAvgCheckIn = selectedUser ? summaryMap[selectedUser]?.avgCheckIn : null;
 
   const exportCSV = () => {
     const rows = [['Name', 'Email', 'Days Present', 'Days in Month', 'Attendance %']];
@@ -411,10 +443,10 @@ function AdminAttendanceView() {
   return (
     <div className="space-y-5">
       {/* KPI row */}
-      <div className="grid grid-cols-3 gap-3">
-        <Card><p className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">{filtered.length}</p><p className="text-xs text-neutral-500 mt-0.5">Team size</p></Card>
-        <Card><p className={cn('text-2xl font-bold', pctColor(avgPct))}>{avgPct}%</p><p className="text-xs text-neutral-500 mt-0.5">Avg attendance</p></Card>
-        <Card><p className="text-2xl font-bold text-success-600">{fullAttendance}</p><p className="text-xs text-neutral-500 mt-0.5">Perfect attendance</p></Card>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <Card><p className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">{isLoading ? '…' : filtered.length}</p><p className="text-xs text-neutral-500 mt-0.5">Team size</p></Card>
+        <Card><p className={cn('text-2xl font-bold', isLoading ? 'text-neutral-900 dark:text-neutral-100' : pctColor(avgPct))}>{isLoading ? '…' : `${avgPct}%`}</p><p className="text-xs text-neutral-500 mt-0.5">Avg attendance</p></Card>
+        <Card><p className="text-2xl font-bold text-success-600">{isLoading ? '…' : fullAttendance}</p><p className="text-xs text-neutral-500 mt-0.5">Perfect attendance</p></Card>
       </div>
 
       {/* Team table */}
@@ -465,6 +497,7 @@ function AdminAttendanceView() {
                   <div className="text-right">
                     <p className={cn('text-sm font-bold tabular-nums', pctColor(e.attendancePct))}>{e.attendancePct}%</p>
                     <p className="text-[10px] text-neutral-400">{e.daysPresent}/{e.daysInMonth} days</p>
+                    {e.avgCheckIn && <p className="text-[10px] text-neutral-400">Avg in {fmtTime(e.avgCheckIn)}</p>}
                   </div>
                 </li>
               );
@@ -477,8 +510,10 @@ function AdminAttendanceView() {
           <div className="border-t border-neutral-100 p-4 dark:border-neutral-800">
             <p className="mb-3 text-xs font-semibold text-neutral-500">
               Detail: {empMap[selectedUser]?.name ?? selectedUser}
+              {selectedAvgCheckIn && ` · Avg check-in ${fmtTime(selectedAvgCheckIn)}`}
             </p>
-            <CalendarHeatmap month={month} presentDates={detailPresentDates} />
+            <CalendarHeatmap month={month} presentDates={detailPresentDates} leaveDates={detailLeaveDates} />
+            <CalendarLegend />
           </div>
         )}
       </Card>
@@ -582,7 +617,7 @@ export default function AttendancePage() {
         <h1 className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">Attendance</h1>
       </div>
       <div className="scrollbar-thin flex-1 overflow-y-auto p-6">
-        <div className="mx-auto max-w-3xl">
+        <div className="mx-auto max-w-4xl">
           {isAdmin ? <AdminAttendanceView /> : <EmployeeAttendanceView />}
         </div>
       </div>
