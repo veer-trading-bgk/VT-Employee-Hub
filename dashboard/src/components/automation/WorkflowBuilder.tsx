@@ -5,12 +5,17 @@ import {
   Zap, Hash, Webhook, Copy, RefreshCw, X, Plus, FileText, Bot,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/cn';
 import { useAuth } from '@/context/AuthContext';
-import { API_URL } from '@/lib/api';
+import { API_URL, apiFetch } from '@/lib/api';
+import { usePipelineStages } from '@/hooks/usePipelineStages';
+import { useEmployeesList } from '@/hooks/useEmployeesList';
+import { useTagCatalog } from '@/hooks/useTagCatalog';
 import {
   type WorkflowTrigger, type WorkflowStep, type ActionType,
   type TriggerType, type KeywordMatchMode, type KeywordTriggerConfig,
+  type WorkflowCondition,
   TRIGGER_META,
 } from '@/types/automations';
 import { inputCls, selectCls } from './ActionEditor';
@@ -55,6 +60,34 @@ export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: Work
     'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added', 'keyword_message', 'inbound_webhook', 'form_submitted',
   ];
 
+  // Only the two heavier picker fetches below are gated behind `enabled`.
+  // usePipelineStages()/useTagCatalog() have no `enabled` param in their hook
+  // signatures — they're cheap, single-item reads already shared (same query
+  // keys) with other parts of this page tree, so gating them would mean
+  // widening two hooks used by many other callers just for this. Employees
+  // and crm-analytics are heavier (the latter runs two full-table scans), so
+  // those two actually fetch only when a condition row needs that field —
+  // mirrors ActionEditor.tsx's per-action-type `enabled` gating.
+  const hasAssignedToCondition = trigger.conditions.some((c) => c.field === 'assignedTo');
+  const hasSourceCondition     = trigger.conditions.some((c) => c.field === 'source');
+
+  const { stages: pipelineStages } = usePipelineStages();
+  const { tags: tagCatalog } = useTagCatalog();
+  const { employees } = useEmployeesList({ enabled: hasAssignedToCondition });
+  // No fixed 'source' enum exists anywhere in the codebase — src/routes/*.js sets it to
+  // whatever a given entry point hardcodes ('whatsapp', 'inbound_webhook', 'meta_lead_ads', …)
+  // and the two frontend SOURCE_OPTIONS lists (NewContactDrawer.tsx, CrmTab.tsx) are manual-entry
+  // conveniences that disagree with each other and don't cover automation-set values — neither is
+  // authoritative. Reusing GET /api/crm/crm-analytics's per-company `bySource` breakdown (no new
+  // backend route) for the real distinct values actually seen on this company's leads instead.
+  const { data: sourceAnalytics } = useQuery<{ bySource?: Array<{ source: string; count: number }> }>({
+    queryKey: ['crm-analytics'],
+    queryFn:  () => apiFetch('/api/crm/crm-analytics'),
+    staleTime: 5 * 60_000,
+    enabled:  hasSourceCondition,
+  });
+  const sourceValues = (sourceAnalytics?.bySource ?? []).map((b) => b.source).filter(Boolean);
+
   function addCondition() {
     onChange({ ...trigger, conditions: [...trigger.conditions, { field: 'stage', operator: 'equals', value: '' }] });
   }
@@ -68,6 +101,63 @@ export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: Work
   function updateCondition(i: number, patch: Partial<WorkflowTrigger['conditions'][0]>) {
     const next = trigger.conditions.map((c, idx) => idx === i ? { ...c, ...patch } : c);
     onChange({ ...trigger, conditions: next });
+  }
+
+  // Value control per condition field — stores the underlying key/id (comparable
+  // to what AutomationEngine.js's _ctxField() actually resolves at evaluation
+  // time), displays the human label. 'source' has no backend-enforced enum (see
+  // the sourceValues comment above), so it stays a free-text input with a
+  // native <datalist> of real, per-company values as suggestions rather than a
+  // closed <select> — an admin can still type a source value this company
+  // hasn't produced yet, matching the fact that the field itself isn't validated
+  // against a fixed list anywhere on the backend either.
+  function conditionValueControl(c: WorkflowCondition, i: number) {
+    const onValueChange = (value: string) => updateCondition(i, { value });
+
+    if (c.field === 'stage' || c.field === 'from_stage' || c.field === 'to_stage') {
+      return (
+        <select value={c.value ?? ''} onChange={(e) => onValueChange(e.target.value)} className={cn(selectCls, 'flex-1')}>
+          <option value="">Select stage…</option>
+          {pipelineStages.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+        </select>
+      );
+    }
+    if (c.field === 'assignedTo') {
+      return (
+        <select value={c.value ?? ''} onChange={(e) => onValueChange(e.target.value)} className={cn(selectCls, 'flex-1')}>
+          <option value="">Select employee…</option>
+          {employees.map((emp) => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
+        </select>
+      );
+    }
+    if (c.field === 'tags') {
+      return (
+        <select value={c.value ?? ''} onChange={(e) => onValueChange(e.target.value)} className={cn(selectCls, 'flex-1')}>
+          <option value="">Select tag…</option>
+          {tagCatalog.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+        </select>
+      );
+    }
+    if (c.field === 'source') {
+      const listId = `condition-source-options-${i}`;
+      return (
+        <>
+          <input
+            list={listId}
+            value={c.value ?? ''}
+            onChange={(e) => onValueChange(e.target.value)}
+            placeholder="e.g. whatsapp"
+            className={cn(inputCls, 'flex-1')}
+          />
+          <datalist id={listId}>
+            {sourceValues.map((s) => <option key={s} value={s} />)}
+          </datalist>
+        </>
+      );
+    }
+    return (
+      <input value={c.value ?? ''} onChange={(e) => onValueChange(e.target.value)} placeholder="value" className={cn(inputCls, 'flex-1')} />
+    );
   }
 
   return (
@@ -129,14 +219,7 @@ export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: Work
                 <option value="exists">exists</option>
                 <option value="not_exists">not exists</option>
               </select>
-              {!['exists', 'not_exists'].includes(c.operator) && (
-                <input
-                  value={c.value ?? ''}
-                  onChange={(e) => updateCondition(i, { value: e.target.value })}
-                  placeholder="value"
-                  className={cn(inputCls, 'flex-1')}
-                />
-              )}
+              {!['exists', 'not_exists'].includes(c.operator) && conditionValueControl(c, i)}
               <button onClick={() => removeCondition(i)} className="shrink-0 rounded p-1 text-neutral-400 hover:text-error-500">
                 <X className="h-3.5 w-3.5" />
               </button>
