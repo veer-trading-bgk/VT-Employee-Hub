@@ -9,6 +9,14 @@ export interface PipelineStage {
   label: string;
   color: string;
   order: number;
+  // Stage 3 (2026-07-17 360° audit) — opt-in, mutually exclusive per stage,
+  // configured via the Pipeline Stage Manager. Omitted (not false) on any
+  // stage that hasn't been explicitly marked, including every FALLBACK_STAGES
+  // entry below — no stage is auto-classified. Replaces hardcoded stage-name
+  // matching (e.g. 'lost', 'demat_done') across the KPI header, team view,
+  // journeyInference.ts, and the backend's isClosedLead()/convertedAt logic.
+  isWon?: boolean;
+  isLost?: boolean;
 }
 
 // Exact client-side mirror of src/services/PipelineService.js's DEFAULT_STAGES —

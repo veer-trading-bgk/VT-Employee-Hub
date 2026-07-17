@@ -136,10 +136,19 @@ function exportCSV(contacts: Contact[], stages: PipelineStage[]) {
 // ── KPI Header ────────────────────────────────────────────────────────────────
 
 function KPIHeader({ contacts, stages }: { contacts: Contact[]; stages: PipelineStage[] }) {
+  // Flag-based (Stage 3, 2026-07-17 360° audit) — replaces the previous
+  // hardcoded 'demat_done'/'lost' key matches, which silently produced wrong
+  // KPIs (Converted/Win Rate stuck at 0) for any company whose real pipeline
+  // doesn't use those exact keys (confirmed live for viir_trading during the
+  // audit). isWon/isLost are opt-in per stage via the Pipeline Stage
+  // Manager — a company that hasn't configured them sees 0 Converted/0 Lost
+  // here, same as today's un-configured state, until an admin marks their
+  // own Won/Lost stage(s).
+  const stageFlags = new Map(stages.map((s) => [s.key, { isWon: !!s.isWon, isLost: !!s.isLost }]));
   const total       = contacts.length;
-  const active      = contacts.filter((c) => c.stage !== 'lost').length;
-  const converted   = contacts.filter((c) => c.stage === 'demat_done').length;
-  const lost        = contacts.filter((c) => c.stage === 'lost').length;
+  const active      = contacts.filter((c) => !stageFlags.get(c.stage)?.isLost).length;
+  const converted   = contacts.filter((c) => stageFlags.get(c.stage)?.isWon).length;
+  const lost        = contacts.filter((c) => stageFlags.get(c.stage)?.isLost).length;
   const winBase     = converted + lost;
   const winRate     = winBase > 0 ? Math.round((converted / winBase) * 100) : 0;
   // priorityTier is LeadScoringScheduler's persisted, company-wide computed value —
@@ -152,7 +161,7 @@ function KPIHeader({ contacts, stages }: { contacts: Contact[]; stages: Pipeline
     { label: 'Total Leads', value: total,         sub: 'in pipeline',         color: 'text-neutral-900 dark:text-neutral-100' },
     { label: 'Active',      value: active,         sub: `${total ? Math.round((active/total)*100) : 0}% of total`, color: 'text-primary-600 dark:text-primary-400' },
     { label: 'Hot Leads',   value: hot,            sub: 'Priority score ≥70', color: 'text-amber-600 dark:text-amber-400' },
-    { label: 'Converted',   value: converted,      sub: 'Demat Done',          color: 'text-green-600 dark:text-green-400' },
+    { label: 'Converted',   value: converted,      sub: 'Marked as Won',       color: 'text-green-600 dark:text-green-400' },
     { label: 'Win Rate',    value: `${winRate}%`,  sub: `${lost} lost`,        color: winRate >= 20 ? 'text-green-600 dark:text-green-400' : 'text-neutral-700 dark:text-neutral-300' },
   ];
 
@@ -609,8 +618,11 @@ function TeamPipelineView({
       {},
     );
     const total = mine.length;
-    const converted = stageCounts['demat_done'] ?? 0;
-    const lost = stageCounts['lost'] ?? 0;
+    // Flag-based (Stage 3, 2026-07-17 360° audit) — sums stageCounts entries
+    // for whichever stage(s) are marked isWon/isLost, replacing the previous
+    // hardcoded 'demat_done'/'lost' key lookups.
+    const converted = stages.filter((s) => s.isWon).reduce((sum, s) => sum + (stageCounts[s.key] ?? 0), 0);
+    const lost = stages.filter((s) => s.isLost).reduce((sum, s) => sum + (stageCounts[s.key] ?? 0), 0);
     const winBase = converted + lost;
     const winRate = winBase > 0 ? Math.round((converted / winBase) * 100) : 0;
     return { emp, stageCounts, total, winRate };
@@ -1087,6 +1099,23 @@ function ManagePipelineDrawer({
     setStages((p) => p.map((s, idx) => idx === i ? { ...s, color } : s));
   }
 
+  // Stage 3 (2026-07-17 360° audit) — mutually exclusive by construction
+  // (setting one always clears the other in the same update), replacing the
+  // hardcoded stage-name matching that previously drove Converted/Lost/Win
+  // Rate KPIs and the convertedAt stamp. Confirmed live during the audit:
+  // viir_trading's real pipeline (new_lead, contacted, qualified, demat,
+  // active_clients, webinar, mutual_funds, insurance, churned) has no
+  // 'demat_done'/'lost'-keyed stages at all, so those KPIs read 0 despite
+  // real converted/lost leads existing — this control is how an admin fixes
+  // that for their own pipeline (e.g. active_clients → Won, churned → Lost),
+  // a manual one-time step this save button performs, not something any
+  // migration sets automatically.
+  function setOutcome(i: number, outcome: 'none' | 'won' | 'lost') {
+    setStages((p) => p.map((s, idx) => idx === i
+      ? { ...s, isWon: outcome === 'won', isLost: outcome === 'lost' }
+      : s));
+  }
+
   function remove(i: number) {
     setStages((p) => p.filter((_, idx) => idx !== i));
   }
@@ -1157,6 +1186,20 @@ function ManagePipelineDrawer({
               placeholder="Stage name"
             />
 
+            {/* Won/Lost outcome — mutually exclusive, drives Converted/Lost/
+                Win Rate KPIs and the automatic convertedAt stamp */}
+            <select
+              value={s.isWon ? 'won' : s.isLost ? 'lost' : 'none'}
+              onChange={(e) => setOutcome(i, e.target.value as 'none' | 'won' | 'lost')}
+              className={cn(selectCls, 'w-20 shrink-0')}
+              title="Mark this stage's outcome"
+              aria-label={`Outcome for ${s.label || 'stage'}`}
+            >
+              <option value="none">None</option>
+              <option value="won">Won</option>
+              <option value="lost">Lost</option>
+            </select>
+
             {/* Move up */}
             <button
               type="button"
@@ -1205,7 +1248,7 @@ function ManagePipelineDrawer({
         </button>
 
         <p className="text-xs text-neutral-400 mt-1">
-          Click the colored circle to change a stage color. Stages with active leads cannot be deleted — move leads first.
+          Click the colored circle to change a stage color. Mark a stage Won or Lost to include it in the Converted/Lost KPIs and Win Rate — a stage can be one, the other, or neither. Stages with active leads cannot be deleted — move leads first.
         </p>
       </div>
     </Drawer>

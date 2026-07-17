@@ -26,7 +26,11 @@ const { runDueLeadScoring } = require('../src/services/LeadScoringScheduler');
 const STAGES = [
   { key: 'new_lead', label: 'New Lead', color: '#000', order: 0 },
   { key: 'interested', label: 'Interested', color: '#000', order: 1 },
-  { key: 'lost', label: 'Lost', color: '#000', order: 2 },
+  // Stage 3 (2026-07-17 360° audit): isClosedLead() is flag-based now — this
+  // 'lost' entry carries isLost: true deliberately so the sweep-behavior
+  // tests below still exercise "closed leads get excluded," just via the
+  // flag rather than the old hardcoded key/wonAt check.
+  { key: 'lost', label: 'Lost', color: '#000', order: 2, isLost: true },
 ];
 
 function mockCursor(lastRunAt) {
@@ -85,7 +89,11 @@ describe('LeadScoringScheduler.runDueLeadScoring — throttle', () => {
 describe('LeadScoringScheduler.runDueLeadScoring — sweep behavior', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  test('excludes closed leads (lost stage, wonAt set) from scoring', async () => {
+  // Stage 3 (2026-07-17 360° audit): isClosedLead() is flag-based now.
+  // wonAt no longer has any effect at all (it's never read) — lead #2 below
+  // deliberately carries a truthy wonAt to prove that. Only lead #1 (whose
+  // stage carries isLost: true in STAGES) is actually excluded.
+  test('excludes only flag-closed leads from scoring; a truthy wonAt no longer has any effect', async () => {
     mockCursor(undefined);
     mockScanPages([
       { PK: 'LEAD#acme#1', SK: 'METADATA', companyId: 'acme', stage: 'lost' },
@@ -99,12 +107,38 @@ describe('LeadScoringScheduler.runDueLeadScoring — sweep behavior', () => {
     const result = await runDueLeadScoring();
 
     expect(result.scannedCount).toBe(3);
-    expect(result.eligibleCount).toBe(1);
-    expect(result.scoredCount).toBe(1);
-    expect(dynamodb.update).toHaveBeenCalledTimes(1);
+    expect(result.eligibleCount).toBe(2);
+    expect(result.scoredCount).toBe(2);
+    expect(dynamodb.update).toHaveBeenCalledTimes(2);
+    expect(dynamodb.update).not.toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: 'LEAD#acme#1', SK: 'METADATA' },
+    }));
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: 'LEAD#acme#2', SK: 'METADATA' },
+    }));
     expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
       Key: { PK: 'LEAD#acme#3', SK: 'METADATA' },
     }));
+  });
+
+  // A company (or a fresh/default pipeline) with no isWon/isLost configured
+  // anywhere closes NO leads at all — the deliberate "no auto-classification"
+  // design this stage introduces, not a regression.
+  test('a company with no isWon/isLost flags configured on any stage scores EVERY lead, including ones in the "lost"-keyed stage', async () => {
+    const UNFLAGGED_STAGES = STAGES.map((s) => { const { isLost, ...rest } = s; void isLost; return rest; });
+    mockCursor(undefined);
+    mockScanPages([
+      { PK: 'LEAD#acme#1', SK: 'METADATA', companyId: 'acme', stage: 'lost' },
+      { PK: 'LEAD#acme#2', SK: 'METADATA', companyId: 'acme', stage: 'interested' },
+    ]);
+    PipelineService.getPipelineStages.mockResolvedValue(UNFLAGGED_STAGES);
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    const result = await runDueLeadScoring();
+
+    expect(result.eligibleCount).toBe(2);
+    expect(result.scoredCount).toBe(2);
   });
 
   test('writes priorityScore/priorityTier/priorityScoreBreakdown/priorityScoreUpdatedAt for each open lead', async () => {

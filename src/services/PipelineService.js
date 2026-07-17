@@ -18,8 +18,18 @@ const DEFAULT_STAGES = [
 /**
  * Fetch the company's CRM pipeline stages, falling back to DEFAULT_STAGES
  * when the company hasn't customized their pipeline (or on read failure).
+ *
+ * A stage's `isWon`/`isLost` flags (Stage 3, 2026-07-17 360° audit) are
+ * additive and optional — omitted entirely on any stage that hasn't been
+ * explicitly marked via the Pipeline Stage Manager, including every entry
+ * in DEFAULT_STAGES below. No stage is auto-classified: a company (or a
+ * fresh/default pipeline) with no flags configured has zero Won/Lost
+ * stages until an admin sets them, by design — see crm.js's PUT /pipeline
+ * and every isWon/isLost reader (LeadScoringService.isClosedLead,
+ * crm.js's convertedAt branch, the Sales KPI header/team view,
+ * journeyInference.ts).
  * @param {string} companyId
- * @returns {Promise<Array<{key: string, label: string, color: string, order: number}>>}
+ * @returns {Promise<Array<{key: string, label: string, color: string, order: number, isWon?: boolean, isLost?: boolean}>>}
  */
 async function getPipelineStages(companyId) {
   try {

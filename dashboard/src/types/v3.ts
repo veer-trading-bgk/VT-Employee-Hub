@@ -41,14 +41,14 @@ export const V3_ROLE_LABELS: Record<V3Role, string> = {
   support: 'Support',
 };
 
-// APForce pipeline stages
-export type Stage =
-  | 'new_lead'
-  | 'contacted'
-  | 'interested'
-  | 'kyc_done'
-  | 'demat_done'
-  | 'lost';
+// APForce pipeline stages — widened to a plain string (Stage 3, 2026-07-17
+// 360° audit): the real stage keys are company-configured via the Pipeline
+// Stage Manager (PipelineService.getPipelineStages()) and were never
+// actually limited to these six defaults; the closed literal union just
+// couldn't express that. STAGE_LABELS below still only has entries for the
+// six defaults — a company's own configured labels (usePipelineStages())
+// remain the real source of truth for display; this map is a fallback.
+export type Stage = string;
 
 export const STAGE_LABELS: Record<Stage, string> = {
   new_lead:    'New Lead',

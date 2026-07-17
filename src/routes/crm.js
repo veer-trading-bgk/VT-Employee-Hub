@@ -95,6 +95,13 @@ router.put('/pipeline', authMiddleware, checkRole(['admin']), rateLimit(20, 60_0
     }
     for (const s of stages) {
       if (!s.key || !s.label) return res.status(400).json({ error: 'each stage needs key and label' });
+      // isWon/isLost (Stage 3, 2026-07-17 360° audit) are mutually exclusive —
+      // a stage can be one, the other, or neither, never both. Enforced here
+      // too, not just in the Pipeline Stage Manager UI, since this route is
+      // the actual trust boundary.
+      if (s.isWon && s.isLost) {
+        return res.status(400).json({ error: `Stage "${s.label}" cannot be marked both Won and Lost` });
+      }
     }
 
     // Block deleting a stage that still has leads
@@ -115,7 +122,15 @@ router.put('/pipeline', authMiddleware, checkRole(['admin']), rateLimit(20, 60_0
       Item: {
         PK: `CONFIG#CRM#${req.user.companyId}`,
         SK: 'PIPELINE',
-        stages: stages.map((s, i) => ({ key: s.key, label: s.label, color: s.color ?? '#64748b', order: i })),
+        // isWon/isLost only stored when explicitly true — an admin who never
+        // touches the Won/Lost control gets a stage identical in shape to
+        // today's (key/label/color/order only), not a stray `isWon: false`
+        // on every stage.
+        stages: stages.map((s, i) => ({
+          key: s.key, label: s.label, color: s.color ?? '#64748b', order: i,
+          ...(s.isWon && { isWon: true }),
+          ...(s.isLost && { isLost: true }),
+        })),
         updatedAt: new Date().toISOString(),
       },
     }).promise();
@@ -509,7 +524,14 @@ router.put('/leads/:id/stage', authMiddleware, rateLimit(20, 60_000), async (req
     if (!stage) return res.status(400).json({ error: 'stage required' });
 
     const companyId = req.user.companyId;
-    if (!(await isValidStage(companyId, stage))) {
+    // Replaces isValidStage(companyId, stage) — that helper only returns a
+    // boolean, discarding the matched stage object, but the convertedAt
+    // branch below (Stage 3, 2026-07-17 360° audit) needs that object's
+    // isWon flag. One fetch covers both the validity check and the flag
+    // lookup, rather than fetching the pipeline twice.
+    const pipelineStages = await getPipelineStages(companyId);
+    const targetStage = pipelineStages.find((s) => s.key === stage);
+    if (!targetStage) {
       return res.status(400).json({ error: 'Invalid stage key' });
     }
 
@@ -534,7 +556,22 @@ router.put('/leads/:id/stage', authMiddleware, rateLimit(20, 60_000), async (req
     const updateVals = { ':stage': stage, ':ua': now, ':sca': now };
     let updateExpr = 'SET #stage = :stage, #ua = :ua, #sca = :sca';
 
-    if (stage === 'converted') {
+    // convertedAt fires when the NEW stage is flagged isWon (Stage 3,
+    // 2026-07-17 360° audit) — replaces the old `stage === 'converted'`
+    // literal-key match, which only ever fired for a company that happened
+    // to name a stage exactly "converted" (no such key exists in the
+    // documented default pipeline, so this branch was dead in practice for
+    // every company on the default six stages). isWon is opt-in per company
+    // via the Pipeline Stage Manager; an unconfigured pipeline never
+    // triggers this, matching every other isWon/isLost reader.
+    // Gated on an actual transition (lead.stage !== stage), same as the
+    // auto-metric-credit block below — without this, a repeat/idempotent
+    // PUT into an already-Won stage would silently reset convertedAt to
+    // "now" and corrupt convertedToday/convertedThisMonth stats. The old
+    // literal-key check had this same gap, but it was unreachable since no
+    // company ever named a stage "converted"; isWon being a real opt-in
+    // flag makes the gap reachable in practice, so it must be closed here.
+    if (targetStage.isWon && lead.stage !== stage) {
       updateExpr += ', #ca = :ca';
       updateAttrs['#ca'] = 'convertedAt';
       updateVals[':ca'] = now;

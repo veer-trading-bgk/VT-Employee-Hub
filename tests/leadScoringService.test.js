@@ -15,21 +15,52 @@ const now = () => new Date().toISOString();
 const daysAgo = (n) => new Date(Date.now() - n * 24 * 60 * 60 * 1000).toISOString();
 const daysAhead = (n) => new Date(Date.now() + n * 24 * 60 * 60 * 1000).toISOString();
 
+// Stage 3 (2026-07-17 360° audit) — isClosedLead() is now flag-based against
+// the company's real pipeline, replacing the old
+// `stage === 'lost' || Boolean(lead.wonAt)` hardcoded check. STAGES (above)
+// carries no isWon/isLost flags at all — matching an unconfigured/default
+// pipeline exactly — so these tests use their own locally-flagged stage
+// lists to exercise the flag-based behavior deliberately, rather than
+// silently relying on STAGES ever gaining a flag.
 describe('LeadScoringService.isClosedLead', () => {
-  test('true for a lead in the "lost" stage', () => {
-    expect(isClosedLead({ stage: 'lost' })).toBe(true);
+  const FLAGGED_STAGES = [
+    { key: 'new_lead', label: 'New Lead', color: '#000', order: 0 },
+    { key: 'interested', label: 'Interested', color: '#000', order: 1 },
+    { key: 'demat_done', label: 'Demat Done', color: '#000', order: 2, isWon: true },
+    { key: 'lost', label: 'Lost', color: '#000', order: 3, isLost: true },
+  ];
+
+  test('true for a lead whose stage is flagged isLost', () => {
+    expect(isClosedLead({ stage: 'lost' }, FLAGGED_STAGES)).toBe(true);
   });
 
-  test('true for a lead with wonAt set, regardless of stage', () => {
-    expect(isClosedLead({ stage: 'demat_done', wonAt: now() })).toBe(true);
+  test('true for a lead whose stage is flagged isWon', () => {
+    expect(isClosedLead({ stage: 'demat_done' }, FLAGGED_STAGES)).toBe(true);
   });
 
-  test('false for an open lead', () => {
-    expect(isClosedLead({ stage: 'interested' })).toBe(false);
+  test('false for an open lead (stage has neither flag)', () => {
+    expect(isClosedLead({ stage: 'interested' }, FLAGGED_STAGES)).toBe(false);
   });
 
   test('false for a lead with no stage at all (defensive default)', () => {
-    expect(isClosedLead({})).toBe(false);
+    expect(isClosedLead({}, FLAGGED_STAGES)).toBe(false);
+  });
+
+  test('wonAt no longer has any effect — a truthy wonAt on an unflagged stage does NOT close the lead', () => {
+    expect(isClosedLead({ stage: 'interested', wonAt: now() }, FLAGGED_STAGES)).toBe(false);
+  });
+
+  // The deliberate behavior change this stage introduces: a company (or a
+  // fresh/default pipeline) with NO isWon/isLost configured anywhere closes
+  // NO leads at all — not a regression, the documented "no auto-
+  // classification" design (Pipeline Stage Manager configuration required).
+  test('a lead in the literally-"lost"-keyed stage is NOT closed when no flags are configured (unconfigured pipeline)', () => {
+    expect(isClosedLead({ stage: 'lost' }, STAGES)).toBe(false);
+  });
+
+  test('missing/undefined stages array fails open (never closes a lead) rather than throwing', () => {
+    expect(isClosedLead({ stage: 'lost' })).toBe(false);
+    expect(() => isClosedLead({ stage: 'lost' }, undefined)).not.toThrow();
   });
 });
 

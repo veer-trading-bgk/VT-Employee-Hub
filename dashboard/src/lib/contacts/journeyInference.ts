@@ -47,20 +47,44 @@ type ContactForJourney = Pick<
  * or Won, regardless of which stage it was in before being marked lost —
  * this codebase has no signal for "how far had it gotten," and crediting
  * progress for a dead deal would overstate it.
+ *
+ * Stage 3 (2026-07-17 360° audit): "lost" identification itself is now
+ * flag-based (`stage.isLost`) instead of a hardcoded key match. A stage's
+ * `isLost` flag is opt-in per company (Pipeline Stage Manager); until
+ * configured, no stage is excluded here, including a literally
+ * `'lost'`-keyed stage.
+ *
+ * Stage 3 continued (2026-07-17, adversarial-review follow-up): Won
+ * detection is ALSO now flag-based once a company has configured any
+ * stage's `isWon` — it no longer assumes the highest-order non-lost stage
+ * is the won one. Without this, the Sales KPI header (already purely
+ * flag-based) and this journey timeline could visibly disagree: e.g.
+ * viir_trading's real pipeline has `active_clients` at order 4 but
+ * `insurance` at order 7 as the highest non-lost stage once `churned` is
+ * flagged `isLost` — a converted customer sitting in `active_clients`
+ * would show `reachedWon: false` here while the KPI header correctly
+ * counted them as Converted. The order heuristic remains the fallback for
+ * an unconfigured pipeline (no stage has `isWon` set anywhere), where
+ * there is no flag signal to defer to.
  */
 function pipelineProgress(stage: string, stages: PipelineStage[]): { reachedProposal: boolean; reachedWon: boolean } {
-  if (!stage || stage === 'lost') return { reachedProposal: false, reachedWon: false };
+  if (!stage) return { reachedProposal: false, reachedWon: false };
+  const currentStageObj = stages.find((s) => s.key === stage);
+  if (currentStageObj?.isLost) return { reachedProposal: false, reachedWon: false };
 
-  const positiveStages = stages.filter((s) => s.key !== 'lost');
+  const positiveStages = stages.filter((s) => !s.isLost);
   if (positiveStages.length === 0) return { reachedProposal: false, reachedWon: false };
 
   const maxOrder = Math.max(...positiveStages.map((s) => s.order));
   const current = positiveStages.find((s) => s.key === stage);
   if (!current) return { reachedProposal: false, reachedWon: false };
 
+  const anyStageConfiguredWon = stages.some((s) => s.isWon);
+  const reachedWon = anyStageConfiguredWon ? Boolean(current.isWon) : current.order >= maxOrder;
+
   return {
     reachedProposal: current.order >= maxOrder - 1,
-    reachedWon: current.order >= maxOrder,
+    reachedWon,
   };
 }
 

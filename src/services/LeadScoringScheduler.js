@@ -61,7 +61,7 @@ async function runDueLeadScoring() {
   do {
     const scan = await dynamodb.scan({
       TableName: TABLE,
-      ProjectionExpression: 'PK, SK, companyId, #st, intent, confidence, lastInboundAt, lastMessageAt, closureDeadline, expectedValue, wonAt',
+      ProjectionExpression: 'PK, SK, companyId, #st, intent, confidence, lastInboundAt, lastMessageAt, closureDeadline, expectedValue',
       FilterExpression: 'begins_with(PK, :lead) AND SK = :meta AND attribute_not_exists(deletedAt)',
       ExpressionAttributeNames: { '#st': 'stage' },
       ExpressionAttributeValues: { ':lead': 'LEAD#', ':meta': 'METADATA' },
@@ -72,11 +72,6 @@ async function runDueLeadScoring() {
   } while (lastKey);
 
   const scannedCount = items.length;
-  const openLeads = items.filter((l) => !isClosedLead(l));
-  const eligibleCount = openLeads.length;
-  let scoredCount = 0;
-  let failedCount = 0;
-  let skippedCount = 0;
 
   // One pipeline fetch per company per sweep, never once per lead. Caches the
   // in-flight PROMISE itself (not its resolved value) — concurrent leads in
@@ -90,6 +85,21 @@ async function runDueLeadScoring() {
     }
     return stagesByCompany.get(companyId);
   }
+
+  // isClosedLead() is now flag-based (Stage 3, 2026-07-17 360° audit) — it
+  // needs each lead's company pipeline to look up isWon/isLost, so this can
+  // no longer run as a synchronous filter before any stage fetch. Reuses the
+  // same per-company cached _stagesFor() the scoring loop below already
+  // relies on, so this adds at most one extra fetch per DISTINCT company
+  // represented in `items`, not one per lead — the "once per company per
+  // sweep" property this file's own tests verify is unchanged.
+  const openLeads = (await Promise.all(
+    items.map(async (l) => ({ lead: l, closed: isClosedLead(l, await _stagesFor(l.companyId)) })),
+  )).filter((x) => !x.closed).map((x) => x.lead);
+  const eligibleCount = openLeads.length;
+  let scoredCount = 0;
+  let failedCount = 0;
+  let skippedCount = 0;
 
   // Phase 2A / PR 1 — per-company opt-out (CONFIG#LEADSCORING#{companyId}),
   // defaults enabled: true so a company that never opens AI Administration

@@ -150,14 +150,27 @@ function _tierFor(score) {
 /**
  * True when a lead is closed (won or lost) and should be excluded from
  * scoring/prioritization entirely — it's not "who to follow up with next."
- * `wonAt` is one of crm.js's own "Reserved future-ready fields" and is not
- * populated by any current write path, so in practice this only reliably
- * catches the default pipeline's `stage === 'lost'` — a fully custom
- * pipeline that renamed its closing stages isn't detected, same limitation
- * `sales/page.tsx`'s own KPI cards already accept.
+ *
+ * Stage 3 (2026-07-17 360° audit): now flag-based against the company's
+ * real pipeline (`stages`, e.g. `PipelineService.getPipelineStages()`'s
+ * result) instead of the previous `stage === 'lost' || Boolean(lead.wonAt)`
+ * hardcoded check — the old check named a key ('lost') that doesn't exist
+ * in every custom pipeline, and `wonAt` is never written a real value by
+ * any current write path (only ever initialized/preserved as `null`), so
+ * that half of the check was always dead in practice.
+ *
+ * A stage's `isWon`/`isLost` flags are opt-in per company (Pipeline Stage
+ * Manager) and default to unset — a company that hasn't configured them
+ * (including a fresh/default pipeline) has zero closed leads until it does.
+ * This is a deliberate behavior change: previously any lead whose stage KEY
+ * happened to be `'lost'` closed automatically; now every company,
+ * including ones still on the stock default pipeline, must explicitly mark
+ * their closing stage(s) once. `stages` defaults to `[]` so a caller that
+ * forgets to pass it fails open (never closes a lead) rather than throwing.
  */
-function isClosedLead(lead) {
-  return lead.stage === 'lost' || Boolean(lead.wonAt);
+function isClosedLead(lead, stages = []) {
+  const stageObj = stages.find((s) => s.key === lead.stage);
+  return Boolean(stageObj?.isWon || stageObj?.isLost);
 }
 
 /**
