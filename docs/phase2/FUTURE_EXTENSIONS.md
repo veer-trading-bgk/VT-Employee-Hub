@@ -233,6 +233,23 @@ Architecture is reserved by:
 - `WhatsAppFlowsPanel.tsx`'s current "reference by ID" form remains the fallback path for Flows built outside APForce (agency-built or imported Flows) — an in-app builder would be additive, not a replacement
 - Platform-value, industry-agnostic feature — not BFSI-specific, fits any future Industry Pack
 
+### §13 Addendum — Dynamic Flows (data_exchange support)
+
+**Current state:** The builder only generates static Flows — every screen's Footer either navigates to the next screen or completes the Flow (`toFlowJson()` in flowBuilder.ts). Meta also supports a third mode ("With Endpoint" in Meta's own terminology): a screen can call a business-hosted server between screens for live data before the customer sees the next screen — e.g. checking real appointment-slot availability, validating a PAN isn't already registered, or pulling a live NAV price. None of the builder's current Flows use this.
+
+**Why not built yet:** requires new infrastructure the platform doesn't have — a per-company RSA-2048 key pair (public key uploaded to Meta, private key stored governed, same rigor as `CONFIG#WABA#{companyId}` credentials), one shared server endpoint that decrypts Meta's AES-GCM-encrypted requests and re-encrypts responses, and a sub-3-second response budget per screen transition. Real security surface (per-company private key storage) and real infrastructure, not a quick add. Confirmed via a real reference implementation (an open-source "WhatsApp Flow Server" project) that this is substantial enough that people build and maintain dedicated servers for just this piece — not something to bolt on casually.
+
+**Architecture reservation:**
+- The encryption/data-exchange handler is a new service, sibling to `FlowManagementService` (same ADR-017 shape) — NOT a third-party workflow tool (e.g. n8n). Reasoning: it would be a second workflow/automation engine outside `AutomationEngine.js` (violates the standing no-second-engine rule), and per-company private keys living in a third-party tool's credential store bypasses this platform's governed credential model entirely.
+- Runs inside existing Lambda infrastructure, not a separately-owned/patched VPS.
+- Only ONE shared endpoint is needed platform-wide — every dynamic Flow, every company, calls the same address; per-Flow logic lives inside that handler's routing, not as separate endpoints.
+
+**Builder gap, separate from the endpoint itself:** even once the endpoint exists, the screen editor's Footer action currently only supports two `on-click-action` types (`navigate`, `complete`) — it needs a third option (`data_exchange`) added to the per-screen config UI before an admin could actually wire a screen to the live endpoint. Both pieces (the endpoint AND this builder option) are required together; building only one doesn't enable anything.
+
+**Scope limitation:** only usable on DRAFT/unpublished Flows going forward — published Flows are immutable in this builder by design (existing §13 decision), so this never applies retroactively to an already-published Flow.
+
+**Confirmed real use cases for this business** (not speculative): live appointment/session slot availability, PAN duplicate check during KYC, personalized product/plan recommendations based on prior answers, live NAV/fund pricing lookup, nearest-branch/RM lookup by pincode.
+
 ---
 
 ## Reserved Field Slots in Contact Type
