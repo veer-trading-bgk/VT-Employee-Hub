@@ -214,7 +214,6 @@ export interface FlowScreen {
 
 // Same id idiom as ButtonListEditor's newButtonId — uniqueness within a session.
 const newComponentId = () => `fc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-export const newOptionId = () => `opt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
 const NAME_BASES: Record<FormFlowComponent['type'], string> = {
   TextInput: 'text_input',
@@ -238,6 +237,35 @@ function generateComponentName(
   const taken = new Set(existing.filter(isFormComponent).map((c) => c.name));
   if (reservedNames) for (const n of reservedNames) taken.add(n);
   const base = NAME_BASES[type];
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}_${n}`)) n += 1;
+  return `${base}_${n}`;
+}
+
+// "Mutual Funds" → "mutual_funds" — same slugify-with-leading-digit-guard
+// shape as deriveScreenId below, lowercase since an option id is a Meta
+// data-source value (feeds directly into what a completed response actually
+// stores), not a screen identifier.
+function slugifyOptionId(title: string): string {
+  const id = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!id) return 'option';
+  return /^[0-9]/.test(id) ? `opt_${id}` : id;
+}
+
+/**
+ * Derives a readable option id from its title, suffixing on collision within
+ * the same data-source list (same _2/_3 idiom as generateComponentName). Fixes
+ * RadioButtonsGroup/CheckboxGroup/Dropdown options previously only ever
+ * getting an opaque opt-{timestamp}-{random} id — the exact value a completed
+ * Flow response stores instead of a readable answer.
+ */
+export function deriveOptionId(title: string, existingIds: string[]): string {
+  const base = slugifyOptionId(title);
+  const taken = new Set(existingIds);
   if (!taken.has(base)) return base;
   let n = 2;
   while (taken.has(`${base}_${n}`)) n += 1;
@@ -270,7 +298,7 @@ export function createComponent(
         name: generateComponentName(type, existing, reservedNames),
         label: '',
         required: false,
-        dataSource: [{ id: newOptionId(), title: '' }],
+        dataSource: [{ id: deriveOptionId('', []), title: '' }],
       };
     case 'OptIn':
       return { id, type, name: generateComponentName(type, existing, reservedNames), label: '', required: false };

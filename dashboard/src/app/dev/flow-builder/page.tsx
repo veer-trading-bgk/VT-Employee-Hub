@@ -31,7 +31,10 @@ const MOCK_SCREENS: FlowScreen[] = [
         dataSource: [
           { id: 'opt-equity', title: 'Equity' },
           { id: 'opt-fno', title: 'Futures & Options' },
-          { id: 'opt-mf', title: 'Mutual funds' },
+          // Deliberately opaque, pre-dating the deriveOptionId fix — proves a
+          // legacy option loaded from an existing draft is never silently
+          // rewritten just by rendering it (only a fresh title edit touches it).
+          { id: 'opt-1751234567-a1b2', title: 'Mutual funds' },
         ],
       },
       { id: 'seed-w5', type: 'Footer', label: 'Continue' },

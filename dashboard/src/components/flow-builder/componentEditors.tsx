@@ -1,10 +1,11 @@
 'use client';
 
-import { Plus, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { ChevronDown, ChevronUp, Plus, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import {
   FLOW_LIMITS,
-  newOptionId,
+  deriveOptionId,
   type CheckboxGroupComponent,
   type DatePickerComponent,
   type DropdownComponent,
@@ -213,36 +214,34 @@ export function OptionsListEditor({ options, onChange }: {
   options: FlowOption[];
   onChange: (options: FlowOption[]) => void;
 }) {
+  function updateOption(idx: number, patch: Partial<FlowOption>) {
+    onChange(options.map((o, i) => (i === idx ? { ...o, ...patch } : o)));
+  }
+  function removeOption(idx: number) {
+    onChange(options.filter((_, i) => i !== idx));
+  }
+
   return (
     <Field label="Options">
       <div className="space-y-1.5">
         {options.map((option, idx) => (
-          <div key={option.id} className="flex items-center gap-2">
-            <input
-              value={option.title}
-              onChange={(e) =>
-                onChange(options.map((o, i) => (i === idx ? { ...o, title: e.target.value.slice(0, FLOW_LIMITS.optionTitleMax) } : o)))
-              }
-              placeholder={`Option ${idx + 1}`}
-              maxLength={FLOW_LIMITS.optionTitleMax}
-              className={cn(inputCls, 'flex-1')}
-            />
-            <span className="shrink-0 text-[10px] text-neutral-400">
-              {option.title.length}/{FLOW_LIMITS.optionTitleMax}
-            </span>
-            <button
-              type="button"
-              onClick={() => onChange(options.filter((_, i) => i !== idx))}
-              className="shrink-0 rounded p-1 text-neutral-300 hover:bg-error-50 hover:text-error-500 dark:hover:bg-error-900/20"
-              aria-label={`Remove option ${idx + 1}`}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          </div>
+          <OptionRow
+            // Index, not option.id — id now mutates as the admin types a
+            // title (auto-derive below), and keying by a mutating value
+            // would remount this row's <input> every keystroke, dropping
+            // focus after the first character. This list has no reordering
+            // (append/remove-at-index only), so an index key is safe here.
+            key={idx}
+            index={idx}
+            option={option}
+            otherIds={options.filter((_, i) => i !== idx).map((o) => o.id)}
+            onChange={(patch) => updateOption(idx, patch)}
+            onRemove={() => removeOption(idx)}
+          />
         ))}
         <button
           type="button"
-          onClick={() => onChange([...options, { id: newOptionId(), title: '' }])}
+          onClick={() => onChange([...options, { id: deriveOptionId('', options.map((o) => o.id)), title: '' }])}
           className="flex items-center gap-1.5 text-xs font-medium text-primary-600 hover:text-primary-700 dark:text-primary-400"
         >
           <Plus className="h-3.5 w-3.5" /> Add option
@@ -252,6 +251,80 @@ export function OptionsListEditor({ options, onChange }: {
         )}
       </div>
     </Field>
+  );
+}
+
+function OptionRow({ option, index, otherIds, onChange, onRemove }: {
+  option: FlowOption;
+  index: number;
+  /** Every OTHER option's current id in this same data-source list — the
+   * collision set both the auto-derive-on-type and "was this hand-edited"
+   * checks below need. */
+  otherIds: string[];
+  onChange: (patch: Partial<FlowOption>) => void;
+  onRemove: () => void;
+}) {
+  const [editingId, setEditingId] = useState(false);
+
+  function handleTitleChange(rawTitle: string) {
+    const newTitle = rawTitle.slice(0, FLOW_LIMITS.optionTitleMax);
+    // Same "stateless — id tracks title until touched" logic as the Screen ID
+    // field (FlowScreenEditor.tsx): an untouched id always equals what
+    // deriveOptionId would produce for the option's OLD title, so a manual
+    // edit (via "Edit ID" below) is detected without extra state — the
+    // moment the id stops matching that derivation, every later title edit
+    // leaves it alone too.
+    const idWasAuto = option.id === deriveOptionId(option.title, otherIds);
+    onChange({ title: newTitle, ...(idWasAuto ? { id: deriveOptionId(newTitle, otherIds) } : {}) });
+  }
+
+  return (
+    <div className="rounded-lg border border-neutral-200 dark:border-neutral-700" data-testid={`option-row-${index}`}>
+      <div className="flex items-center gap-2 p-1.5">
+        <input
+          value={option.title}
+          onChange={(e) => handleTitleChange(e.target.value)}
+          placeholder={`Option ${index + 1}`}
+          maxLength={FLOW_LIMITS.optionTitleMax}
+          className={cn(inputCls, 'flex-1')}
+          data-testid={`option-title-input-${index}`}
+        />
+        <span className="shrink-0 text-[10px] text-neutral-400">
+          {option.title.length}/{FLOW_LIMITS.optionTitleMax}
+        </span>
+        <button
+          type="button"
+          onClick={() => setEditingId((v) => !v)}
+          className="shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-600 dark:hover:bg-neutral-800"
+          aria-label={editingId ? 'Hide option ID' : 'Edit option ID'}
+          title="Edit ID"
+        >
+          {editingId ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+        </button>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="shrink-0 rounded p-1 text-neutral-300 hover:bg-error-50 hover:text-error-500 dark:hover:bg-error-900/20"
+          aria-label={`Remove option ${index + 1}`}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {editingId && (
+        <div className="space-y-1 border-t border-neutral-100 p-1.5 dark:border-neutral-800">
+          <label className="block text-[10px] font-medium text-neutral-500">
+            Option ID (this is what a completed response actually stores)
+          </label>
+          <input
+            value={option.id}
+            onChange={(e) => onChange({ id: e.target.value.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '') })}
+            placeholder="option_id"
+            className={cn(inputCls, 'font-mono text-xs')}
+            data-testid={`option-id-input-${index}`}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
