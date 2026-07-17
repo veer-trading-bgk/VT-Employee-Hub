@@ -1196,6 +1196,16 @@ Flagged during the simple-request CORS audit (2026-07-16) as outside the audit's
 
 **Priority:** Low — narrow edge case (a Flow sent via the AutomationEngine `send_flow` node to a phone number with no CRM lead yet is uncommon; the Inbox manual-send route and welcome-button follow-ups both always resolve a real `leadPK` first). Worth closing before the `flow_completed` trigger consumes `flowId` broadly, so a known gap doesn't surface as a confusing "why is this always null for X contacts" support question later.
 
+## `flow_completed` trigger inherits the unknown-contact correlation gap above (found 2026-07-17, wiring the flow_completed trigger)
+
+**Issue.** The `flow_completed` trigger (`src/routes/whatsapp.js`'s `nfm_reply` handler, fired via `AutomationEngine.fireTrigger(webhookCompanyId, 'flow_completed', ctx)`) only fires inside the known-lead branch (`if (lead) { ... if (isNewMsg) { ... if (matchedFlowId) { ... } } }`), and `matchedFlowId` can only ever resolve from the same `PENDINGFLOW#` correlation logic described in the entry directly above. That entry already establishes the correlation never runs at all on the unknown-contact (`INBOX#`) path — this is the same root cause, not a new one: a Flow response from a contact with no CRM lead yet will always carry `flowId: null` and therefore can never fire `flow_completed`, regardless of how a workflow's trigger config (`{flowId}` filter or company-wide catch-all) is set.
+
+**Fix:** identical to the fix above — this entry closes automatically whenever that one is fixed. Not tracked as a separate action item.
+
+**Reference:** see `send_flow`'s `{ phone }` fallback entry above; same file/branch references apply, plus the `flow_completed` fire site inside the same `if (matchedFlowId)` block this gap already governs.
+
+**Priority:** Low — same root cause and same narrow-edge-case reasoning as the entry above; this is a note that the boundary also applies to the newer trigger, not an independent gap.
+
 ## Flow builder option IDs can be manually duplicated within one component, unvalidated (found 2026-07-17, building the option-id auto-derive fix)
 
 **Issue (found while building the deriveOptionId auto-derive fix for RadioButtonsGroup/CheckboxGroup/Dropdown options, not fixed — flagged as a known scope boundary, not silently expanded).** `OptionsListEditor`'s per-option "Edit ID" affordance (`dashboard/src/components/flow-builder/componentEditors.tsx`) lets an admin hand-set an option's `id` directly, sanitized to a safe character set (lowercase letters/digits/underscore) but never checked against the OTHER options already in the same `dataSource` array. Nothing stops two options within one Dropdown/RadioButtonsGroup/CheckboxGroup from ending up with the identical `id` — auto-derive itself can never produce this (`deriveOptionId()`'s own `_2`/`_3` suffixing guarantees uniqueness against `otherIds` on every keystroke), but a manual edit bypasses that guarantee entirely, silently.

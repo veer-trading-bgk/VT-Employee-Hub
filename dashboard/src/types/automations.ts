@@ -9,7 +9,8 @@ export type TriggerType =
   | 'tag_added'
   | 'keyword_message'
   | 'inbound_webhook'
-  | 'form_submitted';
+  | 'form_submitted'
+  | 'flow_completed';
 
 export type ActionType =
   | 'send_template'
@@ -47,10 +48,20 @@ export interface KeywordTriggerConfig {
   caseSensitive?: boolean;    // default false
 }
 
+// flow_completed trigger's own config — which registered Flow's completion
+// fires this workflow. Unlike KeywordTriggerConfig, entirely optional: a
+// blank/absent flowId is the documented "any Flow" catch-all, not an
+// authoring error (see AutomationEngine.js's _matchesFlowCompletedConfig).
+export interface FlowCompletedTriggerConfig {
+  flowId?: string;
+}
+
 export interface WorkflowTrigger {
   type:       TriggerType;
   conditions: WorkflowCondition[];
-  config?:    KeywordTriggerConfig; // only meaningful for keyword_message today
+  // keyword_message and flow_completed each carry their own config shape;
+  // consumers narrow by trigger.type (no discriminant on the config itself).
+  config?:    KeywordTriggerConfig | FlowCompletedTriggerConfig;
   // inbound_webhook only — server-generated capability-URL token (read-only,
   // present once the workflow has been saved at least once with this trigger type).
   webhookToken?:     string;
@@ -386,6 +397,7 @@ export const TRIGGER_META: Record<string, { label: string; description: string }
   keyword_message:               { label: 'Keyword / Button Tap', description: 'Customer types a matching phrase or taps a matching button' },
   inbound_webhook:               { label: 'Inbound Webhook',      description: 'An external system posts to this workflow\'s own URL'      },
   form_submitted:                { label: 'Form Submitted',       description: 'A lead submits a form via the public API (traits available as {{trait.*}} variables)' },
+  flow_completed:                { label: 'Flow Completed',       description: 'A customer submits a WhatsApp Flow — optionally only a specific one' },
 };
 
 export const ACTION_META: Record<ActionType, { label: string; description: string }> = {

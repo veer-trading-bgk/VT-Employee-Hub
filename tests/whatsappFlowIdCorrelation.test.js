@@ -53,6 +53,7 @@ jest.mock('../src/services/AutomationEngine', () => ({
 }));
 
 const dynamodb = require('../src/config/dynamodb');
+const AutomationEngine = require('../src/services/AutomationEngine');
 const whatsappRouter = require('../src/routes/whatsapp');
 
 function getRouteHandler(router, path, method) {
@@ -157,6 +158,15 @@ describe('POST /api/whatsapp/webhook — nfm_reply flowId correlation', () => {
     expect(dynamodb.delete).toHaveBeenCalledWith(expect.objectContaining({
       Key: { PK: LEAD_PK, SK: 'PENDINGFLOW#flow-A' },
     }));
+
+    // flow_completed trigger fired with the resolved flowId + parseFlowResponse's
+    // output, same base ctx shape as the keyword_message fire site.
+    expect(AutomationEngine.fireTrigger).toHaveBeenCalledWith(CID, 'flow_completed', expect.objectContaining({
+      leadPK: LEAD_PK, phone: PHONE10, source: 'whatsapp',
+      flowId: 'flow-A', flowName: 'KYC Form',
+      flowFields: [{ key: 'full_name', label: 'Full Name', value: 'Priya Sharma' }],
+      flowSummary: 'Full Name: Priya Sharma',
+    }));
   });
 
   test('two markers for the same lead, different flows → most-recent wins, flowIdConfidence: "ambiguous", unmatched marker survives', async () => {
@@ -188,6 +198,12 @@ describe('POST /api/whatsapp/webhook — nfm_reply flowId correlation', () => {
     expect(dynamodb.delete).not.toHaveBeenCalledWith(expect.objectContaining({
       Key: { PK: LEAD_PK, SK: 'PENDINGFLOW#flow-OLD' },
     }));
+
+    // An ambiguous best-guess flowId is still enough to route on — the trigger
+    // DOES fire (only a null flowId skips it).
+    expect(AutomationEngine.fireTrigger).toHaveBeenCalledWith(CID, 'flow_completed', expect.objectContaining({
+      flowId: 'flow-NEW',
+    }));
   });
 
   test('zero pending markers → flowId: null, no flowIdConfidence, no throw', async () => {
@@ -209,6 +225,29 @@ describe('POST /api/whatsapp/webhook — nfm_reply flowId correlation', () => {
     // index entirely.
     expect(patchArgs.UpdateExpression).not.toMatch(/flowRespCompanyPK/);
     expect(patchArgs.ExpressionAttributeValues[':frcp']).toBeUndefined();
+
+    // ...and no flow_completed trigger — an uncorrelated response has nothing
+    // to route on.
+    expect(AutomationEngine.fireTrigger).not.toHaveBeenCalledWith(CID, 'flow_completed', expect.anything());
+  });
+
+  test('a failed MSG# stamp write does NOT block the flow_completed trigger (routing is independent of the reporting patch)', async () => {
+    pendingFlowMarkers = [markerItem('flow-A', '2026-07-17T10:00:00.000Z')];
+    // Only the flowId-patch update on the MSG# record fails; every other
+    // update (ACTIVITY#, lead preview, etc.) still succeeds.
+    dynamodb.update.mockImplementation((params) => {
+      if (params?.Key?.SK?.startsWith('MSG#')) {
+        return { promise: () => Promise.reject(new Error('simulated stamp failure')) };
+      }
+      return { promise: () => Promise.resolve({}) };
+    });
+
+    const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+    await handler({ body: webhookBody(nfmReplyMessage()) }, mockRes(), jest.fn());
+
+    expect(AutomationEngine.fireTrigger).toHaveBeenCalledWith(CID, 'flow_completed', expect.objectContaining({
+      flowId: 'flow-A',
+    }));
   });
 
   test('FlowResponsesByCompany GSI query with the stamped key returns exactly the flowId-scoped subset', async () => {

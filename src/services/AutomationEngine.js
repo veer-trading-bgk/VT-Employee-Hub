@@ -73,8 +73,11 @@ class AutomationEngine {
       // workflow's trigger actually matches this specific event — unlike every other
       // trigger type, where trigger.type alone is enough and trigger.conditions[]
       // (still evaluated below, unaffected) is only ever an optional extra filter.
-      const workflows = triggerType === 'keyword_message'
-        ? matched.filter((w) => this._matchesKeywordConfig(w.trigger?.config, context.messageText))
+      // flow_completed uses the same per-trigger-config mechanism, with opposite
+      // fail-open semantics on a missing config (see _matchesFlowCompletedConfig).
+      const workflows =
+        triggerType === 'keyword_message'  ? matched.filter((w) => this._matchesKeywordConfig(w.trigger?.config, context.messageText))
+        : triggerType === 'flow_completed' ? matched.filter((w) => this._matchesFlowCompletedConfig(w.trigger?.config, context.flowId))
         : matched;
 
       if (workflows.length === 0) return;
@@ -959,6 +962,19 @@ class AutomationEngine {
 
     if (config.matchMode === 'exact') return keywords.some((k) => norm(k) === target);
     return keywords.some((k) => target.includes(norm(k))); // 'contains' and 'any_of'
+  }
+
+  // ── flow_completed trigger matcher (flow_completed trigger's own config) ──
+  // config.flowId set → only that Flow's completions fire this workflow;
+  // unset/blank → company-wide catch-all (any completed Flow). Fails OPEN on
+  // a missing config — the opposite of _matchesKeywordConfig, deliberately:
+  // a keyword trigger without keywords is a broken workflow (nothing defines
+  // what fires it), while a flow_completed trigger without a flowId is the
+  // documented "any Flow" configuration, not an authoring error.
+  _matchesFlowCompletedConfig(config, flowId) {
+    const wanted = typeof config?.flowId === 'string' ? config.flowId.trim() : '';
+    if (!wanted) return true;
+    return wanted === flowId;
   }
 
   // ── Graph condition-node evaluator (mid-workflow — live re-fetch when possible) ──

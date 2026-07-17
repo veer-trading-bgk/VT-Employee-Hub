@@ -1546,6 +1546,12 @@ router.post('/webhook', async (req, res) => {
           // for an unrelated reason, silently losing the correlation for the
           // retry that eventually succeeds.
           if (flowResp) {
+            // Hoisted out of the try so the flow_completed trigger below can
+            // fire even when the STAMP write failed (routing must not depend
+            // on the reporting patch) — while a failure in resolution itself
+            // leaves this null and correctly skips the fire.
+            let matchedFlowId = null;
+            let ambiguous = false;
             try {
               const markersRes = await dynamodb.query({
                 TableName: TABLE,
@@ -1553,9 +1559,6 @@ router.post('/webhook', async (req, res) => {
                 ExpressionAttributeValues: { ':pk': lead.PK, ':pfx': 'PENDINGFLOW#' },
               }).promise();
               const markers = markersRes.Items ?? [];
-
-              let matchedFlowId = null;
-              let ambiguous = false;
               if (markers.length === 1) {
                 matchedFlowId = markers[0].flowId;
               } else if (markers.length > 1) {
@@ -1613,6 +1616,27 @@ router.post('/webhook', async (req, res) => {
               }
             } catch (e) {
               logger.warn(`flowId correlation failed for ${lead.PK}: ${e.message}`);
+            }
+
+            // flow_completed trigger — only when a flowId was resolved
+            // (INCLUDING an ambiguous best-guess match: still enough to route
+            // on; only null skips, since an uncorrelated response has nothing
+            // to route on). Same base ctx shape as the keyword_message fire
+            // below, plus the resolved flowId and parseFlowResponse's output
+            // (name/fields/summary) so downstream nodes and trigger-config
+            // filtering can use them. Awaited (bounded) — same Lambda-freeze
+            // reasoning as every other fire site (19_DECISION_LOG.md Era 20).
+            if (matchedFlowId) {
+              await withTimeout(
+                require('../services/AutomationEngine').fireTrigger(webhookCompanyId, 'flow_completed', {
+                  leadId: lead.leadId, leadPK: lead.PK, phone: phone10, name: lead.name,
+                  stage: lead.stage, tags: lead.tags ?? [], assignedTo: lead.assignedTo,
+                  source: 'whatsapp',
+                  flowId: matchedFlowId, flowName: flowResp.flowName,
+                  flowFields: flowResp.fields, flowSummary: flowResp.summary,
+                }).catch((e) => logger.warn('flow_completed trigger fire failed: ' + e.message)),
+                'fireTrigger(flow_completed)',
+              );
             }
           }
           await updateLeadLastMessage(lead.PK, text, 'inbound', timestamp);

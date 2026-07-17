@@ -142,3 +142,50 @@ describe('PUT /:id — inbound_webhook trigger token preservation/regeneration',
     expect(vals[':t']).not.toHaveProperty('regenerateToken');
   });
 });
+
+describe('POST / — flow_completed trigger config storage', () => {
+  const handler = getRouteHandler(automationsRouter, '/', 'post');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+  });
+
+  test('a real flowId is persisted trimmed under trigger.config', async () => {
+    const res = mockRes();
+    await handler({
+      user: USER,
+      body: {
+        name: 'KYC follow-up',
+        trigger: { type: 'flow_completed', conditions: [], config: { flowId: '  1564070475429845  ' } },
+        steps: [{ id: 's1', type: 'end', config: {} }],
+      },
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const item = dynamodb.put.mock.calls[0][0].Item;
+    expect(item.trigger.type).toBe('flow_completed');
+    expect(item.trigger.config).toEqual({ flowId: '1564070475429845' });
+  });
+
+  test('blank/absent flowId persists NO config at all (the "any Flow" catch-all) — not a validation error', async () => {
+    for (const config of [undefined, {}, { flowId: '' }, { flowId: '   ' }]) {
+      jest.clearAllMocks();
+      dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+      const res = mockRes();
+      await handler({
+        user: USER,
+        body: {
+          name: 'Any-flow catch-all',
+          trigger: { type: 'flow_completed', conditions: [], ...(config !== undefined && { config }) },
+          steps: [{ id: 's1', type: 'end', config: {} }],
+        },
+      }, res, jest.fn());
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      const item = dynamodb.put.mock.calls[0][0].Item;
+      expect(item.trigger.type).toBe('flow_completed');
+      expect(item.trigger.config).toBeUndefined();
+    }
+  });
+});

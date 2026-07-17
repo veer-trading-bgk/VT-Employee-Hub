@@ -2,7 +2,7 @@
 
 import {
   MessageCircle, UserPlus, GitMerge, Tag, CheckSquare, Timer, Square,
-  Zap, Hash, Webhook, Copy, RefreshCw, X, Plus, FileText, Bot,
+  Zap, Hash, Webhook, Copy, RefreshCw, X, Plus, FileText, Bot, ClipboardCheck,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
@@ -15,9 +15,11 @@ import { useTagCatalog } from '@/hooks/useTagCatalog';
 import {
   type WorkflowTrigger, type WorkflowStep, type ActionType,
   type TriggerType, type KeywordMatchMode, type KeywordTriggerConfig,
+  type FlowCompletedTriggerConfig,
   type WorkflowCondition,
   TRIGGER_META,
 } from '@/types/automations';
+import { FlowPicker } from '@/components/shared/ButtonListEditor';
 import { inputCls, selectCls } from './ActionEditor';
 
 // Single-editor migration (2026-07-10, docs/phase3/TECHNICAL_DEBT.md): the
@@ -49,6 +51,7 @@ export const ACTION_ICONS: Record<string, React.ElementType> = {
   keyword_message:              Hash,
   inbound_webhook:              Webhook,
   form_submitted:               FileText,
+  flow_completed:               ClipboardCheck,
 };
 
 // ── Trigger editor ────────────────────────────────────────────────────────────
@@ -57,7 +60,7 @@ export const ACTION_ICONS: Record<string, React.ElementType> = {
 // TriggerNode has no config UI of its own, this is the only trigger editor.
 export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: WorkflowTrigger; onChange: (t: WorkflowTrigger) => void; workflowId?: string }) {
   const TRIGGER_OPTIONS: TriggerType[] = [
-    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added', 'keyword_message', 'inbound_webhook', 'form_submitted',
+    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added', 'keyword_message', 'inbound_webhook', 'form_submitted', 'flow_completed',
   ];
 
   // Only the two heavier picker fetches below are gated behind `enabled`.
@@ -180,13 +183,20 @@ export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: Work
 
       {trigger.type === 'keyword_message' && (
         <KeywordConfigFields
-          config={trigger.config ?? { matchMode: 'contains', keywords: [''], caseSensitive: false }}
+          config={(trigger.config as KeywordTriggerConfig | undefined) ?? { matchMode: 'contains', keywords: [''], caseSensitive: false }}
           onChange={(config) => onChange({ ...trigger, config })}
         />
       )}
 
       {trigger.type === 'inbound_webhook' && (
         <WebhookConfigFields trigger={trigger} onChange={onChange} workflowId={workflowId} />
+      )}
+
+      {trigger.type === 'flow_completed' && (
+        <FlowCompletedConfigFields
+          config={(trigger.config as FlowCompletedTriggerConfig | undefined) ?? {}}
+          onChange={(config) => onChange({ ...trigger, config })}
+        />
       )}
 
       {/* Conditions */}
@@ -324,6 +334,24 @@ function KeywordConfigFields({ config, onChange }: { config: KeywordTriggerConfi
 
       <p className="text-[11px] text-neutral-400">
         Also matches when a customer taps a button or list option with matching text.
+      </p>
+    </div>
+  );
+}
+
+// ── flow_completed trigger config — which Flow's completion fires this
+// workflow. FlowPicker reused from ButtonListEditor.tsx (same shared
+// ['whatsapp-flows'] query SendFlowEditor.tsx's node config already uses).
+// Blank is a valid, documented state: "react to any completed Flow" — the
+// helper text below carries that meaning since the picker's own blank-option
+// label ("Select a Flow…") can't.
+function FlowCompletedConfigFields({ config, onChange }: { config: FlowCompletedTriggerConfig; onChange: (c: FlowCompletedTriggerConfig) => void }) {
+  return (
+    <div className="space-y-2 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+      <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400">Which Flow?</label>
+      <FlowPicker value={config.flowId ?? ''} onChange={(flowId) => onChange({ ...config, flowId })} />
+      <p className="text-[11px] text-neutral-400">
+        Fires when a customer submits this Flow. Leave unselected to react to any completed Flow.
       </p>
     </div>
   );

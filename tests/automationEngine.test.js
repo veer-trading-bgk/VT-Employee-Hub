@@ -1990,3 +1990,131 @@ describe('AutomationEngine — hasActiveWorkflow / _findActiveWorkflows', () => 
     expect(found.map((w) => w.id)).toEqual(['w1']);
   });
 });
+
+// ─── fireTrigger("flow_completed") — WhatsApp Flow submission trigger ─────────
+// Same per-trigger-config mechanism as keyword_message above, with the OPPOSITE
+// missing-config semantics: keyword_message fails closed (no keywords = broken
+// workflow), flow_completed fails open (no flowId = the documented "any Flow"
+// company-wide catch-all). trigger.conditions[] still stacks as an AND-filter.
+describe('AutomationEngine — fireTrigger("flow_completed")', () => {
+  const resolved = (value) => ({ promise: () => Promise.resolve(value) });
+
+  function flowWorkflow(config, conditions = []) {
+    return {
+      id: 'wf-flow', name: 'Flow workflow', status: 'active',
+      trigger: { type: 'flow_completed', conditions, ...(config !== undefined && { config }) },
+      steps: [{ id: 'end-default', type: 'end', config: {} }],
+    };
+  }
+
+  let startSpy;
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    startSpy = jest.spyOn(engine, '_startExecution').mockResolvedValue(undefined);
+  });
+  afterEach(() => startSpy.mockRestore());
+
+  test('flowId-scoped config fires ONLY for the matching Flow', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [flowWorkflow({ flowId: 'flow-KYC' })] }));
+
+    await engine.fireTrigger(CID, 'flow_completed', { leadPK: LEAD_PK, flowId: 'flow-KYC' });
+    expect(startSpy).toHaveBeenCalledTimes(1);
+
+    startSpy.mockClear();
+    await engine.fireTrigger(CID, 'flow_completed', { leadPK: LEAD_PK, flowId: 'flow-OTHER' });
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  test('no config at all → company-wide catch-all, fires for ANY completed Flow', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [flowWorkflow(undefined)] }));
+
+    await engine.fireTrigger(CID, 'flow_completed', { leadPK: LEAD_PK, flowId: 'flow-A' });
+    await engine.fireTrigger(CID, 'flow_completed', { leadPK: LEAD_PK, flowId: 'flow-B' });
+    expect(startSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('blank-string flowId in config is normalized to the same catch-all (not a never-matches)', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [flowWorkflow({ flowId: '   ' })] }));
+
+    await engine.fireTrigger(CID, 'flow_completed', { leadPK: LEAD_PK, flowId: 'flow-A' });
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('stacks with a generic trigger condition (AND) on top of the flowId match', async () => {
+    dynamodb.query.mockReturnValue(resolved({
+      Items: [flowWorkflow({ flowId: 'flow-KYC' }, [{ field: 'stage', operator: 'equals', value: 'new' }])],
+    }));
+
+    await engine.fireTrigger(CID, 'flow_completed', { leadPK: LEAD_PK, flowId: 'flow-KYC', stage: 'won' });
+    expect(startSpy).not.toHaveBeenCalled(); // flowId matches, stacked stage condition fails
+
+    startSpy.mockClear();
+    await engine.fireTrigger(CID, 'flow_completed', { leadPK: LEAD_PK, flowId: 'flow-KYC', stage: 'new' });
+    expect(startSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test('a flow_completed workflow never fires for an unrelated trigger type', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [flowWorkflow({ flowId: 'flow-KYC' })] }));
+
+    await engine.fireTrigger(CID, 'keyword_message', { messageText: 'flow-KYC' });
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ─── flow_completed → downstream nodes: full (unspied) graph run ──────────────
+// Proves add_tag and send_message work UNMODIFIED as steps after this trigger —
+// the whole point of wiring it. No _startExecution spy here: the real graph
+// runner executes both nodes against the mocked table/send service.
+describe('AutomationEngine — flow_completed graph run reaches add_tag and send_message', () => {
+  const resolved = (value) => ({ promise: () => Promise.resolve(value) });
+
+  const GRAPH_WORKFLOW = {
+    id: 'wf-flow-graph', name: 'KYC follow-up', status: 'active',
+    trigger: { type: 'flow_completed', conditions: [], config: { flowId: 'flow-KYC' } },
+    nodes: [
+      { id: 'n1', type: 'add_tag',      config: { tag: 'kyc-submitted' } },
+      { id: 'n2', type: 'send_message', config: { messageText: 'Thanks {{name}}, we received your KYC details.' } },
+    ],
+    edges: [{ id: 'e1', source: 'n1', target: 'n2' }],
+    entryNodeId: 'n1',
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    dynamodb.query.mockReturnValue(resolved({ Items: [GRAPH_WORKFLOW] }));
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockImplementation(guardedUpdateMock());
+    WASendSvc.sendText.mockResolvedValue({ wamid: 'wamid.sent-1' });
+  });
+
+  test('both nodes execute with the webhook-shaped flow_completed context', async () => {
+    await engine.fireTrigger(CID, 'flow_completed', {
+      leadId: 'lead_001', leadPK: LEAD_PK, phone: '9876543210', name: 'Priya',
+      stage: 'new', tags: [], assignedTo: 'emp_1', source: 'whatsapp',
+      flowId: 'flow-KYC', flowName: 'KYC Form',
+      flowFields: [{ key: 'full_name', label: 'Full Name', value: 'Priya Sharma' }],
+      flowSummary: 'Full Name: Priya Sharma',
+    });
+
+    // add_tag ran against the lead — ctx.leadPK + step.config.tag, nothing more.
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: LEAD_PK, SK: 'METADATA' },
+      ExpressionAttributeValues: expect.objectContaining({ ':newTag': ['kyc-submitted'] }),
+    }));
+
+    // send_message ran next with {{name}} resolved from the trigger context.
+    expect(WASendSvc.sendText).toHaveBeenCalledWith(
+      CID,
+      { resolvedContact: { pk: LEAD_PK, phone: '9876543210', isLead: true } },
+      'Thanks Priya, we received your KYC details.',
+      { id: 'system', role: 'admin', name: 'Automation' },
+    );
+
+    // The execution record was created for this trigger type.
+    const execPut = dynamodb.put.mock.calls.find(([a]) => a.Item?.PK === `AUTO_EXEC#${CID}`);
+    expect(execPut).toBeDefined();
+    expect(execPut[0].Item.triggeredBy.type).toBe('flow_completed');
+  });
+});

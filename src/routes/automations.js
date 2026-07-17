@@ -108,6 +108,15 @@ function buildTriggerForStorage(trigger, existingTrigger) {
     const webhookToken = canKeepExisting ? existingTrigger.webhookToken : generateWebhookToken();
     return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [], webhookToken } };
   }
+  if (trigger.type === 'flow_completed') {
+    // Unlike keyword_message, config here is OPTIONAL — a blank/absent flowId
+    // is the documented "any Flow" catch-all, not a broken workflow, so there
+    // is no validation error to return. Only a real non-blank flowId is ever
+    // persisted (blank is normalized to no config at all, keeping the stored
+    // shape identical to every other config-less trigger).
+    const flowId = typeof trigger.config?.flowId === 'string' ? trigger.config.flowId.trim() : '';
+    return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [], ...(flowId && { config: { flowId } }) } };
+  }
   return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [] } };
 }
 
