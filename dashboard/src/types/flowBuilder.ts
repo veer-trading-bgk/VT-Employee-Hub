@@ -272,6 +272,29 @@ export function deriveOptionId(title: string, existingIds: string[]): string {
   return `${base}_${n}`;
 }
 
+/**
+ * Regenerates every selection component's option ids from their titles,
+ * collision-checked within that same option list — the Duplicate Flow
+ * feature's one deliberate deviation from fromFlowJson's normal behavior
+ * (which preserves ids as-is), so a duplicate of a Flow built before the
+ * deriveOptionId fix comes out with clean ids instead of copied gibberish.
+ * Everything else (screen ids, field names, labels, component ids) is left
+ * untouched — those were already meaningful, unlike option ids.
+ */
+export function regenerateOptionIds(screens: FlowScreen[]): FlowScreen[] {
+  return screens.map((screen) => ({
+    ...screen,
+    components: screen.components.map((c) => {
+      if (!isSelectionComponent(c)) return c;
+      const dataSource: FlowOption[] = [];
+      for (const opt of c.dataSource) {
+        dataSource.push({ id: deriveOptionId(opt.title, dataSource.map((o) => o.id)), title: opt.title });
+      }
+      return { ...c, dataSource };
+    }),
+  }));
+}
+
 /** New component with sensible empty defaults and a Flow-unique field name. */
 export function createComponent(
   type: FlowComponentType,
