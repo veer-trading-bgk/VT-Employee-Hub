@@ -1037,6 +1037,7 @@ this codebase (confirmed by reading every GSI-creation script).
 | `ContactsByCompany` | METRICS | `contactCompanyPK` (value: `CONTACT#{companyId}`) | `createdAt` | List Contacts for a company, newest-first | `ContactRepository.queryByCompany()` |
 | `ConvByCompany` | METRICS | `convCompanyPK` (value: `CONV#{companyId}`) | `lastActivityAt` | List Conversations for a company, newest-first, optional status/assignedTo filter | `ConversationRepository.queryByCompany()` |
 | `ConvByContact` | METRICS | `convContactPK` (value: `CONV_CONTACT#{companyId}#{contactId}`) | `lastActivityAt` | List Conversations for one Contact, newest-first | `ConversationRepository.queryByContact()` |
+| `FlowResponsesByCompany` | METRICS | `flowRespCompanyPK` (value: `FLOWRESP#{companyId}#{flowId}`) | `timestamp` | List Flow responses for one Flow, oldest-first (sparse — only MSG# `flow_response` items whose flowId correlation resolved; `flowIdConfidence: 'ambiguous'` items included and filterable) | No reader yet — foundation for the `flow_completed` trigger + Flow-response reporting; stamped by `whatsapp.js` nfm_reply handler |
 | `companyIdIndex` | METRICS | `companyId` | — | List daily metric entries for a company (team-summary, leaderboard, performers) | `metrics.js` |
 | `companyIdIndex` | EMPLOYEES | `companyId` | — | List employees for a company (replaces a full Scan) | `admin.js`, `metrics.js`, `src/utils/wsConnections.js` is NOT this one — see next row |
 | `companyIdIndex` | `ws_connections` | `companyId` | `connectionId` | Find all active WebSocket connections for a company, for push fan-out | `src/utils/wsConnections.js.getConnectionsByCompany()` |
@@ -1057,6 +1058,7 @@ flagging rather than treating as self-evidently fine.
 | `company-phone-index` | `scripts/create-phone-gsi.js` (paired with `scripts/backfill-phone-norm.js` to populate `phoneNorm` on pre-existing leads before the GSI goes live) |
 | `ContactPhoneIndex`, `ContactsByCompany` | `scripts/migrations/add-contact-gsi.js` |
 | `ConvByCompany`, `ConvByContact` | `scripts/migrations/add-conversation-gsi.js` |
+| `FlowResponsesByCompany` | `scripts/migrations/add-flow-responses-gsi.js` |
 | `companyIdIndex` (`ws_connections`) | `scripts/create-ws-table.ps1` (also creates the table itself, with TTL on `ttl`) |
 | `companyIdIndex` (EMPLOYEES), `emailIndex` | Not present in any script reviewed — pre-existing, created before the current migration-script convention was established |
 | `companyIdIndex` (AUDIT) | Not present in any script reviewed |

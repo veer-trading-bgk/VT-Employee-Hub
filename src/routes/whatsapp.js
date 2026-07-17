@@ -1577,21 +1577,33 @@ router.post('/webhook', async (req, res) => {
                 ambiguous = true;
               }
 
+              // One update call for all three outcomes (exact / ambiguous /
+              // no-marker) — the SET expression grows per outcome instead of
+              // adding a third round-trip write. flowRespCompanyPK feeds the
+              // FlowResponsesByCompany GSI (hash=flowRespCompanyPK,
+              // range=timestamp): embedding flowId in the value makes "all
+              // responses for Flow X" a direct GSI query. Stamped whenever a
+              // flowId was resolved — INCLUDING ambiguous matches (a best-guess
+              // flowId is still useful for grouping; flowIdConfidence stays
+              // visible for filtering) — but never when flowId is null, so
+              // uncorrelated responses stay out of the sparse index rather
+              // than clustering under a meaningless key.
+              const setParts = ['flowId = :fid'];
+              const patchValues = { ':fid': matchedFlowId };
               if (ambiguous) {
-                await dynamodb.update({
-                  TableName: TABLE,
-                  Key: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}` },
-                  UpdateExpression: 'SET flowId = :fid, flowIdConfidence = :conf',
-                  ExpressionAttributeValues: { ':fid': matchedFlowId, ':conf': 'ambiguous' },
-                }).promise();
-              } else {
-                await dynamodb.update({
-                  TableName: TABLE,
-                  Key: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}` },
-                  UpdateExpression: 'SET flowId = :fid',
-                  ExpressionAttributeValues: { ':fid': matchedFlowId },
-                }).promise();
+                setParts.push('flowIdConfidence = :conf');
+                patchValues[':conf'] = 'ambiguous';
               }
+              if (matchedFlowId) {
+                setParts.push('flowRespCompanyPK = :frcp');
+                patchValues[':frcp'] = `FLOWRESP#${webhookCompanyId}#${matchedFlowId}`;
+              }
+              await dynamodb.update({
+                TableName: TABLE,
+                Key: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}` },
+                UpdateExpression: `SET ${setParts.join(', ')}`,
+                ExpressionAttributeValues: patchValues,
+              }).promise();
 
               if (matchedFlowId) {
                 await dynamodb.delete({
