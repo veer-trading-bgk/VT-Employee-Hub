@@ -1534,6 +1534,75 @@ router.post('/webhook', async (req, res) => {
           logger.error('MSG# put failed (lead)', e.message);
         }
         if (isNewMsg) {
+          // Correlate this Flow response back to which Flow was actually sent —
+          // Meta does not reliably echo flow_token back through externally-
+          // authored Flow JSON, so this reads the PENDINGFLOW# marker(s)
+          // sendRegisteredFlow() writes at send time instead. Patched onto the
+          // MSG# record just written (gated on isNewMsg, same "only consume
+          // external state once the correlated write is confirmed" reasoning
+          // as every other side-effect in this block) rather than baked into
+          // msgItem above — consuming a marker before dedupPut's write is
+          // confirmed could delete it for a delivery whose write then fails
+          // for an unrelated reason, silently losing the correlation for the
+          // retry that eventually succeeds.
+          if (flowResp) {
+            try {
+              const markersRes = await dynamodb.query({
+                TableName: TABLE,
+                KeyConditionExpression: 'PK = :pk AND begins_with(SK, :pfx)',
+                ExpressionAttributeValues: { ':pk': lead.PK, ':pfx': 'PENDINGFLOW#' },
+              }).promise();
+              const markers = markersRes.Items ?? [];
+
+              let matchedFlowId = null;
+              let ambiguous = false;
+              if (markers.length === 1) {
+                matchedFlowId = markers[0].flowId;
+              } else if (markers.length > 1) {
+                // More than one Flow pending for this contact at once — the
+                // PENDINGFLOW# SK shape intentionally allows that (several
+                // Flows sent close together each keep their own marker), so
+                // this is an expected case, not a bug. Which one this reply
+                // actually answers can't be known for certain, so most-recent-
+                // by-sentAt is the best available guess. flowIdConfidence:
+                // 'ambiguous' turns that guess into a visible, queryable
+                // signal — any future report/support tool can filter on it to
+                // see exactly which responses might be misattributed, instead
+                // of the ambiguity being invisible. Its absence on a single-
+                // marker match IS the "certain" signal; never written as
+                // 'exact'. Only the matched marker is deleted — the others
+                // are left in place in case a later reply matches them.
+                const mostRecent = markers.reduce((a, b) => (b.sentAt > a.sentAt ? b : a));
+                matchedFlowId = mostRecent.flowId;
+                ambiguous = true;
+              }
+
+              if (ambiguous) {
+                await dynamodb.update({
+                  TableName: TABLE,
+                  Key: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}` },
+                  UpdateExpression: 'SET flowId = :fid, flowIdConfidence = :conf',
+                  ExpressionAttributeValues: { ':fid': matchedFlowId, ':conf': 'ambiguous' },
+                }).promise();
+              } else {
+                await dynamodb.update({
+                  TableName: TABLE,
+                  Key: { PK: lead.PK, SK: `MSG#${timestamp}#${waMessageId}` },
+                  UpdateExpression: 'SET flowId = :fid',
+                  ExpressionAttributeValues: { ':fid': matchedFlowId },
+                }).promise();
+              }
+
+              if (matchedFlowId) {
+                await dynamodb.delete({
+                  TableName: TABLE,
+                  Key: { PK: lead.PK, SK: `PENDINGFLOW#${matchedFlowId}` },
+                }).promise();
+              }
+            } catch (e) {
+              logger.warn(`flowId correlation failed for ${lead.PK}: ${e.message}`);
+            }
+          }
           await updateLeadLastMessage(lead.PK, text, 'inbound', timestamp);
           if (waName) {
             dynamodb.update({
@@ -2177,6 +2246,13 @@ router.put('/inbox/:leadId/pin', authMiddleware, rateLimit(20, 60_000), async (r
   } catch (err) { next(err); }
 });
 
+// TTL for the PENDINGFLOW# correlation marker written below — long enough
+// that a customer who opens a Flow a day later still gets attributed, short
+// enough that DynamoDB TTL cleans up abandoned (never-completed) Flows
+// without unbounded growth. Same 'ttl' attribute convention as entityKeys.js's
+// idemPK lock (epoch seconds).
+const PENDING_FLOW_TTL_SECONDS = 48 * 60 * 60;
+
 // Looks up a registered Flow and sends it via sendInteractive() unmodified
 // (ADR-012) — the single place that builds the Meta Flow-send payload, shared
 // by the manual /inbox/:leadId/send-flow route below and welcome-message
@@ -2218,7 +2294,34 @@ async function sendRegisteredFlow(companyId, target, flowId, user) {
       },
     },
   };
-  return WASendSvc.sendInteractive(companyId, target, interactive, user);
+  const result = await WASendSvc.sendInteractive(companyId, target, interactive, user);
+
+  // Foundation for flowId correlation on the reply (nfm_reply webhook path,
+  // see the query/consume site further down this file) — Meta does not
+  // reliably echo flow_token back through externally-authored Flow JSON, so
+  // this marker is what lets a later reply be attributed back to the Flow
+  // that was actually sent. SK shape (PENDINGFLOW#{flowId}) intentionally
+  // supports MULTIPLE simultaneous markers per contact — several Flows can be
+  // sent close together, each keeping its own marker until consumed or
+  // TTL-expired; that's deliberate, not a limitation. Best-effort: the
+  // message already went out, so a failure here must never fail the send.
+  try {
+    const now = Date.now();
+    await dynamodb.put({
+      TableName: TABLE,
+      Item: {
+        PK: result.pk,
+        SK: `PENDINGFLOW#${flowId}`,
+        flowId,
+        sentAt: new Date(now).toISOString(),
+        ttl: Math.floor(now / 1000) + PENDING_FLOW_TTL_SECONDS,
+      },
+    }).promise();
+  } catch (e) {
+    logger.warn(`sendRegisteredFlow: PENDINGFLOW# marker write failed for ${result.pk}: ${e.message}`);
+  }
+
+  return result;
 }
 
 // ── POST /api/whatsapp/inbox/:leadId/send-flow — trigger a registered WhatsApp Flow ─

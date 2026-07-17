@@ -198,6 +198,49 @@ describe('POST /api/whatsapp/inbox/:leadId/send-flow', () => {
     const [, , interactive] = WASendSvc.sendInteractive.mock.calls[0];
     expect(interactive.action.parameters.flow_action_payload).toBeUndefined();
   });
+
+  // Foundation for flowId correlation on the reply — see
+  // whatsappFlowIdCorrelation.test.js for the consume side (nfm_reply webhook).
+  test('writes a PENDINGFLOW# marker for correlation after a successful send, TTL ~48h out', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({
+        Item: { flowId: '999888777', bodyText: 'Please complete this form', ctaLabel: 'Start', screenId: null },
+      }),
+    });
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.abc', timestamp: '2026-07-03T10:00:00.000Z', pk: 'LEAD#acme#lead_1' });
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    const handler = getRouteHandler(whatsappRouter, '/inbox/:leadId/send-flow', 'post');
+    const req = { params: { leadId: 'lead_1' }, body: { flowId: '999888777' }, user: { companyId: 'acme', id: 'emp_1', name: 'Test Agent' } };
+    await handler(req, mockRes(), jest.fn());
+
+    const markerCall = dynamodb.put.mock.calls.find(([a]) => a.Item?.SK === 'PENDINGFLOW#999888777');
+    expect(markerCall).toBeDefined();
+    const [markerArgs] = markerCall;
+    expect(markerArgs.Item.PK).toBe('LEAD#acme#lead_1');
+    expect(markerArgs.Item.flowId).toBe('999888777');
+    expect(typeof markerArgs.Item.sentAt).toBe('string');
+    const nowSec = Math.floor(Date.now() / 1000);
+    expect(markerArgs.Item.ttl).toBeGreaterThan(nowSec + 47 * 3600);
+    expect(markerArgs.Item.ttl).toBeLessThan(nowSec + 49 * 3600);
+  });
+
+  test('marker write failure is caught and logged — never fails the send itself', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({
+        Item: { flowId: '1', bodyText: 'x', ctaLabel: 'Start', screenId: null },
+      }),
+    });
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'w', timestamp: 't', pk: 'LEAD#acme#lead_1' });
+    dynamodb.put.mockReturnValue({ promise: () => Promise.reject(new Error('ProvisionedThroughputExceededException')) });
+
+    const handler = getRouteHandler(whatsappRouter, '/inbox/:leadId/send-flow', 'post');
+    const req = { params: { leadId: 'lead_1' }, body: { flowId: '1' }, user: { companyId: 'acme' } };
+    const res = mockRes();
+    await handler(req, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, messageId: 'w' }));
+  });
 });
 
 describe('inbound flow_response (nfm_reply) parsing', () => {
