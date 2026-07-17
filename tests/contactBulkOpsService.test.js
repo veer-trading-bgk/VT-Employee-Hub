@@ -54,6 +54,7 @@ function makeFakeTable(initialItem) {
         ...(ExpressionAttributeValues[':ua'] !== undefined && { updatedAt: ExpressionAttributeValues[':ua'] }),
         ...(ExpressionAttributeValues[':at'] !== undefined && { assignedTo: ExpressionAttributeValues[':at'] }),
         ...(ExpressionAttributeValues[':s'] !== undefined && { stage: ExpressionAttributeValues[':s'] }),
+        ...(ExpressionAttributeValues[':sca'] !== undefined && { stageChangedAt: ExpressionAttributeValues[':sca'] }),
       };
       return Promise.resolve({});
     },
@@ -197,15 +198,33 @@ describe('ContactBulkOpsService.assignLead() — no race possible (unconditional
 
 describe('ContactBulkOpsService.updateStage() and contactKey()', () => {
   test('updates stage for a lead', async () => {
-    makeFakeTable({});
+    const table = makeFakeTable({});
     const result = await updateStage(CID, { leadId: 'lead1' }, 'interested');
     expect(result).toEqual({ stage: 'interested' });
+    expect(table.getState().stage).toBe('interested');
   });
 
   test('updates stage for an INBOX contact via phone', async () => {
-    makeFakeTable({});
+    const table = makeFakeTable({});
     const result = await updateStage(CID, { phone: '9000000000' }, 'interested');
     expect(result).toEqual({ stage: 'interested' });
+    expect(table.getState().stage).toBe('interested');
+  });
+
+  // 2026-07-17 — this path previously stamped no timestamp at all, the one
+  // gap the Sales Kanban board's "Recently moved" sort (sales/page.tsx)
+  // depends on for both leads AND unknown contacts (both types funnel
+  // through this one function).
+  test('stamps stageChangedAt as a real ISO timestamp alongside stage (lead)', async () => {
+    const table = makeFakeTable({});
+    await updateStage(CID, { leadId: 'lead1' }, 'interested');
+    expect(table.getState().stageChangedAt).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
+  });
+
+  test('stamps stageChangedAt as a real ISO timestamp alongside stage (unknown contact)', async () => {
+    const table = makeFakeTable({});
+    await updateStage(CID, { phone: '9000000000' }, 'interested');
+    expect(table.getState().stageChangedAt).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
   });
 
   test('contactKey() throws when neither leadId nor phone is provided', () => {

@@ -22,8 +22,15 @@ export function useStageMutation() {
     onMutate: async ({ contact, stageKey }) => {
       await qc.cancelQueries({ queryKey: ['sales-contacts'] });
       const previous = qc.getQueryData<Contact[]>(['sales-contacts']);
+      // Stamp stageChangedAt optimistically too, matching what the backend
+      // will actually persist (crm.js / ContactBulkOpsService.updateStage /
+      // AutomationEngine all stamp it on every stage write) — otherwise the
+      // Sales Kanban board's "Recently moved" sort wouldn't reorder the
+      // dragged card to the top of its new column until the onSettled
+      // refetch completes, defeating the point of an optimistic update.
+      const now = new Date().toISOString();
       qc.setQueryData<Contact[]>(['sales-contacts'], (old = []) =>
-        old.map((c) => (c.id === contact.id ? { ...c, stage: stageKey as Stage } : c)),
+        old.map((c) => (c.id === contact.id ? { ...c, stage: stageKey as Stage, stageChangedAt: now } : c)),
       );
       return { previous };
     },

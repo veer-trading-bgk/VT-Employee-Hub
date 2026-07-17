@@ -510,9 +510,15 @@ router.put('/leads/:id/stage', authMiddleware, rateLimit(20, 60_000), async (req
     }
 
     const now = new Date().toISOString();
-    const updateAttrs = { '#stage': 'stage', '#ua': 'updatedAt' };
-    const updateVals = { ':stage': stage, ':ua': now };
-    let updateExpr = 'SET #stage = :stage, #ua = :ua';
+    // stageChangedAt is distinct from updatedAt — updatedAt bumps on ANY edit
+    // (rename, notes, tags, ...), which makes it too noisy for "most recently
+    // moved into this stage" ordering. The Sales Kanban board sorts each
+    // column by this field (dashboard sales/page.tsx, 2026-07-17) so a
+    // just-dragged card floats to the top of its new column instead of
+    // landing wherever the board's unrelated sort happened to place it.
+    const updateAttrs = { '#stage': 'stage', '#ua': 'updatedAt', '#sca': 'stageChangedAt' };
+    const updateVals = { ':stage': stage, ':ua': now, ':sca': now };
+    let updateExpr = 'SET #stage = :stage, #ua = :ua, #sca = :sca';
 
     if (stage === 'converted') {
       updateExpr += ', #ca = :ca';

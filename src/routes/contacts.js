@@ -39,6 +39,10 @@ function normaliseLead(l) {
     // Sales CRM list/Kanban view (same gap Item 7 fixed for the inbox intent badge).
     priorityScore: l.priorityScore ?? null,
     priorityTier: l.priorityTier ?? null,
+    // Stamped by every stage-write path (crm.js's lead-stage route,
+    // ContactBulkOpsService.updateStage, AutomationEngine's change_stage) —
+    // the Sales Kanban board's own "Recently moved" sort (2026-07-17).
+    stageChangedAt: l.stageChangedAt ?? null,
   };
 }
 
@@ -63,6 +67,7 @@ function normaliseInbox(u) {
     assignedToName: null,
     chatStatus: 'unassigned',
     nameSource: u.nameSource ?? null,
+    stageChangedAt: u.stageChangedAt ?? null,
   };
 }
 

@@ -58,13 +58,18 @@ async function assignLead(companyId, leadId, { assignedTo, assignedToName }) {
 
 // ── Change pipeline stage for a lead or unknown contact ─────────────────────
 // Same shape as assignLead — unconditional SET, no read-modify-write, no race.
+// stageChangedAt stamped alongside stage (this path previously stamped no
+// timestamp at all) — the Sales Kanban board sorts each column by it so a
+// just-moved contact floats to the top of its new column (dashboard
+// sales/page.tsx, 2026-07-17). Also covers the bulk-update 'stage' operation,
+// which calls this same function for both leads and unknown contacts.
 async function updateStage(companyId, { leadId, phone }, stage) {
   const Key = contactKey(companyId, { leadId, phone });
   await dynamodb.update({
     TableName: TABLE,
     Key,
-    UpdateExpression: 'SET stage = :s',
-    ExpressionAttributeValues: { ':s': stage },
+    UpdateExpression: 'SET stage = :s, stageChangedAt = :sca',
+    ExpressionAttributeValues: { ':s': stage, ':sca': new Date().toISOString() },
   }).promise();
   return { stage };
 }

@@ -81,6 +81,7 @@ export interface Contact {
   updatedAt?: string;                // NOT returned by current API; use lastMessageAt ?? createdAt
   priorityScore?: number | null;     // LeadScoringScheduler — recomputed on a ~60min cycle, not real-time
   priorityTier?: 'hot' | 'warm' | 'cold' | null;
+  stageChangedAt?: string | null;    // stamped by every stage-write path; null for contacts that predate this field
 }
 
 // V3 Follow-up entity (FOLLOWUP# in DynamoDB)

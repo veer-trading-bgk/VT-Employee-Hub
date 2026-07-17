@@ -62,6 +62,37 @@ function contactName(c: Contact): string {
   return c.displayName ?? c.name ?? c.phone ?? '';
 }
 
+// Shared comparator — the List view's column-header sort AND the Kanban
+// board's own per-column sort both call this (2026-07-17) instead of each
+// keeping a separate switch. 'recentlyMoved' sorts by stageChangedAt
+// (stamped by every stage-write path: crm.js's lead-stage route,
+// ContactBulkOpsService.updateStage, AutomationEngine's change_stage
+// action), falling back to createdAt for a contact that predates the
+// field. Ascending by construction (earlier/lower first) — callers reverse
+// when they want newest/highest first.
+function compareContacts(a: Contact, b: Contact, key: string, stageOrder: Map<string, number>): number {
+  switch (key) {
+    case 'name':
+      return contactName(a).localeCompare(contactName(b));
+    case 'stage':
+      return (stageOrder.get(a.stage) ?? 0) - (stageOrder.get(b.stage) ?? 0);
+    case 'priorityScore':
+      return (a.priorityScore ?? -1) - (b.priorityScore ?? -1);
+    case 'lastActivity': {
+      const tA = a.lastMessageAt ?? a.createdAt ?? '';
+      const tB = b.lastMessageAt ?? b.createdAt ?? '';
+      return tA.localeCompare(tB);
+    }
+    case 'recentlyMoved': {
+      const tA = a.stageChangedAt ?? a.createdAt ?? '';
+      const tB = b.stageChangedAt ?? b.createdAt ?? '';
+      return tA.localeCompare(tB);
+    }
+    default:
+      return 0;
+  }
+}
+
 function relTime(ts: string | undefined | null): string {
   if (!ts) return '—';
   const d = new Date(ts);
@@ -1196,6 +1227,13 @@ export default function SalesPage() {
   // agent lands on, not something they have to click a column header to reach.
   const [sortKey, setSortKey]                 = useState('priorityScore');
   const [sortDir, setSortDir]                 = useState<SortDirection>('desc');
+  // Kanban's OWN column order — deliberately independent of sortKey/sortDir
+  // above (List view only). Defaults to 'recentlyMoved' so a card just
+  // dragged to a new stage floats to the top of it, instead of silently
+  // inheriting whatever the List view's sort happened to be (previously:
+  // always Priority desc, with no visible indication Kanban was sorted at
+  // all — the actual bug report this fixes).
+  const [kanbanSortKey, setKanbanSortKey]     = useState('recentlyMoved');
   const [filters, setFilters]                 = useState<Filters>(EMPTY_FILTERS);
   const [bulkMode, setBulkMode]               = useState(false);
   const [selectedIds, setSelectedIds]         = useState<Set<string>>(new Set());
@@ -1287,26 +1325,21 @@ export default function SalesPage() {
   const sortedContacts = useMemo(() => {
     if (!sortDir) return filteredContacts; // Table's 3-state toggle (asc→desc→null) — null means "no sort"
     const stageOrder = new Map(stages.map((s) => [s.key, s.order]));
-    function compare(a: Contact, b: Contact): number {
-      switch (sortKey) {
-        case 'name':
-          return contactName(a).localeCompare(contactName(b));
-        case 'stage':
-          return (stageOrder.get(a.stage) ?? 0) - (stageOrder.get(b.stage) ?? 0);
-        case 'priorityScore':
-          return (a.priorityScore ?? -1) - (b.priorityScore ?? -1);
-        case 'lastActivity': {
-          const tA = a.lastMessageAt ?? a.createdAt ?? '';
-          const tB = b.lastMessageAt ?? b.createdAt ?? '';
-          return tA.localeCompare(tB);
-        }
-        default:
-          return 0;
-      }
-    }
-    const sorted = [...filteredContacts].sort(compare);
+    const sorted = [...filteredContacts].sort((a, b) => compareContacts(a, b, sortKey, stageOrder));
     return sortDir === 'desc' ? sorted.reverse() : sorted;
   }, [filteredContacts, sortKey, sortDir, stages]);
+
+  // Kanban's own column order, decoupled from the List view's sortKey/sortDir
+  // above — a card just dragged to a new stage floats to the top of it under
+  // the 'recentlyMoved' default, instead of landing wherever the List view's
+  // (unrelated) sort happened to place it. 'name' sorts A→Z ascending (as-is);
+  // 'recentlyMoved'/'priorityScore' both want newest/highest first, so the
+  // (ascending, by construction) comparator's result is reversed for those.
+  const kanbanContacts = useMemo(() => {
+    const stageOrder = new Map(stages.map((s) => [s.key, s.order]));
+    const sorted = [...filteredContacts].sort((a, b) => compareContacts(a, b, kanbanSortKey, stageOrder));
+    return kanbanSortKey === 'name' ? sorted : sorted.reverse();
+  }, [filteredContacts, kanbanSortKey, stages]);
 
   function patchFilter(patch: Partial<Filters>) { setFilters((prev) => ({ ...prev, ...patch })); }
 
@@ -1334,8 +1367,13 @@ export default function SalesPage() {
 
   async function handleBulkStage(stageKey: string) {
     const toMove = contacts.filter((c) => selectedIds.has(c.id) && c.stage !== stageKey);
+    // stageChangedAt stamped optimistically here too — same reasoning as
+    // useStageMutation's onMutate (single drag): without it, a bulk stage
+    // move wouldn't reorder to the top of the Kanban board's new column
+    // until the onSettled refetch completes.
+    const now = new Date().toISOString();
     qc.setQueryData<Contact[]>(['sales-contacts'], (old = []) =>
-      old.map((c) => selectedIds.has(c.id) ? { ...c, stage: stageKey as Stage } : c),
+      old.map((c) => selectedIds.has(c.id) ? { ...c, stage: stageKey as Stage, stageChangedAt: now } : c),
     );
     let failed = 0;
     for (const c of toMove) {
@@ -1435,6 +1473,25 @@ export default function SalesPage() {
             ))}
           </div>
 
+          {/* Kanban's own sort control — independent of the List view's
+              column-header sort (sortKey/sortDir above). Defaults to
+              "Recently moved" so a just-dragged card shows at the top of its
+              new column instead of wherever the board's sort used to place
+              it (the reported bug this control + default fixes). */}
+          {view === 'kanban' && (
+            <select
+              value={kanbanSortKey}
+              onChange={(e) => setKanbanSortKey(e.target.value)}
+              className={selectCls}
+              aria-label="Sort Kanban cards"
+              title="Sort Kanban cards"
+            >
+              <option value="recentlyMoved">Recently moved</option>
+              <option value="priorityScore">Priority</option>
+              <option value="name">Name</option>
+            </select>
+          )}
+
           {canCreate && (
             <Button size="sm" iconLeft={<Plus className="h-4 w-4" />} onClick={() => setShowAddLead(true)}>
               Add Lead
@@ -1493,7 +1550,7 @@ export default function SalesPage() {
         />
       ) : view === 'kanban' ? (
         <KanbanBoard
-          contacts={sortedContacts}
+          contacts={kanbanContacts}
           tagMap={tagMap}
           bulkMode={bulkMode}
           selectedIds={selectedIds}

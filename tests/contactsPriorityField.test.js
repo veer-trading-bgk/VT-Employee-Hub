@@ -83,3 +83,54 @@ describe('GET /api/contacts — priorityScore/priorityTier pass-through', () => 
     expect(body.contacts[0]).toMatchObject({ leadId: 'mine', priorityScore: 55, priorityTier: 'warm' });
   });
 });
+
+// 2026-07-17 — same "curated projection silently drops a field" gap as
+// priorityScore above, now for stageChangedAt (the Sales Kanban board's
+// "Recently moved" sort, sales/page.tsx). Covers both normaliseLead() and
+// normaliseInbox() since the Kanban board mixes leads and unknown contacts.
+describe('GET /api/contacts — stageChangedAt pass-through', () => {
+  const handler = getRouteHandler(contactsRouter, '/', 'get');
+  beforeEach(() => jest.clearAllMocks());
+
+  test('includes stageChangedAt for a lead that has been moved at least once', async () => {
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [{
+      PK: 'LEAD#acme#lead1', leadId: 'lead1', companyId: 'acme', name: 'Ravi', phone: '9876543210',
+      stage: 'interested', assignedTo: 'emp_1', stageChangedAt: '2026-07-17T10:00:00.000Z',
+    }] }) });
+    dynamodb.scan.mockReturnValue({ promise: () => Promise.resolve({ Items: [] }) });
+
+    const res = mockRes();
+    await handler({ user: { companyId: 'acme', id: 'admin_1', role: 'admin' }, query: {} }, res, jest.fn());
+
+    const contact = res.json.mock.calls[0][0].contacts.find((c) => c.leadId === 'lead1');
+    expect(contact.stageChangedAt).toBe('2026-07-17T10:00:00.000Z');
+  });
+
+  test('defaults stageChangedAt to null for a lead that predates the field', async () => {
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [{
+      PK: 'LEAD#acme#lead2', leadId: 'lead2', companyId: 'acme', name: 'Priya', phone: '9000000000',
+      stage: 'new_lead', assignedTo: 'emp_1',
+    }] }) });
+    dynamodb.scan.mockReturnValue({ promise: () => Promise.resolve({ Items: [] }) });
+
+    const res = mockRes();
+    await handler({ user: { companyId: 'acme', id: 'admin_1', role: 'admin' }, query: {} }, res, jest.fn());
+
+    const contact = res.json.mock.calls[0][0].contacts.find((c) => c.leadId === 'lead2');
+    expect(contact.stageChangedAt).toBeNull();
+  });
+
+  test('includes stageChangedAt for an unknown (INBOX#) contact too', async () => {
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [] }) });
+    dynamodb.scan.mockReturnValue({ promise: () => Promise.resolve({ Items: [{
+      PK: 'INBOX#acme#9333333333', SK: 'CONTACT', phone: '9333333333', stage: 'new_lead',
+      stageChangedAt: '2026-07-17T11:00:00.000Z',
+    }] }) });
+
+    const res = mockRes();
+    await handler({ user: { companyId: 'acme', id: 'admin_1', role: 'admin' }, query: {} }, res, jest.fn());
+
+    const contact = res.json.mock.calls[0][0].contacts.find((c) => c.phone === '9333333333');
+    expect(contact.stageChangedAt).toBe('2026-07-17T11:00:00.000Z');
+  });
+});

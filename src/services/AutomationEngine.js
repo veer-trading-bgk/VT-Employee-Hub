@@ -830,12 +830,16 @@ class AutomationEngine {
         if (!(await PipelineService.isValidStage(companyId, stage))) {
           throw new Error(`change_stage: "${stage}" is not a valid stage in the current pipeline`);
         }
+        // stageChangedAt alongside updatedAt/stage — same field the two manual
+        // stage-write paths (crm.js, ContactBulkOpsService.updateStage) stamp,
+        // so a stage move driven by automation also floats to the top of its
+        // new column on the Sales Kanban board (sales/page.tsx, 2026-07-17).
         await dynamodb.update({
           TableName: TABLE,
           Key: { PK: leadPK, SK: 'METADATA' },
-          UpdateExpression: 'SET #s = :s, updatedAt = :ua',
+          UpdateExpression: 'SET #s = :s, updatedAt = :ua, stageChangedAt = :sca',
           ExpressionAttributeNames:  { '#s': 'stage' },
-          ExpressionAttributeValues: { ':s': stage, ':ua': now },
+          ExpressionAttributeValues: { ':s': stage, ':ua': now, ':sca': now },
         }).promise();
         return { stage };
       }

@@ -64,6 +64,25 @@ describe('AutomationEngine — change_stage action', () => {
     expect(result).toEqual({ stage: 'interested' });
   });
 
+  // 2026-07-17 — the Sales Kanban board's "Recently moved" sort
+  // (sales/page.tsx) depends on this field being stamped on every
+  // change_stage run, same as the two manual stage-write routes.
+  test('stamps stageChangedAt alongside stage/updatedAt', async () => {
+    PipelineService.isValidStage.mockResolvedValue(true);
+
+    await engine._runAction(
+      CID,
+      { type: 'change_stage', config: { stage: 'interested' } },
+      { leadPK: LEAD_PK },
+    );
+
+    const [{ ExpressionAttributeValues, UpdateExpression }] = dynamodb.update.mock.calls.find(
+      ([a]) => a.Key?.PK === LEAD_PK && a.ExpressionAttributeValues?.[':s'] === 'interested',
+    );
+    expect(UpdateExpression).toMatch(/stageChangedAt = :sca/);
+    expect(ExpressionAttributeValues[':sca']).toEqual(expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/));
+  });
+
   test('throws — not a silent no-op — when the configured stage is not in the live pipeline', async () => {
     // Simulates a workflow authored against a since-changed/customized pipeline.
     PipelineService.isValidStage.mockResolvedValue(false);
