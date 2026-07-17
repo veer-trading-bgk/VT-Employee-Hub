@@ -29,6 +29,7 @@ import { cn } from '@/lib/cn';
 import { apiFetch, ApiClientError } from '@/lib/api';
 import type { Contact, Stage } from '@/types/v3';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
+import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { useStageMutation } from '@/hooks/useStageMutation';
 import { useAuth } from '@/context/AuthContext';
 import { toV3Role } from '@/types/v3';
@@ -1241,13 +1242,14 @@ export default function SalesPage() {
   });
   const tagCatalog = tagCatalogData?.tags ?? [];
 
-  const { data: employeesData } = useQuery({
-    queryKey: ['employees-list'],
-    queryFn: () => apiFetch<{ employees: EmployeeItem[] }>('/api/admin/employees'),
-    enabled: isAdmin,
-    staleTime: 5 * 60_000,
-  });
-  const employees = employeesData?.employees ?? [];
+  // Canonical hook — the previous inline useQuery here typed the response as
+  // { employees: EmployeeItem[] }, but GET /api/admin/employees actually
+  // returns { success, data: [...] } (confirmed in src/routes/admin.js), so
+  // employeesData?.employees was always undefined and this "Owner" filter
+  // silently never populated for any admin. useEmployeesList() normalises
+  // both shapes and is the single canonical owner of the ['employees-list']
+  // query key (see its own header comment).
+  const { employees } = useEmployeesList({ enabled: isAdmin });
 
   const tagMap = useMemo(
     () => new Map(tagCatalog.map((t) => [t.id, t])),

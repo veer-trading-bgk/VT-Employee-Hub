@@ -5,6 +5,7 @@ import { apiFetch } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { usePipelineStages } from '@/hooks/usePipelineStages';
 import { useEmployeesList } from '@/hooks/useEmployeesList';
+import { useTagCatalog } from '@/hooks/useTagCatalog';
 import type { WorkflowStep } from '@/types/automations';
 
 // ── Shared styles — also used by WorkflowBuilder.tsx's TriggerEditor ─────────
@@ -35,12 +36,12 @@ export function ActionEditor({ step, onChange }: { step: WorkflowStep; onChange:
   // regardless of role; this also silently excluded admin/superadmin like
   // every other duplicate employee-fetch this hook replaces.
   const { employees } = useEmployeesList({ enabled: step.type === 'assign_employee' });
-  const { data: tagsData } = useQuery<{ tags: string[] }>({
-    queryKey: ['tag-catalog'],
-    queryFn:  () => apiFetch('/api/tags'),
-    staleTime: 5 * 60_000,
-    enabled:  step.type === 'add_tag',
-  });
+  // GET /api/tags returns { success, tags: Tag[] } (full {id, label, color, ...}
+  // objects), not string[] — useTagCatalog() is the canonical, correctly-typed
+  // owner of the ['tag-catalog'] query (see docs/phase3/TECHNICAL_DEBT.md: the
+  // former inline useQuery<{tags: string[]}> here rendered raw Tag objects as
+  // <option> children, throwing "Objects are not valid as a React child").
+  const { tags: tagCatalog } = useTagCatalog();
   const { stages: pipelineStages } = usePipelineStages();
 
   const set = (key: string, value: unknown) => onChange({ ...cfg, [key]: value } as WorkflowStep['config']);
@@ -108,13 +109,12 @@ export function ActionEditor({ step, onChange }: { step: WorkflowStep; onChange:
     }
 
     case 'add_tag': {
-      const tags = tagsData?.tags ?? [];
       return (
         <Field label="Tag">
-          {tags.length > 0 ? (
+          {tagCatalog.length > 0 ? (
             <select value={String(cfg.tag ?? '')} onChange={(e) => set('tag', e.target.value)} className={selectCls}>
               <option value="">Select tag…</option>
-              {tags.map((t) => <option key={t} value={t}>{t}</option>)}
+              {tagCatalog.map((tag) => <option key={tag.id} value={tag.id}>{tag.label}</option>)}
             </select>
           ) : (
             <input value={String(cfg.tag ?? '')} onChange={(e) => set('tag', e.target.value)} placeholder="Tag name" className={inputCls} />
