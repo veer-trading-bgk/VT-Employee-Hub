@@ -287,6 +287,23 @@ router.put('/stage', authMiddleware, rateLimit(20, 60_000), async (req, res, nex
 
     if (!leadId && !phone) return res.status(400).json({ error: 'leadId or phone required' });
 
+    // Ownership gate for restricted roles — the EXACT check crm.js's
+    // PUT /leads/:id/stage already enforces (same role set, same 403), which
+    // this route previously bypassed entirely: any authenticated user could
+    // change ANY lead's stage company-wide by passing a leadId here
+    // (2026-07-17 360° audit, Stage 1 Fix 1). Only enforced when a leadId is
+    // present — unknown (INBOX#) contacts have no assignedTo to check
+    // against, and restricted roles never see them in any list anyway.
+    const empRoles = ['telecaller', 'agent', 'intern'];
+    if (leadId && empRoles.includes(req.user.role)) {
+      const Key = ContactBulkOps.contactKey(companyId, { leadId });
+      const existing = await dynamodb.get({ TableName: TABLE, Key }).promise();
+      if (!existing.Item) return res.status(404).json({ error: 'Lead not found' });
+      if (existing.Item.assignedTo !== req.user.id) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
+
     const result = await ContactBulkOps.updateStage(companyId, { leadId, phone }, stage);
     res.json({ success: true, ...result });
   } catch (err) {

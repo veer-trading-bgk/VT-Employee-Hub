@@ -13,6 +13,7 @@ const CIS = require('../services/CustomerIdentityService');
 const PipelineService = require('../services/PipelineService');
 const ContactBulkOps = require('../services/ContactBulkOpsService');
 const TagService = require('../services/TagService');
+const TeamScopeService = require('../services/TeamScopeService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -325,6 +326,19 @@ router.get('/leads/:id', authMiddleware, async (req, res, next) => {
     const empRoles = ['telecaller', 'agent', 'intern'];
     if (empRoles.includes(req.user.role) && meta.assignedTo !== req.user.id) {
       return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    // team_lead is TEAM-scoped, not owner-only like the three roles above —
+    // blocked only when the lead belongs to neither them nor one of their
+    // team members. Same TeamScopeService the Inbox list scoping uses, so
+    // "visible in my inbox" and "openable by id" can't disagree (previously
+    // this route didn't scope team_lead at all — company-wide detail reads
+    // despite an own-only list; 2026-07-17 360° audit, Stage 1 Fix 3).
+    if (req.user.role === 'team_lead' && meta.assignedTo !== req.user.id) {
+      const teamMemberIds = await TeamScopeService.getTeamMemberIds(companyId, req.user.id);
+      if (!teamMemberIds.has(meta.assignedTo)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
     }
 
     const msgQuery = {

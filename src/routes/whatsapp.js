@@ -21,6 +21,7 @@ const WASendSvc            = require('../services/WhatsAppSendService');
 const FlowManagementService = require('../services/FlowManagementService');
 const TagService           = require('../services/TagService');
 const ContactService       = require('../services/ContactService');
+const TeamScopeService     = require('../services/TeamScopeService');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
 const { welcomeConfigSchema, delayedResponseConfigSchema, workingHoursConfigSchema, oooConfigSchema, branchSchema, stripStorageMetadata } = require('../utils/validation');
 const { resolveWelcomeVariables, resolveTemplateParams } = require('../utils/welcomeVariables');
@@ -2094,8 +2095,21 @@ router.get('/inbox', authMiddleware, async (req, res, next) => {
       } while (lk2);
     }
 
-    // Admin/manager/superadmin see all leads; other roles see only their own assigned leads
-    const visibleLeads = canViewAll ? leadItems : leadItems.filter((l) => l.assignedTo === req.user.id);
+    // Admin/manager/superadmin see all leads. team_lead sees their own PLUS
+    // their team members' leads — same TeamScopeService the Contacts module
+    // already uses for this exact role (contacts.js fetchFilteredContacts,
+    // OQ-006), previously missing here so team_lead was own-only in the Inbox
+    // against 09_PERMISSION_MATRIX.md §4 (2026-07-17 360° audit, Stage 1
+    // Fix 2). Every other role stays own-assigned-only, unchanged.
+    let visibleLeads;
+    if (canViewAll) {
+      visibleLeads = leadItems;
+    } else if (req.user.role === 'team_lead') {
+      const teamMemberIds = await TeamScopeService.getTeamMemberIds(companyId, req.user.id);
+      visibleLeads = leadItems.filter((l) => l.assignedTo === req.user.id || teamMemberIds.has(l.assignedTo));
+    } else {
+      visibleLeads = leadItems.filter((l) => l.assignedTo === req.user.id);
+    }
 
     // Dedup: suppress unknown contacts whose phoneNorm already exists as ANY CRM lead.
     // Uses phoneNorm (canonical 10-digit) on both sides so cross-format matches are caught:
@@ -2216,7 +2230,13 @@ router.get('/inbox/unknown/:phone/messages', authMiddleware, checkRole(['admin',
 });
 
 // ── POST /api/whatsapp/inbox/unknown/:phone/send ──────────────────────────────
-router.post('/inbox/unknown/:phone/send', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
+// checkRole matches the read-side gate on GET /inbox/unknown/:phone/messages
+// above — restricted roles can't see unknown contacts anywhere, so they must
+// not be able to message arbitrary numbers through this route either
+// (previously authMiddleware-only; _assertSendPermission skips non-lead
+// targets entirely, so nothing downstream caught it — 2026-07-17 360° audit,
+// Stage 1 Fix 4).
+router.post('/inbox/unknown/:phone/send', authMiddleware, checkRole(['admin', 'manager']), rateLimit(20, 60_000), async (req, res, next) => {
   try {
     const { message } = req.body;
     if (!message?.trim()) return res.status(400).json({ error: 'message required' });
