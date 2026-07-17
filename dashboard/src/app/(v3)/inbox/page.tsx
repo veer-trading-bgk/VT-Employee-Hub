@@ -110,6 +110,11 @@ interface WaMessage {
   direction: 'inbound' | 'outbound';
   content: string;
   timestamp: string;
+  // Real stored attribute on every MSG# item (whatsapp.js's msgItem, spread
+  // raw into both message-fetch responses — never stripped by a curated
+  // projection) — just missing from this interface until Stage 2 (2026-07-17
+  // 360° audit Fix 2) needed it to wire real read receipts.
+  waMessageId?: string;
   type?: 'text' | 'image' | 'video' | 'audio' | 'document' | 'sticker' | 'template' | 'flow_response' | 'button_reply' | 'list_reply' | 'interactive' | 'location';
   s3Key?: string;
   mediaId?: string;
@@ -1173,24 +1178,58 @@ function ThreadPane({
     return conversation.lastInboundAt;
   })();
 
+  // The most recent inbound message's waMessageId — needed to send a real
+  // Meta read receipt (Stage 2 Fix 2, 2026-07-17 360° audit). The backend
+  // route only sends a receipt when lastWaMessageId is present in the
+  // request body; previously nothing on this page ever supplied one, so
+  // read receipts (blue ticks) never actually fired.
+  const latestInboundWaMessageId = (() => {
+    const inbound = messages.filter((m) => m.direction === 'inbound');
+    return inbound.length > 0 ? inbound[inbound.length - 1].waMessageId : undefined;
+  })();
+
   const windowRemainingMs = getWindowRemainingMs(effectiveLastInboundAt, now);
   const windowExpired = windowRemainingMs === 0;
   const windowClosingSoon = !windowExpired && windowRemainingMs <= CLOSING_SOON_MS;
 
-  // Mark conversation as read when opened (clears unread badge + sends read receipts)
+  // Shared mark-read call (Stage 2, 2026-07-17 360° audit) — used both when a
+  // conversation is first opened (below) and whenever a new inbound message
+  // arrives via WebSocket while it stays open (Fix 3, in the WS effect
+  // further down). Passing lastWaMessageId lets the backend actually send a
+  // Meta read receipt (Fix 2) instead of only resetting unreadCount.
+  const markConversationRead = useCallback((lastWaMessageId?: string) => {
+    const body = lastWaMessageId ? JSON.stringify({ lastWaMessageId }) : undefined;
+    const path = conversation.type === 'lead' && conversation.leadId
+      ? `/api/whatsapp/inbox/${conversation.leadId}/mark-read`
+      : conversation.type === 'unknown'
+        ? `/api/whatsapp/inbox/unknown/${conversation.phone}/mark-read`
+        : null;
+    if (!path) return;
+    apiFetch(path, { method: 'POST', body })
+      .then(() => qc.invalidateQueries({ queryKey: ['wa-inbox'] }))
+      .catch(() => {});
+  }, [conversation, qc]);
+
+  // Mark conversation as read when opened (clears unread badge + sends read
+  // receipts). Guarded by a ref keyed on convKey — NOT just fired once on
+  // [convKey] alone — because live testing surfaced a real race in the
+  // original [convKey]-only version (Stage 2, 2026-07-17 360° audit, Fix 2):
+  // selecting a conversation triggers the ['wa-conv', convKey] query and
+  // this effect in the SAME render, but the query can only resolve on a
+  // LATER tick, so `messages` (and therefore latestInboundWaMessageId) was
+  // still empty on almost every real conversation-open — not a rare edge
+  // case, the dominant one. The ref lets this effect re-run (harmlessly)
+  // whenever `isLoading`/the derived id changes without ever double-sending
+  // for the same conversation: it waits for the in-flight fetch to settle,
+  // then sends exactly once with whatever id is actually available by then.
+  const markedReadForConvRef = useRef<string | null>(null);
   useEffect(() => {
-    if ((conversation.unreadCount ?? 0) === 0) return;
-    if (conversation.type === 'lead' && conversation.leadId) {
-      apiFetch(`/api/whatsapp/inbox/${conversation.leadId}/mark-read`, { method: 'POST' })
-        .then(() => qc.invalidateQueries({ queryKey: ['wa-inbox'] }))
-        .catch(() => {});
-    } else if (conversation.type === 'unknown') {
-      apiFetch(`/api/whatsapp/inbox/unknown/${conversation.phone}/mark-read`, { method: 'POST' })
-        .then(() => qc.invalidateQueries({ queryKey: ['wa-inbox'] }))
-        .catch(() => {});
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [convKey]);
+    if (markedReadForConvRef.current === convKey) return;
+    if ((conversation.unreadCount ?? 0) === 0) { markedReadForConvRef.current = convKey; return; }
+    if (isLoading) return; // wait for this conversation's own message fetch to resolve at least once
+    markedReadForConvRef.current = convKey;
+    markConversationRead(latestInboundWaMessageId);
+  }, [convKey, isLoading, latestInboundWaMessageId, conversation.unreadCount, markConversationRead]);
 
   // Resolve / Reopen conversation (only available for CRM leads, not unknown contacts)
   const resolveMutation = useMutation({
@@ -1206,20 +1245,37 @@ function ThreadPane({
     onError: () => toast.error('Failed to update conversation status'),
   });
 
-  // Real-time: refetch when a WA message arrives for this conversation
+  // Real-time: refetch when a WA message arrives for this conversation, and
+  // (Stage 2 Fix 3, 2026-07-17 360° audit) re-mark-read too — otherwise a new
+  // inbound message bumps the backend's unreadCount while this conversation
+  // is already open and being actively viewed, leaving a stale unread badge
+  // until the user navigates away and back (which re-runs the mark-read-on-
+  // open effect above via a convKey change). Uses the just-arrived message's
+  // own waMessageId straight off the WS payload — whatsapp.js's notifyCompany
+  // spreads the real msgItem (including waMessageId) into `message`, so this
+  // doesn't need to wait for the refetch above to complete.
   useEffect(() => {
     const handler = (wsMsg: WsMessage) => {
-      const p = wsMsg as WsMessage & { conversationId?: string; phone?: string; from?: string };
+      const p = wsMsg as WsMessage & {
+        conversationId?: string; phone?: string; from?: string;
+        message?: { direction?: string; waMessageId?: string };
+      };
       const isThis = conversation.type === 'lead'
         ? p.conversationId === conversation.leadId
         : (p.phone === conversation.phone || String(p.from) === conversation.phone);
       if (isThis) {
         qc.refetchQueries({ queryKey: ['wa-conv', convKey] });
+        // whatsapp_message is only ever emitted from the inbound-webhook path
+        // (never for an outbound send), but check direction explicitly
+        // rather than assume — cheap, and correct if that ever changes.
+        if (p.message?.direction === 'inbound') {
+          markConversationRead(p.message.waMessageId);
+        }
       }
     };
     wsClient.on('whatsapp_message', handler);
     return () => wsClient.off('whatsapp_message', handler);
-  }, [qc, convKey, conversation]);
+  }, [qc, convKey, conversation, markConversationRead]);
 
   const sendMutation = useMutation({
     mutationFn: (text: string) => {

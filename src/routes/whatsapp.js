@@ -2254,10 +2254,83 @@ router.post('/inbox/unknown/:phone/send', authMiddleware, checkRole(['admin', 'm
   }
 });
 
+// ── Ownership gate shared by resolve/reopen/pin/mark-read (Stage 2, 2026-07-17
+// 360° audit fix plan) — same check shape Stage 1 already established in
+// crm.js's GET /leads/:id and contacts.js's PUT /stage: restricted roles may
+// only act on their own assigned lead; team_lead may act on their own OR any
+// team member's lead (TeamScopeService — keeps "visible in the team_lead's
+// inbox" (Stage 1 Fix 2) and "actionable here" from disagreeing, same
+// reasoning as crm.js's team_lead branch, Stage 1 Fix 3). admin/manager/
+// superadmin are unrestricted. Previously these 4 routes had no ownership
+// check at all — any authenticated company member could resolve/reopen/pin/
+// mark-read ANY lead's conversation, including one not assigned to them.
+//
+// Fetches and returns the lead's METADATA Item on success so a caller that
+// already needs it (pin's toggle read, mark-read's unreadCount read for the
+// Fix 4 race-safe reset below) gets it for free instead of a second GET; on
+// failure the response has already been sent (404/403) and this returns
+// null — callers must check for null and return without any further write.
+async function assertOwnsLead(req, res, companyId, leadId) {
+  const restrictedRoles = new Set(['telecaller', 'agent', 'intern']);
+  const PK = `LEAD#${companyId}#${leadId}`;
+  const { Item } = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
+  if (!Item) {
+    res.status(404).json({ error: 'Lead not found' });
+    return null;
+  }
+  if (restrictedRoles.has(req.user.role) && Item.assignedTo !== req.user.id) {
+    res.status(403).json({ error: 'Forbidden' });
+    return null;
+  }
+  if (req.user.role === 'team_lead' && Item.assignedTo !== req.user.id) {
+    const teamMemberIds = await TeamScopeService.getTeamMemberIds(companyId, req.user.id);
+    if (!teamMemberIds.has(Item.assignedTo)) {
+      res.status(403).json({ error: 'Forbidden' });
+      return null;
+    }
+  }
+  return Item;
+}
+
+// ── Race-safe unreadCount reset (Stage 2 Fix 4, 2026-07-17 360° audit) — the
+// previous unconditional 'SET unreadCount = :zero' could interleave with a
+// concurrent inbound increment (both call sites use
+// 'unreadCount = if_not_exists(unreadCount, :zero) + :one' — see
+// updateLeadLastMessage.js and this file's own webhook handler) and silently
+// wipe out a message that arrived a moment before, or have its own reset
+// immediately undone — purely last-writer-wins either way. Conditions the
+// ADD's negative delta on the exact unreadCount value just read, mirroring
+// WalletService.debit()'s ADD+ConditionExpression-on-the-field's-own-value
+// shape — this codebase's one existing precedent for guarding a numeric
+// field this way (as opposed to a side version/updatedAt sentinel, which
+// ConversationRepository's own incrementUnread() already proves doesn't work
+// here, since increments never bump it). A failed condition means a message
+// arrived between the read and this write — unreadCount already correctly
+// reflects it, so the conflict is swallowed rather than retried to force
+// zero, same as ContactBulkOpsService.updateTags()'s "don't fight a genuine
+// concurrent change" philosophy.
+async function markReadCountSafe(PK, SK, currentUnreadCount) {
+  if (!currentUnreadCount) return; // already 0 — nothing to reset, no write needed
+  try {
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK, SK },
+      UpdateExpression: 'ADD unreadCount :negN',
+      ConditionExpression: 'unreadCount = :n',
+      ExpressionAttributeValues: { ':negN': -currentUnreadCount, ':n': currentUnreadCount },
+    }).promise();
+  } catch (e) {
+    if (e.code !== 'ConditionalCheckFailedException') throw e;
+  }
+}
+
 // ── PUT /api/whatsapp/inbox/:leadId/resolve ───────────────────────────────────
 router.put('/inbox/:leadId/resolve', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
-    const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
+    const companyId = req.user.companyId;
+    const lead = await assertOwnsLead(req, res, companyId, req.params.leadId);
+    if (!lead) return;
+    const PK = `LEAD#${companyId}#${req.params.leadId}`;
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK, SK: 'METADATA' },
@@ -2265,7 +2338,7 @@ router.put('/inbox/:leadId/resolve', authMiddleware, rateLimit(20, 60_000), asyn
       ExpressionAttributeValues: { ':s': 'resolved', ':ra': new Date().toISOString(), ':rb': req.user.id },
     }).promise();
     // Fire-and-forget: mirror status change to CONV# entity
-    syncConvStatus(req.user.companyId, PK, 'resolved', req.user.id).catch(() => {});
+    syncConvStatus(companyId, PK, 'resolved', req.user.id).catch(() => {});
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -2273,7 +2346,10 @@ router.put('/inbox/:leadId/resolve', authMiddleware, rateLimit(20, 60_000), asyn
 // ── PUT /api/whatsapp/inbox/:leadId/reopen ─────────────────────────────────────
 router.put('/inbox/:leadId/reopen', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
-    const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
+    const companyId = req.user.companyId;
+    const lead = await assertOwnsLead(req, res, companyId, req.params.leadId);
+    if (!lead) return;
+    const PK = `LEAD#${companyId}#${req.params.leadId}`;
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK, SK: 'METADATA' },
@@ -2281,7 +2357,7 @@ router.put('/inbox/:leadId/reopen', authMiddleware, rateLimit(20, 60_000), async
       ExpressionAttributeValues: { ':s': 'open' },
     }).promise();
     // Fire-and-forget: mirror status change to CONV# entity
-    syncConvStatus(req.user.companyId, PK, 'open', req.user.id).catch(() => {});
+    syncConvStatus(companyId, PK, 'open', req.user.id).catch(() => {});
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -2289,9 +2365,11 @@ router.put('/inbox/:leadId/reopen', authMiddleware, rateLimit(20, 60_000), async
 // ── PUT /api/whatsapp/inbox/:leadId/pin — toggle pinned conversation ───────────
 router.put('/inbox/:leadId/pin', authMiddleware, rateLimit(20, 60_000), async (req, res, next) => {
   try {
-    const PK = `LEAD#${req.user.companyId}#${req.params.leadId}`;
-    const current = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
-    const pinned = !(current.Item?.pinned ?? false);
+    const companyId = req.user.companyId;
+    const lead = await assertOwnsLead(req, res, companyId, req.params.leadId);
+    if (!lead) return;
+    const PK = `LEAD#${companyId}#${req.params.leadId}`;
+    const pinned = !(lead.pinned ?? false);
     await dynamodb.update({
       TableName: TABLE,
       Key: { PK, SK: 'METADATA' },
@@ -4060,21 +4138,23 @@ router.post('/inbox/:leadId/mark-read', authMiddleware, async (req, res, next) =
     const companyId = req.user.companyId;
     const { lastWaMessageId } = req.body;
 
-    // Reset unread count — fire-and-forget
-    dynamodb.update({
-      TableName: TABLE,
-      Key: { PK: `LEAD#${companyId}#${leadId}`, SK: 'METADATA' },
-      UpdateExpression: 'SET unreadCount = :zero',
-      ExpressionAttributeValues: { ':zero': 0 },
-    }).promise().catch(() => {});
+    // Ownership gate (Stage 2 Fix 1) — the same dynamodb.get() this needs
+    // doubles as Fix 4's "read the current unreadCount moments before the
+    // reset" step, so no second read is needed for the race-safe write below.
+    const lead = await assertOwnsLead(req, res, companyId, leadId);
+    if (!lead) return;
+    const PK = `LEAD#${companyId}#${leadId}`;
+
+    // Reset unread count — race-safe (Stage 2 Fix 4), fire-and-forget same as before
+    markReadCountSafe(PK, 'METADATA', lead.unreadCount ?? 0).catch(() => {});
     // Fire-and-forget: sync unread reset to CONV# entity
-    syncMarkRead(companyId, { leadPK: `LEAD#${companyId}#${leadId}` }, req.user.id).catch(() => {});
+    syncMarkRead(companyId, { leadPK: PK }, req.user.id).catch(() => {});
 
     // Send read receipt to Meta (shows blue ticks on customer's phone) — via
     // WhatsAppSendService per ADR-012, not a direct Graph API call.
     if (lastWaMessageId) {
       await WASendSvc.sendReadReceipt(
-        companyId, { leadPK: `LEAD#${companyId}#${leadId}` }, lastWaMessageId, req.user,
+        companyId, { leadPK: PK }, lastWaMessageId, req.user,
       ).catch(() => {});
     }
 
@@ -4083,19 +4163,23 @@ router.post('/inbox/:leadId/mark-read', authMiddleware, async (req, res, next) =
 });
 
 // ── POST /api/whatsapp/inbox/unknown/:phone/mark-read ─────────────────────────
-// Resets unreadCount to 0 for unknown (pre-CRM) contacts
+// Resets unreadCount to 0 for unknown (pre-CRM) contacts. No ownership gate —
+// unknown/INBOX# contacts have no assignedTo field to check against (same
+// reasoning as Stage 1 Fix 1's contacts.js gate, which is likewise only
+// enforced when a leadId is present).
 router.post('/inbox/unknown/:phone/mark-read', authMiddleware, async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
     const phone = req.params.phone.replace(/\D/g, '');
-    await dynamodb.update({
-      TableName: TABLE,
-      Key: { PK: `INBOX#${companyId}#${phone}`, SK: 'CONTACT' },
-      UpdateExpression: 'SET unreadCount = :zero',
-      ExpressionAttributeValues: { ':zero': 0 },
-    }).promise().catch(() => {});
+    const PK = `INBOX#${companyId}#${phone}`;
+    // Fix 4's race-safe reset needs a value to condition on — narrow
+    // projection since unreadCount is the only field this route touches.
+    const { Item } = await dynamodb.get({
+      TableName: TABLE, Key: { PK, SK: 'CONTACT' }, ProjectionExpression: 'unreadCount',
+    }).promise();
+    await markReadCountSafe(PK, 'CONTACT', Item?.unreadCount ?? 0).catch(() => {});
     // Fire-and-forget: sync unread reset to CONV# entity
-    syncMarkRead(companyId, { inboxPK: `INBOX#${companyId}#${phone}` }, req.user.id).catch(() => {});
+    syncMarkRead(companyId, { inboxPK: PK }, req.user.id).catch(() => {});
     res.json({ success: true });
   } catch (err) { next(err); }
 });
@@ -4297,3 +4381,4 @@ module.exports.parseListReply = parseListReply;
 module.exports.sendWelcomeMessage = sendWelcomeMessage;
 module.exports.fireButtonFollowUp = fireButtonFollowUp;
 module.exports.sendRegisteredFlow = sendRegisteredFlow;
+module.exports.markReadCountSafe = markReadCountSafe;
