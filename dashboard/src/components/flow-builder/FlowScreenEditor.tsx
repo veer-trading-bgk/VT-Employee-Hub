@@ -22,9 +22,12 @@ import { GripVertical } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import {
   FLOW_LIMITS,
+  SCREEN_ID_PATTERN,
   createComponent,
+  deriveScreenId,
   isFormComponent,
   isTextContentComponent,
+  sanitizeScreenId,
   type FlowComponent,
   type FlowComponentType,
   type FlowScreen,
@@ -36,6 +39,11 @@ import { ComponentConfigPanel } from './ComponentConfigPanel';
 interface FlowScreenEditorProps {
   screen: FlowScreen;
   onChange: (screen: FlowScreen) => void;
+  /** Other screens' ids — flags duplicate screen-id edits inline. */
+  otherScreenIds?: ReadonlySet<string>;
+  /** Other screens' field names — cross-screen data passing needs Flow-unique
+   * names, so both name generation and duplicate warnings consider these. */
+  externalFieldNames?: ReadonlySet<string>;
 }
 
 /**
@@ -45,9 +53,12 @@ interface FlowScreenEditorProps {
  * Pure controlled component — no fetching, no routing; Phase 2b owns
  * save/publish wiring.
  */
-export function FlowScreenEditor({ screen, onChange }: FlowScreenEditorProps) {
+export function FlowScreenEditor({ screen, onChange, otherScreenIds, externalFieldNames }: FlowScreenEditorProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = screen.components.find((c) => c.id === selectedId) ?? null;
+
+  const screenIdInvalid = !SCREEN_ID_PATTERN.test(screen.id);
+  const screenIdDuplicate = otherScreenIds?.has(screen.id) ?? false;
 
   // distance: 5 keeps plain clicks (select) from starting a drag on the handle;
   // the keyboard sensor is dnd-kit's documented a11y pairing for sortable lists.
@@ -67,7 +78,7 @@ export function FlowScreenEditor({ screen, onChange }: FlowScreenEditorProps) {
 
   function handleAdd(type: FlowComponentType) {
     if (screen.components.length >= FLOW_LIMITS.maxComponentsPerScreen) return;
-    const component = createComponent(type, screen.components);
+    const component = createComponent(type, screen.components, externalFieldNames);
     onChange({ ...screen, components: [...screen.components, component] });
     setSelectedId(component.id);
   }
@@ -92,9 +103,32 @@ export function FlowScreenEditor({ screen, onChange }: FlowScreenEditorProps) {
               <label className="block text-[11px] font-medium text-neutral-500">Screen title</label>
               <input
                 value={screen.title}
-                onChange={(e) => onChange({ ...screen, title: e.target.value })}
+                onChange={(e) => {
+                  // Auto-derive the id from the title until the user edits the
+                  // id by hand — detected statelessly: an untouched id always
+                  // equals the derivation of the title it was derived from.
+                  const idWasAuto = screen.id === deriveScreenId(screen.title);
+                  onChange({
+                    ...screen,
+                    title: e.target.value,
+                    ...(idWasAuto ? { id: deriveScreenId(e.target.value) } : {}),
+                  });
+                }}
                 placeholder="Screen title"
                 className={inputCls}
+              />
+            </div>
+            <div className="w-44 shrink-0 space-y-1">
+              <label className="block text-[11px] font-medium text-neutral-500">Screen ID</label>
+              <input
+                value={screen.id}
+                onChange={(e) => onChange({ ...screen, id: sanitizeScreenId(e.target.value) })}
+                placeholder="SCREEN_ID"
+                className={cn(
+                  inputCls,
+                  'font-mono text-xs uppercase',
+                  (screenIdInvalid || screenIdDuplicate) && 'border-error-500 focus:border-error-500 focus:ring-error-500/20',
+                )}
               />
             </div>
             <label className="flex shrink-0 items-center gap-2 pb-2 text-xs font-medium text-neutral-700 dark:text-neutral-300">
@@ -107,9 +141,17 @@ export function FlowScreenEditor({ screen, onChange }: FlowScreenEditorProps) {
               Terminal screen
             </label>
           </div>
-          <p className="mt-1 text-[11px] text-neutral-400">
-            A terminal screen&apos;s Footer completes the Flow; other screens&apos; Footers navigate to the next screen.
-          </p>
+          {screenIdInvalid ? (
+            <p className="mt-1 text-[11px] text-error-500">
+              Screen ID must be letters, digits and underscores, and cannot start with a digit.
+            </p>
+          ) : screenIdDuplicate ? (
+            <p className="mt-1 text-[11px] text-error-500">Another screen already uses this ID.</p>
+          ) : (
+            <p className="mt-1 text-[11px] text-neutral-400">
+              A terminal screen&apos;s Footer completes the Flow; other screens&apos; Footers navigate to the next screen.
+            </p>
+          )}
         </div>
 
         <div className="space-y-1.5">
@@ -144,6 +186,7 @@ export function FlowScreenEditor({ screen, onChange }: FlowScreenEditorProps) {
           <ComponentConfigPanel
             component={selected}
             screen={screen}
+            externalFieldNames={externalFieldNames}
             onChange={handleComponentChange}
             onClose={() => setSelectedId(null)}
             onDelete={handleDelete}

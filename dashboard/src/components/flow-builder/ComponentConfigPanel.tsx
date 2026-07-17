@@ -24,6 +24,9 @@ interface ComponentConfigPanelProps {
   component: FlowComponent;
   /** Owning screen — used for cross-component checks (duplicate field names). */
   screen: FlowScreen;
+  /** Field names owned by OTHER screens — duplicates across screens break
+   * cross-screen data passing, so they get the same inline warning. */
+  externalFieldNames?: ReadonlySet<string>;
   onChange: (component: FlowComponent) => void;
   onClose: () => void;
   onDelete: () => void;
@@ -36,12 +39,13 @@ interface ComponentConfigPanelProps {
  * Not a Drawer for the same reason NodeConfigPanel isn't: the stack must stay
  * clickable while a component's config is open.
  */
-export function ComponentConfigPanel({ component, screen, onChange, onClose, onDelete }: ComponentConfigPanelProps) {
+export function ComponentConfigPanel({ component, screen, externalFieldNames, onChange, onClose, onDelete }: ComponentConfigPanelProps) {
   const { label: title, icon: Icon } = COMPONENT_META[component.type];
   const subtitle = isFormComponent(component) ? component.name : component.type;
   const duplicateName =
     isFormComponent(component) &&
-    screen.components.some((c) => c.id !== component.id && isFormComponent(c) && c.name === component.name);
+    (screen.components.some((c) => c.id !== component.id && isFormComponent(c) && c.name === component.name) ||
+      (externalFieldNames?.has(component.name) ?? false));
 
   return (
     <div

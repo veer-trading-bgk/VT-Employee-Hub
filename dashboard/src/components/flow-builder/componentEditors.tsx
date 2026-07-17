@@ -83,7 +83,9 @@ function NameField({ value, duplicate, onChange }: {
         className={cn(inputCls, 'font-mono text-xs', duplicate && 'border-error-500 focus:border-error-500 focus:ring-error-500/20')}
       />
       {duplicate ? (
-        <p className="text-[11px] text-error-500">Another field on this screen already uses this name.</p>
+        <p className="text-[11px] text-error-500">
+          Another field in this Flow already uses this name — names must be unique across all screens.
+        </p>
       ) : (
         <p className="text-[11px] text-neutral-400">Lowercase letters, numbers and underscores.</p>
       )}

@@ -5,13 +5,13 @@ import { notFound } from 'next/navigation';
 import { CheckCircle2, XCircle } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { fromFlowJson, toFlowJson, type FlowJson, type FlowScreen } from '@/types/flowBuilder';
-import { FlowScreenEditor } from '@/components/flow-builder/FlowScreenEditor';
+import { FlowScreensEditor } from '@/components/flow-builder/FlowScreensEditor';
 
-// Dev-only harness for the Phase 2a Flow screen editor — NOT linked from any
-// navigation and 404s in production builds. Local mock state only: it exists so
-// the stack render / drag-reorder / toFlowJson round-trip can be verified
-// visually before Phase 2b wires real save/publish. Delete or gate further
-// when 2b lands a real entry point.
+// Dev-only harness for the Flow screen editor — NOT linked from any navigation
+// and 404s in production builds. Drives the same pure multi-screen surface the
+// real workspace uses (FlowScreensEditor) against local mock state, so screen
+// management, reordering, validation and the toFlowJson round-trip (including
+// Phase 2b's cross-screen data passing) stay verifiable without a backend.
 
 const MOCK_SCREENS: FlowScreen[] = [
   {
@@ -73,43 +73,19 @@ export default function FlowBuilderDevPage() {
 
 function FlowBuilderHarness() {
   const [screens, setScreens] = useState<FlowScreen[]>(MOCK_SCREENS);
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [activeId, setActiveId] = useState(MOCK_SCREENS[0].id);
   const roundTrip = checkRoundTrip(screens);
-
-  function handleScreenChange(updated: FlowScreen) {
-    setScreens((prev) => prev.map((s, i) => (i === activeIndex ? updated : s)));
-  }
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-6">
       <div>
         <h1 className="text-lg font-semibold text-neutral-900 dark:text-white">Flow screen editor — dev harness</h1>
         <p className="text-xs text-neutral-400">
-          Phase 2a surface only. Local mock state, no API calls; dev builds only.
+          Editor surface only. Local mock state, no API calls; dev builds only.
         </p>
       </div>
 
-      {/* Screen tabs */}
-      <div className="flex items-center gap-1.5">
-        {screens.map((screen, i) => (
-          <button
-            key={screen.id}
-            type="button"
-            onClick={() => setActiveIndex(i)}
-            className={cn(
-              'rounded-lg px-3 py-1.5 text-xs font-medium',
-              i === activeIndex
-                ? 'bg-primary-600 text-white'
-                : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700',
-            )}
-          >
-            {screen.title || screen.id}
-            {screen.terminal && ' (terminal)'}
-          </button>
-        ))}
-      </div>
-
-      <FlowScreenEditor screen={screens[activeIndex]} onChange={handleScreenChange} />
+      <FlowScreensEditor screens={screens} onChange={setScreens} activeId={activeId} onActiveChange={setActiveId} />
 
       {/* Live round-trip verification */}
       <div

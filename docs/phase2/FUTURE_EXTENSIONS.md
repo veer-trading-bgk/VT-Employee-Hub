@@ -226,7 +226,7 @@ Architecture is reserved by:
 
 **Current state:** WhatsApp Flows integration references an already-built Flow by its Meta-issued Flow ID (`CONFIG#FLOW#{companyId}` config, `whatsapp.js`'s `/flows` routes). APForce does not build or edit Flow screens/JSON — Meta's own Flow Builder in WhatsApp Manager owns that.
 
-**Future vision:** An in-app visual Flow editor (drag-drop screens/fields, live preview, respecting Meta's 8-screen/8-component-per-screen limits) that generates Flow JSON internally and calls Meta's WhatsApp Flows Management API directly (`POST /{waba_id}/flows` → `POST /{flow_id}/assets` → `POST /{flow_id}/publish`) — removing the need for admins to leave APForce to build a Flow. This is how competitors like Interakt offer "in-app form creation": a UI wrapper over the same public Meta API, not different underlying technology.
+**Future vision:** An in-app visual Flow editor (drag-drop screens/fields, live preview, respecting Meta's limits — 50 components per screen; see `FLOW_LIMITS` in `dashboard/src/types/flowBuilder.ts`) that generates Flow JSON internally and calls Meta's WhatsApp Flows Management API directly (`POST /{waba_id}/flows` → `POST /{flow_id}/assets` → `POST /{flow_id}/publish`) — removing the need for admins to leave APForce to build a Flow. This is how competitors like Interakt offer "in-app form creation": a UI wrapper over the same public Meta API, not different underlying technology.
 
 **Architecture reservation:**
 - A new service wrapping Meta's Flow Management API would sit alongside `WhatsAppSendService`, not inside it — Flow creation/publish is a distinct Meta API surface from message sending, and ADR-012 governs sends only, not Flow authoring
