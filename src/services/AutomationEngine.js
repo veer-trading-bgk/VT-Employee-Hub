@@ -779,6 +779,34 @@ class AutomationEngine {
         return { wamid: r.wamid };
       }
 
+      // Sends a registered WhatsApp Flow — reuses sendRegisteredFlow() exactly as
+      // the Inbox's manual "Send Flow" affordance does (POST /inbox/:leadId/send-flow).
+      // Tapping the message's button opens the Flow form directly: unlike
+      // send_buttons/send_list there is no separate button concept to configure,
+      // the Flow message IS the button. Neither the DRAFT-flow gate nor the
+      // stale-flowId 404 are reimplemented here — sendRegisteredFlow already
+      // throws both (a deleted CONFIG#FLOW# row surfaces the same way
+      // send_location's deleted-branch case does), and the generic catch below
+      // in _runSteps/_runGraph logs+continues on any thrown error identically.
+      // Lazy require avoids a circular require with whatsapp.js, which already
+      // lazy-requires this file for the reverse direction (fireTrigger etc. on
+      // inbound webhooks) — same pattern as the ConversationalAgentService
+      // require in the start_ai_conversation case further below.
+      case 'send_flow': {
+        const { flowId } = step.config ?? {};
+        if (!phone) throw new Error('send_flow: phone required');
+        if (!flowId) throw new Error('send_flow: flowId required');
+        const { sendRegisteredFlow } = require('../routes/whatsapp');
+        const target = leadPK
+          ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
+          : { phone };
+        const r = await sendRegisteredFlow(
+          companyId, target, flowId,
+          { id: 'system', role: 'admin', name: 'Automation' },
+        );
+        return { wamid: r.wamid };
+      }
+
       case 'assign_employee': {
         const { employeeId, employeeName } = step.config ?? {};
         if (!employeeId || !leadPK) throw new Error('assign_employee: employeeId and leadPK required');

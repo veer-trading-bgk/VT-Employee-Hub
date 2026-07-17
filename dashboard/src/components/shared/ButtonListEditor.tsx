@@ -226,7 +226,10 @@ function ReplyButtonRow({ button, onChange, onRemove }: {
 
 // Reuses the same ['whatsapp-flows'] query WhatsAppFlowsPanel.tsx and
 // ComposerToolbar.tsx's Send-Flow picker already own — no separate fetch.
-function FlowPicker({ value, onChange }: { value: string; onChange: (flowId: string) => void }) {
+// Exported for the automation canvas's SendFlowEditor.tsx (send_flow node) —
+// second caller, same reuse-before-duplicate reasoning as this file's own
+// header comment.
+export function FlowPicker({ value, onChange }: { value: string; onChange: (flowId: string) => void }) {
   const { data, isLoading } = useQuery({
     queryKey: ['whatsapp-flows'],
     queryFn: () => apiFetch<{ flows: { flowId: string; name: string }[] }>('/api/whatsapp/flows'),

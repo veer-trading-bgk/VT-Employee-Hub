@@ -1,5 +1,10 @@
 'use strict';
 
+// send_flow's action lazy-requires routes/whatsapp.js, whose module-level
+// require('../config/s3') fails fast without this — same env-var precedent
+// whatsappListReply.test.js already sets for the identical reason.
+process.env.WA_MEDIA_BUCKET = process.env.WA_MEDIA_BUCKET || 'test-bucket';
+
 jest.mock('../src/config/dynamodb', () => ({
   update: jest.fn(),
   get:    jest.fn(),
@@ -628,6 +633,76 @@ describe('AutomationEngine — send_location action', () => {
       engine._runAction(CID, { type: 'send_location', config: { branchId: 'deleted-branch' } }, { phone: '9000000000' }),
     ).rejects.toThrow('send_location: branch not found');
     expect(WASendSvc.sendLocation).not.toHaveBeenCalled();
+  });
+});
+
+// send_flow's action lazy-requires the real (unmocked) sendRegisteredFlow from
+// routes/whatsapp.js — only its dynamodb.get/WASendSvc.sendInteractive calls
+// are mocked (both already jest.mock'd above), so these tests exercise the
+// actual production DRAFT-gate and not-found handling rather than reimplementing it.
+describe('AutomationEngine — send_flow action', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  test('looks up the registered Flow and sends it via sendInteractive', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({
+        Item: { flowId: 'flow1', bodyText: 'Open your account', ctaLabel: 'Start', screenId: null },
+      }),
+    });
+    WASendSvc.sendInteractive.mockResolvedValue({ wamid: 'wamid.flow1' });
+
+    const result = await engine._runAction(
+      CID,
+      { type: 'send_flow', config: { flowId: 'flow1' } },
+      { leadPK: LEAD_PK, phone: '9000000000' },
+    );
+
+    expect(dynamodb.get).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: `CONFIG#FLOW#${CID}`, SK: 'FLOW#flow1' },
+    }));
+    const [, target, interactive] = WASendSvc.sendInteractive.mock.calls[0];
+    expect(target).toEqual({ resolvedContact: { pk: LEAD_PK, phone: '9000000000', isLead: true } });
+    expect(interactive).toMatchObject({
+      type: 'flow',
+      body: { text: 'Open your account' },
+      action: { name: 'flow', parameters: expect.objectContaining({ flow_id: 'flow1', flow_cta: 'Start' }) },
+    });
+    expect(result).toEqual({ wamid: 'wamid.flow1' });
+  });
+
+  test('rejects — no phone', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_flow', config: { flowId: 'flow1' } }, {}),
+    ).rejects.toThrow('send_flow: phone required');
+  });
+
+  test('rejects — no flowId configured', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_flow', config: {} }, { phone: '9000000000' }),
+    ).rejects.toThrow('send_flow: flowId required');
+  });
+
+  test('rejects — not a silent no-op — when the configured Flow no longer exists', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    await expect(
+      engine._runAction(CID, { type: 'send_flow', config: { flowId: 'deleted-flow' } }, { phone: '9000000000' }),
+    ).rejects.toThrow('Flow not found');
+    expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
+  });
+
+  test('rejects — an unpublished builder-draft Flow (DRAFT gate reused from sendRegisteredFlow, not reimplemented)', async () => {
+    dynamodb.get.mockReturnValue({
+      promise: () => Promise.resolve({
+        Item: { flowId: 'flow2', bodyText: 'Hi', ctaLabel: 'Go', source: 'builder', status: 'DRAFT' },
+      }),
+    });
+    await expect(
+      engine._runAction(CID, { type: 'send_flow', config: { flowId: 'flow2' } }, { phone: '9000000000' }),
+    ).rejects.toThrow('This Flow is still a draft');
+    expect(WASendSvc.sendInteractive).not.toHaveBeenCalled();
   });
 });
 

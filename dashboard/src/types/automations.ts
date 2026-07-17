@@ -124,7 +124,7 @@ export interface WorkflowStep {
 // 'send_buttons'/'send_document' are graph-only — deliberately not added to
 // ActionType, which the legacy linear model also uses and has no equivalent for.
 export type NodeType = ActionType | 'condition' | 'send_buttons' | 'send_document'
-  | 'send_message' | 'send_list' | 'send_location';
+  | 'send_message' | 'send_list' | 'send_location' | 'send_flow';
 
 // Optional image/video/document shown above the body text — Meta's Interactive
 // Message header field. WhatsAppSendService.sendInteractive() is a raw pass-through
@@ -211,6 +211,16 @@ export interface SendLocationConfig {
   branchId: string;
 }
 
+// Send Flow node — references a Flow already registered in CONFIG#FLOW#
+// (either built in-app or registered by ID, see WhatsAppFlowsPanel.tsx), same
+// "config-time reference, execution-time resolution" shape as
+// SendLocationConfig above. Tapping the message opens the Flow directly —
+// there is no separate button config, unlike SendButtonsConfig/SendListConfig,
+// so this node can never pause on a reply the way those two opt-in to.
+export interface SendFlowConfig {
+  flowId: string;
+}
+
 export type ConditionMode = 'field_match' | 'boolean' | 'button_reply';
 
 export interface ConditionBranch {
@@ -232,7 +242,7 @@ export interface ConditionNodeConfig {
 }
 
 export type NodeConfig = StepConfig | ConditionNodeConfig | SendButtonsConfig | SendDocumentConfig
-  | SendMessageConfig | SendListConfig | SendLocationConfig;
+  | SendMessageConfig | SendListConfig | SendLocationConfig | SendFlowConfig;
 
 export interface NodePosition {
   x: number;
