@@ -342,6 +342,15 @@ class WhatsAppSendService {
     // docs) to intermittently fail with 429s because Meta proxies external
     // URL fetches and rate-limits by the HOSTING PROVIDER'S ASN, not per
     // WABA account.
+    // Captured when a media header is actually sent, so the MSG# item can
+    // carry the same s3Key/mimeType/filename shape every other media message
+    // already stores — reuses MediaRenderer as-is (inbox/page.tsx) rather
+    // than a second renderer, and reuses the template's own stable S3 asset
+    // instead of re-fetching anything from Meta after the fact (2026-07-17
+    // 360° audit fix plan, finding #11 — previously nothing about the header
+    // was ever persisted, so the agent's own Inbox showed text-only for a
+    // template the customer received with an image/video/document header).
+    let headerMedia = null;
     const headerComp = (tmpl.components ?? []).find((c) => c.type === 'HEADER');
     if (headerComp?.format === 'TEXT' && /\{\{1\}\}/.test(headerComp.text ?? '') && options.headerVariableValue != null) {
       components.push({ type: 'header', parameters: [{ type: 'text', text: String(options.headerVariableValue) }] });
@@ -372,6 +381,11 @@ class WhatsAppSendService {
         fileHash: tmpl.headerMediaRef.s3Key,
       });
       components.push({ type: 'header', parameters: [{ type: mediaType, [mediaType]: { id: mediaId } }] });
+      headerMedia = {
+        s3Key: tmpl.headerMediaRef.s3Key,
+        mimeType: tmpl.headerMediaRef.mimeType,
+        filename: tmpl.headerMediaRef.filename,
+      };
     }
     if (bodyParams.length) {
       components.push({ type: 'body', parameters: bodyParams.map((v) => ({ type: 'text', text: v })) });
@@ -411,6 +425,7 @@ class WhatsAppSendService {
       sentBy: user.id, sentByName: user.name ?? null,
       // Include templateId only when we resolved from DDB (we have the ID)
       ...(typeof templateRef === 'string' && { templateId: templateRef }),
+      ...(headerMedia ?? {}),
       timestamp: ts, waMessageId: wamid, msgStatus: 'sent',
       ...(options.extraFields ?? {}),
     });

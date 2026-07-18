@@ -1415,7 +1415,7 @@ router.post('/webhook', async (req, res) => {
     // Eagerly write ACTIVITY# with server-time BEFORE the slow lead-scan +
     // media-download chain.  The 2 s ping detects new messages in ≤2 s instead
     // of the previous 15–20 s that storeInboundMedia was adding to the delay.
-    const INBOUND_MSG_TYPES = ['text', 'image', 'document', 'audio', 'video', 'sticker'];
+    const INBOUND_MSG_TYPES = ['text', 'image', 'document', 'audio', 'video', 'sticker', 'location'];
     if (webhookCompanyId && messages.some((m) => INBOUND_MSG_TYPES.includes(m.type) || isFlowResponse(m) || isButtonReply(m) || isListReply(m))) {
       await dynamodb.update({
         TableName: TABLE,
@@ -1431,7 +1431,10 @@ router.post('/webhook', async (req, res) => {
       const flowResp = isFlowResponse(msg) ? parseFlowResponse(msg) : null;
       const buttonReply = isButtonReply(msg) ? parseButtonReply(msg) : null;
       const listReply = isListReply(msg) ? parseListReply(msg) : null;
-      if (type !== 'text' && !MEDIA_TYPES.includes(type) && !flowResp && !buttonReply && !listReply) continue;
+      // 'location' is not in MEDIA_TYPES — it has no binary payload to download
+      // (no mediaId/mime_type/filename shape), just structured lat/lng/name/
+      // address handled in its own branch below.
+      if (type !== 'text' && type !== 'location' && !MEDIA_TYPES.includes(type) && !flowResp && !buttonReply && !listReply) continue;
 
       const timestamp = new Date(Number(ts) * 1000).toISOString();
       const phone10 = to10Digit(fromPhone);
@@ -1442,6 +1445,7 @@ router.post('/webhook', async (req, res) => {
       let mediaId = null;
       let mimeType = null;
       let filename = null;
+      let location = null;
       if (type === 'text') {
         text = msg.text?.body ?? '';
       } else if (flowResp) {
@@ -1450,6 +1454,14 @@ router.post('/webhook', async (req, res) => {
         text = buttonReply.title;
       } else if (listReply) {
         text = listReply.title;
+      } else if (type === 'location') {
+        // Same shape/preview format as our own outbound sendLocation()
+        // (WhatsAppSendService.js) — inbound.location.{name,address} are
+        // genuinely optional per Meta's webhook payload, unlike outbound
+        // where we choose to omit them from the Graph API call ourselves.
+        const loc = msg.location ?? {};
+        location = { latitude: loc.latitude, longitude: loc.longitude, name: loc.name ?? null, address: loc.address ?? null };
+        text = loc.name ? `[Location: ${loc.name}]` : '[Location]';
       } else {
         const m = msg[type] ?? {};
         mediaId = m.id ?? null;
@@ -1485,6 +1497,7 @@ router.post('/webhook', async (req, res) => {
         type: flowResp ? 'flow_response' : buttonReply ? 'button_reply' : listReply ? 'list_reply' : type,
         timestamp, waMessageId, messageId: waMessageId,
         ...(mediaId && { mediaId, mimeType, filename }),
+        ...(location && { location }),
         ...(flowResp && { flowName: flowResp.flowName, flowFields: flowResp.fields }),
         ...(buttonReply && { buttonId: buttonReply.id }),
         ...(listReply && { listReplyId: listReply.id, ...(listReply.description && { listReplyDescription: listReply.description }) }),

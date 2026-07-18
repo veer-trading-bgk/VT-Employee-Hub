@@ -109,6 +109,19 @@ describe('sendTemplate() — IMAGE/VIDEO/DOCUMENT header parameter construction'
       type: 'header',
       parameters: [{ type: 'image', image: { id: 'META_MEDIA_ID_1' } }],
     });
+
+    // Finding #11 (2026-07-17 360° audit fix plan): the MSG# item persists
+    // the template's own header media reference — s3Key/mimeType/filename,
+    // the same fields every other media message stores — so the agent's own
+    // Inbox can render what the customer actually received (TemplateBubble
+    // reuses MediaRenderer for this, dashboard/src/app/(v3)/inbox/page.tsx).
+    // Previously nothing about the header was ever persisted.
+    const msgPut = dynamodb.put.mock.calls.find(([args]) => args.Item.SK?.startsWith('MSG#'));
+    expect(msgPut[0].Item).toMatchObject({
+      s3Key: 'uploads/comp_test/pic.png',
+      mimeType: 'image/png',
+      filename: 'pic.png',
+    });
   });
 
   test('a VIDEO-header template uses type: "video" throughout', async () => {
@@ -178,6 +191,11 @@ describe('sendTemplate() — IMAGE/VIDEO/DOCUMENT header parameter construction'
       type: 'header',
       parameters: [{ type: 'text', text: 'Viir' }],
     });
+
+    // Finding #11 regression: a TEXT header has no media to persist — the
+    // MSG# item must not gain s3Key/mimeType/filename it never had.
+    const msgPut = dynamodb.put.mock.calls.find(([args]) => args.Item.SK?.startsWith('MSG#'));
+    expect(msgPut[0].Item.s3Key).toBeUndefined();
   });
 
   test('a template with no HEADER component at all is unaffected (regression)', async () => {
@@ -191,6 +209,9 @@ describe('sendTemplate() — IMAGE/VIDEO/DOCUMENT header parameter construction'
     expect(mockGetObject).not.toHaveBeenCalled();
     const [, sendBody] = axios.post.mock.calls[0];
     expect(sendBody.template.components.some((c) => c.type === 'header')).toBe(false);
+
+    const msgPut = dynamodb.put.mock.calls.find(([args]) => args.Item.SK?.startsWith('MSG#'));
+    expect(msgPut[0].Item.s3Key).toBeUndefined();
   });
 
   test('a Meta upload failure inside resolveMediaId() propagates with useful detail, no silent swallow', async () => {

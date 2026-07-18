@@ -232,6 +232,16 @@ export function ComposerToolbar({
   const [tplSearch, setTplSearch] = useState('');
   const [pendingTpl, setPendingTpl] = useState<WaTpl | null>(null);
   const [tplVars, setTplVars] = useState<string[]>([]);
+  // Captured once at select time (handleTplSelect) — NOT derived live from
+  // tplVars. It used to be `pendingTpl.variables.map(...).filter(i => !tplVars[i])`,
+  // recomputed every render: the instant a field's value went from empty to
+  // non-empty (i.e. after the user's first keystroke), that index stopped
+  // satisfying `!tplVars[i]` and was filtered OUT of the list the inputs are
+  // rendered from, unmounting that exact <input> mid-type and dropping focus
+  // after one character — same failure shape as the Flow Builder
+  // OptionsListEditor bug (a render list gated by something that mutates on
+  // every keystroke), just via a live filter predicate instead of a React key.
+  const [unresolvedIdx, setUnresolvedIdx] = useState<number[]>([]);
   const [qrSearch, setQrSearch] = useState('');
   const [showCannedCreate, setShowCannedCreate] = useState(false);
   const [newTitle, setNewTitle] = useState('');
@@ -256,6 +266,7 @@ export function ComposerToolbar({
   function closePanel() {
     setPanel(null);
     setPendingTpl(null);
+    setUnresolvedIdx([]);
     setTplSearch('');
     setQrSearch('');
     setShowCannedCreate(false);
@@ -269,6 +280,7 @@ export function ComposerToolbar({
   function togglePanel(p: Panel) {
     if (panel === p) { closePanel(); return; }
     setPendingTpl(null);
+    setUnresolvedIdx([]);
     setTplSearch('');
     setQrSearch('');
     setShowCannedCreate(false);
@@ -452,6 +464,7 @@ export function ComposerToolbar({
     } else {
       setPendingTpl(t);
       setTplVars(filled);
+      setUnresolvedIdx(filled.map((v, i) => i).filter((i) => !filled[i]));
     }
   }
 
@@ -498,11 +511,6 @@ export function ComposerToolbar({
     onAutoOpenHandled?.();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoOpenTemplateId, panel, tplLoading, tplData, convKey]);
-
-  // Indices where auto-fill couldn't resolve a value
-  const unresolvedIdx = pendingTpl
-    ? pendingTpl.variables.map((_, i) => i).filter((i) => !tplVars[i])
-    : [];
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -572,7 +580,7 @@ export function ComposerToolbar({
           <PanelHeader title={pendingTpl ? pendingTpl.name : 'Templates'} onClose={closePanel}>
             {pendingTpl && (
               <button
-                onClick={() => { setPendingTpl(null); setTplVars([]); }}
+                onClick={() => { setPendingTpl(null); setTplVars([]); setUnresolvedIdx([]); }}
                 className="text-xs text-primary-600 hover:underline dark:text-primary-400"
               >
                 ← Back

@@ -354,7 +354,13 @@ function MediaRenderer({ message, isOut }: { message: WaMessage; isOut: boolean 
     return <p className={cn('text-xs italic', textColor)}>Media unavailable</p>;
   }
 
-  if (type === 'image' || mime.startsWith('image/')) {
+  // type === 'sticker' explicit, not just mime.startsWith('image/') — inbound
+  // stickers do store mime_type today (whatsapp.js's inbound handler) so this
+  // normally rendered correctly anyway, but any record missing it (or a
+  // future send path that doesn't set it) fell back to a generic "Download
+  // file" button instead of showing the sticker (2026-07-17 360° audit fix
+  // plan, finding #13).
+  if (type === 'image' || type === 'sticker' || mime.startsWith('image/')) {
     return (
       <>
         <button
@@ -670,6 +676,16 @@ function TemplateBubble({ message, isOut }: { message: WaMessage; isOut: boolean
   const displayName = tpl?.name ?? contentName ?? null;
   const headerLabel = displayName ? `${contentCategory} · ${displayName}` : contentCategory;
 
+  // Present when the template had an IMAGE/VIDEO/DOCUMENT header — the send
+  // path (WhatsAppSendService.js's sendTemplate()) stamps the template's own
+  // s3Key/mimeType/filename onto the MSG# item now, the same fields every
+  // other media message already stores. Reuses MediaRenderer as-is (already
+  // handles all three via message.type/mimeType) instead of a second
+  // renderer (2026-07-17 360° audit fix plan, finding #11 — previously the
+  // header Meta actually sent the customer was invisible in the agent's own
+  // Inbox, text-only regardless of what the template carried).
+  const hasHeaderMedia = !!(message.s3Key || message.mediaId || message.mediaUrl);
+
   return (
     <div className={cn(
       'max-w-[75%] rounded-2xl px-3 py-2.5 text-sm shadow-sm',
@@ -684,6 +700,11 @@ function TemplateBubble({ message, isOut }: { message: WaMessage; isOut: boolean
         <FileText className="h-2.5 w-2.5" aria-hidden />
         {headerLabel}
       </div>
+      {hasHeaderMedia && (
+        <div className="mb-1.5">
+          <MediaRenderer message={message} isOut={isOut} />
+        </div>
+      )}
       {message.resolvedBody ? (
         // The real text this specific customer received (their name, their
         // order number, etc. already substituted in) — strictly more
