@@ -11,11 +11,12 @@ import { useAuth } from '@/context/AuthContext';
 import { API_URL, apiFetch } from '@/lib/api';
 import { usePipelineStages } from '@/hooks/usePipelineStages';
 import { useEmployeesList } from '@/hooks/useEmployeesList';
+import type { PipelineStage } from '@/hooks/usePipelineStages';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
 import {
   type WorkflowTrigger, type WorkflowStep, type ActionType,
   type TriggerType, type KeywordMatchMode, type KeywordTriggerConfig,
-  type FlowCompletedTriggerConfig,
+  type FlowCompletedTriggerConfig, type StageMembershipTriggerConfig,
   type WorkflowCondition,
   TRIGGER_META,
 } from '@/types/automations';
@@ -46,6 +47,7 @@ export const ACTION_ICONS: Record<string, React.ElementType> = {
   lead_created:                 UserPlus,
   stage_changed:                GitMerge,
   stage_change:                 GitMerge,
+  stage_membership:             GitMerge,
   tag_added:                    Tag,
   campaign_completed:           Zap,
   keyword_message:              Hash,
@@ -60,7 +62,7 @@ export const ACTION_ICONS: Record<string, React.ElementType> = {
 // TriggerNode has no config UI of its own, this is the only trigger editor.
 export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: WorkflowTrigger; onChange: (t: WorkflowTrigger) => void; workflowId?: string }) {
   const TRIGGER_OPTIONS: TriggerType[] = [
-    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'tag_added', 'keyword_message', 'inbound_webhook', 'form_submitted', 'flow_completed',
+    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'stage_membership', 'tag_added', 'keyword_message', 'inbound_webhook', 'form_submitted', 'flow_completed',
   ];
 
   // Only the two heavier picker fetches below are gated behind `enabled`.
@@ -196,6 +198,14 @@ export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: Work
         <FlowCompletedConfigFields
           config={(trigger.config as FlowCompletedTriggerConfig | undefined) ?? {}}
           onChange={(config) => onChange({ ...trigger, config })}
+        />
+      )}
+
+      {trigger.type === 'stage_membership' && (
+        <StageMembershipConfigFields
+          config={(trigger.config as StageMembershipTriggerConfig | undefined) ?? { stage: '' }}
+          onChange={(config) => onChange({ ...trigger, config })}
+          stages={pipelineStages}
         />
       )}
 
@@ -352,6 +362,32 @@ function FlowCompletedConfigFields({ config, onChange }: { config: FlowCompleted
       <FlowPicker value={config.flowId ?? ''} onChange={(flowId) => onChange({ ...config, flowId })} />
       <p className="text-[11px] text-neutral-400">
         Fires when a customer submits this Flow. Leave unselected to react to any completed Flow.
+      </p>
+    </div>
+  );
+}
+
+// ── stage_membership trigger config — which pipeline stage
+// StageMembershipScheduler.js's periodic sweep watches. Reuses the exact
+// same pipelineStages list + <select> pattern the Conditions section's own
+// "stage"/"from_stage"/"to_stage" value control already uses
+// (conditionValueControl above, same usePipelineStages() call TriggerEditor
+// already makes once per render) — no new fetch, no new stage-picker built.
+function StageMembershipConfigFields({ config, onChange, stages }: {
+  config: StageMembershipTriggerConfig;
+  onChange: (c: StageMembershipTriggerConfig) => void;
+  stages: PipelineStage[];
+}) {
+  return (
+    <div className="space-y-2 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+      <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400">Target stage</label>
+      <select value={config.stage} onChange={(e) => onChange({ ...config, stage: e.target.value })} className={selectCls}>
+        <option value="">Select stage…</option>
+        {stages.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+      </select>
+      <p className="text-[11px] text-neutral-400">
+        Runs on a 5-minute sweep: catches every lead currently in this stage plus any new arrivals going forward,
+        enrolling each one only once. Once enrolled, the drip runs to completion even if the lead later leaves this stage.
       </p>
     </div>
   );

@@ -117,6 +117,20 @@ function buildTriggerForStorage(trigger, existingTrigger) {
     const flowId = typeof trigger.config?.flowId === 'string' ? trigger.config.flowId.trim() : '';
     return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [], ...(flowId && { config: { flowId } }) } };
   }
+  if (trigger.type === 'stage_membership') {
+    // Required (unlike flow_completed's optional flowId): a stage_membership
+    // workflow with no target stage has nothing for StageMembershipScheduler's
+    // periodic sweep to match against — a broken workflow, not a valid
+    // "any stage" catch-all. Not re-validated against the company's live
+    // pipeline here (same leniency as flow_completed not checking CONFIG#FLOW#)
+    // — the frontend picker only ever offers real stage keys, and a stale key
+    // (e.g. the stage was later renamed) just means the sweep harmlessly never
+    // matches any lead, not a data-integrity risk the way a bad change_stage
+    // write would be.
+    const stage = typeof trigger.config?.stage === 'string' ? trigger.config.stage.trim() : '';
+    if (!stage) return { error: 'trigger.config.stage is required for a stage_membership trigger' };
+    return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [], config: { stage } } };
+  }
   return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [] } };
 }
 

@@ -232,6 +232,73 @@ describe('POST /api/automations — trigger.config (keyword_message)', () => {
   });
 });
 
+// ─── POST/PUT /api/automations — trigger.config (stage_membership) ───────────
+// Unlike flow_completed's optional flowId, stage is REQUIRED — a
+// stage_membership workflow with no target stage has nothing for
+// StageMembershipScheduler's periodic sweep to match against.
+describe('POST /api/automations — trigger.config (stage_membership)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  function body(trigger, overrides = {}) {
+    return {
+      name: 'Standing stage drip',
+      trigger,
+      steps: [{ id: 'end-default', type: 'end', config: {} }],
+      ...overrides,
+    };
+  }
+
+  test('rejects stage_membership with no config at all', async () => {
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({ body: body({ type: 'stage_membership', conditions: [] }), user: USER }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('rejects stage_membership with a blank/whitespace-only stage', async () => {
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({
+      body: body({ type: 'stage_membership', conditions: [], config: { stage: '   ' } }),
+      user: USER,
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('accepts a valid stage and persists it, trimmed', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({
+      body: body({ type: 'stage_membership', conditions: [], config: { stage: ' kyc_done ' } }),
+      user: USER,
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const saved = dynamodb.put.mock.calls[0][0].Item;
+    expect(saved.trigger).toEqual({ type: 'stage_membership', conditions: [], config: { stage: 'kyc_done' } });
+  });
+
+  test('an existing stage_changed workflow\'s trigger persistence is completely unaffected by the stage_membership branch', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({
+      body: body({ type: 'stage_changed', conditions: [{ field: 'to_stage', operator: 'equals', value: 'kyc_done' }] }),
+      user: USER,
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const saved = dynamodb.put.mock.calls[0][0].Item;
+    expect(saved.trigger).toEqual({ type: 'stage_changed', conditions: [{ field: 'to_stage', operator: 'equals', value: 'kyc_done' }] });
+    expect(saved.trigger.config).toBeUndefined();
+  });
+});
+
 describe('PUT /api/automations/:id — trigger.config (keyword_message)', () => {
   beforeEach(() => {
     jest.clearAllMocks();

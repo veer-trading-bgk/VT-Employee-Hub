@@ -6,6 +6,7 @@ export type TriggerType =
   | 'lead_created'
   | 'stage_changed'
   | 'stage_change'       // legacy alias from crm.js
+  | 'stage_membership'   // standing sweep — see StageMembershipScheduler.js
   | 'tag_added'
   | 'keyword_message'
   | 'inbound_webhook'
@@ -56,12 +57,22 @@ export interface FlowCompletedTriggerConfig {
   flowId?: string;
 }
 
+// stage_membership trigger's own config — which pipeline stage
+// StageMembershipScheduler.js's periodic sweep watches. Unlike
+// FlowCompletedTriggerConfig's optional flowId, stage is required: a drip
+// with no target stage has nothing for the sweep to match against (see
+// automations.js's buildTriggerForStorage validation).
+export interface StageMembershipTriggerConfig {
+  stage: string;
+}
+
 export interface WorkflowTrigger {
   type:       TriggerType;
   conditions: WorkflowCondition[];
-  // keyword_message and flow_completed each carry their own config shape;
-  // consumers narrow by trigger.type (no discriminant on the config itself).
-  config?:    KeywordTriggerConfig | FlowCompletedTriggerConfig;
+  // keyword_message, flow_completed, and stage_membership each carry their
+  // own config shape; consumers narrow by trigger.type (no discriminant on
+  // the config itself).
+  config?:    KeywordTriggerConfig | FlowCompletedTriggerConfig | StageMembershipTriggerConfig;
   // inbound_webhook only — server-generated capability-URL token (read-only,
   // present once the workflow has been saved at least once with this trigger type).
   webhookToken?:     string;
@@ -400,6 +411,7 @@ export const TRIGGER_META: Record<string, { label: string; description: string }
   lead_created:                  { label: 'Lead Created',        description: 'A new lead is added to the CRM'        },
   stage_changed:                 { label: 'Stage Changed',       description: 'A lead moves to a new pipeline stage'  },
   stage_change:                  { label: 'Stage Changed',       description: 'A lead moves to a new pipeline stage'  },
+  stage_membership:              { label: 'Standing Stage Membership', description: 'Catches every lead currently in a stage, plus new arrivals, on an ongoing 5-minute sweep' },
   tag_added:                     { label: 'Tag Added',           description: 'A tag is added to a lead'              },
   keyword_message:               { label: 'Keyword / Button Tap', description: 'Customer types a matching phrase or taps a matching button' },
   inbound_webhook:               { label: 'Inbound Webhook',      description: 'An external system posts to this workflow\'s own URL'      },

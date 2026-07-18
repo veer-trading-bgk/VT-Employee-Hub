@@ -5,6 +5,7 @@ const { loadSecrets } = require('./config/secrets');
 const app = require('./app');
 const { runDueCampaigns } = require('./services/CampaignScheduler');
 const { runDueLeadScoring } = require('./services/LeadScoringScheduler');
+const { runStageMembershipSweep } = require('./services/StageMembershipScheduler');
 const AutomationEngine = require('./services/AutomationEngine');
 
 const handler = serverless(app, {
@@ -25,8 +26,14 @@ exports.handler = async (event, context) => {
   // never actually connected, leaving every paused workflow's timeout branch (and
   // DelayedResponseService's timer) with no fallback if the event-driven resume
   // path ever misses. See docs/bible/19_DECISION_LOG.md for the incident this fixed.
+  // runStageMembershipSweep() rides the same rule too — "standing stage
+  // membership" drips (trigger.type stage_membership) need a periodic sweep
+  // to catch leads already sitting in a target stage, not just a one-time
+  // stage_changed transition; see docs/bible/19_DECISION_LOG.md Era 51.
   if (event.source === 'aws.events' && event['detail-type'] === 'Scheduled Event') {
-    return Promise.allSettled([runDueCampaigns(), runDueLeadScoring(), AutomationEngine.processAllDueWaits()]);
+    return Promise.allSettled([
+      runDueCampaigns(), runDueLeadScoring(), AutomationEngine.processAllDueWaits(), runStageMembershipSweep(),
+    ]);
   }
 
   return handler(event, context);
