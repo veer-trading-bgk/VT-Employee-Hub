@@ -433,9 +433,18 @@ needed.
   1. `WebSocketContext` (`dashboard/src/contexts/WebSocketContext.tsx`) owns the
      single socket connection (via `wsClient`, connect/reconnect/backoff lifecycle,
      lines 47-98) and does coarse-grained React Query cache invalidation keyed by
-     event name (`EVENT_QUERY_MAP`, lines 30-37) — e.g. `whatsapp_message` invalidates
-     `['wa-inbox']` and `['dashboard-wa']`, `lead_created`/`lead_updated` invalidate
-     `['crm-leads']`/`['dashboard-crm']`.
+     event name (`EVENT_QUERY_MAP`) — e.g. `whatsapp_message` invalidates
+     `['wa-inbox']` and `['dashboard-wa']`. `lead_created`/`lead_updated` are handled
+     separately in `handleMessage` (not via the static map): both carry the pushed
+     lead's `leadId`, which is passed straight to `invalidateContactCaches()`
+     (`lib/contactCache.ts`) — the same three-family (`['contacts']`,
+     `['sales-contacts']`, `['contact', leadId]`) sweep every local contact
+     mutation in the app goes through. Fixed 2026-07-18 (Stage 4 of the 2026-07-17
+     360° audit fix plan) — the map previously pointed both events at
+     `['crm-leads']`/`['dashboard-crm']`, two query keys no `useQuery` call has used
+     since the v3 Customer 360 rebuild, so a lead created or stage-changed by one
+     agent never live-updated any other connected client's Contacts list, Sales CRM
+     board, or Customer 360 tab.
   2. `InboxContext` (`dashboard/src/contexts/InboxContext.tsx`) additionally listens
      for `whatsapp_message` directly and, when the push matches the conversation
      currently open on screen, calls `refetchQueries` for that specific conversation

@@ -5,6 +5,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiFetch } from '@/lib/api';
+import { invalidateContactCaches } from '@/lib/contactCache';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
 import { TagBadge, type Tag } from './TagBadge';
 import { TagSelector } from './TagSelector';
@@ -66,6 +67,12 @@ export function ContactTags({
     },
     onSuccess: (res) => {
       if (res.tags) setIds(res.tags);
+      // Every caller (Contacts list, Inbox, Customer 360 header) rendered its
+      // own tags from a different cache family and only invalidated that one
+      // via onMutated — owning the full three-family sweep here means a new
+      // caller never has to remember it. onMutated still fires afterward for
+      // callers with a genuinely separate cache (e.g. Inbox's ['wa-inbox']).
+      invalidateContactCaches(qc, leadId);
       onMutated?.();
     },
     onError: () => {

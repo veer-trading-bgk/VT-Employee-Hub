@@ -11,6 +11,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query';
 import { wsClient, type WsMessage, type WsConnectionState } from '@/lib/wsClient';
 import { api, setMemoryToken } from '@/lib/api';
+import { invalidateContactCaches } from '@/lib/contactCache';
 import { useAuth } from '@/context/AuthContext';
 
 interface WsContextValue {
@@ -27,11 +28,15 @@ const WsContext = createContext<WsContextValue>({
 
 // Map WS event names → React Query keys to invalidate on each push.
 // Keep keys aligned with queryKey arrays used in each page's useQuery() calls.
+//
+// lead_created/lead_updated are handled separately in handleMessage below,
+// not here — ['crm-leads']/['dashboard-crm'] were dead keys (no useQuery in
+// the app has used them since the v3 Customer 360 rebuild), and unlike the
+// static arrays below, their real invalidation target (['contact', leadId])
+// depends on the leadId carried in each push's own payload.
 const EVENT_QUERY_MAP: Record<string, string[][]> = {
   metric_added:      [['admin-team-summary'], ['my-metrics'], ['admin-leaderboard-monthly']],
   metric_verified:   [['admin-team-summary'], ['my-metrics'], ['pending-metrics']],
-  lead_created:      [['crm-leads'], ['dashboard-crm']],
-  lead_updated:      [['crm-leads'], ['dashboard-crm']],
   whatsapp_message:  [['wa-inbox'], ['dashboard-wa']],
   attendance_marked: [['attendance']],
 };
@@ -120,6 +125,17 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
   // ── Query invalidation on push events ─────────────────────────────────────
   const handleMessage = useCallback(
     (msg: WsMessage) => {
+      // lead_created (crm.js POST /leads) and lead_updated (crm.js PUT
+      // /leads/:id/stage) both carry the affected leadId — real cross-client
+      // sync for the Contacts list, Sales CRM board, and Customer 360 (e.g.
+      // two agents on the same Kanban board see each other's stage moves
+      // without a manual refresh), reusing the same three-family sweep every
+      // local mutation in the app already goes through.
+      if (msg.event === 'lead_created' || msg.event === 'lead_updated') {
+        const leadId = typeof msg.leadId === 'string' ? msg.leadId : undefined;
+        invalidateContactCaches(qc, leadId);
+        return;
+      }
       const keys = EVENT_QUERY_MAP[msg.event];
       if (!keys) return;
       keys.forEach((qk) => qc.invalidateQueries({ queryKey: qk }));

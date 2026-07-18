@@ -21,6 +21,7 @@ import { SkeletonRow, Skeleton } from '@/components/v3/ui/Skeleton';
 import { EmptyState } from '@/components/v3/ui/EmptyState';
 import { cn } from '@/lib/cn';
 import { apiFetch, getMemoryToken, ApiClientError } from '@/lib/api';
+import { invalidateContactCaches } from '@/lib/contactCache';
 import { format, isToday, isYesterday } from 'date-fns';
 import { usePipelineStages } from '@/hooks/usePipelineStages';
 import { wsClient } from '@/lib/wsClient';
@@ -1854,13 +1855,11 @@ function CustomerSnapshotPanel({
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['wa-inbox'] });
-      // Customer360Provider owns this same lead under a separate ['contact', leadId]
-      // cache (Customer360Context.tsx) — without this, a stage change made from
-      // Inbox left Customer 360's CRM tab showing the old stage for up to 60s
-      // (its staleTime), or indefinitely if that tab wasn't refocused.
-      if (conversation.leadId) {
-        qc.invalidateQueries({ queryKey: ['contact', conversation.leadId] });
-      }
+      // Customer 360's CRM tab, the Contacts list, and the Sales CRM board
+      // all render this same contact under their own cache keys — without
+      // this, a stage change made from Inbox left them all showing the old
+      // stage until their own unrelated staleTime expired.
+      invalidateContactCaches(qc, conversation.leadId);
       toast.success('Stage updated');
     },
     onError: (err) => {

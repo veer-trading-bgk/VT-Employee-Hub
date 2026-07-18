@@ -40,6 +40,8 @@ import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 import { decideBulkOutcome, type BulkUpdateResponse } from '@/lib/bulkUpdateFeedback';
+import { invalidateContactCaches } from '@/lib/contactCache';
+import { assignmentKey, broadcastAssignment } from '@/lib/assignmentBridge';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -349,7 +351,11 @@ function ContactsContent() {
     },
     onSuccess: (res) => {
       reportBulkOutcome('Tagged', res);
-      if (res.succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
+      // Sales CRM board and any open Customer 360 tab for one of these
+      // contacts render the same tags — ['contacts']-only left them stale.
+      if (res.succeeded > 0) {
+        invalidateContactCaches(qc, res.results.filter((r) => r.ok).map((r) => r.id));
+      }
     },
     onError: () => toast.error('Tagging failed unexpectedly — please try again'),
   });
@@ -370,12 +376,28 @@ function ContactsContent() {
       });
       return { ...res, skippedNonLeads };
     },
-    onSuccess: (res) => {
+    onSuccess: (res, { employeeId, employeeName }) => {
       reportBulkOutcome('Assigned', res);
       if (res.skippedNonLeads > 0) {
         toast.info(`${res.skippedNonLeads} selected contact${res.skippedNonLeads !== 1 ? 's are' : ' is'} not a CRM lead yet — skipped (assign only applies to leads)`);
       }
-      if (res.succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
+      if (res.succeeded > 0) {
+        const okIds = res.results.filter((r) => r.ok).map((r) => r.id);
+        // ['assignment', contactId] is the canonical owner-display cache
+        // (useOwnerAssign.ts, read by every OwnerSelect) — it's enabled:false,
+        // so invalidating it does nothing; it only ever changes via
+        // setQueryData. Without this, OwnerSelect instances that already
+        // cached a (now stale) assignment for one of these ids keep showing
+        // the old owner — invisibly, since it beats the freshly-invalidated
+        // list props — for up to its 30-minute gcTime. broadcastAssignment
+        // mirrors useOwnerAssign's own cross-tab sync for the same reason.
+        const record = { assignedTo: employeeId, assignedToName: employeeName };
+        okIds.forEach((id) => {
+          qc.setQueryData(assignmentKey(id), record);
+          broadcastAssignment(id, record);
+        });
+        invalidateContactCaches(qc, okIds);
+      }
     },
     onError: () => toast.error('Assignment failed unexpectedly — please try again'),
   });
@@ -405,7 +427,9 @@ function ContactsContent() {
     },
     onSuccess: (res) => {
       reportBulkOutcome('Deleted', res);
-      if (res.succeeded > 0) qc.invalidateQueries({ queryKey: ['contacts'] });
+      if (res.succeeded > 0) {
+        invalidateContactCaches(qc, res.results.filter((r) => r.ok).map((r) => r.id));
+      }
     },
     onError: () => toast.error('Delete failed unexpectedly — please try again'),
   });

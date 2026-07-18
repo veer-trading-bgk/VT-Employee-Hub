@@ -3,6 +3,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiFetch, ApiClientError } from '@/lib/api';
+import { invalidateContactCaches } from '@/lib/contactCache';
 import type { Contact, Stage } from '@/types/v3';
 
 // Extracted from sales/page.tsx's KanbanBoard (desktop drag-and-drop) so the
@@ -39,6 +40,16 @@ export function useStageMutation() {
       const is429 = error instanceof ApiClientError && error.status === 429;
       toast.error(is429 ? 'Too many stage changes — wait a moment and try again' : 'Failed to update stage');
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: ['sales-contacts'] }),
+    // ['sales-contacts'] alone left the Contacts list and Customer 360's CRM
+    // tab showing the pre-drag stage until their own unrelated staleTime
+    // expired — invalidateContactCaches covers all three families a stage
+    // change can be viewed through, same leadId resolution as mutationFn above.
+    onSettled: (_data, _error, { contact }) => {
+      const leadId =
+        contact.type === 'lead' || (contact.leadId ?? null) !== null
+          ? (contact.leadId ?? contact.id)
+          : undefined;
+      invalidateContactCaches(qc, leadId);
+    },
   });
 }

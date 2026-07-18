@@ -27,6 +27,7 @@ import { TagBadge, type Tag } from '@/components/tags/TagBadge';
 import { PriorityBadge } from '@/components/shared/PriorityBadge';
 import { cn } from '@/lib/cn';
 import { apiFetch, ApiClientError } from '@/lib/api';
+import { invalidateContactCaches } from '@/lib/contactCache';
 import type { Contact, Stage } from '@/types/v3';
 import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
 import { useEmployeesList } from '@/hooks/useEmployeesList';
@@ -1405,7 +1406,16 @@ export default function SalesPage() {
       }
       return apiFetch('/api/contacts/stage', { method: 'PUT', body: JSON.stringify({ phone: contact.phone, stage: stageKey }) });
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: ['sales-contacts'] }),
+    // Same three-family coverage as the single-drag path (useStageMutation.ts)
+    // — a bulk move only invalidated ['sales-contacts'], leaving the Contacts
+    // list and Customer 360's CRM tab on the pre-move stage.
+    onSettled: (_data, _error, { contact }) => {
+      const leadId =
+        contact.type === 'lead' || (contact.leadId ?? null) !== null
+          ? (contact.leadId ?? contact.id)
+          : undefined;
+      invalidateContactCaches(qc, leadId);
+    },
   });
 
   async function handleBulkStage(stageKey: string) {

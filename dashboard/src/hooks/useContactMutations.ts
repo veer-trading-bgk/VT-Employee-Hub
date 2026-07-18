@@ -2,6 +2,7 @@
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api';
+import { invalidateContactCaches } from '@/lib/contactCache';
 import { toast } from 'sonner';
 import { useAddNote } from './useNoteMutations';
 
@@ -14,13 +15,21 @@ export function useContactMutations(leadId: string) {
     qc.invalidateQueries({ queryKey: ['contact', leadId] });
   }
 
+  // For mutations visible outside Customer 360 too (stage, name) — the
+  // Contacts list and Sales CRM board both render this same contact and
+  // would otherwise keep showing pre-mutation data until their own
+  // unrelated staleTime expired.
+  function invalidateAllContactCaches() {
+    invalidateContactCaches(qc, leadId);
+  }
+
   const changeStage = useMutation({
     mutationFn: (stage: string) =>
       apiFetch(`/api/crm/leads/${leadId}/stage`, {
         method: 'PUT',
         body: JSON.stringify({ stage }),
       }),
-    onSuccess: invalidateContact,
+    onSuccess: invalidateAllContactCaches,
     onError: () => toast.error('Failed to update stage'),
   });
 
@@ -78,7 +87,7 @@ export function useContactMutations(leadId: string) {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
-    onSuccess: invalidateContact,
+    onSuccess: invalidateAllContactCaches,
     onError: () => toast.error('Failed to update contact'),
   });
 
