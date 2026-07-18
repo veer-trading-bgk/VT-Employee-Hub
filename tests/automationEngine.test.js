@@ -27,6 +27,9 @@ jest.mock('../src/services/ConversationalAgentService', () => ({
 jest.mock('../src/services/CapiService', () => ({
   reportForLead: jest.fn(),
 }));
+jest.mock('../src/services/InstagramSendService', () => ({
+  sendText: jest.fn(),
+}));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
 }));
@@ -2320,5 +2323,46 @@ describe('AutomationEngine — meta_signal action (Meta Signal / Conversions API
       engine._runAction(CID, { type: 'meta_signal', config: {} }, { leadPK: LEAD_PK, leadId: 'lead_001' }),
     ).rejects.toThrow(/metaEventName required/);
     expect(dynamodb.get).not.toHaveBeenCalled();
+  });
+});
+
+describe('AutomationEngine — send_instagram_message action (Instagram DM automation, "lightweight, no CRM")', () => {
+  const InstagramSendService = require('../src/services/InstagramSendService');
+  const IGSID = 'ig_sender_1';
+
+  beforeEach(() => jest.clearAllMocks());
+
+  test('reads ctx.igsid directly — NOT leadPK/phone, since Instagram contacts are IGCONTACT# records, never leads', async () => {
+    InstagramSendService.sendText.mockResolvedValue({ mid: 'mid_out_1' });
+
+    const result = await engine._runAction(
+      CID,
+      { type: 'send_instagram_message', config: { messageText: 'Thanks for reaching out!' } },
+      { igsid: IGSID, igUsername: 'someuser', messageText: 'demat' },
+    );
+
+    expect(InstagramSendService.sendText).toHaveBeenCalledWith(CID, IGSID, 'Thanks for reaching out!');
+    expect(result).toEqual({ mid: 'mid_out_1' });
+  });
+
+  test('throws before any send when ctx.igsid is absent (a non-Instagram-sourced context)', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_instagram_message', config: { messageText: 'hi' } }, { leadPK: LEAD_PK }),
+    ).rejects.toThrow(/igsid required/);
+    expect(InstagramSendService.sendText).not.toHaveBeenCalled();
+  });
+
+  test('throws before any send when messageText is missing from config', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'send_instagram_message', config: {} }, { igsid: IGSID }),
+    ).rejects.toThrow(/messageText required/);
+    expect(InstagramSendService.sendText).not.toHaveBeenCalled();
+  });
+
+  test('a Meta send failure propagates — the runner then records a failed node, same sibling semantics as every other action', async () => {
+    InstagramSendService.sendText.mockRejectedValue(new Error('Instagram API error'));
+    await expect(
+      engine._runAction(CID, { type: 'send_instagram_message', config: { messageText: 'hi' } }, { igsid: IGSID }),
+    ).rejects.toThrow('Instagram API error');
   });
 });

@@ -21,6 +21,7 @@ const telegramRoutes = require('./routes/telegram');
 const attendanceRoutes = require('./routes/attendance');
 const crmRoutes = require('./routes/crm');
 const whatsappRoutes = require('./routes/whatsapp');
+const instagramRoutes = require('./routes/instagram');
 const contactsRoutes = require('./routes/contacts');
 const tagsRoutes = require('./routes/tags');
 const automationsRoutes = require('./routes/automations');
@@ -113,6 +114,10 @@ app.use('/api/telegram', telegramRoutes);
 app.use('/api/attendance', authMiddleware, attendanceRoutes);
 app.use('/api/crm', authMiddleware, subscriptionMiddleware, crmRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
+// Same mounting shape as whatsapp.js — no blanket authMiddleware here since
+// the webhook GET/POST routes must stay public (Meta calls them directly);
+// every other route inside instagram.js applies its own authMiddleware.
+app.use('/api/instagram', instagramRoutes);
 app.use('/api/contacts', contactsRoutes);
 app.use('/api/tags', tagsRoutes);
 // EventBridge scheduler bypass — secret checked here before JWT guard runs

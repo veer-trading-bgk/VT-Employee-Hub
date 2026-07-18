@@ -84,6 +84,31 @@ function capiClaimSK(metaEventName) { return `CAPI#${metaEventName}`; }
 function capiLogPK(companyId)                        { return `CAPILOG#${companyId}`; }
 function capiLogSK(timestampISO, leadId, metaEventName) { return `${timestampISO}#${leadId}#${metaEventName}`; }
 
+// Instagram config entity — sibling to CONFIG#WABA#, same CURRENT-item idiom,
+// deliberately a separate item/file (igGraphApiHelpers.js), not a
+// parameterized extension of graphApiHelpers.js. See ADR-020.
+// PK = CONFIG#IG#${companyId}  SK = CURRENT
+function igConfigPK(companyId) { return `CONFIG#IG#${companyId}`; }
+function igConfigSK()           { return 'CURRENT'; }
+
+// Instagram business-account-id → companyId reverse index (webhook routing),
+// same idiom as CONFIG#PHONEID# for WhatsApp's phone_number_id → companyId.
+// PK = CONFIG#IGID#${igBusinessAccountId}  SK = CURRENT
+function igIdConfigPK(igBusinessAccountId) { return `CONFIG#IGID#${igBusinessAccountId}`; }
+function igIdConfigSK()                     { return 'CURRENT'; }
+
+// Instagram contact entity — deliberately NOT a LEAD# record (2026-07-18
+// "lightweight, no CRM" decision — no pipeline stage, no assignedTo, no
+// CustomerIdentityService/ADR-013 involvement; see InstagramContactService.js
+// and docs/bible/19_DECISION_LOG.md Era 54). IGSID has no normalization
+// ambiguity the way phone numbers do, so no idempotency-lock/TransactWrite
+// machinery is needed — just a plain conditional-put-if-absent. Conversation
+// history reuses inboxMsgSK() under this PK (channel-neutral SK shape,
+// confirmed by the 2026-07-18 audit) — no new MSG# constructor needed.
+// PK = IGCONTACT#${companyId}#${igsid}  SK = CURRENT | MSG#${ts}#${msgId}
+function igContactPK(companyId, igsid) { return `IGCONTACT#${companyId}#${igsid}`; }
+function igContactSK()                  { return 'CURRENT'; }
+
 // ─── EMPLOYEES TABLE ──────────────────────────────────────────────────────────
 
 // Employee entity
@@ -148,6 +173,13 @@ module.exports = {
   capiClaimSK,
   capiLogPK,
   capiLogSK,
+  // Instagram (igGraphApiHelpers / InstagramContactService)
+  igConfigPK,
+  igConfigSK,
+  igIdConfigPK,
+  igIdConfigSK,
+  igContactPK,
+  igContactSK,
   // Employees
   empPK,
   empSK,

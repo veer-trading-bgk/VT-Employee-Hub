@@ -943,6 +943,22 @@ class AutomationEngine {
         return r;
       }
 
+      // Instagram DM reply — v1's one send capability (plain text only).
+      // Reads ctx.igsid directly, NOT leadPK/phone: Instagram contacts are
+      // IGCONTACT# records (InstagramContactService), never LEAD# — the
+      // 2026-07-18 "lightweight, no CRM" decision. ctx.igsid is populated
+      // exclusively by instagram.js's webhook handler (via the generic
+      // ctx.contactId ?? ... fallback _startExecution already had for its
+      // execution-record bookkeeping, no engine change needed there).
+      case 'send_instagram_message': {
+        const { messageText } = step.config ?? {};
+        if (!ctx.igsid) throw new Error('send_instagram_message: igsid required (not an Instagram-sourced context)');
+        if (!messageText) throw new Error('send_instagram_message: messageText required');
+        const InstagramSendService = require('./InstagramSendService');
+        const r = await InstagramSendService.sendText(companyId, ctx.igsid, messageText);
+        return { mid: r.mid };
+      }
+
       default:
         throw new Error(`Unknown action type: ${step.type}`);
     }

@@ -1,0 +1,205 @@
+'use strict';
+
+/**
+ * Route tests for src/routes/instagram.js's webhook endpoints — the
+ * security-critical path (signature verification, non-negotiable per the
+ * 2026-07-18 plan) and the v1 parsing/dispatch logic (entry.changes vs
+ * entry.messaging branch, story-reply/mention stubs, keyword_message fire).
+ * Handlers extracted directly from the Express Router, same
+ * getRouteHandler() technique used throughout this codebase's route tests.
+ *
+ * verifyMetaWebhookSignature is mocked here (module factory, so instagram.js's
+ * own require() picks up the mock at load time) — its HMAC correctness is
+ * that function's own concern, already exercised for real by whatsapp.js's
+ * webhook. What THIS file proves is that the route actually calls it and
+ * respects its verdict (401 on false, proceeds on true).
+ */
+
+process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+process.env.META_INSTAGRAM_WEBHOOK_VERIFY_TOKEN = 'ig_verify_token_test';
+
+jest.mock('../src/config/dynamodb', () => ({
+  get: jest.fn(), put: jest.fn(), update: jest.fn(), delete: jest.fn(),
+}));
+jest.mock('../src/config/logger', () => ({
+  info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
+}));
+jest.mock('../src/utils/verifyMetaWebhookSignature', () => ({
+  verifyMetaWebhookSignature: jest.fn(),
+}));
+jest.mock('../src/services/igGraphApiHelpers', () => ({
+  getCompanyByIgBusinessId: jest.fn(),
+  getIgConfig: jest.fn(),
+  invalidateIgConfigCache: jest.fn(),
+  resolveIgGraphUrl: jest.fn(() => 'https://graph.instagram.com/v24.0'),
+}));
+jest.mock('../src/services/InstagramContactService', () => ({
+  resolveOrCreate: jest.fn(),
+  recordMessage: jest.fn(),
+}));
+jest.mock('../src/routes/automations', () => ({ runAutomations: jest.fn() }));
+
+const logger = require('../src/config/logger');
+const { verifyMetaWebhookSignature } = require('../src/utils/verifyMetaWebhookSignature');
+const igGraphApiHelpers = require('../src/services/igGraphApiHelpers');
+const InstagramContactService = require('../src/services/InstagramContactService');
+const { runAutomations } = require('../src/routes/automations');
+const instagramRouter = require('../src/routes/instagram');
+
+function getRouteHandler(router, path, method) {
+  const layer = router.stack.find((l) => l.route && l.route.path === path && l.route.methods[method]);
+  if (!layer) return null;
+  const stack = layer.route.stack;
+  return stack[stack.length - 1].handle;
+}
+
+function mockRes() {
+  return { status: jest.fn().mockReturnThis(), sendStatus: jest.fn().mockReturnThis(), send: jest.fn(), json: jest.fn(), end: jest.fn() };
+}
+
+function req(body) {
+  return { headers: {}, rawBody: Buffer.from(JSON.stringify(body)), body };
+}
+
+const CID = 'comp_test';
+const IG_BUSINESS_ID = 'igba_1';
+const IGSID = 'ig_sender_1';
+
+describe('GET /api/instagram/webhook — subscription handshake', () => {
+  const getHandshake = getRouteHandler(instagramRouter, '/webhook', 'get');
+
+  test('echoes hub.challenge when the verify token matches META_INSTAGRAM_WEBHOOK_VERIFY_TOKEN', () => {
+    const res = mockRes();
+    getHandshake({ query: { 'hub.mode': 'subscribe', 'hub.verify_token': 'ig_verify_token_test', 'hub.challenge': 'chal123' } }, res);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.send).toHaveBeenCalledWith('chal123');
+  });
+
+  test('rejects with 403 on a wrong verify token — does not leak the challenge', () => {
+    const res = mockRes();
+    getHandshake({ query: { 'hub.mode': 'subscribe', 'hub.verify_token': 'wrong', 'hub.challenge': 'chal123' } }, res);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/instagram/webhook — signature verification is wired and respected', () => {
+  const postWebhook = getRouteHandler(instagramRouter, '/webhook', 'post');
+
+  beforeEach(() => jest.clearAllMocks());
+
+  test('rejects 401 when verifyMetaWebhookSignature returns false — non-negotiable, checked first', async () => {
+    verifyMetaWebhookSignature.mockReturnValue(false);
+    const res = mockRes();
+    await postWebhook(req({ entry: [] }), res);
+
+    expect(res.sendStatus).toHaveBeenCalledWith(401);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('signature verification failed'));
+    // Rejected before touching anything downstream.
+    expect(igGraphApiHelpers.getCompanyByIgBusinessId).not.toHaveBeenCalled();
+  });
+
+  test('proceeds to process the payload when verifyMetaWebhookSignature returns true', async () => {
+    verifyMetaWebhookSignature.mockReturnValue(true);
+    igGraphApiHelpers.getCompanyByIgBusinessId.mockResolvedValue(null); // no company — proves it got past the signature gate
+    const res = mockRes();
+    await postWebhook(req({ entry: [{ id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, message: { text: 'hi' } }] }] }), res);
+
+    expect(igGraphApiHelpers.getCompanyByIgBusinessId).toHaveBeenCalledWith(IG_BUSINESS_ID);
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+});
+
+describe('POST /api/instagram/webhook — payload parsing', () => {
+  const postWebhook = getRouteHandler(instagramRouter, '/webhook', 'post');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    verifyMetaWebhookSignature.mockReturnValue(true);
+    igGraphApiHelpers.getCompanyByIgBusinessId.mockResolvedValue(CID);
+    InstagramContactService.resolveOrCreate.mockResolvedValue({ contact: { igsid: IGSID, igUsername: null, tags: [] }, created: true });
+    InstagramContactService.recordMessage.mockResolvedValue(undefined);
+    runAutomations.mockResolvedValue(undefined);
+  });
+
+  test('entry.changes (comments) — v1 stub: logged, 200, NOT processed', async () => {
+    const res = mockRes();
+    await postWebhook(req({ entry: [{ id: IG_BUSINESS_ID, changes: [{ field: 'comments', value: { text: 'nice!' } }] }] }), res);
+
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+    expect(InstagramContactService.resolveOrCreate).not.toHaveBeenCalled();
+    expect(runAutomations).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('comments field received, deferred'));
+  });
+
+  test('entry.messaging with plain text: resolves the contact, records the message, and fires keyword_message with ctx.igsid populated', async () => {
+    const res = mockRes();
+    await postWebhook(req({
+      entry: [{ id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, timestamp: 1732000000000, message: { mid: 'mid_1', text: 'hello there' } }] }],
+    }), res);
+
+    expect(InstagramContactService.resolveOrCreate).toHaveBeenCalledWith(CID, IGSID, null);
+    expect(InstagramContactService.recordMessage).toHaveBeenCalledWith(CID, IGSID, {
+      direction: 'inbound', content: 'hello there', timestamp: 1732000000000, mid: 'mid_1',
+    });
+    expect(runAutomations).toHaveBeenCalledWith(CID, 'keyword_message', expect.objectContaining({
+      contactId: IGSID, igsid: IGSID, messageText: 'hello there',
+    }));
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('story reply (message.reply_to.story present) — v1 stub: logged, skipped, no keyword fire', async () => {
+    const res = mockRes();
+    await postWebhook(req({
+      entry: [{ id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, message: { mid: 'm1', reply_to: { story: { id: 's1', url: 'https://x' } } } }] }],
+    }), res);
+
+    expect(InstagramContactService.resolveOrCreate).not.toHaveBeenCalled();
+    expect(runAutomations).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('story reply received, deferred'));
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('story mention (attachment type story_mention) — v1 stub: logged, skipped, no keyword fire', async () => {
+    const res = mockRes();
+    await postWebhook(req({
+      entry: [{ id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, message: { mid: 'm1', attachments: [{ type: 'story_mention', payload: { url: 'https://x' } }] } }] }],
+    }), res);
+
+    expect(InstagramContactService.resolveOrCreate).not.toHaveBeenCalled();
+    expect(runAutomations).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('story mention received, deferred'));
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('postback/reaction events with no message.text are skipped silently — not an error', async () => {
+    const res = mockRes();
+    await postWebhook(req({
+      entry: [{ id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, postback: { payload: 'GET_STARTED' } }] }],
+    }), res);
+
+    expect(runAutomations).not.toHaveBeenCalled();
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('no company mapped for the igId: warns and 200s, never throws or processes', async () => {
+    igGraphApiHelpers.getCompanyByIgBusinessId.mockResolvedValue(null);
+    const res = mockRes();
+    await postWebhook(req({ entry: [{ id: 'unknown_ig_id', messaging: [{ sender: { id: IGSID }, message: { text: 'hi' } }] }] }), res);
+
+    expect(InstagramContactService.resolveOrCreate).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('no company mapped'));
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('always ACKs 200 even when internal processing throws — mirrors whatsapp.js\'s stance', async () => {
+    InstagramContactService.resolveOrCreate.mockRejectedValue(new Error('ddb exploded'));
+    const res = mockRes();
+    await postWebhook(req({
+      entry: [{ id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, message: { text: 'hi' } }] }],
+    }), res);
+
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+    expect(logger.error).toHaveBeenCalledWith('Instagram webhook processing error', expect.any(Error));
+  });
+});

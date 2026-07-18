@@ -1,11 +1,11 @@
 'use client';
 
-import { Zap, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin, Workflow, Radio } from 'lucide-react';
+import { Zap, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin, Workflow, Radio, Camera } from 'lucide-react';
 import { ACTION_META, type ActionType, type NodeType } from '@/types/automations';
 import { ACTION_ICONS } from '../WorkflowBuilder';
 
 const PALETTE_GROUPS: Array<{ label: string; types: NodeType[] }> = [
-  { label: 'Messaging', types: ['send_template', 'send_message', 'send_buttons', 'send_list', 'send_document', 'send_location', 'send_flow'] },
+  { label: 'Messaging', types: ['send_template', 'send_message', 'send_buttons', 'send_list', 'send_document', 'send_location', 'send_flow', 'send_instagram_message'] },
   { label: 'CRM Actions', types: ['assign_employee', 'change_stage', 'add_tag', 'create_task', 'meta_signal'] },
   { label: 'AI', types: ['start_ai_conversation'] },
   { label: 'Logic', types: ['wait', 'condition', 'end'] },
@@ -22,6 +22,7 @@ const EXTRA_META: Partial<Record<NodeType, { label: string; icon: typeof GitBran
   send_location: { label: 'Send Location', icon: MapPin },
   send_flow:     { label: 'Send Flow',     icon: Workflow },
   meta_signal:   { label: 'Meta Signal',   icon: Radio },
+  send_instagram_message: { label: 'Instagram DM Reply', icon: Camera },
 };
 
 interface NodePaletteProps {

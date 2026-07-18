@@ -146,7 +146,7 @@ export interface WorkflowStep {
 // 'send_buttons'/'send_document' are graph-only — deliberately not added to
 // ActionType, which the legacy linear model also uses and has no equivalent for.
 export type NodeType = ActionType | 'condition' | 'send_buttons' | 'send_document'
-  | 'send_message' | 'send_list' | 'send_location' | 'send_flow' | 'meta_signal';
+  | 'send_message' | 'send_list' | 'send_location' | 'send_flow' | 'meta_signal' | 'send_instagram_message';
 
 // Optional image/video/document shown above the body text — Meta's Interactive
 // Message header field. WhatsAppSendService.sendInteractive() is a raw pass-through
@@ -266,6 +266,16 @@ export interface MetaSignalConfig {
   valueField?: string;
 }
 
+// Instagram DM reply node — v1's one send capability (plain text only; no
+// buttons/templates/media/location/flow, none of which have a 1:1 Instagram
+// equivalent, per the 2026-07-18 audit). Fires against an IGCONTACT# record
+// (InstagramContactService), never a lead — the "lightweight, no CRM"
+// decision. Only reachable from a keyword_message trigger whose context
+// carries ctx.igsid (populated exclusively by the Instagram webhook).
+export interface SendInstagramMessageConfig {
+  messageText: string;
+}
+
 export type ConditionMode = 'field_match' | 'boolean' | 'button_reply';
 
 export interface ConditionBranch {
@@ -287,7 +297,8 @@ export interface ConditionNodeConfig {
 }
 
 export type NodeConfig = StepConfig | ConditionNodeConfig | SendButtonsConfig | SendDocumentConfig
-  | SendMessageConfig | SendListConfig | SendLocationConfig | SendFlowConfig | MetaSignalConfig;
+  | SendMessageConfig | SendListConfig | SendLocationConfig | SendFlowConfig | MetaSignalConfig
+  | SendInstagramMessageConfig;
 
 export interface NodePosition {
   x: number;

@@ -6,6 +6,7 @@ const app = require('./app');
 const { runDueCampaigns } = require('./services/CampaignScheduler');
 const { runDueLeadScoring } = require('./services/LeadScoringScheduler');
 const { runStageMembershipSweep } = require('./services/StageMembershipScheduler');
+const { runDueInstagramTokenRefresh } = require('./services/InstagramTokenScheduler');
 const AutomationEngine = require('./services/AutomationEngine');
 
 const handler = serverless(app, {
@@ -30,9 +31,14 @@ exports.handler = async (event, context) => {
   // membership" drips (trigger.type stage_membership) need a periodic sweep
   // to catch leads already sitting in a target stage, not just a one-time
   // stage_changed transition; see docs/bible/19_DECISION_LOG.md Era 51.
+  // runDueInstagramTokenRefresh() rides the same rule too — Instagram Login
+  // tokens are long-lived (60 days) but DO expire and need refreshing,
+  // unlike WhatsApp's Tech-Provider tokens; self-throttles to once daily.
+  // See docs/bible/19_DECISION_LOG.md Era 54.
   if (event.source === 'aws.events' && event['detail-type'] === 'Scheduled Event') {
     return Promise.allSettled([
       runDueCampaigns(), runDueLeadScoring(), AutomationEngine.processAllDueWaits(), runStageMembershipSweep(),
+      runDueInstagramTokenRefresh(),
     ]);
   }
 

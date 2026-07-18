@@ -31,6 +31,7 @@ import {
   FileText,
   KeyRound,
   Trash2,
+  Camera,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card } from '@/components/v3/ui/Card';
@@ -63,6 +64,7 @@ type SettingsSection =
   | 'organisation'
   | 'employees'
   | 'whatsapp'
+  | 'instagram'
   | 'ai'
   | 'notifications'
   | 'security'
@@ -102,6 +104,7 @@ const SECTIONS: SectionDef[] = [
   { id: 'organisation',  label: 'Organisation',     description: 'Company name, logo, settings',           icon: <Building2 className="h-5 w-5" />, adminOnly: true },
   { id: 'employees',     label: 'Employees',        description: 'Invite, manage roles and permissions',   icon: <Users className="h-5 w-5" />, adminOnly: true },
   { id: 'whatsapp',      label: 'WhatsApp',         description: 'Connect and manage WhatsApp Business',   icon: <Smartphone className="h-5 w-5" />, adminOnly: true },
+  { id: 'instagram',     label: 'Instagram',        description: 'Connect Instagram for DM keyword auto-reply', icon: <Camera className="h-5 w-5" />, adminOnly: true },
   { id: 'templates',     label: 'Templates',        description: 'Meta-approved WhatsApp message templates', icon: <FileText className="h-5 w-5" />, visibleToRoles: ['admin', 'manager'] },
   { id: 'ai',            label: 'AI',               description: 'Master switch and per-feature AI controls', icon: <Sparkles className="h-5 w-5" />, adminOnly: true },
   { id: 'pipeline',      label: 'Pipeline Stages',  description: 'Customise your sales stages',            icon: <LayoutGrid className="h-5 w-5" />, adminOnly: true },
@@ -962,6 +965,122 @@ function WhatsAppSection() {
         </ol>
       </Card>
 
+    </div>
+  );
+}
+
+// ── Instagram section ─────────────────────────────────────────────────────────
+// v1 scope (the "lightweight, no CRM" decision — see
+// docs/bible/19_DECISION_LOG.md Era 54): connect/disconnect only, mirroring
+// WhatsAppSection's OAuth-popup structure. No manual-connect form (unlike
+// WhatsApp's fallback, Instagram Login has no equivalent System User token
+// path today) and no health-check/probe panel — those ride on WhatsApp's
+// richer, longer-established config surface, not replicated here for a v1
+// with no CRM/conversation UI to diagnose against yet.
+
+interface IgConfigResponse {
+  connected: boolean;
+  igUsername: string | null;
+  igBusinessAccountId: string | null;
+  connectedAt: string | null;
+  tokenExpiresAt: string | null;
+}
+
+function InstagramSection() {
+  const qc = useQueryClient();
+
+  const { data: cfg, isLoading, isError } = useQuery<IgConfigResponse>({
+    queryKey: ['instagram-config'],
+    queryFn: () => apiFetch<IgConfigResponse>('/api/instagram/config'),
+    staleTime: 30_000,
+  });
+
+  const disconnectMut = useMutation({
+    mutationFn: () => apiFetch('/api/instagram/connection', { method: 'DELETE' }),
+    onSuccess: () => {
+      toast.success('Instagram disconnected');
+      qc.invalidateQueries({ queryKey: ['instagram-config'] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  async function handleOAuth() {
+    try {
+      const res = await apiFetch<{ url: string }>('/api/instagram/auth/init');
+      const popup = window.open(res.url, 'ig_connect', 'width=600,height=700');
+      const onMsg = (e: MessageEvent) => {
+        if (e.data?.type === 'ig_connected') {
+          toast.success(e.data.message ?? 'Instagram connected');
+          qc.invalidateQueries({ queryKey: ['instagram-config'] });
+          window.removeEventListener('message', onMsg);
+        } else if (e.data?.type === 'ig_failed') {
+          toast.error(e.data.message ?? 'Connection failed');
+          window.removeEventListener('message', onMsg);
+        }
+      };
+      window.addEventListener('message', onMsg);
+      const t = setInterval(() => {
+        if (popup?.closed) { clearInterval(t); window.removeEventListener('message', onMsg); }
+      }, 500);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'OAuth failed';
+      if (msg.includes('INSTAGRAM_APP_ID')) toast.error('Instagram App ID not configured on server');
+      else toast.error(msg);
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-40 w-full rounded-xl" />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <Card className="p-6">
+        <p className="text-sm text-error-600">Couldn&apos;t load Instagram connection status. Try refreshing.</p>
+      </Card>
+    );
+  }
+
+  const connected = cfg?.connected ?? false;
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold text-neutral-900 dark:text-white">Instagram</h2>
+        <p className="text-sm text-neutral-500">Automated DM keyword replies — connect an Instagram professional account.</p>
+      </div>
+      <Card className="p-6">
+        <div className="flex items-center gap-3">
+          <Camera className={cn('h-5 w-5', connected ? 'text-success-600' : 'text-neutral-400')} />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-neutral-900 dark:text-white">
+              {connected ? `@${cfg?.igUsername ?? 'Connected'}` : 'Not connected'}
+            </p>
+            {connected && cfg?.connectedAt && (
+              <p className="text-xs text-neutral-400">Connected {new Date(cfg.connectedAt).toLocaleDateString()}</p>
+            )}
+          </div>
+          <Badge variant={connected ? 'success' : 'default'}>{connected ? 'Connected' : 'Disconnected'}</Badge>
+        </div>
+        <div className="mt-4 flex gap-2">
+          {connected ? (
+            <Button variant="secondary" onClick={() => disconnectMut.mutate()} disabled={disconnectMut.isPending}>
+              {disconnectMut.isPending ? 'Disconnecting…' : 'Disconnect'}
+            </Button>
+          ) : (
+            <Button onClick={handleOAuth}>Connect Instagram</Button>
+          )}
+        </div>
+      </Card>
+      <p className="text-xs text-neutral-400">
+        DM keyword replies are configured from Automation → Workflows, using a Keyword trigger and an
+        &quot;Instagram DM Reply&quot; node — no separate Instagram-specific workflow setup is needed here.
+      </p>
     </div>
   );
 }
@@ -1860,6 +1979,7 @@ function SettingsPageInner() {
       case 'appearance':    return <AppearanceSection />;
       case 'employees':     return <EmployeesSection />;
       case 'whatsapp':      return <WhatsAppSection />;
+      case 'instagram':     return <InstagramSection />;
       case 'templates':     return <SettingsTemplatesSection />;
       case 'ai':            return <AISection />;
       case 'notifications': return <StubSection title="Notifications" description="Manage your notification preferences" />;

@@ -11,6 +11,7 @@ import { SendListNode } from './SendListNode';
 import { SendLocationNode } from './SendLocationNode';
 import { SendFlowNode } from './SendFlowNode';
 import { MetaSignalNode } from './MetaSignalNode';
+import { SendInstagramMessageNode } from './SendInstagramMessageNode';
 
 // Every ActionType except 'wait'/'end' shares the generic ActionNode shell.
 export const nodeTypes: NodeTypes = {
@@ -30,5 +31,6 @@ export const nodeTypes: NodeTypes = {
   send_location:   SendLocationNode,
   send_flow:       SendFlowNode,
   meta_signal:     MetaSignalNode,
+  send_instagram_message: SendInstagramMessageNode,
   end:             EndNode,
 };

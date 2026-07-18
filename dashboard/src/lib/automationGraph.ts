@@ -2,7 +2,7 @@ import dagre from '@dagrejs/dagre';
 import type { Node, Edge } from '@xyflow/react';
 import type {
   GraphNode, GraphEdge, NodeType, NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig,
-  SendMessageConfig, SendListConfig, SendLocationConfig, SendFlowConfig, MetaSignalConfig,
+  SendMessageConfig, SendListConfig, SendLocationConfig, SendFlowConfig, MetaSignalConfig, SendInstagramMessageConfig,
   SendTemplateConfig, AssignEmployeeConfig, ChangeStageConfig, AddTagConfig, CreateTaskConfig,
   StartAiConversationConfig,
 } from '@/types/automations';
@@ -105,6 +105,7 @@ const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
   send_location: { width: 256, height: 84 },
   send_flow:     { width: 256, height: 84 },
   meta_signal:   { width: 256, height: 84 },
+  send_instagram_message: { width: 256, height: 84 },
 };
 const DEFAULT_DIMENSIONS = { width: 240, height: 76 };
 
@@ -159,6 +160,7 @@ export function summarizeNodeConfig(nodeType: NodeType, config: NodeConfig): str
     case 'create_task':     return `In ${(config as CreateTaskConfig).daysFromNow ?? 1} day(s)`;
     case 'start_ai_conversation': return (config as StartAiConversationConfig).contextHint || 'Hand off to AI agent';
     case 'meta_signal':     return (config as MetaSignalConfig).metaEventName || 'No event selected';
+    case 'send_instagram_message': return (config as SendInstagramMessageConfig).messageText || 'No message set';
     default:                return '';
   }
 }
@@ -208,6 +210,10 @@ export function defaultSendFlowConfig(): SendFlowConfig {
 
 export function defaultMetaSignalConfig(): MetaSignalConfig {
   return { metaEventName: '' };
+}
+
+export function defaultSendInstagramMessageConfig(): SendInstagramMessageConfig {
+  return { messageText: '' };
 }
 
 // ── Save-time validation: unconnected branches ────────────────────────────────

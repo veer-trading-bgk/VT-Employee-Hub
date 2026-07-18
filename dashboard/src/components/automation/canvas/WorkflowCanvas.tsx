@@ -17,7 +17,7 @@ import { TriggerConfigPanel } from './TriggerConfigPanel';
 import {
   toReactFlow, fromReactFlow, applyDagreLayout, needsLayout,
   newNodeId, newEdgeId, defaultConditionConfig, defaultSendButtonsConfig, defaultSendDocumentConfig,
-  defaultSendMessageConfig, defaultSendListConfig, defaultSendLocationConfig, defaultSendFlowConfig, defaultMetaSignalConfig, nextNodePosition,
+  defaultSendMessageConfig, defaultSendListConfig, defaultSendLocationConfig, defaultSendFlowConfig, defaultMetaSignalConfig, defaultSendInstagramMessageConfig, nextNodePosition,
   findIncompleteBranches, TRIGGER_NODE_ID, type CanvasNodeData,
 } from '@/lib/automationGraph';
 import { defaultConfig } from '../WorkflowBuilder';
@@ -119,6 +119,7 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
       type === 'send_location' ? defaultSendLocationConfig() :
       type === 'send_flow'     ? defaultSendFlowConfig() :
       type === 'meta_signal'   ? defaultMetaSignalConfig() :
+      type === 'send_instagram_message' ? defaultSendInstagramMessageConfig() :
                                   defaultConfig(type as ActionType);
     const newNode: Node<CanvasNodeData> = {
       id: newNodeId(),
