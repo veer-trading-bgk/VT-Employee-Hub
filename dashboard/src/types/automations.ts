@@ -146,7 +146,7 @@ export interface WorkflowStep {
 // 'send_buttons'/'send_document' are graph-only — deliberately not added to
 // ActionType, which the legacy linear model also uses and has no equivalent for.
 export type NodeType = ActionType | 'condition' | 'send_buttons' | 'send_document'
-  | 'send_message' | 'send_list' | 'send_location' | 'send_flow';
+  | 'send_message' | 'send_list' | 'send_location' | 'send_flow' | 'meta_signal';
 
 // Optional image/video/document shown above the body text — Meta's Interactive
 // Message header field. WhatsAppSendService.sendInteractive() is a raw pass-through
@@ -243,6 +243,29 @@ export interface SendFlowConfig {
   flowId: string;
 }
 
+// Meta Signal node — reports a conversion event for this lead to Meta's
+// Conversions API when the workflow reaches it (v1: clean ctwa_clid match
+// only — the engine silently skips leads without a stored ctwaClid, i.e.
+// every organic/non-ad lead, and reports at most once per lead per event).
+// metaEventName must come from Meta's fixed business-messaging event list
+// below — the BM Conversions API does NOT accept custom event names (doc-
+// verified 2026-07-18), which is why this is a dropdown, not free text.
+// Mirror of CapiService.js's SUPPORTED_EVENTS — keep the two in sync.
+export const META_SIGNAL_EVENTS = [
+  'Purchase', 'LeadSubmitted', 'QualifiedLead', 'InitiateCheckout', 'AddToCart',
+  'ViewContent', 'OrderCreated', 'OrderShipped', 'OrderDelivered', 'OrderCanceled',
+  'OrderReturned', 'CartAbandoned', 'RatingProvided', 'ReviewProvided',
+] as const;
+export type MetaSignalEventName = typeof META_SIGNAL_EVENTS[number];
+
+// valueField optionally names a numeric lead field whose amount rides along
+// as custom_data.value in INR (today the only meaningful one is
+// expectedValue); absent/non-numeric on the lead → value omitted cleanly.
+export interface MetaSignalConfig {
+  metaEventName: MetaSignalEventName | '';
+  valueField?: string;
+}
+
 export type ConditionMode = 'field_match' | 'boolean' | 'button_reply';
 
 export interface ConditionBranch {
@@ -264,7 +287,7 @@ export interface ConditionNodeConfig {
 }
 
 export type NodeConfig = StepConfig | ConditionNodeConfig | SendButtonsConfig | SendDocumentConfig
-  | SendMessageConfig | SendListConfig | SendLocationConfig | SendFlowConfig;
+  | SendMessageConfig | SendListConfig | SendLocationConfig | SendFlowConfig | MetaSignalConfig;
 
 export interface NodePosition {
   x: number;

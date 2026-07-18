@@ -68,6 +68,22 @@ function inboxMsgSK(timestamp, msgId)      { return `MSG#${timestamp}#${msgId}`;
 function tlPK(companyId, entityType, entityId) { return `TL#${companyId}#${entityType}#${entityId}`; }
 function tlSK(timestamp, eventType, eventId)   { return `${timestamp}#${eventType}#${eventId}`; }
 
+// Meta Signal (Conversions API) — see CapiService.js / ADR-019.
+// Once-ever claim marker, written on the LEAD's own partition BEFORE any
+// /events POST. Deliberately NO TTL (unlike IDEM#/PENDINGFLOW#): Meta does
+// not dedup business-messaging events, so an expired claim would let a
+// re-added tag double-count the conversion at Meta — same "expiry re-triggers
+// an outbound side effect" reasoning as StageMembershipScheduler's ENROLLED#.
+// PK = <lead PK>  SK = CAPI#${metaEventName}
+function capiClaimSK(metaEventName) { return `CAPI#${metaEventName}`; }
+
+// Meta Signal observability log — company-scoped, newest-first Query-able,
+// TTL'd (90 days; expiry is low-stakes here — the claim marker above, not
+// this row, is the dedup mechanism). Same PK/SK idiom as BROADCAST#.
+// PK = CAPILOG#${companyId}  SK = ${timestampISO}#${leadId}#${metaEventName}
+function capiLogPK(companyId)                        { return `CAPILOG#${companyId}`; }
+function capiLogSK(timestampISO, leadId, metaEventName) { return `${timestampISO}#${leadId}#${metaEventName}`; }
+
 // ─── EMPLOYEES TABLE ──────────────────────────────────────────────────────────
 
 // Employee entity
@@ -128,6 +144,10 @@ module.exports = {
   // Timeline
   tlPK,
   tlSK,
+  // Meta Signal / Conversions API (CapiService)
+  capiClaimSK,
+  capiLogPK,
+  capiLogSK,
   // Employees
   empPK,
   empSK,

@@ -911,6 +911,38 @@ class AutomationEngine {
         return { engaged };
       }
 
+      // Meta Signal — report a conversion event for this lead to Meta's
+      // Conversions API. All the business capability (once-ever claim,
+      // dataset provisioning, the /events POST, CAPILOG# logging) lives in
+      // CapiService (sibling boundary, ADR-019); this case only fetches the
+      // lead and surfaces the outcome. The lead re-fetch is REQUIRED, not an
+      // optimization: no trigger's frozen context carries ctwaClid (audited
+      // 2026-07-18), and after a wait node the replayed context is stale
+      // anyway — ctwaClid is create-only/immutable, so a fetch at fire time
+      // is always correct. Skips (organic lead, already reported, no lead in
+      // context) return normally; only a real Meta send failure throws, so
+      // the execution path records a failed node — and the runner's per-node
+      // catch guarantees the workflow itself still continues, same as every
+      // sibling action. Lazy require: cold-path module, same pattern as the
+      // ConversationalAgentService require directly above.
+      case 'meta_signal': {
+        const { metaEventName, valueField } = step.config ?? {};
+        if (!metaEventName) throw new Error('meta_signal: metaEventName required');
+        // Contexts with no lead (e.g. whatsapp_conversation_started fires for
+        // unknown INBOX# contacts) have nothing to attribute — a skip, same
+        // "nothing to report" posture as an organic lead, not an error.
+        if (!leadPK || !leadId) return { status: 'skipped', reason: 'no_lead_in_context' };
+        const { Item: lead } = await dynamodb.get({
+          TableName: TABLE,
+          Key: { PK: leadPK, SK: 'METADATA' },
+        }).promise();
+        if (!lead) return { status: 'skipped', reason: 'lead_missing' };
+        const CapiService = require('./CapiService');
+        const r = await CapiService.reportForLead(companyId, { lead, metaEventName, valueField });
+        if (r.status === 'failed') throw new Error(`meta_signal: ${r.error}`);
+        return r;
+      }
+
       default:
         throw new Error(`Unknown action type: ${step.type}`);
     }

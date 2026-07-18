@@ -24,6 +24,9 @@ jest.mock('../src/services/DelayedResponseService', () => ({
 jest.mock('../src/services/ConversationalAgentService', () => ({
   startForLead: jest.fn(),
 }));
+jest.mock('../src/services/CapiService', () => ({
+  reportForLead: jest.fn(),
+}));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
 }));
@@ -2237,5 +2240,85 @@ describe('AutomationEngine — flow_completed graph run reaches add_tag and send
     const execPut = dynamodb.put.mock.calls.find(([a]) => a.Item?.PK === `AUTO_EXEC#${CID}`);
     expect(execPut).toBeDefined();
     expect(execPut[0].Item.triggeredBy.type).toBe('flow_completed');
+  });
+});
+
+describe('AutomationEngine — meta_signal action (Meta Signal / Conversions API)', () => {
+  const CapiService = require('../src/services/CapiService');
+  const LEAD_ITEM = {
+    PK: LEAD_PK, SK: 'METADATA', leadId: 'lead_001', companyId: CID,
+    ctwaClid: 'AR_click_abc123', expectedValue: 50000,
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  test('re-fetches the lead METADATA (ctwaClid is NOT in any trigger context) and hands it to CapiService.reportForLead', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: LEAD_ITEM }) });
+    CapiService.reportForLead.mockResolvedValue({ status: 'sent', eventId: `${CID}:lead_001:Purchase` });
+
+    const result = await engine._runAction(
+      CID,
+      { type: 'meta_signal', config: { metaEventName: 'Purchase', valueField: 'expectedValue' } },
+      { leadPK: LEAD_PK, leadId: 'lead_001' },
+    );
+
+    expect(dynamodb.get).toHaveBeenCalledWith(expect.objectContaining({ Key: { PK: LEAD_PK, SK: 'METADATA' } }));
+    expect(CapiService.reportForLead).toHaveBeenCalledWith(CID, {
+      lead: LEAD_ITEM, metaEventName: 'Purchase', valueField: 'expectedValue',
+    });
+    expect(result).toEqual({ status: 'sent', eventId: `${CID}:lead_001:Purchase` });
+  });
+
+  test('skips WITHOUT any fetch or CapiService call when the context has no lead (e.g. whatsapp_conversation_started)', async () => {
+    const result = await engine._runAction(
+      CID,
+      { type: 'meta_signal', config: { metaEventName: 'Purchase' } },
+      { phone: '9876543210' },
+    );
+    expect(result).toEqual({ status: 'skipped', reason: 'no_lead_in_context' });
+    expect(dynamodb.get).not.toHaveBeenCalled();
+    expect(CapiService.reportForLead).not.toHaveBeenCalled();
+  });
+
+  test('skips when the lead item no longer exists (hard-purged mid-workflow)', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const result = await engine._runAction(
+      CID,
+      { type: 'meta_signal', config: { metaEventName: 'Purchase' } },
+      { leadPK: LEAD_PK, leadId: 'lead_001' },
+    );
+    expect(result).toEqual({ status: 'skipped', reason: 'lead_missing' });
+    expect(CapiService.reportForLead).not.toHaveBeenCalled();
+  });
+
+  test('a skipped report (organic lead — no ctwa_clid) passes through without throwing', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: { ...LEAD_ITEM, ctwaClid: null } }) });
+    CapiService.reportForLead.mockResolvedValue({ status: 'skipped', reason: 'no_ctwa_clid' });
+
+    const result = await engine._runAction(
+      CID,
+      { type: 'meta_signal', config: { metaEventName: 'Purchase' } },
+      { leadPK: LEAD_PK, leadId: 'lead_001' },
+    );
+    expect(result).toEqual({ status: 'skipped', reason: 'no_ctwa_clid' });
+  });
+
+  test('a failed Meta send THROWS so the execution path records a failed node — the runner then continues, sibling semantics', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: LEAD_ITEM }) });
+    CapiService.reportForLead.mockResolvedValue({ status: 'failed', error: 'Meta API error' });
+
+    await expect(
+      engine._runAction(CID, { type: 'meta_signal', config: { metaEventName: 'Purchase' } }, { leadPK: LEAD_PK, leadId: 'lead_001' }),
+    ).rejects.toThrow('meta_signal: Meta API error');
+  });
+
+  test('throws before any fetch when metaEventName is missing from config', async () => {
+    await expect(
+      engine._runAction(CID, { type: 'meta_signal', config: {} }, { leadPK: LEAD_PK, leadId: 'lead_001' }),
+    ).rejects.toThrow(/metaEventName required/);
+    expect(dynamodb.get).not.toHaveBeenCalled();
   });
 });

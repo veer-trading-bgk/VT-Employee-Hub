@@ -1,9 +1,9 @@
 'use client';
 
-import { X, Trash2, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin, Workflow } from 'lucide-react';
+import { X, Trash2, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin, Workflow, Radio } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ACTION_META, isConditionConfig, type ActionType, type NodeType } from '@/types/automations';
-import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig, SendMessageConfig, SendListConfig, SendLocationConfig, SendFlowConfig, StepConfig } from '@/types/automations';
+import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig, SendMessageConfig, SendListConfig, SendLocationConfig, SendFlowConfig, MetaSignalConfig, StepConfig } from '@/types/automations';
 import { ActionEditor } from '../ActionEditor';
 import { ConditionEditor } from '../ConditionEditor';
 import { SendButtonsEditor } from '../SendButtonsEditor';
@@ -12,6 +12,7 @@ import { SendMessageEditor } from '../SendMessageEditor';
 import { SendListEditor } from '../SendListEditor';
 import { SendLocationEditor } from '../SendLocationEditor';
 import { SendFlowEditor } from '../SendFlowEditor';
+import { MetaSignalEditor } from '../MetaSignalEditor';
 import { ACTION_ICONS } from '../WorkflowBuilder';
 
 interface NodeConfigPanelProps {
@@ -31,6 +32,7 @@ const EXTRA_TITLES: Partial<Record<NodeType, { label: string; icon: typeof GitBr
   send_list:     { label: 'Message + List', icon: ListChecks },
   send_location: { label: 'Send Location', icon: MapPin },
   send_flow:     { label: 'Send Flow',     icon: Workflow },
+  meta_signal:   { label: 'Meta Signal',   icon: Radio },
 };
 
 /**
@@ -121,6 +123,11 @@ export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose, o
         ) : nodeType === 'send_flow' ? (
           <SendFlowEditor
             config={config as SendFlowConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'meta_signal' ? (
+          <MetaSignalEditor
+            config={config as MetaSignalConfig}
             onChange={(c) => onChange(c)}
           />
         ) : (
