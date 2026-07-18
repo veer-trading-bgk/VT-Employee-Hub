@@ -29,6 +29,36 @@ function contactKey(companyId, { leadId, phone }) {
   throw new Error('leadId or phone required');
 }
 
+// ── Query every item under a PK and batch-delete them ───────────────────────
+// Shared by deleteLead and deleteUnknownContact — was duplicated inline in
+// both (deleteLead as a local nested function, deleteUnknownContact as its
+// own copy of the same query+batchWrite loop) until Stage 5 of the 2026-07-17
+// 360° audit fix plan hoisted it out, needed to also purge deleteUnknownContact's
+// linked CONV#/TL# partitions without writing that loop a third time.
+async function purgePartition(pk) {
+  const items = [];
+  let lk;
+  do {
+    const r = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk',
+      ExpressionAttributeValues: { ':pk': pk },
+      ...(lk && { ExclusiveStartKey: lk }),
+    }).promise();
+    items.push(...(r.Items ?? []));
+    lk = r.LastEvaluatedKey;
+  } while (lk);
+  for (let i = 0; i < items.length; i += 25) {
+    await dynamodb.batchWrite({
+      RequestItems: {
+        [TABLE]: items.slice(i, i + 25).map((it) => ({
+          DeleteRequest: { Key: { PK: it.PK, SK: it.SK } },
+        })),
+      },
+    }).promise();
+  }
+}
+
 // ── Assign employee to a lead ────────────────────────────────────────────────
 // Unconditional SET of absolute values (assignedTo/assignedToName/chatStatus),
 // never reads-then-merges — two concurrent assigns to the same lead are just
@@ -175,31 +205,6 @@ async function deleteLead(companyId, leadId) {
   if (!existing.Item) throw new NotFoundError('Lead not found');
   const phone = existing.Item.phone;
 
-  // Helper: query all items under a PK and batch-delete them
-  async function purgePartition(pk) {
-    const items = [];
-    let lk;
-    do {
-      const r = await dynamodb.query({
-        TableName: TABLE,
-        KeyConditionExpression: 'PK = :pk',
-        ExpressionAttributeValues: { ':pk': pk },
-        ...(lk && { ExclusiveStartKey: lk }),
-      }).promise();
-      items.push(...(r.Items ?? []));
-      lk = r.LastEvaluatedKey;
-    } while (lk);
-    for (let i = 0; i < items.length; i += 25) {
-      await dynamodb.batchWrite({
-        RequestItems: {
-          [TABLE]: items.slice(i, i + 25).map((it) => ({
-            DeleteRequest: { Key: { PK: it.PK, SK: it.SK } },
-          })),
-        },
-      }).promise();
-    }
-  }
-
   // 1. Delete all items under LEAD# PK (METADATA, MSG#*, NOTE#*, etc.)
   await purgePartition(PK);
 
@@ -305,13 +310,21 @@ async function deleteLead(companyId, leadId) {
 }
 
 // ── Delete an unknown (phone-only, INBOX#-only) contact ─────────────────────
-// Extracted verbatim from contacts.js's DELETE /unknown/:phone. Purges only
-// the INBOX# partition (CONTACT + any pre-promotion MSG#* items) — unlike
-// deleteLead above, this does NOT purge CONV#/TL# partitions. That matches
-// the single-contact route's existing (pre-Track-A5) behavior exactly; a
-// scan for whether unknown contacts can also accumulate an orphaned CONV#/TL#
-// pair the way leads can is a separate, not-yet-scoped question — flagged in
-// docs/phase3/TECHNICAL_DEBT.md rather than silently expanded here.
+// Originally extracted verbatim from contacts.js's DELETE /unknown/:phone,
+// purging only the INBOX# partition (CONTACT + any pre-promotion MSG#*
+// items). Found 2026-07-10 (docs/phase3/TECHNICAL_DEBT.md) to leave a real
+// orphan behind: any unknown contact that ever received an inbound message
+// has a CONV#/TL#CONV# pair created via resolveForInbox()
+// (conversationResolver.js:211-236), with convId stamped onto this same
+// INBOX# CONTACT item — deleting the contact without also purging those left
+// them permanently orphaned, including lastMessageText/aiSummary content
+// surviving the "delete" (a privacy/erasure concern, not just data hygiene).
+// Fixed Stage 5 of the 2026-07-17 360° audit fix plan, mirroring deleteLead's
+// own CONV#/TL# purge (above) rather than writing new purge logic — the only
+// difference is deleteLead reads convId off a SEPARATE INBOX# partition it
+// doesn't otherwise touch, while here the INBOX# CONTACT item already read
+// into `existing` above IS the record convId lives on, so no extra fetch
+// is needed.
 async function deleteUnknownContact(companyId, phone) {
   const normPhone = to10Digit(phone);
   const PK = inboxKey(companyId, normPhone).PK;
@@ -319,30 +332,30 @@ async function deleteUnknownContact(companyId, phone) {
   const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'CONTACT' } }).promise();
   if (!existing.Item) throw new NotFoundError('Unknown contact not found');
 
-  const items = [];
-  let lk;
-  do {
-    const r = await dynamodb.query({
-      TableName: TABLE,
-      KeyConditionExpression: 'PK = :pk',
-      ExpressionAttributeValues: { ':pk': PK },
-      ...(lk && { ExclusiveStartKey: lk }),
-    }).promise();
-    items.push(...(r.Items ?? []));
-    lk = r.LastEvaluatedKey;
-  } while (lk);
+  await purgePartition(PK);
 
-  for (let i = 0; i < items.length; i += 25) {
-    await dynamodb.batchWrite({
-      RequestItems: {
-        [TABLE]: items.slice(i, i + 25).map((it) => ({
-          DeleteRequest: { Key: { PK: it.PK, SK: it.SK } },
-        })),
-      },
-    }).promise();
+  const convId = existing.Item.convId ?? null;
+  const convTlPurge = { conv: null, tlConv: null };
+  if (convId) {
+    convTlPurge.conv = true;
+    convTlPurge.tlConv = true;
+    await purgePartition(conversationPK(companyId, convId))
+      .catch((e) => {
+        convTlPurge.conv = false;
+        logger.warn(`ContactBulkOps.deleteUnknownContact: CONV# delete failed phone=${normPhone} convId=${convId}: ${e.message}`);
+      });
+    await purgePartition(tlPK(companyId, ENTITY.CONV, convId))
+      .catch((e) => {
+        convTlPurge.tlConv = false;
+        logger.warn(`ContactBulkOps.deleteUnknownContact: TL#CONV delete failed phone=${normPhone} convId=${convId}: ${e.message}`);
+      });
+    logger.info(`ContactBulkOps.deleteUnknownContact: phone=${normPhone} purged linked conversation convId=${convId}`);
+  } else {
+    logger.info(`ContactBulkOps.deleteUnknownContact: phone=${normPhone} has no convId — skipping CONV#/TL#(CONV) purge (never messaged)`);
   }
+  const convTlPartialFailure = Object.values(convTlPurge).some((v) => v === false);
 
-  return {};
+  return { convId, convTlPurge, convTlPartialFailure };
 }
 
 // ── Delete a contact (lead or unknown) — bulk-delete's single entry point ──
@@ -355,8 +368,8 @@ async function deleteContact(companyId, { leadId, phone }) {
     return { isLead: true, ...result };
   }
   if (phone) {
-    await deleteUnknownContact(companyId, phone);
-    return { isLead: false };
+    const result = await deleteUnknownContact(companyId, phone);
+    return { isLead: false, ...result };
   }
   throw new Error('leadId or phone required');
 }

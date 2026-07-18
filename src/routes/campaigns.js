@@ -25,7 +25,7 @@ async function _buildAudience(companyId, filter) {
   do {
     const sr = await dynamodb.scan({
       TableName: TABLE,
-      FilterExpression: 'begins_with(PK, :pfx) AND SK = :meta AND attribute_not_exists(deletedAt)',
+      FilterExpression: 'begins_with(PK, :pfx) AND SK = :meta',
       ExpressionAttributeValues: { ':pfx': `LEAD#${companyId}#`, ':meta': 'METADATA' },
       ...(lastKey && { ExclusiveStartKey: lastKey }),
     }).promise();

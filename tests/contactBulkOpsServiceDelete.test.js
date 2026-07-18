@@ -166,6 +166,48 @@ describe('ContactBulkOpsService.deleteUnknownContact() — INBOX# partition purg
     expect(store.anyUnderPK(`INBOX#${CID}#${phone}`)).toBe(false);
     expect(store.has(`INBOX#${CID}#other`, 'CONTACT')).toBe(true);
   });
+
+  // Stage 5 (2026-07-17 360° audit fix plan, finding #6): an unknown contact
+  // that ever received an inbound message has a real CONV#/TL#CONV# pair
+  // (resolveForInbox()), with convId stamped onto the same INBOX# CONTACT
+  // item deleted above. Confirms that pair no longer survives the delete.
+  test('purges a linked CONV#/TL#CONV# too, when the INBOX# CONTACT item has a convId', async () => {
+    const phone = '9000000003';
+    const convId = 'conv-unknown-1';
+    const store = makeFakeStore([
+      { PK: `INBOX#${CID}#${phone}`, SK: 'CONTACT', convId },
+      { PK: `INBOX#${CID}#${phone}`, SK: 'MSG#2026-07-10T00:00:00.000Z#m1' },
+      { PK: `CONV#${CID}#${convId}`, SK: 'CONV#META', lastMessageText: 'hi', aiSummary: 'greeting' },
+      { PK: `TL#${CID}#CONV#${convId}`, SK: '2026-07-10T00:00:00.000Z#msg_in#e1' },
+      // A different, unrelated conversation — must survive untouched.
+      { PK: `CONV#${CID}#other-conv`, SK: 'CONV#META' },
+    ]);
+
+    const result = await deleteUnknownContact(CID, phone);
+
+    expect(store.anyUnderPK(`INBOX#${CID}#${phone}`)).toBe(false);
+    expect(store.anyUnderPK(`CONV#${CID}#${convId}`)).toBe(false);
+    expect(store.anyUnderPK(`TL#${CID}#CONV#${convId}`)).toBe(false);
+    expect(store.has(`CONV#${CID}#other-conv`, 'CONV#META')).toBe(true);
+
+    expect(result.convId).toBe(convId);
+    expect(result.convTlPurge).toEqual({ conv: true, tlConv: true });
+    expect(result.convTlPartialFailure).toBe(false);
+  });
+
+  test('no convId (never messaged) — INBOX# purge still succeeds cleanly, no CONV#/TL# purge attempted', async () => {
+    const phone = '9000000004';
+    const store = makeFakeStore([
+      { PK: `INBOX#${CID}#${phone}`, SK: 'CONTACT' },
+    ]);
+
+    const result = await deleteUnknownContact(CID, phone);
+
+    expect(store.anyUnderPK(`INBOX#${CID}#${phone}`)).toBe(false);
+    expect(result.convId).toBeNull();
+    expect(result.convTlPurge).toEqual({ conv: null, tlConv: null });
+    expect(result.convTlPartialFailure).toBe(false);
+  });
 });
 
 describe('ContactBulkOpsService.deleteContact() — bulk-delete dispatcher', () => {

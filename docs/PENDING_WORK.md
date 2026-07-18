@@ -156,17 +156,14 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
   escalation handoff message itself fails to send, `_runTurn()` still returns `true`, so the caller
   believes a handoff message went out when it didn't. Flagged, not fixed.
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "_handoff()'s Send Failure Is Swallowed".
-- **Bulk delete's `restore` route is a dead end.** `ContactBulkOpsService.deleteLead()`/
-  `deleteUnknownContact()` are hard purges that never set `deletedAt`, but
-  `POST /leads/:id/restore` still exists and 404s for anything deleted via the current delete path.
-  Needs a product decision: remove the now-dead restore route (hard-delete-with-confirmation is a
-  coherent, intentional design), or build real soft-delete and wire restore up for real. Not done.
+- ~~**Bulk delete's `restore` route is a dead end.**~~ RESOLVED 2026-07-18 (Stage 5 of the
+  2026-07-17 360° audit fix plan) — product decision: removed the dead `POST /leads/:id/restore`
+  route rather than build real soft-delete; delete stays permanent.
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Bulk-Deleted Contacts Are Unrecoverable".
-- **Unknown-contact delete's CONV#/TL# purge coverage is unverified.** Unlike the lead-delete path
-  (which purges linked `CONV#`/`TL#CONV` records), `deleteUnknownContact()` only ever purges the
-  `INBOX#` partition. Whether an unknown/pre-promotion contact can actually accumulate a `CONV#`
-  entity hasn't been checked — if it can, this is the same orphan-record bug class already fixed
-  for leads (Era 37/41), just on an unaudited path. Not done.
+- ~~**Unknown-contact delete's CONV#/TL# purge coverage is unverified.**~~ RESOLVED 2026-07-18
+  (Stage 5) — confirmed reachable in production; `deleteUnknownContact()` now purges a linked
+  `CONV#`/`TL#CONV#` pair too, mirroring `deleteLead()`'s existing purge.
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Unknown-Contact Delete Never Purges CONV#/TL#".
   *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "Unknown-Contact Delete Never Purges CONV#/TL#".
 - **V3_NAV_PERMISSIONS centralization.** Route gating is currently per-page (`ProtectedRoute
   allowedRoles`, e.g. Campaigns and, as of 2026-07-12, Templates) rather than driven by the

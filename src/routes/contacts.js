@@ -91,7 +91,7 @@ async function fetchFilteredContacts(req, { q = '', source = '', stage = '', tag
       TableName: TABLE,
       IndexName: 'leadsByCompany',
       KeyConditionExpression: 'companyId = :cid',
-      FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
+      FilterExpression: 'SK = :meta',
       ExpressionAttributeValues: { ':cid': companyId, ':meta': 'METADATA' },
       ...(lk1 && { ExclusiveStartKey: lk1 }),
     }).promise();

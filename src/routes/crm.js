@@ -33,7 +33,7 @@ async function scanAllLeads(companyId) {
     TableName: TABLE,
     IndexName: 'leadsByCompany',
     KeyConditionExpression: 'companyId = :cid',
-    FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
+    FilterExpression: 'SK = :meta',
     ExpressionAttributeValues: { ':cid': companyId, ':meta': 'METADATA' },
   };
   const items = [];
@@ -442,7 +442,7 @@ router.put('/leads/:id', authMiddleware, rateLimit(30, 60_000), async (req, res,
           TableName: TABLE,
           IndexName: 'company-phone-index',
           KeyConditionExpression: 'companyId = :cid AND phoneNorm = :norm',
-          FilterExpression: 'SK = :meta AND attribute_not_exists(deletedAt)',
+          FilterExpression: 'SK = :meta',
           ExpressionAttributeValues: { ':cid': companyId, ':norm': updates.phoneNorm, ':meta': 'METADATA' },
           Limit: 2,
         }).promise();
@@ -686,28 +686,6 @@ router.delete('/leads/:id', authMiddleware, checkRole(['admin']), rateLimit(10, 
     );
   } catch (err) {
     logger.error('crm/leads/:id DELETE error', err);
-    next(err);
-  }
-});
-
-// ── POST /api/crm/leads/:id/restore — undo soft-delete ────────────────────────
-router.post('/leads/:id/restore', authMiddleware, checkRole(['admin', 'manager']), rateLimit(10, 60_000), async (req, res, next) => {
-  try {
-    const PK = leadPK(req.user.companyId, req.params.id);
-    const existing = await dynamodb.get({ TableName: TABLE, Key: { PK, SK: 'METADATA' } }).promise();
-    if (!existing.Item) return res.status(404).json({ error: 'Lead not found' });
-    if (!existing.Item.deletedAt) return res.status(400).json({ error: 'Lead is not deleted' });
-
-    await dynamodb.update({
-      TableName: TABLE,
-      Key: { PK, SK: 'METADATA' },
-      UpdateExpression: 'REMOVE deletedAt, deletedBy',
-    }).promise();
-
-    await logAudit(req.user.id, 'crm_lead_restored', req.params.id, 'success', req.ip, {});
-    res.json({ success: true });
-  } catch (err) {
-    logger.error('crm/leads/:id/restore error', err);
     next(err);
   }
 });

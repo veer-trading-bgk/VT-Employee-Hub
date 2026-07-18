@@ -112,7 +112,7 @@ async function _findByPhone(companyId, phoneNorm) {
     TableName:                 TABLE(),
     IndexName:                 GSI.LEAD_BY_PHONE,
     KeyConditionExpression:    'companyId = :cid AND phoneNorm = :norm',
-    FilterExpression:          'SK = :meta AND attribute_not_exists(deletedAt)',
+    FilterExpression:          'SK = :meta',
     ExpressionAttributeValues: { ':cid': companyId, ':norm': phoneNorm, ':meta': 'METADATA' },
     Limit: 1,
   }).promise();

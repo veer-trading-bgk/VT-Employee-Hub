@@ -62,7 +62,7 @@ async function runDueLeadScoring() {
     const scan = await dynamodb.scan({
       TableName: TABLE,
       ProjectionExpression: 'PK, SK, companyId, #st, intent, confidence, lastInboundAt, lastMessageAt, closureDeadline, expectedValue',
-      FilterExpression: 'begins_with(PK, :lead) AND SK = :meta AND attribute_not_exists(deletedAt)',
+      FilterExpression: 'begins_with(PK, :lead) AND SK = :meta',
       ExpressionAttributeNames: { '#st': 'stage' },
       ExpressionAttributeValues: { ':lead': 'LEAD#', ':meta': 'METADATA' },
       ...(lastKey && { ExclusiveStartKey: lastKey }),

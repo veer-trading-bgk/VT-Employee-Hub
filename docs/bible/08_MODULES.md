@@ -97,11 +97,12 @@ catalog, `CONFIG#WELCOME#${companyId}` welcome-message config, INBOX# unknown-co
 
 ### `src/routes/crm.js` (1,123 lines)
 
-**Purpose:** CRM lead pipeline — pipeline stage config, lead CRUD, assignment, stage transitions, soft-delete/restore, follow-ups, CSV bulk import, and CRM-scoped stats/analytics.
+**Purpose:** CRM lead pipeline — pipeline stage config, lead CRUD, assignment, stage transitions, hard-delete, follow-ups, CSV bulk import, and CRM-scoped stats/analytics.
 
 **Owns:** `CONFIG#CRM#${companyId}` pipeline stage config, `LEAD#${companyId}#${leadId}` METADATA records (the primary customer entity used everywhere else in the system), `FOLLOWUP#${companyId}#${date}` records.
 
-**Endpoints:** `GET/PUT /pipeline`, `GET/POST /leads`, `GET/PUT/DELETE /leads/:id`, `PUT /leads/:id/assign`, `PUT /leads/:id/stage`, `POST /leads/:id/restore`, `GET /followups`, `POST /leads/:id/followup`, `PUT /followups/:date/:leadId/done`, `POST /import`, `GET /stats`, `GET /crm-analytics`.
+**Endpoints:** `GET/PUT /pipeline`, `GET/POST /leads`, `GET/PUT/DELETE /leads/:id`, `PUT /leads/:id/assign`, `PUT /leads/:id/stage`, `GET /followups`, `POST /leads/:id/followup`, `PUT /followups/:date/:leadId/done`, `POST /import`, `GET /stats`, `GET /crm-analytics`.
+`DELETE /leads/:id` is a hard purge (`ContactBulkOpsService.deleteLead`), not soft-delete — `POST /leads/:id/restore` was removed Stage 5 of the 2026-07-17 360° audit fix plan: it could never succeed via the shipped delete path (nothing ever set `deletedAt` on a `LEAD#`/`INBOX#` record) and had zero frontend callers. Delete is permanent, matching the "This cannot be undone" warning shown at delete time.
 
 **Key requires():** `../middleware/auth`, `../config/dynamodb`, `../utils/audit`, `../utils/autoAssign`, `../middleware/rateLimiter`, `../utils/validation` (`createLeadSchema`, `updateLeadSchema`, `createFollowupSchema`), `../utils/wsNotify`, `../utils/phone` (`to10Digit`), `../services/LeadService`.
 

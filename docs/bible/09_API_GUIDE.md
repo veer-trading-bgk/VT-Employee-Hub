@@ -191,7 +191,6 @@ Lead pipeline: stages, lead CRUD, assignment, follow-ups, CSV import, analytics.
 | `PUT /leads/:id/assign` | `checkRole(['admin','manager'])` | `{ assignedTo, assignedToName? }` | `{ success, assignedTo, assignedToName }` | 400 missing assignedTo; 404 not found |
 | `PUT /leads/:id/stage` | any (non-privileged restricted to own) | `{ stage }` | `{ success, stage, autoMetric }` — auto-credits a metric (`kyc`/`demat`) on certain stage transitions, writes `STAGE#` history | 400 invalid stage key; 403 forbidden; 404 not found |
 | `DELETE /leads/:id` | `checkRole(['admin'])`, `rateLimit(10/min)` | — | `{ success }` — hard-purges all `LEAD#` items + shadow `INBOX#` items for the phone | 404 not found |
-| `POST /leads/:id/restore` | `checkRole(['admin','manager'])`, `rateLimit(10/min)` | — | `{ success }` — undoes soft-delete (`REMOVE deletedAt`) | 400 not deleted; 404 not found |
 | `GET /followups` | any (non-privileged restricted to own) | Query: `days?, overdue?, leadId?` | `{ success, followups }` | — |
 | `POST /leads/:id/followup` | any authenticated, `rateLimit(30/min)` | Zod `createFollowupSchema`: `{ date, note }` | `201 { success }` | 400 validation |
 | `PUT /followups/:date/:leadId/done` | any authenticated | — | `{ success }` | — |
