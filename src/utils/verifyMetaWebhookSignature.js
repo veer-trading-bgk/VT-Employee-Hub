@@ -7,16 +7,22 @@ const crypto = require('crypto');
  * never against JSON.stringify(req.body), which is not guaranteed byte-identical to what
  * Meta actually sent (key order, escaping) and can produce false negatives/positives.
  *
- * Shared by both Meta webhook consumers in this codebase (WhatsApp messages webhook,
- * Meta Lead Ads webhook) so there is exactly one verification implementation to audit.
+ * Shared by every Meta webhook consumer in this codebase, but the signing secret is
+ * per-APP, not global: Meta signs each webhook with the app secret of the app the webhook
+ * is registered on. The `secret` param defaults to META_APP_SECRET (the Facebook/WhatsApp
+ * Tech Provider app) — the WhatsApp messages webhook and the Meta Lead Ads webhook both
+ * ride that default. A consumer registered on a DIFFERENT Meta app MUST pass that app's
+ * secret explicitly: the Instagram DM webhook is a separate "Instagram Login" app and
+ * passes INSTAGRAM_APP_SECRET. Verifying an Instagram-signed payload against META_APP_SECRET
+ * rejects every real delivery with 401 — the 2026-07-18 production incident this param
+ * fixes (docs/bible/19_DECISION_LOG.md Era 54).
  *
- * Fails closed: returns false whenever META_APP_SECRET is configured and the signature
- * is missing, malformed, or doesn't match. Skips verification only when META_APP_SECRET
- * itself isn't set (local/dev only — production absence is warned at cold start by
- * config/secrets.js).
+ * Fails closed: returns false whenever `secret` is configured and the signature is missing,
+ * malformed, or doesn't match. Skips verification (returns true) ONLY when `secret` itself
+ * is falsy (local/dev — production absence of these secrets is a deploy-time concern; the
+ * Tech Provider secret is warned at cold start by config/secrets.js).
  */
-function verifyMetaWebhookSignature(req) {
-  const secret = process.env.META_APP_SECRET;
+function verifyMetaWebhookSignature(req, secret = process.env.META_APP_SECRET) {
   if (!secret) return true;
 
   const signature = req.headers['x-hub-signature-256'];

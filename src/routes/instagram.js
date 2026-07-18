@@ -208,7 +208,17 @@ router.get('/webhook', (req, res) => {
 
 // ── POST /api/instagram/webhook — inbound events ────────────────────────────────
 router.post('/webhook', async (req, res) => {
-  if (!verifyMetaWebhookSignature(req)) {
+  // Instagram DMs are delivered by a SEPARATE Meta app (Instagram Login), so
+  // Meta signs them with INSTAGRAM_APP_SECRET — NOT META_APP_SECRET (the
+  // WhatsApp/Facebook Tech Provider app). Verifying against the default
+  // (WhatsApp) secret rejected every real delivery with 401 (2026-07-18
+  // production incident; see verifyMetaWebhookSignature + DECISION_LOG Era 54).
+  const sigIg = verifyMetaWebhookSignature(req, process.env.INSTAGRAM_APP_SECRET);
+  // TEMPORARY live diagnostic (remove after verification against real traffic):
+  // confirms the inbound signature validates against the Instagram app secret
+  // and NOT the WhatsApp app secret. Booleans only — no secret or body logged.
+  logger.info(`Instagram webhook sig-diag: ig=${sigIg} meta=${verifyMetaWebhookSignature(req, process.env.META_APP_SECRET)}`);
+  if (!sigIg) {
     logger.warn('Instagram webhook signature verification failed');
     return res.sendStatus(401);
   }
