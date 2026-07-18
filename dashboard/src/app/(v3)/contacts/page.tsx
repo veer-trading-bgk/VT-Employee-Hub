@@ -12,7 +12,6 @@ import {
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/v3/ui/Button';
-import { Badge } from '@/components/v3/ui/Badge';
 import { Avatar } from '@/components/v3/ui/Avatar';
 import { SearchBar } from '@/components/v3/ui/SearchBar';
 import { FilterBar } from '@/components/v3/ui/FilterBar';
@@ -29,6 +28,7 @@ import { toast } from 'sonner';
 import Link from 'next/link';
 import { format } from 'date-fns';
 import { OwnerSelect } from '@/components/v3/ui/OwnerSelect';
+import { StageSelect } from '@/components/v3/ui/StageSelect';
 import { NewContactDrawer } from '@/components/contacts/NewContactDrawer';
 import { ImportContactsDrawer } from '@/components/contacts/ImportContactsDrawer';
 import { type Tag as CatalogTag } from '@/components/tags/TagBadge';
@@ -38,7 +38,7 @@ import { EditableName } from '@/components/shared/EditableName';
 import { useContactMutations } from '@/hooks/useContactMutations';
 import { useEmployeesList } from '@/hooks/useEmployeesList';
 import { useTagCatalog } from '@/hooks/useTagCatalog';
-import { usePipelineStages, type PipelineStage } from '@/hooks/usePipelineStages';
+import { usePipelineStages } from '@/hooks/usePipelineStages';
 import { decideBulkOutcome, type BulkUpdateResponse } from '@/lib/bulkUpdateFeedback';
 import { invalidateContactCaches } from '@/lib/contactCache';
 import { assignmentKey, broadcastAssignment } from '@/lib/assignmentBridge';
@@ -147,7 +147,7 @@ function ContactNameCell({ leadId, value, onSaved }: { leadId: string; value: st
   );
 }
 
-function buildColumns(canEditOwner: boolean, onRowChanged: () => void, pipelineStages: PipelineStage[]): TableColumn<Contact>[] {
+function buildColumns(canEditOwner: boolean, onRowChanged: () => void): TableColumn<Contact>[] {
   return [
     {
       key: 'name',
@@ -183,14 +183,20 @@ function buildColumns(canEditOwner: boolean, onRowChanged: () => void, pipelineS
       header: 'Stage',
       sortable: true,
       width: 'w-32',
-      cell: (row) => {
-        const stageObj = pipelineStages.find((s) => s.key === row.stage);
-        return (
-          <Badge variant="stage" stage={row.stage} color={stageObj?.color}>
-            {stageObj?.label ?? row.stage}
-          </Badge>
-        );
-      },
+      // stopPropagation — this cell is interactive (opens a dropdown inline);
+      // without it, clicks bubble to the row's onClick and navigate to
+      // Customer 360, same reasoning as the Tags cell below.
+      cell: (row) => (
+        <div onClick={(e) => e.stopPropagation()}>
+          <StageSelect
+            contactId={row.id}
+            isLead={row.type === 'lead' || !!row.leadId}
+            currentStage={row.stage}
+            onSuccess={onRowChanged}
+            compact
+          />
+        </div>
+      ),
     },
     {
       key: 'owner',
@@ -463,7 +469,7 @@ function ContactsContent() {
     }
   }
 
-  const columns = buildColumns(canEditOwner, () => qc.invalidateQueries({ queryKey: ['contacts'] }), pipelineStages);
+  const columns = buildColumns(canEditOwner, () => qc.invalidateQueries({ queryKey: ['contacts'] }));
 
   const filterChips = stageFilter
     ? [{ key: 'stage', label: 'Stage', value: stageLabel(stageFilter) }]
