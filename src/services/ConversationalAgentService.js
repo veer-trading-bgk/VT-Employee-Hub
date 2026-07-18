@@ -529,21 +529,43 @@ async function _runTurn(companyId, { leadPK, lead, conversationId, text, turnCou
  * lead immediately (see the updateLeadLastMessage() call below) — root cause
  * of the "1st message invisible in inbox" bug (docs/bible/19_DECISION_LOG.md).
  *
+ * 2026-07-18: `referral` (Meta's messages[].referral block, present only on
+ * the first message of a Click-to-WhatsApp ad conversation) is threaded
+ * through from the webhook unmodified. When present, the fresh lead is
+ * created with source: 'ctwa' (reserved by ADR-013), ctwaClid stored as its
+ * own field, and a freeform campaign tag (referral.headline, falling back to
+ * referral.source_id) — same non-catalog tag pattern already proven at
+ * forms.js's web-form/Meta-Lead-Ads intake. All three are create-only, same
+ * as every other CIS "new customers only" field — an enriched hit (an
+ * existing lead) is untouched. Deliberately does NOT cache referral onto the
+ * INBOX# contact when this function isn't reached at all (AI disabled, or a
+ * whatsapp_conversation_started workflow owns first contact) — known,
+ * accepted limitation, see docs/phase3/TECHNICAL_DEBT.md.
+ *
  * @returns {Promise<boolean>} true only if the bot actually sent a reply this
  *   turn (see _runTurn()'s own @returns) — false for every other reason this
  *   contact isn't bot-eligible OR the AI turn didn't produce a sent reply, so
  *   the webhook's welcome-message + whatsapp_conversation_started fallback
  *   correctly still runs.
  */
-async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessageId }) {
+async function maybeStart(companyId, { phone10, waName, text, timestamp, waMessageId, referral }) {
   try {
     const cfg = await _getConfig(companyId);
     if (!cfg.enabled) return false;
 
+    // referral is Meta's messages[].referral block — present only on the
+    // first message of a Click-to-WhatsApp ad conversation (whatsapp.js
+    // extracts it, unmodified, straight off the raw webhook message).
+    // headline is the human-readable ad title; source_id (the ad/post id) is
+    // the schema-guaranteed fallback when an ad has no headline set.
+    const campaignTag = referral ? (referral.headline?.trim() || referral.source_id || null) : null;
+
     const result = await CustomerIdentityService.resolveOrCreate(companyId, {
       phone: phone10,
       name: waName || undefined,
-      source: 'whatsapp',
+      source: referral ? 'ctwa' : 'whatsapp',
+      ctwaClid: referral?.ctwa_clid ?? null,
+      ...(campaignTag && { tags: [campaignTag] }),
       skipAutoAssign: true,
       idempotencyKey: `convagent:${companyId}:${phone10}:${waMessageId}`,
     }, { createdBy: 'webhook' });

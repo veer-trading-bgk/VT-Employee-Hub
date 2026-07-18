@@ -1440,6 +1440,15 @@ router.post('/webhook', async (req, res) => {
       const phone10 = to10Digit(fromPhone);
       const waName = waNameByPhone[phone10] ?? waNameByPhone[fromPhone] ?? null;
 
+      // Click-to-WhatsApp ad attribution — Meta attaches this block, unmodified,
+      // to the FIRST inbound message of a conversation started by tapping a
+      // CTWA ad (messages[].referral, a sibling field on the message object,
+      // NOT nested under `context` — verified against Meta's own CTWA docs).
+      // Already arriving in `msg` today; simply never read until now. Threaded
+      // through to ConversationalAgentService.maybeStart() below, which is the
+      // only place a fresh lead actually gets created from an unknown contact.
+      const referral = msg.referral ?? null;
+
       // Extract content + media metadata
       let text = '';
       let mediaId = null;
@@ -1919,7 +1928,7 @@ router.post('/webhook', async (req, res) => {
           if (isFirstContact && type === 'text'
               && !(await require('../services/AutomationEngine').hasActiveWorkflow(companyId, 'whatsapp_conversation_started'))) {
             botEngaged = await ConversationalAgentService.maybeStart(companyId, {
-              phone10, waName, text, timestamp, waMessageId,
+              phone10, waName, text, timestamp, waMessageId, referral,
             });
           }
           // Free text on a LATER turn engages the AI too (2026-07-15,

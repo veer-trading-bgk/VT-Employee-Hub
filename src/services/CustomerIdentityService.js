@@ -432,6 +432,7 @@ async function _createCustomer(companyId, phoneNorm, data, context, idemKey, int
     company:               data.company?.trim()    ?? null,
     productInterest:       data.productInterest    ?? [],
     source:                data.source             ?? 'unknown',
+    ctwaClid:              data.ctwaClid           ?? null,
     notes:                 data.notes?.trim()      ?? '',
     stage:                 defaultStage,
     tags:                  data.tags               ?? [],
@@ -574,10 +575,13 @@ async function _createCustomer(companyId, phoneNorm, data, context, idemKey, int
  *   name             {string}   smart-update if existing name is a placeholder
  *   email            {string}   set if null on existing customer
  *   company          {string}   set if null on existing customer
- *   source           {string}   channel: web_form | meta_lead_ads | whatsapp | csv | manual | api
+ *   source           {string}   channel: web_form | meta_lead_ads | whatsapp | ctwa | csv | manual | api
  *   campaign         {string}   UTM campaign / ad set name
  *   medium           {string}   UTM medium: organic | paid_social | email | whatsapp | referral
  *   landingPage      {string}   referring URL
+ *   ctwaClid         {string}   Meta Click-to-WhatsApp click id (messages[].referral.ctwa_clid
+ *                               on the inbound webhook message) — for new customers only, not
+ *                               re-checked on enrichment, same as notes/stage/assignedTo below
  *   product          {string}   primary product interest (stored on interaction)
  *   tags             {string[]} pre-resolved tag IDs — additive union; resolve before calling
  *   productInterest  {string[]} product interest IDs — additive union

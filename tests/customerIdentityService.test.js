@@ -206,3 +206,62 @@ describe('CustomerIdentityService.resolveOrCreate — skipAutoAssign', () => {
     expect(result.lead.assignedTo).toBe('emp_9');
   });
 });
+
+// ─── ctwa_clid / CTWA ad-attribution capture (2026-07-18) ────────────────────
+describe('CustomerIdentityService.resolveOrCreate — ctwaClid (Click-to-WhatsApp attribution)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('a fresh lead created with data.ctwaClid stores it on the lead item, alongside source and tags', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [] }) });
+    dynamodb.transactWrite.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    const result = await CIS.resolveOrCreate(
+      'acme',
+      { phone: '9666666666', name: 'Ad Customer', source: 'ctwa', ctwaClid: 'AR_click_id_123', tags: ['50% off Demat opening'], skipAutoAssign: true },
+      { createdBy: 'webhook' },
+    );
+
+    expect(result.lead.ctwaClid).toBe('AR_click_id_123');
+    expect(result.lead.source).toBe('ctwa');
+    expect(result.lead.tags).toEqual(['50% off Demat opening']);
+  });
+
+  test('a fresh lead created WITHOUT data.ctwaClid defaults it to null — no regression to the existing "whatsapp" source path', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [] }) });
+    dynamodb.transactWrite.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    const result = await CIS.resolveOrCreate(
+      'acme',
+      { phone: '9777777777', name: 'Organic Customer', source: 'whatsapp', skipAutoAssign: true },
+      { createdBy: 'webhook' },
+    );
+
+    expect(result.lead.ctwaClid).toBeNull();
+    expect(result.lead.source).toBe('whatsapp');
+    expect(result.lead.tags).toEqual([]);
+  });
+
+  test('multi-tenant scoping: two companies creating a lead with different ctwaClid values in the same test run never cross-contaminate — each lead item is keyed and populated from its own call only', async () => {
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.query.mockReturnValue({ promise: () => Promise.resolve({ Items: [] }) });
+    dynamodb.transactWrite.mockReturnValue({ promise: () => Promise.resolve({}) });
+
+    const acmeResult = await CIS.resolveOrCreate(
+      'acme', { phone: '9888888881', source: 'ctwa', ctwaClid: 'acme-click-id', skipAutoAssign: true }, { createdBy: 'webhook' },
+    );
+    const betaResult = await CIS.resolveOrCreate(
+      'beta', { phone: '9888888882', source: 'ctwa', ctwaClid: 'beta-click-id', skipAutoAssign: true }, { createdBy: 'webhook' },
+    );
+
+    expect(acmeResult.lead.ctwaClid).toBe('acme-click-id');
+    expect(acmeResult.lead.PK).toBe(`LEAD#acme#${acmeResult.leadId}`);
+    expect(betaResult.lead.ctwaClid).toBe('beta-click-id');
+    expect(betaResult.lead.PK).toBe(`LEAD#beta#${betaResult.leadId}`);
+    // Neither lead's PK or ctwaClid leaked into the other's result.
+    expect(acmeResult.lead.PK).not.toContain('beta');
+    expect(betaResult.lead.PK).not.toContain('acme');
+    expect(acmeResult.lead.ctwaClid).not.toBe(betaResult.lead.ctwaClid);
+  });
+});

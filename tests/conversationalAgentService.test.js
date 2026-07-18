@@ -1180,4 +1180,62 @@ describe('ConversationalAgentService', () => {
       expect(ConversationService.handoffToHuman).toHaveBeenCalledTimes(1);
     });
   });
+
+  // ─── ctwa_clid / CTWA ad-attribution capture (2026-07-18) ──────────────────
+  // maybeStart() is the only place a fresh lead gets created from an unknown
+  // WhatsApp contact — whatsapp.js threads Meta's messages[].referral block
+  // through unmodified as the new `referral` param.
+  describe('maybeStart — referral (Click-to-WhatsApp ad attribution)', () => {
+    test('referral present: passes ctwaClid, source: "ctwa", and a campaign tag (referral.headline) into resolveOrCreate', async () => {
+      mockTurn();
+      await agent.maybeStart(CID, {
+        phone10: PHONE, waName: 'Ravi', text: 'Hi', timestamp: 't1', waMessageId: 'wam1',
+        referral: { source_id: '12345', source_type: 'ad', headline: '50% off Demat account opening', ctwa_clid: 'AR_click_abc' },
+      });
+
+      expect(CustomerIdentityService.resolveOrCreate).toHaveBeenCalledWith(
+        CID,
+        expect.objectContaining({
+          source: 'ctwa',
+          ctwaClid: 'AR_click_abc',
+          tags: ['50% off Demat account opening'],
+        }),
+        expect.anything(),
+      );
+    });
+
+    test('referral present but with no headline: falls back to source_id for the campaign tag', async () => {
+      mockTurn();
+      await agent.maybeStart(CID, {
+        phone10: PHONE, waName: 'Ravi', text: 'Hi', timestamp: 't1', waMessageId: 'wam1',
+        referral: { source_id: '98765', source_type: 'ad', ctwa_clid: 'AR_click_xyz' },
+      });
+
+      expect(CustomerIdentityService.resolveOrCreate).toHaveBeenCalledWith(
+        CID,
+        expect.objectContaining({ source: 'ctwa', ctwaClid: 'AR_click_xyz', tags: ['98765'] }),
+        expect.anything(),
+      );
+    });
+
+    test('referral ABSENT (the normal, non-ad case): source stays "whatsapp", no ctwaClid/tags key regression — existing behavior completely unchanged', async () => {
+      mockTurn();
+      await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hi', timestamp: 't1', waMessageId: 'wam1' });
+
+      const [, data] = CustomerIdentityService.resolveOrCreate.mock.calls[0];
+      expect(data.source).toBe('whatsapp');
+      expect(data.ctwaClid).toBeNull();
+      expect(data.tags).toBeUndefined(); // no tags key added at all when there's no campaign to tag
+    });
+
+    test('referral explicitly null behaves identically to referral omitted', async () => {
+      mockTurn();
+      await agent.maybeStart(CID, { phone10: PHONE, waName: 'Ravi', text: 'Hi', timestamp: 't1', waMessageId: 'wam1', referral: null });
+
+      const [, data] = CustomerIdentityService.resolveOrCreate.mock.calls[0];
+      expect(data.source).toBe('whatsapp');
+      expect(data.ctwaClid).toBeNull();
+      expect(data.tags).toBeUndefined();
+    });
+  });
 });

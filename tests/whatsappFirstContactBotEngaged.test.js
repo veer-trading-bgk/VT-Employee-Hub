@@ -191,6 +191,41 @@ describe('POST /api/whatsapp/webhook — unknown-contact branch: botEngaged gate
     expect(ConversationalAgentService.maybeStart).toHaveBeenCalledTimes(1);    // unchanged from today
   });
 
+  // ── CTWA (Click-to-WhatsApp) referral threading (2026-07-18) ────────────────
+  // Meta attaches messages[].referral (carrying ctwa_clid) only on the first
+  // message of an ad-originated conversation — a sibling field on the message
+  // object, already flowing through this exact route, previously discarded.
+  describe('CTWA referral threading', () => {
+    test('referral present on the inbound message is passed through to maybeStart() unmodified', async () => {
+      ConversationalAgentService.maybeStart.mockResolvedValue(true);
+      const referral = { source_id: '12345', source_type: 'ad', headline: '50% off Demat account opening', ctwa_clid: 'AR_click_abc' };
+
+      const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+      await handler({ body: webhookBody({ type: 'text', text: { body: 'Hi' }, referral }) }, mockRes(), jest.fn());
+
+      expect(ConversationalAgentService.maybeStart).toHaveBeenCalledWith(
+        CID, expect.objectContaining({ referral }),
+      );
+    });
+
+    test('referral ABSENT on the inbound message (the normal, non-ad case) — maybeStart() still called, with referral: null, no other regression', async () => {
+      ConversationalAgentService.maybeStart.mockResolvedValue(false);
+
+      const handler = getRouteHandler(whatsappRouter, '/webhook', 'post');
+      await handler({ body: webhookBody({ type: 'text', text: { body: 'Hi' } }) }, mockRes(), jest.fn());
+
+      expect(ConversationalAgentService.maybeStart).toHaveBeenCalledWith(
+        CID, expect.objectContaining({ phone10: PHONE10, waName: 'New Customer', referral: null }),
+      );
+      // Unchanged sibling behavior on this exact same (non-ad) request —
+      // confirms this is purely additive, not a regression to the existing path.
+      expect(WASendSvc.sendTemplate).toHaveBeenCalled();
+      expect(AutomationEngine.fireTrigger).toHaveBeenCalledWith(
+        CID, 'whatsapp_conversation_started', expect.objectContaining({ phone: PHONE10, source: 'whatsapp' }),
+      );
+    });
+  });
+
   // ── Free text = engagement (2026-07-15, 19_DECISION_LOG.md) ──────────────────
   // A typed message on an unengaged, unassigned conversation now starts the AI
   // via startForLead(), in BOTH branches — not only on first contact (maybeStart)
