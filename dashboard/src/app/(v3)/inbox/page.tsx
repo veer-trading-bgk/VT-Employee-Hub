@@ -742,13 +742,19 @@ function TemplateBubble({ message, isOut }: { message: WaMessage; isOut: boolean
 
 function InteractiveActionPreview({ action, isOut }: { action: InteractiveAction; isOut: boolean }) {
   if (action.buttons && action.buttons.length > 0) {
+    // Meta's interactive reply buttons are always vertically stacked, one per
+    // row, full width — never side-by-side (max 3, per Meta's own developer
+    // docs; this preview used to render them as wrapped inline pills instead,
+    // which never matched what the customer's real WhatsApp client shows).
+    // Preview-only: the outbound payload (WhatsAppSendService.js's
+    // sendInteractive()) is unrelated to this component and was never wrong.
     return (
-      <div className="mt-2 flex flex-wrap gap-1.5">
+      <div className="mt-2 flex flex-col gap-1.5">
         {action.buttons.map((b) => (
           <span
             key={b.reply?.id ?? b.reply?.title}
             className={cn(
-              'rounded-full border px-2.5 py-1 text-xs font-medium',
+              'w-full rounded-lg border px-2.5 py-1.5 text-center text-xs font-medium',
               isOut ? 'border-white/40 text-white' : 'border-neutral-300 text-neutral-700 dark:border-neutral-600 dark:text-neutral-300',
             )}
           >
