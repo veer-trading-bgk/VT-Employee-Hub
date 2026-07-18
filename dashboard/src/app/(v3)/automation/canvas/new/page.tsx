@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useEffect, useRef } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { apiFetch } from '@/lib/api';
 import type { AutomationResponse } from '@/types/automations';
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
@@ -31,8 +31,56 @@ const STARTER_BODY = {
   entryNodeId: 'n-end',
 };
 
+// Campaigns page's "Create Drip Campaign" on-ramp (?template=drip) — same
+// create-then-redirect flow as the blank starter above, just pre-loaded with
+// a real send_template/wait sequence instead of an empty end-only graph, so
+// the admin lands ready to customize timing and pick templates rather than
+// staring at an empty canvas. No new backend/engine concept: this POSTs to
+// the exact same /api/automations endpoint, producing an exact same
+// CONFIG#AUTO# workflow, editable/deletable/listable in Automation →
+// Workflows exactly like any other afterward — source is a provenance
+// marker only (WorkflowList.tsx's "Drip Campaign" chip), never read by
+// AutomationEngine.js and never gates execution.
+//
+// tag_added (not lead_created) is the default trigger deliberately: a drip
+// CAMPAIGN targets a chosen segment (tag a batch of contacts, the sequence
+// fires for that segment), unlike a blanket "every new lead" welcome
+// sequence, which lead_created already suits better as the OTHER starter's
+// default above.
+//
+// No `position` on any node — same as the blank starter's own n-end node —
+// the canvas auto-arranges via dagre on first open when positions are
+// absent (automationGraph.ts's needsAutoLayout()/layoutNodes()), which is
+// what "positioned readably" actually means here: nothing to hand-compute.
+//
+// Node/template/wait timing config is deliberately empty — the admin fills
+// in real templates and delays after landing in the editor; this skeleton's
+// only job is to remove the "blank canvas" cold-start, not to guess content.
+const DRIP_STARTER_BODY = {
+  name: 'New drip campaign',
+  trigger: { type: 'tag_added', conditions: [] },
+  status: 'draft',
+  nodes: [
+    { id: 'n1', type: 'wait',          config: { amount: 1, unit: 'hours' } },
+    { id: 'n2', type: 'send_template', config: { templateName: '', language: 'en', variables: [] } },
+    { id: 'n3', type: 'wait',          config: { amount: 1, unit: 'days' } },
+    { id: 'n4', type: 'send_template', config: { templateName: '', language: 'en', variables: [] } },
+    { id: 'n5', type: 'end',           config: {} },
+  ],
+  edges: [
+    { id: 'e1', source: 'n1', target: 'n2' },
+    { id: 'e2', source: 'n2', target: 'n3' },
+    { id: 'e3', source: 'n3', target: 'n4' },
+    { id: 'e4', source: 'n4', target: 'n5' },
+  ],
+  entryNodeId: 'n1',
+  source: 'drip_campaign_template',
+};
+
 function WorkflowCanvasNewPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const isDrip = searchParams.get('template') === 'drip';
   const firedRef = useRef(false);
   // M2-D: below md, don't fire the create-POST at all — a mobile visitor
   // would otherwise create a real "New workflow" draft purely to be
@@ -45,17 +93,17 @@ function WorkflowCanvasNewPageInner() {
     firedRef.current = true;
     apiFetch<AutomationResponse>('/api/automations', {
       method: 'POST',
-      body: JSON.stringify(STARTER_BODY),
+      body: JSON.stringify(isDrip ? DRIP_STARTER_BODY : STARTER_BODY),
     })
       .then((res) => router.replace(`/automation/canvas/${res.automation.id}?new=1`))
       .catch(() => router.replace('/automation'));
-  }, [router, isDesktop]);
+  }, [router, isDesktop, isDrip]);
 
   if (!isDesktop) return <CanvasMobileGate />;
 
   return (
     <div className="flex h-full w-full items-center justify-center text-sm text-neutral-400">
-      Creating new workflow…
+      {isDrip ? 'Creating drip campaign…' : 'Creating new workflow…'}
     </div>
   );
 }
@@ -63,7 +111,9 @@ function WorkflowCanvasNewPageInner() {
 export default function WorkflowCanvasNewPage() {
   return (
     <ProtectedRoute allowedRoles={['admin']}>
-      <WorkflowCanvasNewPageInner />
+      <Suspense>
+        <WorkflowCanvasNewPageInner />
+      </Suspense>
     </ProtectedRoute>
   );
 }

@@ -293,6 +293,13 @@ export interface Workflow {
   nodes?:         GraphNode[];
   edges?:         GraphEdge[];
   entryNodeId?:   string;
+  // Provenance-only marker for which guided on-ramp (if any) created this
+  // workflow — absent on every ordinary workflow, including every one that
+  // predates this field. Never read by AutomationEngine.js, only by the
+  // dashboard (WorkflowList.tsx's "Drip Campaign" chip, eventually a
+  // filtered count on the Campaigns page). The workflow itself is fully
+  // ordinary either way — this never gates edit/delete/execution.
+  source?:        'drip_campaign_template';
   runCount:       number;
   // Absent on any workflow that hasn't completed a run since this field was
   // added (AutomationEngine.js only writes it going forward, no backfill —

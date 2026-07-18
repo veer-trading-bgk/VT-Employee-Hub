@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Search, Trash2, Play, Pause, Zap, GitBranch, Copy, Minus, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Plus, Search, Trash2, Play, Pause, Zap, GitBranch, Copy, Minus, CheckCircle2, AlertTriangle, Droplets } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Button } from '@/components/v3/ui/Button';
@@ -221,6 +221,14 @@ function WorkflowRow({
               className="flex shrink-0 items-center gap-1 rounded bg-primary-50 px-1.5 py-0.5 text-[10px] font-medium text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
             >
               <GitBranch className="h-2.5 w-2.5" aria-hidden /> Branching
+            </span>
+          )}
+          {w.source === 'drip_campaign_template' && (
+            <span
+              title="Created via Campaigns' Create Drip Campaign on-ramp — an ordinary workflow otherwise"
+              className="flex shrink-0 items-center gap-1 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-400"
+            >
+              <Droplets className="h-2.5 w-2.5" aria-hidden /> Drip Campaign
             </span>
           )}
         </div>

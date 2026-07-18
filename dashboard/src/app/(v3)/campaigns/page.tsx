@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Send, LayoutDashboard, List, Users, BarChart3, History, FileText } from 'lucide-react';
+import { Send, LayoutDashboard, List, Users, BarChart3, History, FileText, Droplets } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { CampaignsDashboard } from '@/components/campaigns/CampaignsDashboard';
 import { CampaignList } from '@/components/campaigns/CampaignList';
@@ -33,16 +33,37 @@ function CampaignsPageInner() {
     <div className="flex min-h-0 flex-1 flex-col">
       {/* ── Page header ─────────────────────────────────────────────────────── */}
       <div className="border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-950">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-50 dark:bg-primary-900/20">
-            <Send className="h-5 w-5 text-primary-600 dark:text-primary-400" aria-hidden />
+        <div className="flex flex-wrap items-center justify-between gap-y-2">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-50 dark:bg-primary-900/20">
+              <Send className="h-5 w-5 text-primary-600 dark:text-primary-400" aria-hidden />
+            </div>
+            <div>
+              <h1 className="text-lg font-bold text-neutral-900 dark:text-white">Campaigns</h1>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                WhatsApp Broadcasts and Click-to-WhatsApp campaigns at scale
+              </p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-lg font-bold text-neutral-900 dark:text-white">Campaigns</h1>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">
-              WhatsApp Broadcasts and Click-to-WhatsApp campaigns at scale
-            </p>
-          </div>
+
+          {/* Guided on-ramp into a drip SEQUENCE — a real Automation workflow
+              under the hood (nodes/edges/entryNodeId, same CONFIG#AUTO#
+              entity, same graph shape as any workflow built directly in
+              Automation), not a new Campaign entity or a second execution
+              engine. Deliberately styled apart from the broadcast-campaign
+              flow (indigo outline + Droplets vs. the primary-filled Send
+              buttons elsewhere on this page) — this creates and redirects
+              into a DIFFERENT system (Automation's canvas editor), not a
+              variant of the same drawer. */}
+          <button
+            type="button"
+            onClick={() => router.push('/automation/canvas/new?template=drip')}
+            className="flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 transition-colors hover:bg-indigo-100 dark:border-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300 dark:hover:bg-indigo-900/40"
+            title="Build a multi-step WhatsApp drip sequence in the Automation canvas"
+          >
+            <Droplets className="h-4 w-4 shrink-0" aria-hidden />
+            Create Drip Campaign
+          </button>
         </div>
 
         {/* Tabs */}

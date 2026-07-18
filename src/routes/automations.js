@@ -299,10 +299,18 @@ router.get('/', authMiddleware, checkRole(['admin']), async (req, res, next) => 
 router.post('/', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), async (req, res, next) => {
   try {
     const { companyId, id: userId, name: userName } = req.user;
-    const { name, description, trigger, steps, nodes, edges, entryNodeId, status = 'draft' } = req.body;
+    const { name, description, trigger, steps, nodes, edges, entryNodeId, status = 'draft', source } = req.body;
 
     if (!name?.trim())  return res.status(400).json({ error: 'name is required' });
     if (!trigger?.type) return res.status(400).json({ error: 'trigger.type is required' });
+    // Purely a UI provenance marker (which on-ramp created this workflow) — no
+    // execution/RBAC significance, so an allowlist rather than free text is
+    // just to keep the field meaningful, not a security boundary. Add new
+    // on-ramps here as they're built (e.g. a future "Create Welcome Series").
+    const KNOWN_SOURCES = ['drip_campaign_template'];
+    if (source !== undefined && !KNOWN_SOURCES.includes(source)) {
+      return res.status(400).json({ error: 'Unknown source value' });
+    }
 
     const triggerResult = buildTriggerForStorage(trigger);
     if (triggerResult.error) return res.status(400).json({ error: triggerResult.error });
@@ -330,6 +338,14 @@ router.post('/', authMiddleware, checkRole(['admin']), rateLimit(30, 60_000), as
       status:        safeStatus,
       trigger:       triggerResult.trigger,
       ...(isGraph ? { nodes, edges: edges ?? [], entryNodeId } : { steps }),
+      // Provenance-only marker — which guided on-ramp (if any) created this
+      // workflow. Absent for every ordinary workflow, including every one
+      // that predates this field; never read by AutomationEngine.js, only by
+      // the dashboard (a "Drip Campaign" chip on this row, and eventually a
+      // filtered count on the Campaigns page). The workflow itself is fully
+      // ordinary either way — editable/deletable/listable exactly like any
+      // other, this field never gates that.
+      ...(source && { source }),
       runCount:      0,
       lastRunAt:     null,
       createdBy:     userId,

@@ -549,3 +549,69 @@ describe('POST/PUT /api/automations — Era 48 save-time advisories', () => {
     expect(payload.warning).toMatch(/Start AI Conversation/i);
   });
 });
+
+// ── POST /api/automations — source (Campaigns "Create Drip Campaign" on-ramp) ──
+// Purely a provenance marker for a "Drip Campaign" chip on this row (WorkflowList.tsx)
+// and, eventually, a filtered count on the Campaigns page — never read by
+// AutomationEngine.js, never gates execution. Allowlisted (not free text) just to
+// keep the field meaningful, not a security boundary (this route is already
+// admin-only via checkRole above).
+describe('POST /api/automations — source (drip-campaign provenance marker)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  function body(overrides = {}) {
+    return {
+      name: 'Drip workflow',
+      trigger: { type: 'tag_added', conditions: [] },
+      nodes: [{ id: 'n-end', type: 'end', config: {} }],
+      entryNodeId: 'n-end',
+      ...overrides,
+    };
+  }
+
+  test('omitted source: persists the item with no source field at all', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({ body: body(), user: USER }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const [{ Item }] = dynamodb.put.mock.calls[0];
+    expect(Item).not.toHaveProperty('source');
+  });
+
+  test('source: "drip_campaign_template" is accepted and persisted verbatim', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({ body: body({ source: 'drip_campaign_template' }), user: USER }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const [{ Item }] = dynamodb.put.mock.calls[0];
+    expect(Item.source).toBe('drip_campaign_template');
+    expect(res.json.mock.calls[0][0].automation.source).toBe('drip_campaign_template');
+  });
+
+  test('an unknown source value is rejected, not silently dropped or stored as-is', async () => {
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({ body: body({ source: 'made_up_value' }), user: USER }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('the resulting workflow has no other distinguishing field — fully ordinary otherwise', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    const handler = getRouteHandler(automationsRouter, '/', 'post');
+    const res = mockRes();
+    await handler({ body: body({ source: 'drip_campaign_template' }), user: USER }, res, jest.fn());
+
+    const [{ Item }] = dynamodb.put.mock.calls[0];
+    // Same shape any other graph workflow gets — status/runCount/PK-SK
+    // conventions unaffected by source's presence.
+    expect(Item.status).toBe('draft');
+    expect(Item.runCount).toBe(0);
+    expect(Item.PK).toBe(`CONFIG#AUTO#${CID}`);
+  });
+});

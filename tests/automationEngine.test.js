@@ -836,6 +836,108 @@ describe('AutomationEngine — graph engine (nodes[]/edges[])', () => {
     expect(vals[':path'][0].status).toBe('completed'); // plain wait resume, no branch involved
   });
 
+  // Drip-campaign feature (Campaigns "Create Drip Campaign" on-ramp) — STEP 1
+  // confirmation this feature explicitly required before any new engine work:
+  // does send_template → wait → send_template → wait → send_template already
+  // chain correctly across the FULL wait/resume cycle, not just each node type
+  // in isolation? Drives all three phases for real: the initial _runGraph()
+  // call (which pauses at the first wait), then TWO separate resumeExecution()
+  // calls (simulating two separate processDueWaits() ticks, each rehydrating
+  // workflow+execution from mocked dynamodb.get() the same way production
+  // does), asserting all 3 sendTemplate calls fire in order with the right
+  // template and the same contact, and the path/status record is correct at
+  // every checkpoint. No existing test exercised two wait nodes back to back —
+  // every prior wait test here stops after one pause/resume.
+  test('a full send_template → wait → send_template → wait → send_template chain executes all 3 sends in order, across 2 separate pause/resume cycles', async () => {
+    WASendSvc.sendTemplate
+      .mockResolvedValueOnce({ wamid: 'wamid.1' })
+      .mockResolvedValueOnce({ wamid: 'wamid.2' })
+      .mockResolvedValueOnce({ wamid: 'wamid.3' });
+
+    const workflow = {
+      id: 'wf-drip-chain', name: 'Multi-hop drip chain', status: 'active', entryNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'send_template', config: { templateName: 'day1_welcome', language: 'en', variables: [] } },
+        { id: 'n2', type: 'wait', config: { amount: 1, unit: 'days' } },
+        { id: 'n3', type: 'send_template', config: { templateName: 'day2_followup', language: 'en', variables: [] } },
+        { id: 'n4', type: 'wait', config: { amount: 3, unit: 'days' } },
+        { id: 'n5', type: 'send_template', config: { templateName: 'day5_closing', language: 'en', variables: [] } },
+        { id: 'n6', type: 'end', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'n1', target: 'n2' },
+        { id: 'e2', source: 'n2', target: 'n3' },
+        { id: 'e3', source: 'n3', target: 'n4' },
+        { id: 'e4', source: 'n4', target: 'n5' },
+        { id: 'e5', source: 'n5', target: 'n6' },
+      ],
+    };
+    const context  = { leadPK: LEAD_PK, phone: '9000000000', name: 'Test' };
+    const execItem = makeExecItem();
+
+    // ── Phase 1: initial run — n1 sends, n2 (wait) pauses ────────────────────
+    await engine._runGraph(CID, workflow, execItem, context, 'n1');
+
+    expect(WASendSvc.sendTemplate).toHaveBeenCalledTimes(1);
+    expect(WASendSvc.sendTemplate.mock.calls[0][2]).toEqual({ templateName: 'day1_welcome', language: 'en' });
+    let patchCall = dynamodb.update.mock.calls.filter((c) => c[0].Key?.SK === execItem.SK).at(-1);
+    expect(patchCall[0].ExpressionAttributeValues[':st']).toBe('paused');
+    let path = patchCall[0].ExpressionAttributeValues[':path'];
+    expect(path.map((p) => p.nodeId)).toEqual(['n1', 'n2']);
+    expect(path[0].status).toBe('completed');
+    expect(path[1].status).toBe('waiting');
+    expect(dynamodb.put.mock.calls.at(-1)[0].Item).toMatchObject({ graph: true, nodeId: 'n2' });
+
+    // ── Phase 2: first resume (simulates a real processDueWaits tick) — n2
+    //    completes, n3 sends, n4 (wait) pauses ───────────────────────────────
+    let execSnapshot = { ...execItem, path, status: 'paused' };
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK.startsWith('CONFIG#AUTO#')) return resolved({ Item: workflow });
+      if (params.Key.PK.startsWith('AUTO_EXEC#'))   return resolved({ Item: execSnapshot });
+      return resolved({});
+    });
+    dynamodb.update.mockClear();
+    dynamodb.put.mockClear();
+
+    await engine.resumeExecution(CID, { workflowId: workflow.id, execSK: execItem.SK, context, graph: true, nodeId: 'n2' });
+
+    expect(WASendSvc.sendTemplate).toHaveBeenCalledTimes(2);
+    expect(WASendSvc.sendTemplate.mock.calls[1][2]).toEqual({ templateName: 'day2_followup', language: 'en' });
+    patchCall = dynamodb.update.mock.calls.filter((c) => c[0].Key?.SK === execItem.SK).at(-1);
+    expect(patchCall[0].ExpressionAttributeValues[':st']).toBe('paused');
+    path = patchCall[0].ExpressionAttributeValues[':path'];
+    expect(path.map((p) => p.nodeId)).toEqual(['n1', 'n2', 'n3', 'n4']);
+    expect(path[1].status).toBe('completed'); // n2's wait resolved via resume
+    expect(path[2].status).toBe('completed'); // n3 sent
+    expect(path[3].status).toBe('waiting');   // n4's wait now pending
+    expect(dynamodb.put.mock.calls.at(-1)[0].Item).toMatchObject({ graph: true, nodeId: 'n4' });
+
+    // ── Phase 3: second resume (a SEPARATE later tick) — n4 completes, n5
+    //    sends, n6 (end) finalizes the execution ─────────────────────────────
+    execSnapshot = { ...execItem, path, status: 'paused' };
+    dynamodb.update.mockClear();
+    dynamodb.put.mockClear();
+
+    await engine.resumeExecution(CID, { workflowId: workflow.id, execSK: execItem.SK, context, graph: true, nodeId: 'n4' });
+
+    expect(WASendSvc.sendTemplate).toHaveBeenCalledTimes(3);
+    expect(WASendSvc.sendTemplate.mock.calls[2][2]).toEqual({ templateName: 'day5_closing', language: 'en' });
+    patchCall = dynamodb.update.mock.calls.filter((c) => c[0].Key?.SK === execItem.SK).at(-1);
+    expect(patchCall[0].ExpressionAttributeValues[':st']).toBe('completed');
+    path = patchCall[0].ExpressionAttributeValues[':path'];
+    expect(path.map((p) => p.nodeId)).toEqual(['n1', 'n2', 'n3', 'n4', 'n5', 'n6']);
+    expect(path[3].status).toBe('completed'); // n4's wait resolved via resume
+    expect(path[4].status).toBe('completed'); // n5 sent
+    expect(path[5].status).toBe('completed'); // end node
+
+    // Every send targeted the SAME contact — context correctly threaded
+    // through BOTH pause/resume cycles, not just the first.
+    for (const call of WASendSvc.sendTemplate.mock.calls) {
+      expect(call[0]).toBe(CID);
+      expect(call[1]).toEqual({ resolvedContact: { pk: LEAD_PK, phone: '9000000000', isLead: true } });
+    }
+  });
+
   test('a button_reply condition node pauses execution and stores awaitReply with expected button ids', async () => {
     const workflow = {
       id: 'wf-btn', name: 'Button workflow', entryNodeId: 'n1',
