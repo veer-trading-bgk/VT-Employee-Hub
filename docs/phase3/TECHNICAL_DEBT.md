@@ -1251,3 +1251,21 @@ A sweep of all 35 useQuery call sites in the dashboard found only these 2 — th
 **Reference:** `src/routes/whatsapp.js`'s `POST /inbox/:leadId/note` (creation, ungated) vs. `PUT`/`DELETE .../note/:timestamp` (already gated via `canModifyNote`).
 
 **Priority:** Medium — same real access-control gap class as Stage 1/2's own fixes (a restricted-role employee acting on a lead not assigned to them), just on notes instead of stage/resolve/reopen/pin/mark-read. Narrower blast radius than those (a note is additive/informational, not a destructive or customer-facing action), which is why it wasn't caught by Stage 1/2's own literal scope — worth closing in a focused follow-up rather than silently folding into either already-shipped stage.
+
+## Doc/comment staleness sweep — InboxContext/ChatPane references beyond Stage 7's scope (found 2026-07-18, Stage 7 of the 2026-07-17 360° audit fix plan, finding #10 follow-up)
+
+**Issue:** While fixing finding #10's 8 cited InboxContext doc references (Stage 7) and a follow-up round of 2 more doc-file sets the user pointed at directly, a full-repo sweep for `InboxContext`/`ChatPane` turned up 9 further locations still describing either file as live or citing specific line numbers of files that no longer exist (both `InboxContext.tsx` and `ChatPane.tsx` were fully deleted in an earlier session, confirmed zero importers). None of these 9 were fixed — flagged here rather than expanded into on request, so the sweep result isn't lost:
+
+- `docs/phase2/FUTURE_EXTENSIONS.md`
+- `docs/bible/19_DECISION_LOG.md`
+- `docs/bible/12_PERFORMANCE.md`
+- `dashboard/docs/phase2/IMPLEMENTATION_PLAN.md`
+- `docs/phase2/ROLLOUT_PLAN.md`
+- `docs/phase2/NAVIGATION_ARCHITECTURE.md`
+- `docs/phase2/UI_COMPONENT_ARCHITECTURE.md`
+- `dashboard/src/lib/mediaUpload.ts` — code *comment* only, citing `ChatPane.tsx`/`ConversationTab.tsx` as precedent for its upload-request-sequence pattern; not a broken import, file loads fine
+- `dashboard/src/components/automation/MediaSourceField.tsx` — same, a code comment citing `ChatPane.tsx`/`ConversationTab.tsx` as precedent for its presign-and-PUT flow; not a broken import
+
+**Fix:** Not done — deliberately deferred, per explicit instruction not to expand this pass further. Same treatment as the 10 files already fixed applies whenever this is picked up: living docs get rewritten to current-state language, versioned/dated snapshot docs (anything self-declared frozen, like `ENGINEERING_HANDBOOK.md` or `docs/v3/ARCHITECTURE_AUDIT.md`) get a brief inline "superseded/historical" annotation instead of a rewrite, and the two code comments just need the file-name references corrected or removed (no functional risk either way).
+
+**Priority:** Low — all 9 are stale references/comments, not functional bugs; nothing here can cause incorrect runtime behavior, only a misleading read for whoever opens these files next.

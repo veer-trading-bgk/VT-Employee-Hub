@@ -192,9 +192,9 @@ The 1-hour access token is not silently renewed. After expiry, the user is redir
 | Debt | File | Risk | Deferral reason |
 |---|---|---|---|
 | `react-hooks/set-state-in-effect` in `WebSocketContext` | `contexts/WebSocketContext.tsx:52` | Medium | Complex real-time logic; safe behavior, just non-optimal |
-| `react-hooks/set-state-in-effect` in `InboxContext` | `contexts/InboxContext.tsx:306,412` | Medium | Deep-link selection logic; fixing risks behavioral regression |
+| ~~`react-hooks/set-state-in-effect` in `InboxContext`~~ | `contexts/InboxContext.tsx:306,412` | — | **Moot — file deleted.** `InboxContext.tsx` was fully removed in a later session; this debt item no longer exists. `(v3)/inbox/page.tsx` (the file's replacement) owns this logic directly now. See docs/bible/08_MODULES.md's `InboxContext.tsx` entry. |
 | `no-explicit-any` in `crm/page.tsx` | `app/admin/crm/page.tsx` | Low | Pre-Phase 2 file; requires ~700-line audit |
-| `no-explicit-any` in `ChatPane.tsx` | `components/whatsapp/ChatPane.tsx` | Low | Pre-Phase 2 file; requires ~1000-line audit |
+| ~~`no-explicit-any` in `ChatPane.tsx`~~ | `components/whatsapp/ChatPane.tsx` | — | **Moot — file deleted.** `ChatPane.tsx` was fully removed in a later session; this debt item no longer exists. See docs/bible/08_MODULES.md's `InboxContext.tsx` entry. |
 | `nextFollowup` sort outside `useMemo` | `contexts/Customer360Context.tsx:110` | Low | Bounded by `followupsData` stability; negligible impact |
 
 ---

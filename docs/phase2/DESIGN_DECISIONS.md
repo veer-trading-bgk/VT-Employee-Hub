@@ -64,6 +64,8 @@ The key insight is that these screens are *operational views* — different lens
 
 ## ADR-004 — ChatPane is Reused Without Modification
 
+*(Superseded — not what shipped. `ConversationTab.tsx`, the Conversation tab that was actually built, does not import or reuse `ChatPane` at all; it implements its own conversation UI directly, reusing only `TemplatePicker.tsx` and `MediaPreviewModal.tsx` from the legacy `components/whatsapp/` folder. `ChatPane.tsx` itself — along with `InboxContext.tsx`, referenced below as what ChatPane's implicit dependencies ran through — was deleted entirely rather than kept and adapted. Left otherwise unedited as a historical record of the decision as planned; see docs/bible/08_MODULES.md's `InboxContext.tsx` entry for what actually happened. Annotated 2026-07-18, Stage 7 of the 2026-07-17 360° audit fix plan, finding #10 follow-up.)*
+
 **Decision:** The `ChatPane` component from the WhatsApp Inbox is reused in the Customer 360 Conversation tab without internal modifications. Adaptations are made via props, not via changes to ChatPane's internals.
 
 **Context:** The ChatPane has been battle-tested in the Inbox. It handles message rendering, WebSocket integration, send input, template picker, and media display. Rebuilding it for the Conversation tab would create a maintenance burden (two implementations of the same thing) and introduce bugs.

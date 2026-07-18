@@ -124,17 +124,22 @@ real, separate Telegraf bot instance handling `/link`, `/add_kyc`, and similar c
 `config/telegram.js`'s `bot` export is fake. See **08_MODULES.md (`admin.js` notable section);
 16_PLAYBOOKS.md (Runbook: Tailing Lambda logs)**.
 
-**`Customer360Provider` and `InboxContext` are fully built per the frontend's own architecture doc
-but never actually mounted as the shared data layer they were designed to be.** The shipped
-`/contacts/[contactId]` and `/inbox` routes each reimplement their own state independently — this
-directly violates `dashboard/CLAUDE.md`'s own commit-level enforcement rule, quoted verbatim here:
-*"No component fetches `['contact', leadId]` directly — all tabs consume via `useCustomer360()`."*
-See **06_ARCHITECTURE.md §4a step 6, §6, §7 (InboxContext architecture description, which describes
-InboxContext operating independently rather than through the shared provider)**. Note: this
-document's source chapters describe InboxContext's real, working behavior in detail (its own
-direct WS listener, its own refetch logic) — they establish that it functions as an independent
-system, which is the factual basis for saying it is not operating as a shared/mounted layer in the
-way `dashboard/CLAUDE.md`'s architecture principles describe.
+**✅ RESOLVED, both the opposite way from each other — `Customer360Provider` is now mounted;
+`InboxContext` was deleted rather than mounted.** This entry used to say both were "fully built per
+the frontend's own architecture doc but never actually mounted as the shared data layer they were
+designed to be," with `/contacts/[contactId]` and `/inbox` each reimplementing their own state
+independently in violation of `dashboard/CLAUDE.md`'s commit-level rule (*"No component fetches
+`['contact', leadId]` directly — all tabs consume via `useCustomer360()`."*). That's no longer
+accurate for either half: `Customer360Provider` was rebuilt into the real, mounted implementation —
+`/contacts/[contactId]` now mounts it directly and renders all 7 frozen tabs through it (see
+**08_MODULES.md**'s `Customer360Context.tsx` entry for the full history). `InboxContext.tsx`, by
+contrast, was fully deleted along with its three legacy consumers (`LeadSidebar.tsx`,
+`ChatPane.tsx`, `ConversationList.tsx`) — `(v3)/inbox/page.tsx`'s own local state (useState + React
+Query) is the one real implementation, with no separate context layer between it and
+`WebSocketContext.tsx`. See **06_ARCHITECTURE.md §4a step 6 and §7** and **08_MODULES.md**'s
+`InboxContext.tsx` entry, both corrected the same pass. Doc corrected 2026-07-18, Stage 7 of the
+2026-07-17 360° audit fix plan (finding #10) — this entry had kept citing specific InboxContext line
+numbers of a file that no longer exists.
 
 **Zero test coverage on `WhatsAppSendService.js` and `CustomerIdentityService.js`** — the two files
 the codebase's own ADRs treat as the most compliance-critical. Confirmed by

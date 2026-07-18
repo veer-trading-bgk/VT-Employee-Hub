@@ -95,7 +95,7 @@ The tab list is frozen at seven tabs. Do not add tabs without an explicit archit
 | `['contact', leadId]` | `Customer360Provider` | All tabs via `useCustomer360()` | 60s |
 | `['crm-pipeline']` | `Customer360Provider` | CrmTab, ActivityPanel via context | 10 min |
 | `['crm-followups', leadId]` | `Customer360Provider` | TasksTab, ActivityPanel, CrmTab via context | 30s |
-| `['tag-catalog']` | Shared (no single owner) | ProfileTab, CrmTab, ActivityPanel, InboxContext | 5 min |
+| `['tag-catalog']` | Shared (no single owner) | ProfileTab, CrmTab, ActivityPanel, `(v3)/inbox/page.tsx` via `ContactTags`/`useTagCatalog()` | 5 min |
 | `['contacts']` | Contact Hub page | Contact Hub list | varies |
 | `['global-search', q]` | GlobalSearch component | Self | 30s |
 | `['admin-employees']` | CrmTab | Self | 10 min |

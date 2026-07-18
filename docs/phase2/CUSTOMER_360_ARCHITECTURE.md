@@ -197,6 +197,8 @@ The canonical WhatsApp chat view for this contact, implemented as `ConversationT
 
 **Implementation note (updated Commit 2):** `ChatPane` from the Inbox is architecturally coupled to `InboxContext`, which owns the full inbox state machine (all conversations, ping loop, unread counts). Mounting `InboxProvider` inside Customer 360 would duplicate the entire inbox API call surface — a clear violation of the "no duplicate API requests" rule. `ConversationTab` therefore reuses the same API endpoints, WebSocket subscription pattern, and UI conventions as `ChatPane`, but is fed by `Customer360Provider` instead of `InboxContext`.
 
+*(Update — both `ChatPane.tsx` and `InboxContext.tsx` referenced above were later deleted entirely, not just avoided by this tab. `(v3)/inbox/page.tsx` (the Inbox route's eventual real implementation) never mounted `InboxContext` either — it always used its own local state, the same independent shape `ConversationTab` uses here. The "no duplicate API requests" reasoning above held either way, so this tab's design was unaffected by that later deletion. See docs/bible/08_MODULES.md's `InboxContext.tsx` entry for the full history. Annotated 2026-07-18, Stage 7 of the 2026-07-17 360° audit fix plan, finding #10 follow-up.)*
+
 **Behaviour:**
 - `ConversationTab` reads messages, notes, and timeline from `Customer360Context` — no second fetch
 - Message data comes from the same `/api/crm/leads/:id` call that hydrates the page (fetched once by `Customer360Provider`)

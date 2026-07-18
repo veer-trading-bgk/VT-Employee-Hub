@@ -204,15 +204,18 @@ the data-key and application-authorization layers:
    inline.
 6. On the dashboard, `WebSocketContext` (`dashboard/src/contexts/WebSocketContext.tsx`)
    holds the single WS connection and maps event names to React Query keys to
-   invalidate (`EVENT_QUERY_MAP`, lines 30-37) — `whatsapp_message` invalidates
-   `['wa-inbox']` and `['dashboard-wa']`. Separately, `InboxContext`
-   (`dashboard/src/contexts/InboxContext.tsx:383-407`) listens for the same
-   `whatsapp_message` event directly via `wsClient.on(...)` and, if the message
-   belongs to the currently-open conversation, calls `refetchQueries` immediately
-   (chosen deliberately over `setQueryData` — the code comment at lines 379-382 notes
-   `setQueryData` from outside React's event system caused 20-30s UI lag). A 2-second
-   HTTP ping loop (`InboxContext.tsx:325-355`) is kept as a fallback when the socket
-   is down.
+   invalidate (`EVENT_QUERY_MAP`) — `whatsapp_message` invalidates `['wa-inbox']`
+   and `['dashboard-wa']`. `(v3)/inbox/page.tsx` additionally listens for the same
+   `whatsapp_message` event directly via its own `wsClient.on(...)` and, if the
+   message belongs to the currently-open conversation, calls `refetchQueries` on
+   that conversation's own `['wa-conv', convKey]` query immediately, rather than
+   waiting on the coarser `['wa-inbox']` invalidation above. There is no separate
+   context layer here — `InboxContext.tsx`, which previously owned this
+   responsibility (plus a 2-second HTTP ping-loop fallback for when the socket was
+   down), was fully deleted in an earlier session; confirmed zero importers before
+   removal. Doc corrected 2026-07-18, Stage 7 of the 2026-07-17 360° audit fix plan
+   (finding #10) — it had kept citing specific line numbers of a file that no
+   longer exists.
 7. Media (if any) is downloaded from Meta and archived to S3 **after** the WS push has
    already fired — `storeInboundMedia(...).then(...)` patches `s3Key` onto the
    already-visible `MSG#` item asynchronously (`whatsapp.js:1392-1404`), so a slow
@@ -220,9 +223,17 @@ the data-key and application-authorization layers:
 
 ### 4b. Outbound message (agent sends from Inbox)
 
-1. Agent types in `ChatPane.tsx` (`dashboard/src/components/whatsapp/ChatPane.tsx`);
-   the `sendMutation` (line 628) calls `apiFetch('/api/whatsapp/send', ...)`
-   (line 661).
+1. Agent types in `(v3)/inbox/page.tsx` (`ChatPane.tsx`, the component this step
+   used to cite, was deleted along with `InboxContext.tsx` — see §7 and
+   `08_MODULES.md`'s `InboxContext.tsx` entry). The page's own `sendMutation`
+   calls `apiFetch('/api/whatsapp/send', ...)` for a known lead (`leadPK` in the
+   body) or `POST /api/whatsapp/inbox/unknown/:phone/send` for an unknown
+   contact — same optimistic-update/rollback shape as before (`onMutate`
+   appends an optimistic message to the `['wa-conv', convKey]` cache; `onError`
+   rolls back via `invalidateQueries`; `onSuccess` invalidates both
+   `['wa-conv', convKey]` and `['wa-inbox']`). Doc corrected 2026-07-18, Stage 7
+   of the 2026-07-17 360° audit fix plan (finding #10 follow-up) — it had kept
+   citing specific line numbers of a file that no longer exists.
 2. Backend route `POST /api/whatsapp/send` (`src/routes/whatsapp.js:1505`) is a thin
    wrapper per ADR-012: it validates `leadPK`/`message` are present and calls
    `WASendSvc.sendText(req.user.companyId, { leadPK }, message.trim(), req.user,
@@ -240,8 +251,8 @@ the data-key and application-authorization layers:
    `ConversationService.updateLastMessage()` is fired fire-and-forget (lines 264-268).
 4. The route returns `{ success: true, messageId, timestamp }`
    (`whatsapp.js:1517`); the frontend mutation's optimistic-update/rollback logic
-   (`sendMutation`, `ChatPane.tsx:628`) reconciles the local cache with the server
-   response.
+   (`sendMutation`, `(v3)/inbox/page.tsx`) reconciles the local cache with the
+   server response.
 5. Delivery/read receipts for this `waMessageId` arrive later via the **same inbound
    webhook path** described in 4a step 3 — the `WAMID#` lookup written in step 3 above
    is exactly what lets that status-update code find the right `MSG#` record to patch.
@@ -445,15 +456,17 @@ needed.
      since the v3 Customer 360 rebuild, so a lead created or stage-changed by one
      agent never live-updated any other connected client's Contacts list, Sales CRM
      board, or Customer 360 tab.
-  2. `InboxContext` (`dashboard/src/contexts/InboxContext.tsx`) additionally listens
-     for `whatsapp_message` directly and, when the push matches the conversation
-     currently open on screen, calls `refetchQueries` for that specific conversation
-     immediately, rather than waiting for the coarser invalidation in (1) to trigger a
-     background refetch (lines 383-407). It also re-syncs on socket reconnect
-     (`$open` handler, `InboxContext.tsx:371-377`, and again in
-     `WebSocketContext.tsx:92-98`) to catch anything that arrived while the socket was
-     down, and runs a 2-second HTTP ping loop as a fallback whenever the tab is active
-     but the socket isn't connected (`InboxContext.tsx:325-355`).
+  2. `(v3)/inbox/page.tsx` additionally listens for `whatsapp_message` directly via
+     its own `wsClient.on(...)` and, when the push matches the conversation
+     currently open on screen, calls `refetchQueries` on that conversation's own
+     `['wa-conv', convKey]` query immediately, rather than waiting for the coarser
+     invalidation in (1) to trigger a background refetch. There is no separate
+     context layer between (1) and the page — `InboxContext.tsx`, which previously
+     owned this responsibility (plus its own `$open` reconnect re-sync and a
+     2-second HTTP ping-loop fallback for when the socket was down), was fully
+     deleted in an earlier session; confirmed zero importers before removal. Doc
+     corrected 2026-07-18, Stage 7 of the 2026-07-17 360° audit fix plan (finding
+     #10).
 - Connections have a hard ceiling: API Gateway WebSocket connections max out at 2 hours
   total lifetime (comment, `src/utils/wsConnections.js:4-5`); the connections table's
   TTL is aligned to that so orphaned rows (e.g. a client that never sent `$disconnect`)

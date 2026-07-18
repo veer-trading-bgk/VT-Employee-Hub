@@ -177,7 +177,7 @@ All admin routes use the `/admin/` prefix. V3 removes this:
 | Customer 360 tab structure (7 frozen tabs) | Correct. CLAUDE.md enforced. |
 | ContactHeader, ContactTabNav, ContactTabPanel | Clean. Compose correctly from shared context. |
 | ChatPane + ConversationTab | Working. Real-time WS updates functional. |
-| InboxContext (conversation selection, WS state) | Solid. Keep. Only simplify LeadSidebar. |
+| InboxContext (conversation selection, WS state) | Solid. Keep. Only simplify LeadSidebar. *(Superseded — this recommendation was not followed; InboxContext.tsx and its consumers, including LeadSidebar, were later deleted entirely rather than simplified. See docs/bible/08_MODULES.md's `InboxContext.tsx` entry. Historical planning snapshot, not corrected further — this file is dated 2026-06-29, pre-implementation.)* |
 | CRM kanban drag-drop | Working. Sanctioned exception. Keep. |
 | Admin Dashboard KPIs (queries) | Working. Rename to My Work. Keep queries. |
 | Employee HR modules (all routes) | Working. Out of scope for Phase 3 mutations. |
@@ -230,6 +230,7 @@ This sequence is derived from three constraints:
 - Keep: name/phone/email, "Open in Customer 360 ↗" button, assignee `<select>`, chat status display, source/created/WA window meta
 - Remove now-unused `stageMutation`, `tagMutation`, `noteMutation` consumption from sidebar (they remain in InboxContext for C360 use if needed)
 - Keep InboxContext mutations — do not delete; they may be needed by other consumers
+  *(Superseded — not followed; InboxContext.tsx was later deleted entirely, along with LeadSidebar/ChatPane/ConversationList, once `(v3)/inbox/page.tsx`'s own independent implementation became the sole live one. See docs/bible/08_MODULES.md's `InboxContext.tsx` entry for the resolution. Left otherwise unedited — historical planning snapshot, dated 2026-06-29, pre-implementation.)*
 
 **A3 — Rename navigation + routes**
 - Sidebar: update labels (Communications, Customers, Sales, My Work)

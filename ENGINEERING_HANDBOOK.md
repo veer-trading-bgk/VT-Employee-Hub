@@ -113,14 +113,14 @@ vt-employee-bot/
 │       │   ├── AuthContext.tsx     Session state, login/logout, auth:expired handler
 │       │   └── ThemeContext.tsx
 │       ├── contexts/
-│       │   ├── InboxContext.tsx    WhatsApp inbox + ping loop + windowExpired
+│       │   ├── InboxContext.tsx    WhatsApp inbox + ping loop + windowExpired [DELETED post-V2 — see docs/bible/08_MODULES.md]
 │       │   └── WebSocketContext.tsx WS connection state machine
 │       ├── lib/
 │       │   ├── api.ts             apiFetch, _tryRefreshToken, setMemoryToken
 │       │   └── wsClient.ts        Raw WS client with reconnect + state machine
 │       └── components/
 │           └── whatsapp/
-│               └── ChatPane.tsx   Primary WhatsApp conversation UI
+│               └── ChatPane.tsx   Primary WhatsApp conversation UI [DELETED post-V2 — see docs/bible/08_MODULES.md]
 ├── tests/                      Jest test suite (433 tests)
 ├── scripts/
 │   └── package-lambda.ps1      Lambda zip builder
@@ -434,7 +434,7 @@ POST /api/whatsapp/send
 | Known lead | `/api/crm/leads/:leadId/messages` | `LEAD#` + linked `CONV#` |
 | Unknown (inbox) | `/api/whatsapp/inbox/unknown/:phone/messages` | `INBOX#` + linked `CONV#` |
 
-The frontend uses `InboxContext` to determine which path to call based on whether `selected.leadId` is present.
+The frontend used `InboxContext` to determine which path to call based on whether `selected.leadId` is present, at the time of this V2 snapshot. `InboxContext.tsx` was later deleted entirely; `(v3)/inbox/page.tsx` now makes this same lead-vs-unknown branch decision directly in its own local state — see docs/bible/08_MODULES.md's `InboxContext.tsx` entry.
 
 ---
 
@@ -474,7 +474,7 @@ Reconnect strategy: exponential backoff with jitter. `window online/offline` eve
 
 ### 9.3 Fallback (WS Disconnected)
 
-`InboxContext` detects `!wsConnected` and switches to polling:
+`InboxContext` detected `!wsConnected` and switched to polling, at the time of this V2 snapshot (`InboxContext.tsx` was later deleted — see docs/bible/08_MODULES.md's `InboxContext.tsx` entry):
 - `wa-inbox` query: polls every 8s (vs 30s when connected)
 - `wa-conv` query: polls every 3s (vs disabled when connected)
 - Ping loop: fires `POST /api/whatsapp/inbox/ping` every 2s to keep the server-side session alive
@@ -606,6 +606,7 @@ QueryProvider (TanStack Query)
         {page children}
           InboxContext  ← WhatsApp inbox, ping loop, windowExpired, sendMutation
 ```
+*(This provider's bottom layer no longer exists — `InboxContext.tsx` was deleted post-V2. `(v3)/inbox/page.tsx` now sits directly under `WebSocketProvider` with its own local state instead. See docs/bible/08_MODULES.md's `InboxContext.tsx` entry.)*
 
 ### 13.2 API Client
 
@@ -616,18 +617,19 @@ QueryProvider (TanStack Query)
 - On 401: calls `_tryRefreshToken()` → retries once → on second 401: dispatches `auth:expired`, throws
 - `retries: 2` default is for 5xx only (idempotent retry). Client errors (4xx) short-circuit immediately.
 
-### 13.3 ChatPane — Key Invariants
+### 13.3 ChatPane — Key Invariants *(historical — ChatPane.tsx deleted post-V2)*
 
-**File:** `dashboard/src/components/whatsapp/ChatPane.tsx`
+**File:** `dashboard/src/components/whatsapp/ChatPane.tsx` — deleted; the equivalent invariants now live in `(v3)/inbox/page.tsx`'s own `sendMutation` (see docs/bible/06_ARCHITECTURE.md §4b for the current send path).
 
-- `sendMutation.onMutate`: clears `msgText` optimistically (via `setMsgText('')`)
-- `sendMutation.onError`: **must restore** `setMsgText(vars.text)` — otherwise user loses typed text on any failure
-- `windowExpired = is24hExpired(lastInboundAt)`: disables textarea when `inputMode === 'reply'`
+At the time of this V2 snapshot:
+- `sendMutation.onMutate`: cleared `msgText` optimistically (via `setMsgText('')`)
+- `sendMutation.onError`: had to restore `setMsgText(vars.text)` — otherwise the user lost typed text on any failure
+- `windowExpired = is24hExpired(lastInboundAt)`: disabled the textarea when `inputMode === 'reply'`
 - Error banner at line ~1054: shown when `sendMutation.isError || noteMutation.isError`
 
-### 13.4 InboxContext — Ping Loop
+### 13.4 InboxContext — Ping Loop *(historical — InboxContext.tsx deleted post-V2)*
 
-When `tabActive && !wsConnected`, fires `POST /api/whatsapp/inbox/ping` every 2 seconds. All errors are caught and swallowed. If the ping returns 401 and token refresh fails, `auth:expired` is dispatched — the one-shot guard in `AuthContext` ensures only one logout occurs.
+At the time of this V2 snapshot: when `tabActive && !wsConnected`, fired `POST /api/whatsapp/inbox/ping` every 2 seconds. All errors were caught and swallowed. If the ping returned 401 and token refresh failed, `auth:expired` was dispatched — the one-shot guard in `AuthContext` ensured only one logout occurred. `InboxContext.tsx` (and this ping-loop fallback with it) was later deleted entirely, along with its three legacy consumers — see docs/bible/08_MODULES.md's `InboxContext.tsx` entry for the resolution and docs/bible/06_ARCHITECTURE.md §7 for current WS reconnect behavior.
 
 ---
 

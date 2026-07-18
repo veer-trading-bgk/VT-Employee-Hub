@@ -958,7 +958,7 @@ full detail only for the context/provider files that own shared state.
 | `templates/` | WhatsApp message template management (category/quality/status badges, live preview) |
 | `ui/` | Pre-v3 generic UI kit (DataTable, Leaderboard, MetricCard) — legacy counterpart to `v3/ui/` |
 | `v3/` | Current design-system + feature-shell folder — see below |
-| `whatsapp/` | Legacy WhatsApp inbox UI (`ChatPane`, `ConversationList`, `LeadSidebar`) — still the real consumer of `InboxContext` (see below) |
+| `whatsapp/` | `MediaPreviewModal.tsx` + `TemplatePicker.tsx` only — both consumed by Customer 360's `ConversationTab.tsx`, not a standalone legacy inbox surface. `ChatPane`/`ConversationList`/`LeadSidebar` (InboxContext's former consumers) were deleted along with it — see `InboxContext.tsx`'s entry below |
 | Loose files: `DeleteEmployeeDialog.tsx`, `EditEmployeeModal.tsx`, `EmployeeActionMenu.tsx` | All three consumed by `v3/team/EmployeesSection.tsx` |
 | `ServiceWorkerRegister.tsx` | Registers the PWA service worker on mount |
 
@@ -990,8 +990,9 @@ full detail only for the context/provider files that own shared state.
 
 ### Context/Provider files — state ownership
 
-`dashboard/src/contexts/` (plural) holds `Customer360Context.tsx`, `InboxContext.tsx`,
-`WebSocketContext.tsx`. **Auth state lives in a separate, singular `dashboard/src/context/`
+`dashboard/src/contexts/` (plural) holds `Customer360Context.tsx` and `WebSocketContext.tsx`
+(`InboxContext.tsx` was fully deleted — see its own entry below for the history).
+**Auth state lives in a separate, singular `dashboard/src/context/`
 folder** (`AuthContext.tsx`, plus `ThemeContext.tsx`) — a naming split worth remembering since
 it's an easy place for both a human and an AI assistant to search the wrong directory.
 
@@ -1007,11 +1008,9 @@ it's an easy place for both a human and an AI assistant to search the wrong dire
 
 **`DocumentsTab.tsx` — the 7th frozen tab, built for the first time.** Not a stub: lists WhatsApp media attachments already present in the context's `messages` (image/video/audio/document), with on-click lazy URL resolution mirroring `ConversationTab`'s `useMediaSrc` fallback chain. Reserves `data-slot="documents-kyc"` / `"documents-agent-uploads"` / `"documents-system"` for the other three categories `docs/v3/08_CUSTOMER360_VISION.md`'s Documents spec describes — not implemented, since they need document-storage backend endpoints that don't exist yet.
 
-#### `InboxContext.tsx` — same pattern as Customer360Context
+#### `InboxContext.tsx` — DELETED (was the same duplication pattern Customer360Context had, resolved the opposite way)
 
-**State owned:** conversation selection, tab filters, 11 mutations (stage/assign/tag/resolve/reopen/note/auto-assign/pin/availability/name), query keys `wa-inbox`, `crm-pipeline`, `admin-employees`, `wa-conv`, `wa-canned`, `wa-availability`, `tag-catalog`. **Export:** `useInbox()`, `InboxProvider`.
-
-**Verified:** only 3 real consumers, all in the legacy `components/whatsapp/` folder (`LeadSidebar.tsx`, `ChatPane.tsx`, `ConversationList.tsx`). The current production route, `app/(v3)/inbox/page.tsx`, does **not** consume `useInbox()` — it implements its own local state/queries independently, mirroring the Customer360 duplication exactly. Its own `noteMutation` (correct URL, matches finding #6's fixed endpoint) is therefore dead code too — not touched by the notes fix below since nothing renders it.
+**History:** owned conversation selection, tab filters, and 11 mutations (stage/assign/tag/resolve/reopen/note/auto-assign/pin/availability/name) behind `useInbox()`/`InboxProvider`, mirroring `Customer360Context.tsx`'s shape. Verified (2026-07-17 audit) to have only 3 real consumers — all in the legacy `components/whatsapp/` folder (`LeadSidebar.tsx`, `ChatPane.tsx`, `ConversationList.tsx`) — while the current production route, `app/(v3)/inbox/page.tsx`, never consumed `useInbox()` at all: it always implemented its own local state/queries independently, the same duplication Customer360 had. Where Customer360's duplication was resolved by deleting the ad-hoc route and mounting the real provider, Inbox's was resolved the other way: `InboxContext.tsx` and its three legacy consumers were deleted entirely (confirmed zero importers before removal), leaving `(v3)/inbox/page.tsx`'s own local state as the one real implementation — no separate context layer exists between it and `WebSocketContext.tsx`. Doc corrected 2026-07-18, Stage 7 of the 2026-07-17 360° audit fix plan (finding #10) — this entry had kept describing the deleted file as live, down to citing its specific line numbers.
 
 #### `WebSocketContext.tsx`
 
@@ -1034,7 +1033,7 @@ Instantiates the single app-wide `QueryClient` (2-min staleTime, 10-min gcTime, 
 ### Cross-cutting frontend findings
 
 1. **Resolved.** Two parallel, fully-built Customer 360 implementations used to exist — the documented-architecture one (`Customer360Provider` + 7 tab components, unmounted) and the ad-hoc one that shipped (`app/(v3)/contacts/[contactId]/page.tsx`, violating the dashboard's own `CLAUDE.md` fetch-ownership rule). The ad-hoc implementation has been deleted; the page now mounts `Customer360Provider` and renders the 7 real tabs (the previously-missing `DocumentsTab.tsx` was built as part of this). See the `Customer360Context.tsx` entry above for the full history and the explicit unknown-contact design decision.
-2. The same shape of duplication exists for Inbox: `InboxContext` is real and used by the legacy `components/whatsapp/*` UI, but the current `/inbox` route reimplements its own state independently.
+2. **Resolved, the opposite way from #1.** The same shape of duplication used to exist for Inbox — `InboxContext` was real and used by the legacy `components/whatsapp/*` UI, while the current `/inbox` route always reimplemented its own state independently. Where #1 was resolved by deleting the ad-hoc route, this one was resolved by deleting `InboxContext.tsx` and its legacy consumers instead — `(v3)/inbox/page.tsx`'s own local state is the one real implementation. See the `InboxContext.tsx` entry above.
 3. Legacy and v3 UI kits coexist deliberately and are both live (`components/ui/` + `components/whatsapp/` pre-v3; `components/v3/ui/` current) — this is not migration debt so much as an incomplete migration in progress.
 4. Several routes are pure redirect stubs preserving old URLs: `customers/*` → `contacts/*`, `communications` → `inbox`, `automation/logs` → `automation`.
 5. **Fully resolved.** Two independent `PipelineStage` type definitions used to exist — the live one in `hooks/usePipelineStages.ts` (`{key,label,color,order}`) and one locally declared inside `Customer360Context.tsx` (`{key,label,color}`). As of the stage-hardcoding remediation, `hooks/usePipelineStages.ts`'s type is the sole one in the codebase: the hardcoded `STAGE_LABELS`/`Stage`-union pattern it replaced was traced to 10 frontend files (originating at the V3 launch, `efe9c7c`, not a later regression) and all 10 now read the live pipeline instead — 3 were write-payload risk (`inbox/page.tsx`'s stage select, `WorkflowBuilder.tsx`'s `change_stage` action config, `NewContactDrawer.tsx`'s initial-stage picker), 1 was a duplicate fetch (`sales/page.tsx` independently queried the same `GET /api/crm/pipeline` under the same `['pipeline-stages']` key `usePipelineStages` now owns), 2 were filter-availability gaps (`AudienceBuilder.tsx`, `contacts/page.tsx`'s list filter), and 4 were cosmetic label-only lookups (`contacts/page.tsx`'s CSV/table/chip, `CampaignCreateDrawer.tsx`, `home/page.tsx`). `components/v3/ui/Badge.tsx`'s `variant="stage"` also gained an optional `color` prop so a custom stage key renders with a real color instead of shape-only. As part of the Customer 360 rebuild, `Customer360Context.tsx`'s local declaration was removed and replaced with a re-export of the shared hook's type (`export type { PipelineStage }` from `usePipelineStages.ts`) — there is now exactly one `PipelineStage` type in the codebase.

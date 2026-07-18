@@ -122,14 +122,17 @@ src/
       ContactHeader    # Contact identity block at top of page
       ContactTabNav    # Tab navigation bar
     layout/            # Navbar (with GlobalSearch), Sidebar, CrmSubNav
-    whatsapp/          # ChatPane, LeadSidebar, MediaPreviewModal
+    whatsapp/          # MediaPreviewModal, TemplatePicker (both used by Customer 360's ConversationTab)
     ui/                # ErrorBoundary, Skeleton, UndoToast, FollowUpForm
     common/            # Shared components
 
   contexts/
     Customer360Context # Single provider for all Customer 360 data
-    InboxContext       # WhatsApp conversation state
     WebSocketContext   # Real-time connection management
+    # InboxContext was deleted — (v3)/inbox/page.tsx owns its own local state
+    # (useState + React Query) directly, no separate context layer.
+
+  context/ (singular — different folder from contexts/ above)
     AuthContext        # Session and JWT
     ThemeContext       # Dark / light mode
 
