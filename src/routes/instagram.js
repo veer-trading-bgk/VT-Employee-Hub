@@ -262,6 +262,51 @@ router.get('/posts/:mediaId/comments', authMiddleware, checkRole(['admin']), asy
   }
 });
 
+// POST /api/instagram/posts/:mediaId/comments/:commentId/reply — manual private
+// reply to a comment from the Comments tab (admin only). Same send path as the
+// automated Follow Gate's DM #1 (InstagramSendService.sendPrivateReply +
+// InstagramCommentService.markCommentReplied), but operator-initiated. GUARD:
+// Meta allows exactly ONE private reply per comment, so an already-'replied'
+// comment is refused up front (409) rather than sent and bounced. Finding the
+// stored comment by commentId within the post partition also yields its
+// timestamp, needed to address the CMT# record for the status flip.
+router.post('/posts/:mediaId/comments/:commentId/reply', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+    const { mediaId, commentId } = req.params;
+    const text = (req.body?.text ?? req.body?.message ?? '').toString().trim();
+    if (!text) return res.status(400).json({ error: 'Reply text is required' });
+
+    const q = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :cmt)',
+      FilterExpression: 'commentId = :cid',
+      ExpressionAttributeValues: { ':pk': igPostPK(companyId, mediaId), ':cmt': 'CMT#', ':cid': commentId },
+    }).promise();
+    const comment = (q.Items ?? [])[0];
+    if (!comment) return res.status(404).json({ error: 'Comment not found' });
+    if (comment.replyStatus === 'replied') {
+      return res.status(409).json({ error: 'This comment has already been replied to. Instagram allows only one private reply per comment.' });
+    }
+
+    let r;
+    try {
+      r = await require('../services/InstagramSendService').sendPrivateReply(companyId, commentId, text);
+    } catch (e) {
+      // Surface Meta's own error (outside 7-day window, one-reply, invalid) as-is.
+      return res.status(e.status ?? 400).json({ error: e.message ?? 'Failed to send private reply' });
+    }
+
+    // Same status flip as the automated node — conditional, decrements the
+    // unreplied badge exactly once. Best-effort; never throws.
+    await require('../services/InstagramCommentService').markCommentReplied(companyId, mediaId, commentId, comment.timestamp);
+
+    res.json({ success: true, mid: r.mid, igsid: r.igsid ?? null });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── GET /api/instagram/auth/init — start OAuth popup ───────────────────────────
 router.get('/auth/init', authMiddleware, checkRole(['admin']), (req, res) => {
   const appId = process.env.INSTAGRAM_APP_ID;

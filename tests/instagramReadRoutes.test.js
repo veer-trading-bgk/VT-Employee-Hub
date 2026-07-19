@@ -28,9 +28,13 @@ jest.mock('../src/services/InstagramContactService', () => ({
 jest.mock('../src/services/AutomationEngine', () => ({
   resumeOnInstagramReply: jest.fn(), pendingInstagramReplyIgsids: jest.fn(),
 }));
+jest.mock('../src/services/InstagramSendService', () => ({ sendPrivateReply: jest.fn() }));
+jest.mock('../src/services/InstagramCommentService', () => ({ markCommentReplied: jest.fn(), recordComment: jest.fn() }));
 
 const dynamodb = require('../src/config/dynamodb');
 const AutomationEngine = require('../src/services/AutomationEngine');
+const InstagramSendService = require('../src/services/InstagramSendService');
+const InstagramCommentService = require('../src/services/InstagramCommentService');
 const instagramRouter = require('../src/routes/instagram');
 
 const CID = 'comp_test';
@@ -179,6 +183,75 @@ describe('GET /api/instagram/posts/:mediaId/comments', () => {
   test('admin-only gate', async () => {
     const res = mockRes();
     await runStackAfterAuth(instagramRouter, '/posts/:mediaId/comments', 'get', { user: { companyId: CID, role: 'employee' }, params: { mediaId: 'media_a' }, query: {} }, res);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(dynamodb.query).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/instagram/posts/:mediaId/comments/:commentId/reply — manual private reply', () => {
+  const handler = getRouteHandler(instagramRouter, '/posts/:mediaId/comments/:commentId/reply', 'post');
+  const okReq = (body = { text: 'Thanks for commenting!' }) => ({
+    user: { companyId: CID, role: 'admin' }, params: { mediaId: 'media_a', commentId: 'c1' }, body,
+  });
+
+  beforeEach(() => {
+    InstagramSendService.sendPrivateReply.mockResolvedValue({ mid: 'mid_pr', igsid: 'ig_recip' });
+    InstagramCommentService.markCommentReplied.mockResolvedValue(undefined);
+  });
+
+  test('happy path: finds the unreplied comment, sends the private reply, flips its status', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [{ commentId: 'c1', timestamp: 1700000000000, replyStatus: 'unreplied' }] }));
+    const res = mockRes();
+    await handler(okReq(), res, jest.fn());
+
+    expect(InstagramSendService.sendPrivateReply).toHaveBeenCalledWith(CID, 'c1', 'Thanks for commenting!');
+    expect(InstagramCommentService.markCommentReplied).toHaveBeenCalledWith(CID, 'media_a', 'c1', 1700000000000);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, mid: 'mid_pr' }));
+    // Company-scoped lookup.
+    expect(dynamodb.query.mock.calls[0][0].ExpressionAttributeValues[':pk']).toBe(`IGPOST#${CID}#media_a`);
+  });
+
+  test('REFUSES a second reply: an already-replied comment gets 409, no send (Meta one-reply-per-comment limit)', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [{ commentId: 'c1', timestamp: 1700000000000, replyStatus: 'replied' }] }));
+    const res = mockRes();
+    await handler(okReq(), res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(InstagramSendService.sendPrivateReply).not.toHaveBeenCalled();
+    expect(InstagramCommentService.markCommentReplied).not.toHaveBeenCalled();
+  });
+
+  test('404 when the comment is not stored', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [] }));
+    const res = mockRes();
+    await handler(okReq(), res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(InstagramSendService.sendPrivateReply).not.toHaveBeenCalled();
+  });
+
+  test('400 on empty reply text — before any lookup or send', async () => {
+    const res = mockRes();
+    await handler(okReq({ text: '   ' }), res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(dynamodb.query).not.toHaveBeenCalled();
+    expect(InstagramSendService.sendPrivateReply).not.toHaveBeenCalled();
+  });
+
+  test('surfaces a Meta send error as-is and does NOT flip the status', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [{ commentId: 'c1', timestamp: 1700000000000, replyStatus: 'unreplied' }] }));
+    InstagramSendService.sendPrivateReply.mockRejectedValue(Object.assign(new Error('This comment can no longer be replied to.'), { status: 400 }));
+    const res = mockRes();
+    await handler(okReq(), res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: 'This comment can no longer be replied to.' }));
+    expect(InstagramCommentService.markCommentReplied).not.toHaveBeenCalled();
+  });
+
+  test('admin-only gate', async () => {
+    const res = mockRes();
+    await runStackAfterAuth(instagramRouter, '/posts/:mediaId/comments/:commentId/reply', 'post',
+      { user: { companyId: CID, role: 'employee' }, params: { mediaId: 'media_a', commentId: 'c1' }, body: { text: 'hi' } }, res);
     expect(res.status).toHaveBeenCalledWith(403);
     expect(dynamodb.query).not.toHaveBeenCalled();
   });
