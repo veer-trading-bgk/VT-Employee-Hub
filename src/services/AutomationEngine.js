@@ -76,8 +76,9 @@ class AutomationEngine {
       // flow_completed uses the same per-trigger-config mechanism, with opposite
       // fail-open semantics on a missing config (see _matchesFlowCompletedConfig).
       const workflows =
-        triggerType === 'keyword_message'  ? matched.filter((w) => this._matchesKeywordConfig(w.trigger?.config, context.messageText))
-        : triggerType === 'flow_completed' ? matched.filter((w) => this._matchesFlowCompletedConfig(w.trigger?.config, context.flowId))
+        triggerType === 'keyword_message'   ? matched.filter((w) => this._matchesKeywordConfig(w.trigger?.config, context.messageText))
+        : triggerType === 'comment_received' ? matched.filter((w) => this._matchesCommentConfig(w.trigger?.config, context))
+        : triggerType === 'flow_completed'  ? matched.filter((w) => this._matchesFlowCompletedConfig(w.trigger?.config, context.flowId))
         : matched;
 
       if (workflows.length === 0) return;
@@ -348,6 +349,32 @@ class AutomationEngine {
         }
       }
 
+      // A wait_instagram_reply node is the Follow Gate's pause point (ADR-021
+      // R5): DM #1 (a private reply) was already sent by the preceding
+      // send_instagram_private_reply node, and this node waits for the user's
+      // free-text DM reply — an event-driven resume (resumeOnInstagramReply(),
+      // called from instagram.js's inbound-DM webhook) — or its own timeout
+      // (time-driven resume via the processAllDueWaits() sweep). Unlike
+      // WhatsApp's button-reply waits, the resume key is the IGSID (Instagram
+      // DMs are free text, not button taps), sourced from DM #1's private-reply
+      // response (context.igsid, set by the private-reply node). On reply we
+      // follow the node's single default edge (→ DM #2); on timeout we follow
+      // an optional TIMEOUT_HANDLE_ID edge if wired, else the flow simply ends.
+      if (node.type === 'wait_instagram_reply') {
+        const { timeoutAmount, timeoutUnit } = node.config ?? {};
+        const resumeAt = timeoutAmount
+          ? new Date(Date.now() + this._parseWait({ amount: timeoutAmount, unit: timeoutUnit })).toISOString()
+          : new Date(Date.now() + UNBOUNDED_REPLY_WAIT_MS).toISOString();
+        await this._storeWait(companyId, {
+          executionId: execItem.executionId, workflowId: workflow.id, execSK: execItem.SK,
+          graph: true, nodeId, resumeAt, context,
+          awaitReply: { igsid: context.igsid ?? null },
+        });
+        path.push({ nodeId, type: 'wait_instagram_reply', status: 'waiting_reply', resumeAt });
+        await this._patchExecPath(companyId, execItem.SK, path, 'paused');
+        return;
+      }
+
       // Action node — send_template / assign_employee / change_stage / add_tag / create_task.
       try {
         const result = await this._runAction(companyId, node, context);
@@ -404,11 +431,17 @@ class AutomationEngine {
       const node = (wfRes.Item.nodes ?? []).find((n) => n.id === nodeId);
       const isConditionReplyWait = node?.type === 'condition' && node.config?.mode === 'button_reply';
       const isSendReplyWait = node?.type === 'send_buttons' || node?.type === 'send_list';
+      const isIgReplyWait = node?.type === 'wait_instagram_reply';
       const resumeSignal = isConditionReplyWait
         ? { status: resolvedBranch ? 'evaluated' : 'timed_out', branchKey: resolvedBranch ?? node.config.fallbackKey ?? null }
         : isSendReplyWait
           ? { status: resolvedBranch ? 'replied' : 'timed_out', branchKey: resolvedBranch ?? TIMEOUT_HANDLE_ID }
-          : { status: 'completed' }; // plain 'wait' node — single outgoing edge, no branch
+          : isIgReplyWait
+            // Reply (resolvedBranch set by resumeOnInstagramReply) → single default
+            // edge to DM #2, no branchKey. Timeout (resolvedBranch null, from the
+            // time-sweep) → optional TIMEOUT_HANDLE_ID edge if wired, else end.
+            ? (resolvedBranch ? { status: 'replied' } : { status: 'timed_out', branchKey: TIMEOUT_HANDLE_ID })
+            : { status: 'completed' }; // plain 'wait' node — single outgoing edge, no branch
       return this._runGraph(companyId, wfRes.Item, execRes.Item, context, nodeId, resumeSignal);
     }
 
@@ -550,6 +583,59 @@ class AutomationEngine {
     }
   }
 
+  // ── Event-driven resume for wait_instagram_reply nodes (Follow Gate) ──────
+  // The Instagram-DM sibling of resumeOnButtonReply, called from instagram.js's
+  // inbound-DM webhook when a user replies to DM #1 (ADR-021 R5). Two
+  // deliberate differences from the WhatsApp path: the match key is the IGSID
+  // (awaitReply.igsid), not a phone, because Instagram contacts have no phone;
+  // and ANY inbound text resumes — there are no button ids to match, since
+  // Instagram DMs are free text. Same whole-partition Query + conditional-delete
+  // claim so a reply and a concurrent timeout sweep can never both resume the
+  // same wait. Isolation is automatic: these waits store no `phone`, so
+  // resumeOnButtonReply/cancelButtonReplyWaits (both key on awaitReply.phone)
+  // never touch them, and this never touches a WhatsApp button wait (no igsid).
+  // Returns the number of executions resumed, so the caller can suppress
+  // keyword_message when a reply was consumed by a Follow Gate.
+  async resumeOnInstagramReply(companyId, igsid) {
+    let resumed = 0;
+    if (!igsid) return resumed;
+    try {
+      const { Items = [] } = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk',
+        ExpressionAttributeValues: { ':pk': `AUTO_WAIT#${companyId}` },
+        Limit: 100,
+      }).promise();
+
+      const candidates = Items.filter((item) => item.awaitReply?.igsid && item.awaitReply.igsid === igsid);
+
+      for (const item of candidates) {
+        try {
+          await dynamodb.delete({
+            TableName: TABLE,
+            Key:       { PK: item.PK, SK: item.SK },
+            ConditionExpression: 'attribute_exists(PK)',
+          }).promise();
+        } catch (e) {
+          if (e.code === 'ConditionalCheckFailedException') continue; // already claimed (e.g. the timeout sweep)
+          logger.warn(`AutomationEngine: ig-reply-claim failed for ${item.executionId}: ${e.message}`);
+          continue;
+        }
+
+        // A truthy resolvedBranch signals "reply arrived" to resumeExecution
+        // (vs. the time-sweep's null → timeout); wait_instagram_reply has a
+        // single default edge, so the exact value only needs to be truthy.
+        await this.resumeExecution(companyId, item, 'replied').catch((e) =>
+          logger.warn(`AutomationEngine: ig-reply resume failed for ${item.executionId}: ${e.message}`),
+        );
+        resumed++;
+      }
+    } catch (e) {
+      logger.warn(`AutomationEngine.resumeOnInstagramReply: ${e.message}`);
+    }
+    return resumed;
+  }
+
   // ── Cancel a contact's paused button-reply waits, WITHOUT resuming ────────
   // Finding 1 (Era 49, 2026-07-15). Free text on an unengaged, unassigned
   // conversation engages the AI and overrides a whatsapp_conversation_started
@@ -593,6 +679,21 @@ class AutomationEngine {
     } catch (e) {
       logger.warn(`AutomationEngine.cancelButtonReplyWaits: ${e.message}`);
     }
+  }
+
+  // Anti-spam reply-variant picker for the Instagram send nodes (ADR-021 R6).
+  // Instagram's automated systems can flag identical repeated replies as spam,
+  // so a comment_received flow supplies replyVariants: string[] (>=2) and one is
+  // chosen at random per send. A single messageText remains valid (v1 keyword
+  // replies, and any single-variant config) — returns null when neither is a
+  // usable non-empty string so the caller throws a clear config error.
+  _pickInstagramVariant(config) {
+    const variants = Array.isArray(config?.replyVariants)
+      ? config.replyVariants.filter((v) => typeof v === 'string' && v.trim())
+      : [];
+    if (variants.length > 0) return variants[Math.floor(Math.random() * variants.length)];
+    const single = config?.messageText;
+    return (typeof single === 'string' && single.trim()) ? single : null;
   }
 
   // ── Action executor ──────────────────────────────────────────────────────
@@ -943,20 +1044,38 @@ class AutomationEngine {
         return r;
       }
 
-      // Instagram DM reply — v1's one send capability (plain text only).
-      // Reads ctx.igsid directly, NOT leadPK/phone: Instagram contacts are
-      // IGCONTACT# records (InstagramContactService), never LEAD# — the
-      // 2026-07-18 "lightweight, no CRM" decision. ctx.igsid is populated
-      // exclusively by instagram.js's webhook handler (via the generic
-      // ctx.contactId ?? ... fallback _startExecution already had for its
-      // execution-record bookkeeping, no engine change needed there).
+      // Instagram DM (normal send, recipient: { id: igsid }). v1's keyword reply
+      // AND the Follow Gate's DM #2 (ADR-021 R2 — sent only after the user has
+      // replied, opening a 24h window). Reads ctx.igsid directly, NOT leadPK/
+      // phone: Instagram contacts are IGCONTACT# records, never LEAD# (the
+      // 2026-07-18 "lightweight, no CRM" decision). For a comment-sourced flow
+      // ctx.igsid is the canonical IGSID captured by the preceding
+      // send_instagram_private_reply node; for a DM-sourced flow it comes from
+      // instagram.js's inbound handler.
       case 'send_instagram_message': {
-        const { messageText } = step.config ?? {};
+        const messageText = this._pickInstagramVariant(step.config);
         if (!ctx.igsid) throw new Error('send_instagram_message: igsid required (not an Instagram-sourced context)');
-        if (!messageText) throw new Error('send_instagram_message: messageText required');
+        if (!messageText) throw new Error('send_instagram_message: messageText or replyVariants required');
         const InstagramSendService = require('./InstagramSendService');
         const r = await InstagramSendService.sendText(companyId, ctx.igsid, messageText);
         return { mid: r.mid };
+      }
+
+      // Instagram comment private reply — DM #1 of a comment_received flow
+      // (ADR-021 R1/R2). Recipient is the comment_id (ctx.commentId), the only
+      // way to first-contact a commenter with no open messaging window. Captures
+      // the response's canonical IGSID into ctx.igsid so a following
+      // wait_instagram_reply keys its wait on it and DM #2 can reach the user.
+      // The caller (instagram.js) has already written the per-comment
+      // idempotency claim, so this node never double-sends on a webhook retry.
+      case 'send_instagram_private_reply': {
+        const messageText = this._pickInstagramVariant(step.config);
+        if (!ctx.commentId) throw new Error('send_instagram_private_reply: commentId required (not a comment-sourced context)');
+        if (!messageText) throw new Error('send_instagram_private_reply: messageText or replyVariants required');
+        const InstagramSendService = require('./InstagramSendService');
+        const r = await InstagramSendService.sendPrivateReply(companyId, ctx.commentId, messageText);
+        if (r.igsid) ctx.igsid = r.igsid; // authoritative IGSID for the follow-gate wait + DM #2
+        return { mid: r.mid, igsid: r.igsid };
       }
 
       default:
@@ -996,24 +1115,44 @@ class AutomationEngine {
     }
   }
 
-  // ── Keyword trigger matcher (keyword_message trigger's own config) ───────
+  // ── Keyword hit test (shared by keyword_message and comment_received) ────
   // 'contains' and 'any_of' are the same operation — substring-match against a
   // list of keywords, just 1 entry vs. N — so they share this one code path
   // rather than duplicating it. Fails closed (false) on any missing/malformed
   // config, same philosophy as _matchesOperator()'s "unknown operator → false".
-  _matchesKeywordConfig(config, messageText) {
-    if (!config || typeof messageText !== 'string') return false;
+  _keywordHit(config, text) {
+    if (!config || typeof text !== 'string') return false;
     const keywords = Array.isArray(config.keywords)
       ? config.keywords.filter((k) => typeof k === 'string' && k.trim())
       : [];
     if (keywords.length === 0) return false;
 
     const norm = (s) => (config.caseSensitive ? s.trim() : s.trim().toLowerCase());
-    const target = norm(messageText);
+    const target = norm(text);
     if (!target) return false;
 
     if (config.matchMode === 'exact') return keywords.some((k) => norm(k) === target);
     return keywords.some((k) => target.includes(norm(k))); // 'contains' and 'any_of'
+  }
+
+  // keyword_message trigger's own config decides whether THIS workflow matches
+  // this inbound message — a thin wrapper over the shared keyword-hit test.
+  _matchesKeywordConfig(config, messageText) {
+    return this._keywordHit(config, messageText);
+  }
+
+  // ── Comment trigger matcher (comment_received trigger's own config) ──────
+  // Requires BOTH a mediaId match (specific post/Reel targeting — the locked v2
+  // scope, ADR-021 R4) AND a keyword match against the comment text. mediaId is
+  // compared as a string on both sides (Meta media ids are numeric strings) and
+  // must be a real non-empty value — a blank config.mediaId never matches
+  // anything, so a malformed trigger fails closed rather than firing on every
+  // comment. Keyword semantics are shared verbatim with keyword_message.
+  _matchesCommentConfig(config, context) {
+    if (!config || typeof config !== 'object') return false;
+    const wantMedia = typeof config.mediaId === 'string' ? config.mediaId.trim() : '';
+    if (!wantMedia || wantMedia !== String(context.mediaId ?? '')) return false;
+    return this._keywordHit(config, context.commentText);
   }
 
   // ── flow_completed trigger matcher (flow_completed trigger's own config) ──

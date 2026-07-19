@@ -28,7 +28,7 @@ jest.mock('../src/services/CapiService', () => ({
   reportForLead: jest.fn(),
 }));
 jest.mock('../src/services/InstagramSendService', () => ({
-  sendText: jest.fn(),
+  sendText: jest.fn(), sendPrivateReply: jest.fn(),
 }));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
@@ -39,6 +39,7 @@ const PipelineService = require('../src/services/PipelineService');
 const WASendSvc = require('../src/services/WhatsAppSendService');
 const DelayedResponseService = require('../src/services/DelayedResponseService');
 const ConversationalAgentService = require('../src/services/ConversationalAgentService');
+const InstagramSendService = require('../src/services/InstagramSendService');
 const logger = require('../src/config/logger');
 const engine = require('../src/services/AutomationEngine');
 const { guardedUpdateMock } = require('./helpers/dynamoReservedWords');
@@ -2352,10 +2353,10 @@ describe('AutomationEngine — send_instagram_message action (Instagram DM autom
     expect(InstagramSendService.sendText).not.toHaveBeenCalled();
   });
 
-  test('throws before any send when messageText is missing from config', async () => {
+  test('throws before any send when neither messageText nor replyVariants is present', async () => {
     await expect(
       engine._runAction(CID, { type: 'send_instagram_message', config: {} }, { igsid: IGSID }),
-    ).rejects.toThrow(/messageText required/);
+    ).rejects.toThrow(/messageText or replyVariants required/);
     expect(InstagramSendService.sendText).not.toHaveBeenCalled();
   });
 
@@ -2364,5 +2365,198 @@ describe('AutomationEngine — send_instagram_message action (Instagram DM autom
     await expect(
       engine._runAction(CID, { type: 'send_instagram_message', config: { messageText: 'hi' } }, { igsid: IGSID }),
     ).rejects.toThrow('Instagram API error');
+  });
+
+  test('picks one of replyVariants at random (anti-spam) and sends it — v1 messageText still works too', async () => {
+    InstagramSendService.sendText.mockResolvedValue({ mid: 'mid_v' });
+    const variants = ['Variant A', 'Variant B', 'Variant C'];
+    await engine._runAction(CID, { type: 'send_instagram_message', config: { replyVariants: variants } }, { igsid: IGSID });
+    const sentText = InstagramSendService.sendText.mock.calls[0][2];
+    expect(variants).toContain(sentText);
+  });
+});
+
+// ── Instagram comment-to-DM (v2) + Follow Gate — ADR-021 ─────────────────────
+describe('AutomationEngine — Instagram comment-to-DM + Follow Gate (ADR-021)', () => {
+  const resolved = (value) => ({ promise: () => Promise.resolve(value) });
+  const COMMENT_ID = 'cmt_100';
+  const RECIP = 'ig_17841400000000123'; // canonical IGSID from the private-reply response
+  const MEDIA_ID = 'media_99';
+
+  function makeExecItem(overrides = {}) {
+    return { PK: `AUTO_EXEC#${CID}`, SK: 'EXEC#2026-01-01T00:00:00.000Z#exec-ig', executionId: 'exec-ig', startedAt: new Date().toISOString(), path: [], ...overrides };
+  }
+  function finalPatch() {
+    const call = dynamodb.update.mock.calls.find((c) => c[0].Key?.SK?.startsWith('EXEC#'));
+    return call ? call[0].ExpressionAttributeValues : undefined;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockReturnValue(resolved({}));
+    dynamodb.delete.mockReturnValue(resolved({}));
+  });
+
+  // ── _matchesCommentConfig (the fireTrigger filter) ──
+  describe('_matchesCommentConfig', () => {
+    const cfg = { mediaId: MEDIA_ID, matchMode: 'contains', keywords: ['link'] };
+
+    test('matches when the mediaId is the targeted post AND a keyword hits the comment text', () => {
+      expect(engine._matchesCommentConfig(cfg, { mediaId: MEDIA_ID, commentText: 'please send the link' })).toBe(true);
+    });
+    test('does NOT match a comment on a different post, even if the keyword hits', () => {
+      expect(engine._matchesCommentConfig(cfg, { mediaId: 'other_media', commentText: 'send the link' })).toBe(false);
+    });
+    test('does NOT match the targeted post when no keyword hits', () => {
+      expect(engine._matchesCommentConfig(cfg, { mediaId: MEDIA_ID, commentText: 'nice photo' })).toBe(false);
+    });
+    test('fails closed on a blank config.mediaId — never fires on every comment', () => {
+      expect(engine._matchesCommentConfig({ mediaId: '   ', matchMode: 'contains', keywords: ['link'] }, { mediaId: MEDIA_ID, commentText: 'link' })).toBe(false);
+    });
+    test('exact mode + numeric-string mediaId equality', () => {
+      const exact = { mediaId: MEDIA_ID, matchMode: 'exact', keywords: ['GET'] };
+      expect(engine._matchesCommentConfig(exact, { mediaId: MEDIA_ID, commentText: 'GET' })).toBe(true);
+      expect(engine._matchesCommentConfig(exact, { mediaId: MEDIA_ID, commentText: 'GET the link' })).toBe(false);
+    });
+  });
+
+  // ── _pickInstagramVariant ──
+  describe('_pickInstagramVariant', () => {
+    test('returns the single messageText when no replyVariants', () => {
+      expect(engine._pickInstagramVariant({ messageText: 'hello' })).toBe('hello');
+    });
+    test('returns one of the replyVariants when present', () => {
+      const variants = ['A', 'B'];
+      expect(variants).toContain(engine._pickInstagramVariant({ replyVariants: variants }));
+    });
+    test('ignores blank variant entries, falls through to messageText, else null', () => {
+      expect(engine._pickInstagramVariant({ replyVariants: ['  ', ''], messageText: 'fallback' })).toBe('fallback');
+      expect(engine._pickInstagramVariant({})).toBeNull();
+      expect(engine._pickInstagramVariant({ messageText: '   ' })).toBeNull();
+    });
+  });
+
+  // ── send_instagram_private_reply node (DM #1) ──
+  describe('send_instagram_private_reply node', () => {
+    test('sends via comment_id, captures the response IGSID into ctx.igsid, returns { mid, igsid }', async () => {
+      InstagramSendService.sendPrivateReply.mockResolvedValue({ mid: 'mid_pr', igsid: RECIP });
+      const ctx = { commentId: COMMENT_ID, igsid: 'ig_from_comment_webhook' };
+      const result = await engine._runAction(CID, { type: 'send_instagram_private_reply', config: { messageText: 'Follow us and reply!' } }, ctx);
+
+      expect(InstagramSendService.sendPrivateReply).toHaveBeenCalledWith(CID, COMMENT_ID, 'Follow us and reply!');
+      expect(ctx.igsid).toBe(RECIP); // overwritten with the authoritative IGSID for the follow-gate wait + DM #2
+      expect(result).toEqual({ mid: 'mid_pr', igsid: RECIP });
+    });
+    test('throws before any send when ctx.commentId is absent (not a comment-sourced context)', async () => {
+      await expect(engine._runAction(CID, { type: 'send_instagram_private_reply', config: { messageText: 'hi' } }, { igsid: RECIP }))
+        .rejects.toThrow(/commentId required/);
+      expect(InstagramSendService.sendPrivateReply).not.toHaveBeenCalled();
+    });
+    test('supports replyVariants (anti-spam) for the private reply too', async () => {
+      InstagramSendService.sendPrivateReply.mockResolvedValue({ mid: 'm', igsid: RECIP });
+      const variants = ['A', 'B', 'C'];
+      await engine._runAction(CID, { type: 'send_instagram_private_reply', config: { replyVariants: variants } }, { commentId: COMMENT_ID });
+      expect(variants).toContain(InstagramSendService.sendPrivateReply.mock.calls[0][2]);
+    });
+  });
+
+  // ── Follow Gate graph: private reply → wait_instagram_reply → DM #2 ──
+  const followGate = {
+    id: 'wf-ig-gate', name: 'Follow Gate', status: 'active', entryNodeId: 'n1',
+    nodes: [
+      { id: 'n1', type: 'send_instagram_private_reply', config: { messageText: 'Follow us, then reply "LINK".' } },
+      { id: 'n2', type: 'wait_instagram_reply', config: {} },
+      { id: 'n3', type: 'send_instagram_message', config: { messageText: 'Here is your link: example.com' } },
+      { id: 'n4', type: 'end', config: {} },
+    ],
+    edges: [
+      { id: 'e1', source: 'n1', target: 'n2' },
+      { id: 'e2', source: 'n2', target: 'n3' },        // single default edge = the "replied" path to DM #2
+      { id: 'e3', source: 'n3', target: 'n4' },
+    ],
+  };
+
+  test('DM #1 sends, then wait_instagram_reply pauses and stores awaitReply keyed on the response IGSID', async () => {
+    InstagramSendService.sendPrivateReply.mockResolvedValue({ mid: 'mid_pr', igsid: RECIP });
+    const execItem = makeExecItem();
+    const context  = { commentId: COMMENT_ID, igsid: 'ig_from_comment_webhook', commentText: 'LINK' };
+
+    await engine._runGraph(CID, followGate, execItem, context, 'n1');
+
+    expect(InstagramSendService.sendPrivateReply).toHaveBeenCalledWith(CID, COMMENT_ID, 'Follow us, then reply "LINK".');
+    // Wait keyed on the AUTHORITATIVE IGSID (recipient_id), NOT the comment webhook's from.id.
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({ PK: `AUTO_WAIT#${CID}`, graph: true, nodeId: 'n2', awaitReply: { igsid: RECIP } }),
+    }));
+    const patchCall = dynamodb.update.mock.calls.find((c) => c[0].Key?.SK === execItem.SK);
+    expect(patchCall[0].ExpressionAttributeValues[':path'].at(-1)).toMatchObject({ nodeId: 'n2', status: 'waiting_reply' });
+    // DM #2 must NOT have been sent yet.
+    expect(InstagramSendService.sendText).not.toHaveBeenCalled();
+  });
+
+  test('resumeOnInstagramReply claims the IGSID-keyed wait and sends DM #2', async () => {
+    InstagramSendService.sendText.mockResolvedValue({ mid: 'mid_dm2' });
+    const context  = { commentId: COMMENT_ID, igsid: RECIP, commentText: 'LINK' };
+    const execItem = makeExecItem({ path: [{ nodeId: 'n2', type: 'wait_instagram_reply', status: 'waiting_reply' }] });
+    const waitItem = {
+      PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-02-01T00:00:00.000Z#exec-ig',
+      executionId: 'exec-ig', workflowId: followGate.id, execSK: execItem.SK,
+      graph: true, nodeId: 'n2', context, awaitReply: { igsid: RECIP },
+    };
+
+    dynamodb.query.mockReturnValue(resolved({ Items: [waitItem] }));
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK.startsWith('CONFIG#AUTO#')) return resolved({ Item: followGate });
+      if (params.Key.PK.startsWith('AUTO_EXEC#'))   return resolved({ Item: execItem });
+      return resolved({});
+    });
+
+    const resumed = await engine.resumeOnInstagramReply(CID, RECIP);
+
+    expect(resumed).toBe(1);
+    expect(dynamodb.delete).toHaveBeenCalledWith(expect.objectContaining({ Key: { PK: waitItem.PK, SK: waitItem.SK } }));
+    expect(InstagramSendService.sendText).toHaveBeenCalledWith(CID, RECIP, 'Here is your link: example.com');
+    const vals = finalPatch();
+    expect(vals[':st']).toBe('completed');
+    expect(vals[':path'].map((p) => p.nodeId)).toEqual(['n2', 'n3', 'n4']);
+  });
+
+  test('resumeOnInstagramReply ignores a different IGSID and never touches WhatsApp button waits (phone-keyed)', async () => {
+    const buttonWait = {
+      PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-02-01T00:00:00.000Z#exec-wa',
+      executionId: 'exec-wa', workflowId: 'wf-btn', graph: true, nodeId: 'n1',
+      awaitReply: { phone: '9000000000', expectedButtonIds: ['BTN_YES'] }, // no igsid
+    };
+    const otherIgWait = {
+      PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-02-01T00:00:00.000Z#exec-other',
+      executionId: 'exec-other', workflowId: 'wf-ig-gate', graph: true, nodeId: 'n2',
+      awaitReply: { igsid: 'ig_somebody_else' },
+    };
+    dynamodb.query.mockReturnValue(resolved({ Items: [buttonWait, otherIgWait] }));
+
+    const resumed = await engine.resumeOnInstagramReply(CID, RECIP);
+
+    expect(resumed).toBe(0);
+    expect(dynamodb.delete).not.toHaveBeenCalled();
+    expect(InstagramSendService.sendText).not.toHaveBeenCalled();
+  });
+
+  test('a timeout resume (no reply arrived) does NOT send DM #2 — the flow just ends', async () => {
+    const context  = { commentId: COMMENT_ID, igsid: RECIP };
+    const execItem = makeExecItem({ path: [{ nodeId: 'n2', type: 'wait_instagram_reply', status: 'waiting_reply' }] });
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK.startsWith('CONFIG#AUTO#')) return resolved({ Item: followGate });
+      if (params.Key.PK.startsWith('AUTO_EXEC#'))   return resolved({ Item: execItem });
+      return resolved({});
+    });
+
+    // processDueWaits() calls resumeExecution WITHOUT a resolvedBranch → timeout.
+    await engine.resumeExecution(CID, { workflowId: followGate.id, execSK: execItem.SK, context, graph: true, nodeId: 'n2' });
+
+    expect(InstagramSendService.sendText).not.toHaveBeenCalled(); // no DM #2 on timeout (no wired timeout edge → ends)
+    const vals = finalPatch();
+    expect(vals[':st']).toBe('completed');
   });
 });

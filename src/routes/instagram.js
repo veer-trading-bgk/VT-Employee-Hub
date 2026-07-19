@@ -40,9 +40,11 @@ const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
-const { igConfigPK, igConfigSK, igIdConfigPK, igIdConfigSK } = require('../core/entityKeys');
+const { igConfigPK, igConfigSK, igIdConfigPK, igIdConfigSK, igCommentClaimPK, igCommentClaimSK } = require('../core/entityKeys');
+const { dedupPut } = require('../utils/dedupPut');
 const igGraphApiHelpers = require('../services/igGraphApiHelpers');
 const InstagramContactService = require('../services/InstagramContactService');
+const AutomationEngine = require('../services/AutomationEngine');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 const IG_AUTHORIZE = 'https://www.instagram.com/oauth/authorize';
@@ -78,6 +80,34 @@ router.get('/config', authMiddleware, checkRole(['admin']), async (req, res, nex
       tokenExpiresAt: cfg?.tokenExpiresAt ?? null,
     });
   } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /api/instagram/media — recent posts/Reels for the comment-automation picker (admin only) ──
+// Data source for the future comment_received mediaId picker (ADR-021, v2 is
+// backend-only for now). Read-only passthrough to the connected account's own
+// media; 400s cleanly on an unconnected account rather than 500ing.
+router.get('/media', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const cfg = await igGraphApiHelpers.getIgConfig(req.user.companyId);
+    if (!cfg?.accessToken || !cfg?.igBusinessAccountId) {
+      return res.status(400).json({ error: 'Instagram not connected. Reconnect via Settings → Instagram.' });
+    }
+    const r = await axios.get(`${igGraphApiHelpers.resolveIgGraphUrl()}/${cfg.igBusinessAccountId}/media`, {
+      params: {
+        fields: 'id,caption,media_type,media_product_type,thumbnail_url,media_url,permalink,timestamp',
+        limit: 50,
+        access_token: cfg.accessToken,
+      },
+      timeout: 15000,
+    });
+    res.json({ media: r.data?.data ?? [], paging: r.data?.paging ?? null });
+  } catch (err) {
+    if (err.response?.data) {
+      logger.error('Instagram media list error', JSON.stringify(err.response.data));
+      return res.status(400).json({ error: err.response.data?.error?.message ?? 'Failed to fetch Instagram media' });
+    }
     next(err);
   }
 });
@@ -206,6 +236,48 @@ router.get('/webhook', (req, res) => {
   res.status(403).end();
 });
 
+// ── Comment-to-DM (v2) — process one entry.changes[] comment event ─────────────
+// Fires the comment_received trigger for a top-level comment on a targeted post/
+// Reel (see ADR-021). Guards, in order: shape → self-comment (our own comment
+// must never trigger an auto-reply to ourselves; the comment-side analog of the
+// DM is_echo guard) → top-level-only (skip parent_id replies-to-comments) →
+// per-comment idempotency claim (Meta retries webhooks but allows exactly ONE
+// private reply per comment, so the claim turns a retry into a no-op instead of
+// a second, failing send). The commenter is NOT resolved to an IGCONTACT# here:
+// the private-reply send owns that, keyed on the response's canonical IGSID, so
+// a commenter and their later DM reply resolve to one record (ADR-021 R8).
+async function processCommentEvent(companyId, igBusinessAccountId, value) {
+  const commentId      = value?.id;
+  const commenterIgsid = value?.from?.id;
+  const mediaId        = value?.media?.id;
+  const commentText    = value?.text;
+  if (!commentId || !commenterIgsid || typeof commentText !== 'string' || !commentText.trim()) return;
+
+  if (commenterIgsid === igBusinessAccountId) {
+    logger.info(`Instagram webhook: self-comment ${commentId} skipped (from.id is the business account)`);
+    return;
+  }
+  if (value.parent_id) return; // reply-to-comment thread — v2 targets top-level comments only
+
+  const claimed = await dedupPut(dynamodb, TABLE, {
+    PK: igCommentClaimPK(companyId, commentId),
+    SK: igCommentClaimSK(),
+    companyId, commentId, mediaId: mediaId ?? null,
+    createdAt: new Date().toISOString(),
+    TTL: Math.floor(Date.now() / 1000) + 30 * 86400, // 30-day claim, past Meta's 7-day private-reply deadline
+  });
+  if (!claimed) {
+    logger.info(`Instagram webhook: duplicate comment ${commentId} ignored (already claimed)`);
+    return;
+  }
+
+  const { runAutomations } = require('./automations');
+  await runAutomations(companyId, 'comment_received', {
+    contactId: commenterIgsid, igsid: commenterIgsid, commentId, mediaId,
+    commentText, igUsername: value.from?.username ?? null, tags: [],
+  });
+}
+
 // ── POST /api/instagram/webhook — inbound events ────────────────────────────────
 router.post('/webhook', async (req, res) => {
   // Instagram DMs are delivered by a SEPARATE Meta app (Instagram Login), so
@@ -220,72 +292,106 @@ router.post('/webhook', async (req, res) => {
   }
 
   try {
-    const entry = req.body?.entry?.[0];
-    const igBusinessAccountId = entry?.id;
+    // Meta batches webhook deliveries at the entry[] level and explicitly does
+    // NOT guarantee batching shape ("batching cannot be guaranteed... handle
+    // each Webhook individually" — Instagram Platform Webhooks docs), nor does
+    // it document that a single entry's comments (entry.changes[]) and
+    // DMs/story-events (entry.messaging[]) are mutually exclusive. So we process
+    // EVERY entry, and BOTH branches within each entry independently — never an
+    // if/else that returns after comments and silently drops the other half.
+    // Company is resolved per entry (a batch can, in principle, span accounts),
+    // from entry.id — same phone_number_id→companyId idiom as WhatsApp. Each
+    // entry is isolated in its own try so one bad entry never drops its
+    // siblings; the handler always ACKs 200 (Meta retries non-200s).
+    for (const entry of req.body?.entry ?? []) {
+      try {
+        const igBusinessAccountId = entry?.id;
+        const hasComments  = Array.isArray(entry?.changes);
+        const hasMessaging = Array.isArray(entry?.messaging);
+        if (!hasComments && !hasMessaging) continue;
 
-    // Comments arrive under entry.changes[] (WhatsApp-Cloud-API-shaped);
-    // DMs/story-events arrive under entry.messaging[] (Messenger-Platform-
-    // shaped) — confirmed by direct reference-implementation code read
-    // 2026-07-18. v1 stub: logged, not processed, so this branch doesn't
-    // need a redesign when comment-to-DM ships in v2.
-    if (Array.isArray(entry?.changes)) {
-      logger.info(`Instagram webhook: comments field received, deferred (v1 stub), igId=${igBusinessAccountId}`);
-      return res.sendStatus(200);
-    }
+        const companyId = igBusinessAccountId
+          ? await igGraphApiHelpers.getCompanyByIgBusinessId(igBusinessAccountId)
+          : null;
+        if (!companyId) {
+          logger.warn(`Instagram webhook: no company mapped for igId=${igBusinessAccountId}`);
+          continue;
+        }
 
-    if (!Array.isArray(entry?.messaging)) {
-      return res.sendStatus(200);
-    }
+        // Comments (entry.changes[]) — only the comments field is handled in v2;
+        // any other changes field is logged and skipped. Each comment is
+        // isolated so one failure never drops the rest of the batch.
+        if (hasComments) {
+          for (const change of entry.changes) {
+            if (change?.field !== 'comments') {
+              logger.info(`Instagram webhook: non-comments changes field '${change?.field}' received, skipped, igId=${igBusinessAccountId}`);
+              continue;
+            }
+            await processCommentEvent(companyId, igBusinessAccountId, change.value)
+              .catch((e) => logger.warn('Instagram comment processing error: ' + e.message));
+          }
+        }
 
-    const companyId = igBusinessAccountId
-      ? await igGraphApiHelpers.getCompanyByIgBusinessId(igBusinessAccountId)
-      : null;
-    if (!companyId) {
-      logger.warn(`Instagram webhook: no company mapped for igId=${igBusinessAccountId}`);
-      return res.sendStatus(200);
-    }
+        // DMs/story-events (entry.messaging[]) — processed independently of the
+        // comments branch above, so a delivery carrying both loses neither.
+        if (hasMessaging) {
+          for (const event of entry.messaging) {
+            const igsid = event.sender?.id;
+            if (!igsid) continue;
 
-    for (const event of entry.messaging) {
-      const igsid = event.sender?.id;
-      if (!igsid) continue;
+            // Echo of an outbound message (message_echo). Meta delivers one for
+            // EVERY DM the business sends — including the ones this automation
+            // itself sends via InstagramSendService. An echo's sender.id is the
+            // BUSINESS account, not a user, and it carries message.text, so
+            // without this guard it slips past the empty-text filter below, gets
+            // mis-keyed as an inbound from igsid=<our own business id>, and fires
+            // keyword_message — which then tries to DM our own account id and gets
+            // Meta error 100 / subcode 2534014 "The requested user cannot be
+            // found" (2026-07-19 production incident). The outbound message is
+            // already persisted by InstagramSendService.recordMessage, so an echo
+            // has nothing to do in v1.
+            if (event.message?.is_echo) continue;
 
-      // Echo of an outbound message (message_echo). Meta delivers one for
-      // EVERY DM the business sends — including the ones this automation itself
-      // sends via InstagramSendService. An echo's sender.id is the BUSINESS
-      // account, not a user, and it carries message.text, so without this guard
-      // it slips past the empty-text filter below, gets mis-keyed as an inbound
-      // from igsid=<our own business id>, and fires keyword_message — which then
-      // tries to DM our own account id and gets Meta error 100 / subcode
-      // 2534014 "The requested user cannot be found" (2026-07-19 production
-      // incident). The outbound message is already persisted by
-      // InstagramSendService.recordMessage, so an echo has nothing to do in v1.
-      if (event.message?.is_echo) continue;
+            // v1 stubs — logged, not processed, structurally ready for v2.
+            if (event.message?.reply_to?.story) {
+              logger.info(`Instagram webhook: story reply received, deferred (v1 stub), igsid=${igsid}`);
+              continue;
+            }
+            if (event.message?.attachments?.[0]?.type === 'story_mention') {
+              logger.info(`Instagram webhook: story mention received, deferred (v1 stub), igsid=${igsid}`);
+              continue;
+            }
 
-      // v1 stubs — logged, not processed, structurally ready for v2.
-      if (event.message?.reply_to?.story) {
-        logger.info(`Instagram webhook: story reply received, deferred (v1 stub), igsid=${igsid}`);
-        continue;
+            const messageText = event.message?.text;
+            if (typeof messageText !== 'string' || !messageText.trim()) continue; // postbacks/reactions — not v1 (echoes already skipped above)
+
+            // Meta's plain messaging event carries no username (confirmed against
+            // the official payload example) — igUsername stays null until a
+            // future profile-lookup enhancement; not built in v1.
+            const { contact } = await InstagramContactService.resolveOrCreate(companyId, igsid, null);
+            await InstagramContactService.recordMessage(companyId, igsid, {
+              direction: 'inbound', content: messageText, timestamp: event.timestamp ?? Date.now(), mid: event.message?.mid,
+            });
+
+            // A DM that resumes a paused Follow Gate (the user replied to DM #1)
+            // is CONSUMED by that gate: it sends DM #2 and must NOT also fire
+            // keyword_message (locked v2 decision — mirrors WhatsApp's
+            // cancelButtonReplyWaits stance). The inbound was still recorded above.
+            const resumed = await AutomationEngine.resumeOnInstagramReply(companyId, igsid)
+              .catch((e) => { logger.warn('Instagram follow-gate resume error: ' + e.message); return 0; });
+            if (resumed > 0) continue;
+
+            const { runAutomations } = require('./automations');
+            await runAutomations(companyId, 'keyword_message', {
+              contactId: igsid, igsid, igUsername: contact.igUsername, messageText, tags: contact.tags ?? [],
+            }).catch((e) => logger.warn('Instagram automation error: ' + e.message));
+          }
+        }
+      } catch (e) {
+        // One entry's failure never drops its siblings. Same log message the
+        // outer backstop uses, so observable behavior is identical to v1.
+        logger.error('Instagram webhook processing error', e);
       }
-      if (event.message?.attachments?.[0]?.type === 'story_mention') {
-        logger.info(`Instagram webhook: story mention received, deferred (v1 stub), igsid=${igsid}`);
-        continue;
-      }
-
-      const messageText = event.message?.text;
-      if (typeof messageText !== 'string' || !messageText.trim()) continue; // postbacks/reactions — not v1 (echoes already skipped above)
-
-      // Meta's plain messaging event carries no username (confirmed against
-      // the official payload example) — igUsername stays null until a
-      // future profile-lookup enhancement; not built in v1.
-      const { contact } = await InstagramContactService.resolveOrCreate(companyId, igsid, null);
-      await InstagramContactService.recordMessage(companyId, igsid, {
-        direction: 'inbound', content: messageText, timestamp: event.timestamp ?? Date.now(), mid: event.message?.mid,
-      });
-
-      const { runAutomations } = require('./automations');
-      await runAutomations(companyId, 'keyword_message', {
-        contactId: igsid, igsid, igUsername: contact.igUsername, messageText, tags: contact.tags ?? [],
-      }).catch((e) => logger.warn('Instagram automation error: ' + e.message));
     }
 
     res.sendStatus(200);

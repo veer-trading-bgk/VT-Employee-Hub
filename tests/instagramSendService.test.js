@@ -118,3 +118,63 @@ describe('InstagramSendService — multi-tenant scoping', () => {
     expect(optsB.headers.Authorization).toBe('Bearer tok_beta');
   });
 });
+
+// ── Private replies (comment-to-DM v2, ADR-021) ──────────────────────────────
+const RECIP = 'ig_17841400000000123'; // canonical IGSID Meta returns in recipient_id
+const COMMENT_ID = 'cmt_100';
+
+describe('InstagramSendService.sendPrivateReply — config gate', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('rejects before any Meta call when Instagram is not connected', async () => {
+    mockConfig(null);
+    await expect(InstagramSendService.sendPrivateReply(CID, COMMENT_ID, 'hi')).rejects.toMatchObject({ status: 400 });
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+
+  test('rejects a missing commentId or blank text before any Meta call', async () => {
+    mockConfig(VALID_CFG);
+    await expect(InstagramSendService.sendPrivateReply(CID, null, 'hi')).rejects.toMatchObject({ status: 400 });
+    await expect(InstagramSendService.sendPrivateReply(CID, COMMENT_ID, '   ')).rejects.toMatchObject({ status: 400 });
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+});
+
+describe('InstagramSendService.sendPrivateReply — payload contract', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Config for CONFIG#IG#, no existing IGCONTACT# (so resolveOrCreate creates one).
+    dynamodb.get.mockImplementation((params) => ({
+      promise: () => Promise.resolve(params.Key.PK.startsWith('CONFIG#IG#') ? { Item: VALID_CFG } : {}),
+    }));
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.update.mockReturnValue({ promise: () => Promise.resolve({}) });
+    axios.post.mockResolvedValue({ data: { message_id: 'mid_pr_1', recipient_id: RECIP } });
+  });
+
+  test('POSTs to /{igBusinessAccountId}/messages with recipient.comment_id (NOT id), message.text, Bearer auth', async () => {
+    await InstagramSendService.sendPrivateReply(CID, COMMENT_ID, 'Follow us and reply for the link!');
+
+    const [url, body, opts] = axios.post.mock.calls[0];
+    expect(url).toMatch(/\/igba_1\/messages$/);
+    expect(body).toEqual({ recipient: { comment_id: COMMENT_ID }, message: { text: 'Follow us and reply for the link!' } });
+    expect(opts.headers.Authorization).toBe('Bearer tok_ig');
+  });
+
+  test('captures the response recipient_id as the canonical IGSID and returns { mid, igsid }', async () => {
+    await expect(InstagramSendService.sendPrivateReply(CID, COMMENT_ID, 'hi')).resolves.toEqual({ mid: 'mid_pr_1', igsid: RECIP });
+  });
+
+  test('records the outbound DM against the response IGSID (recipient_id), NOT the comment_id', async () => {
+    await InstagramSendService.sendPrivateReply(CID, COMMENT_ID, 'hello');
+
+    const msgPut = dynamodb.put.mock.calls.map((c) => c[0].Item).find((it) => it && it.direction === 'outbound');
+    expect(msgPut.PK).toBe(`IGCONTACT#${CID}#${RECIP}`);
+    expect(msgPut).toMatchObject({ direction: 'outbound', content: 'hello', igMid: 'mid_pr_1' });
+  });
+
+  test('surfaces a Meta API error (e.g. window/one-reply violation) as a typed 400', async () => {
+    axios.post.mockRejectedValue({ response: { status: 400, data: { error: { message: 'Cannot send message', error_user_msg: 'This comment can no longer be replied to.' } } } });
+    await expect(InstagramSendService.sendPrivateReply(CID, COMMENT_ID, 'hi')).rejects.toMatchObject({ status: 400, message: 'This comment can no longer be replied to.' });
+  });
+});

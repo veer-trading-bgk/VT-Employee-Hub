@@ -109,6 +109,16 @@ function igIdConfigSK()                     { return 'CURRENT'; }
 function igContactPK(companyId, igsid) { return `IGCONTACT#${companyId}#${igsid}`; }
 function igContactSK()                  { return 'CURRENT'; }
 
+// Instagram comment idempotency claim (comment-to-DM v2 — see ADR-021). Meta
+// allows exactly ONE private reply per comment and retries webhooks, so a
+// per-comment claim marker (written via dedupPut before any private-reply send)
+// makes a webhook retry a no-op instead of a second, failing send. TTL'd 30
+// days — well past Meta's 7-day private-reply deadline, after which the comment
+// can no longer be replied to anyway.
+// PK = IGCOMMENT#${companyId}#${commentId}  SK = CLAIM
+function igCommentClaimPK(companyId, commentId) { return `IGCOMMENT#${companyId}#${commentId}`; }
+function igCommentClaimSK()                      { return 'CLAIM'; }
+
 // ─── EMPLOYEES TABLE ──────────────────────────────────────────────────────────
 
 // Employee entity
@@ -180,6 +190,8 @@ module.exports = {
   igIdConfigSK,
   igContactPK,
   igContactSK,
+  igCommentClaimPK,
+  igCommentClaimSK,
   // Employees
   empPK,
   empSK,

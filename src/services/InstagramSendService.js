@@ -81,4 +81,55 @@ async function sendText(companyId, igsid, text) {
   return { mid };
 }
 
-module.exports = { sendText };
+/**
+ * Send a private reply to an Instagram comment (Meta "Private Replies"; see
+ * ADR-021). Same POST /{ig}/messages endpoint as sendText, but the recipient is
+ * a { comment_id }, not an { id: igsid } — the ONLY way to DM a commenter who
+ * has never messaged the business (they have no open 24h messaging window).
+ *
+ * Meta constraints the caller must respect: exactly ONE private reply per
+ * comment, ever, and within 7 days of the comment. Enforcing "exactly one" is
+ * the caller's job (instagram.js writes a per-comment idempotency claim before
+ * calling this) — this method just performs the send.
+ *
+ * The response's `recipient_id` IS the commenter's canonical IGSID (same
+ * namespace as a later inbound DM's sender.id). We resolve/record the contact
+ * against THAT, not the comment webhook's from.id, and return it so the Follow
+ * Gate can key its reply-wait on it and DM #2 (a normal sendText) can reach the
+ * user once they reply.
+ */
+async function sendPrivateReply(companyId, commentId, text) {
+  if (!commentId) throw _err('sendPrivateReply: commentId is required', 400);
+  if (!text?.trim()) throw _err('sendPrivateReply: text is required', 400);
+
+  const cfg = await _requireConfig(companyId);
+
+  let res;
+  try {
+    res = await axios.post(
+      `${igGraphApiHelpers.resolveIgGraphUrl()}/${cfg.igBusinessAccountId}/messages`,
+      { recipient: { comment_id: commentId }, message: { text } },
+      { headers: { Authorization: `Bearer ${cfg.accessToken}`, 'Content-Type': 'application/json' }, timeout: TIMEOUT_MS },
+    );
+  } catch (err) {
+    throw _metaError(err, 'sendPrivateReply');
+  }
+
+  const mid   = res.data?.message_id ?? null;
+  const igsid = res.data?.recipient_id ?? null;
+
+  // Persist against the canonical IGSID from the response. resolveOrCreate first
+  // (unlike sendText, whose callers always have a pre-existing contact) because
+  // a commenter may have no IGCONTACT# yet — recordMessage's bare lastMessageAt
+  // update would otherwise leave a malformed, field-less contact record.
+  if (igsid) {
+    await InstagramContactService.resolveOrCreate(companyId, igsid, null);
+    await InstagramContactService.recordMessage(companyId, igsid, {
+      direction: 'outbound', content: text, timestamp: Date.now(), mid,
+    });
+  }
+
+  return { mid, igsid };
+}
+
+module.exports = { sendText, sendPrivateReply };

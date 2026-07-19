@@ -65,13 +65,34 @@ const VALID_KEYWORD_MATCH_MODES = new Set(['exact', 'contains', 'any_of']);
 const MAX_KEYWORDS = 20;
 const MAX_KEYWORD_LENGTH = 200;
 
-function validateKeywordTriggerConfig(config) {
-  if (!config || typeof config !== 'object') return 'trigger.config is required for a keyword_message trigger';
+// Neutral keyword-rules checker shared by keyword_message and comment_received
+// (comment-to-DM v2, ADR-021 R4 — a comment trigger matches on the same keyword
+// semantics PLUS a required mediaId). `label` only shapes the first error
+// message so each trigger type reports its own name.
+function validateKeywordRules(config, label) {
+  if (!config || typeof config !== 'object') return `trigger.config is required for a ${label} trigger`;
   if (!VALID_KEYWORD_MATCH_MODES.has(config.matchMode)) return 'trigger.config.matchMode must be exact, contains, or any_of';
   const keywords = Array.isArray(config.keywords) ? config.keywords.filter((k) => typeof k === 'string' && k.trim()) : [];
   if (keywords.length === 0) return 'trigger.config.keywords must contain at least one non-empty keyword';
   if (keywords.length > MAX_KEYWORDS) return `trigger.config.keywords cannot exceed ${MAX_KEYWORDS} entries`;
   if (keywords.some((k) => k.trim().length > MAX_KEYWORD_LENGTH)) return `each keyword must be ${MAX_KEYWORD_LENGTH} characters or fewer`;
+  return null;
+}
+
+function validateKeywordTriggerConfig(config) {
+  return validateKeywordRules(config, 'keyword_message');
+}
+
+// comment_received reuses keyword_message's config shape (keywords[]/matchMode/
+// caseSensitive) so the engine's keyword matcher is shared verbatim, and adds a
+// REQUIRED mediaId — specific post/Reel targeting only, the locked v2 scope
+// ("all posts" is v3). An empty mediaId is a broken workflow, not an "any post"
+// catch-all, so it fails validation the same way an empty keyword list does.
+function validateCommentTriggerConfig(config) {
+  const kwErr = validateKeywordRules(config, 'comment_received');
+  if (kwErr) return kwErr;
+  const mediaId = typeof config.mediaId === 'string' ? config.mediaId.trim() : '';
+  if (!mediaId) return 'trigger.config.mediaId is required for a comment_received trigger (specific post/Reel targeting)';
   return null;
 }
 
@@ -81,6 +102,10 @@ function sanitizeKeywordTriggerConfig(config) {
     keywords:      config.keywords.filter((k) => typeof k === 'string' && k.trim()).map((k) => k.trim()),
     caseSensitive: config.caseSensitive === true,
   };
+}
+
+function sanitizeCommentTriggerConfig(config) {
+  return { ...sanitizeKeywordTriggerConfig(config), mediaId: config.mediaId.trim() };
 }
 
 // ── inbound_webhook trigger — capability-URL token ──────────────────────────
@@ -102,6 +127,11 @@ function buildTriggerForStorage(trigger, existingTrigger) {
     const err = validateKeywordTriggerConfig(trigger.config);
     if (err) return { error: err };
     return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [], config: sanitizeKeywordTriggerConfig(trigger.config) } };
+  }
+  if (trigger.type === 'comment_received') {
+    const err = validateCommentTriggerConfig(trigger.config);
+    if (err) return { error: err };
+    return { trigger: { type: trigger.type, conditions: trigger.conditions ?? [], config: sanitizeCommentTriggerConfig(trigger.config) } };
   }
   if (trigger.type === 'inbound_webhook') {
     const canKeepExisting = existingTrigger?.type === 'inbound_webhook' && existingTrigger.webhookToken && !trigger.regenerateToken;

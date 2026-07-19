@@ -38,12 +38,15 @@ jest.mock('../src/services/InstagramContactService', () => ({
   recordMessage: jest.fn(),
 }));
 jest.mock('../src/routes/automations', () => ({ runAutomations: jest.fn() }));
+jest.mock('../src/services/AutomationEngine', () => ({ resumeOnInstagramReply: jest.fn() }));
 
 const logger = require('../src/config/logger');
+const dynamodb = require('../src/config/dynamodb');
 const { verifyMetaWebhookSignature } = require('../src/utils/verifyMetaWebhookSignature');
 const igGraphApiHelpers = require('../src/services/igGraphApiHelpers');
 const InstagramContactService = require('../src/services/InstagramContactService');
 const { runAutomations } = require('../src/routes/automations');
+const AutomationEngine = require('../src/services/AutomationEngine');
 const instagramRouter = require('../src/routes/instagram');
 
 function getRouteHandler(router, path, method) {
@@ -120,16 +123,17 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
     InstagramContactService.resolveOrCreate.mockResolvedValue({ contact: { igsid: IGSID, igUsername: null, tags: [] }, created: true });
     InstagramContactService.recordMessage.mockResolvedValue(undefined);
     runAutomations.mockResolvedValue(undefined);
+    AutomationEngine.resumeOnInstagramReply.mockResolvedValue(0); // default: no paused Follow Gate
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) }); // dedupPut claim succeeds
   });
 
-  test('entry.changes (comments) — v1 stub: logged, 200, NOT processed', async () => {
+  test('entry.changes (comments) with a malformed value (no id/from) is a safe no-op — 200, no claim, no fire', async () => {
     const res = mockRes();
     await postWebhook(req({ entry: [{ id: IG_BUSINESS_ID, changes: [{ field: 'comments', value: { text: 'nice!' } }] }] }), res);
 
     expect(res.sendStatus).toHaveBeenCalledWith(200);
-    expect(InstagramContactService.resolveOrCreate).not.toHaveBeenCalled();
+    expect(dynamodb.put).not.toHaveBeenCalled();
     expect(runAutomations).not.toHaveBeenCalled();
-    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('comments field received, deferred'));
   });
 
   test('entry.messaging with plain text: resolves the contact, records the message, and fires keyword_message with ctx.igsid populated', async () => {
@@ -206,6 +210,103 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
 
     expect(InstagramContactService.resolveOrCreate).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('no company mapped'));
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('an inbound DM that resumes a Follow Gate is CONSUMED — keyword_message does NOT also fire', async () => {
+    AutomationEngine.resumeOnInstagramReply.mockResolvedValue(1); // a paused gate matched this igsid
+    const res = mockRes();
+    await postWebhook(req({
+      entry: [{ id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, message: { mid: 'm_reply', text: 'yes I followed' } }] }],
+    }), res);
+
+    expect(AutomationEngine.resumeOnInstagramReply).toHaveBeenCalledWith(CID, IGSID);
+    expect(InstagramContactService.recordMessage).toHaveBeenCalled(); // the inbound is still recorded
+    expect(runAutomations).not.toHaveBeenCalled();                    // but keyword_message is suppressed
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  // ── entry.changes[] comment events (comment-to-DM v2, ADR-021) ──
+  test('a top-level comment on a post claims the comment and fires comment_received with commentId/mediaId/text', async () => {
+    const res = mockRes();
+    await postWebhook(req({ entry: [{ id: IG_BUSINESS_ID, changes: [{ field: 'comments', value: {
+      id: 'cmt_1', text: 'send me the link', from: { id: 'ig_commenter_1', username: 'jane' }, media: { id: 'media_99' },
+    } }] }] }), res);
+
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({ PK: `IGCOMMENT#${CID}#cmt_1`, SK: 'CLAIM' }),
+    }));
+    expect(runAutomations).toHaveBeenCalledWith(CID, 'comment_received', expect.objectContaining({
+      igsid: 'ig_commenter_1', commentId: 'cmt_1', mediaId: 'media_99', commentText: 'send me the link',
+    }));
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('a self-comment (from.id === the business account id) is skipped — no claim, no fire (comment-side echo guard)', async () => {
+    const res = mockRes();
+    await postWebhook(req({ entry: [{ id: IG_BUSINESS_ID, changes: [{ field: 'comments', value: {
+      id: 'cmt_self', text: 'thanks everyone', from: { id: IG_BUSINESS_ID }, media: { id: 'media_99' },
+    } }] }] }), res);
+
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(runAutomations).not.toHaveBeenCalled();
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('a reply-to-comment (parent_id present) is skipped — v2 targets top-level comments only', async () => {
+    const res = mockRes();
+    await postWebhook(req({ entry: [{ id: IG_BUSINESS_ID, changes: [{ field: 'comments', value: {
+      id: 'cmt_reply', text: 'me too', from: { id: 'ig_commenter_2' }, media: { id: 'media_99' }, parent_id: 'cmt_1',
+    } }] }] }), res);
+
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(runAutomations).not.toHaveBeenCalled();
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('a duplicate comment (claim already exists) does NOT fire the automation again (idempotency)', async () => {
+    dynamodb.put.mockReturnValue({ promise: () => Promise.reject({ code: 'ConditionalCheckFailedException' }) });
+    const res = mockRes();
+    await postWebhook(req({ entry: [{ id: IG_BUSINESS_ID, changes: [{ field: 'comments', value: {
+      id: 'cmt_dup', text: 'send link', from: { id: 'ig_commenter_3' }, media: { id: 'media_99' },
+    } }] }] }), res);
+
+    expect(runAutomations).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('duplicate comment'));
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('a non-comments changes field is logged and skipped, still 200', async () => {
+    const res = mockRes();
+    await postWebhook(req({ entry: [{ id: IG_BUSINESS_ID, changes: [{ field: 'mentions', value: { media_id: 'x' } }] }] }), res);
+
+    expect(runAutomations).not.toHaveBeenCalled();
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('an entry carrying BOTH changes (comment) and messaging (DM) processes both halves — neither is dropped', async () => {
+    const res = mockRes();
+    await postWebhook(req({ entry: [{
+      id: IG_BUSINESS_ID,
+      changes:   [{ field: 'comments', value: { id: 'cmt_both', text: 'link please', from: { id: 'ig_commenter_x' }, media: { id: 'media_99' } } }],
+      messaging: [{ sender: { id: IGSID }, message: { mid: 'm_both', text: 'hello there' } }],
+    }] }), res);
+
+    expect(runAutomations).toHaveBeenCalledWith(CID, 'comment_received', expect.objectContaining({ commentId: 'cmt_both' }));
+    expect(runAutomations).toHaveBeenCalledWith(CID, 'keyword_message', expect.objectContaining({ igsid: IGSID }));
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('multiple batched entries are ALL processed (Meta batches at the entry[] level)', async () => {
+    const res = mockRes();
+    await postWebhook(req({ entry: [
+      { id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, message: { mid: 'm1', text: 'first' } }] },
+      { id: IG_BUSINESS_ID, messaging: [{ sender: { id: 'ig_other' }, message: { mid: 'm2', text: 'second' } }] },
+    ] }), res);
+
+    expect(runAutomations).toHaveBeenCalledWith(CID, 'keyword_message', expect.objectContaining({ igsid: IGSID }));
+    expect(runAutomations).toHaveBeenCalledWith(CID, 'keyword_message', expect.objectContaining({ igsid: 'ig_other' }));
     expect(res.sendStatus).toHaveBeenCalledWith(200);
   });
 

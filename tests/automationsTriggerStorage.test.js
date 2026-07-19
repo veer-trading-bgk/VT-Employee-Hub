@@ -189,3 +189,51 @@ describe('POST / — flow_completed trigger config storage', () => {
     }
   });
 });
+
+describe('POST / — comment_received trigger config storage (comment-to-DM v2, ADR-021)', () => {
+  const handler = getRouteHandler(automationsRouter, '/', 'post');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+  });
+
+  function post(config) {
+    const res = mockRes();
+    return handler({
+      user: USER,
+      body: {
+        name: 'Comment → DM',
+        trigger: { type: 'comment_received', conditions: [], config },
+        steps: [{ id: 's1', type: 'end', config: {} }],
+      },
+    }, res, jest.fn()).then(() => res);
+  }
+
+  test('a valid config persists sanitized keywords + trimmed mediaId', async () => {
+    const res = await post({ matchMode: 'contains', keywords: [' link ', '', 'guide'], mediaId: '  17900000000000000  ', caseSensitive: false });
+
+    expect(res.status).toHaveBeenCalledWith(201);
+    const item = dynamodb.put.mock.calls[0][0].Item;
+    expect(item.trigger.type).toBe('comment_received');
+    expect(item.trigger.config).toEqual({ matchMode: 'contains', keywords: ['link', 'guide'], caseSensitive: false, mediaId: '17900000000000000' });
+  });
+
+  test('rejects with 400 when mediaId is missing — specific post/Reel targeting is required (not "all posts")', async () => {
+    const res = await post({ matchMode: 'contains', keywords: ['link'] });
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining('mediaId is required') }));
+  });
+
+  test('rejects with 400 when keywords are empty — the shared keyword rule still applies', async () => {
+    const res = await post({ matchMode: 'contains', keywords: [], mediaId: 'media_1' });
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining('keywords must contain at least one') }));
+  });
+
+  test('rejects with 400 on an invalid matchMode', async () => {
+    const res = await post({ matchMode: 'regex', keywords: ['link'], mediaId: 'media_1' });
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining('matchMode must be') }));
+  });
+});
