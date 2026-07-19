@@ -1075,6 +1075,10 @@ class AutomationEngine {
         const InstagramSendService = require('./InstagramSendService');
         const r = await InstagramSendService.sendPrivateReply(companyId, ctx.commentId, messageText);
         if (r.igsid) ctx.igsid = r.igsid; // authoritative IGSID for the follow-gate wait + DM #2
+        // Flip the stored comment 'unreplied' → 'replied' (ADR-022 D1.4), keyed by
+        // the comment coords carried in the comment_received context. Awaited (not
+        // fire-and-forget — avoids the Era-20 un-awaited-work gap) but never throws.
+        await require('./InstagramCommentService').markCommentReplied(companyId, ctx.mediaId, ctx.commentId, ctx.commentTs);
         return { mid: r.mid, igsid: r.igsid };
       }
 

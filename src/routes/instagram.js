@@ -236,33 +236,35 @@ router.get('/webhook', (req, res) => {
   res.status(403).end();
 });
 
-// ── Comment-to-DM (v2) — process one entry.changes[] comment event ─────────────
+// ── Comment-to-DM — process one entry.changes[] comment event ──────────────────
 // Fires the comment_received trigger for a top-level comment on a targeted post/
-// Reel (see ADR-021). Guards, in order: shape → self-comment (our own comment
-// must never trigger an auto-reply to ourselves; the comment-side analog of the
-// DM is_echo guard) → top-level-only (skip parent_id replies-to-comments) →
-// per-comment idempotency claim (Meta retries webhooks but allows exactly ONE
-// private reply per comment, so the claim turns a retry into a no-op instead of
-// a second, failing send). The commenter is NOT resolved to an IGCONTACT# here:
-// the private-reply send owns that, keyed on the response's canonical IGSID, so
-// a commenter and their later DM reply resolve to one record (ADR-021 R8).
+// Reel (see ADR-021), and — since ADR-022 — persists the comment as a readable,
+// post-grouped record for the Instagram page's Comments tab. Guards, in order:
+// shape (id/from/mediaId/text — mediaId is now required: a comment with no post
+// can neither be stored post-grouped nor match a mediaId-scoped trigger) →
+// self-comment (our own comment must never trigger an auto-reply to ourselves;
+// the comment-side analog of the DM is_echo guard) → top-level-only (skip
+// parent_id replies-to-comments) → per-comment idempotency claim (Meta retries
+// webhooks but allows exactly ONE private reply per comment). The commenter is
+// NOT resolved to an IGCONTACT# here — the private-reply send owns that, keyed on
+// the response's canonical IGSID (ADR-021 R8).
 async function processCommentEvent(companyId, igBusinessAccountId, value) {
   const commentId      = value?.id;
   const commenterIgsid = value?.from?.id;
   const mediaId        = value?.media?.id;
   const commentText    = value?.text;
-  if (!commentId || !commenterIgsid || typeof commentText !== 'string' || !commentText.trim()) return;
+  if (!commentId || !commenterIgsid || !mediaId || typeof commentText !== 'string' || !commentText.trim()) return;
 
   if (commenterIgsid === igBusinessAccountId) {
     logger.info(`Instagram webhook: self-comment ${commentId} skipped (from.id is the business account)`);
     return;
   }
-  if (value.parent_id) return; // reply-to-comment thread — v2 targets top-level comments only
+  if (value.parent_id) return; // reply-to-comment thread — targets top-level comments only
 
   const claimed = await dedupPut(dynamodb, TABLE, {
     PK: igCommentClaimPK(companyId, commentId),
     SK: igCommentClaimSK(),
-    companyId, commentId, mediaId: mediaId ?? null,
+    companyId, commentId, mediaId,
     createdAt: new Date().toISOString(),
     TTL: Math.floor(Date.now() / 1000) + 30 * 86400, // 30-day claim, past Meta's 7-day private-reply deadline
   });
@@ -271,9 +273,23 @@ async function processCommentEvent(companyId, igBusinessAccountId, value) {
     return;
   }
 
+  // Persist the comment as a readable, post-grouped record (ADR-022 D1). Gated by
+  // the claim above, so once-per-comment. Best-effort: a store failure must never
+  // block automation dispatch (the automation still fired). commentTs is the
+  // stored sort timestamp, threaded into the automation context so the
+  // private-reply node can later flip this same record to 'replied'.
+  const commentTs = Date.now();
+  const InstagramCommentService = require('../services/InstagramCommentService');
+  await InstagramCommentService.recordComment(companyId, {
+    mediaId, commentId, commenterIgsid,
+    fromUsername: value.from?.username ?? null,
+    commentText, timestamp: commentTs,
+    mediaProductType: value.media?.media_product_type ?? null,
+  }).catch((e) => logger.warn('Instagram comment store failed: ' + e.message));
+
   const { runAutomations } = require('./automations');
   await runAutomations(companyId, 'comment_received', {
-    contactId: commenterIgsid, igsid: commenterIgsid, commentId, mediaId,
+    contactId: commenterIgsid, igsid: commenterIgsid, commentId, mediaId, commentTs,
     commentText, igUsername: value.from?.username ?? null, tags: [],
   });
 }

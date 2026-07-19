@@ -30,6 +30,9 @@ jest.mock('../src/services/CapiService', () => ({
 jest.mock('../src/services/InstagramSendService', () => ({
   sendText: jest.fn(), sendPrivateReply: jest.fn(),
 }));
+jest.mock('../src/services/InstagramCommentService', () => ({
+  recordComment: jest.fn(), markCommentReplied: jest.fn(),
+}));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
 }));
@@ -40,6 +43,7 @@ const WASendSvc = require('../src/services/WhatsAppSendService');
 const DelayedResponseService = require('../src/services/DelayedResponseService');
 const ConversationalAgentService = require('../src/services/ConversationalAgentService');
 const InstagramSendService = require('../src/services/InstagramSendService');
+const InstagramCommentService = require('../src/services/InstagramCommentService');
 const logger = require('../src/config/logger');
 const engine = require('../src/services/AutomationEngine');
 const { guardedUpdateMock } = require('./helpers/dynamoReservedWords');
@@ -2397,6 +2401,7 @@ describe('AutomationEngine — Instagram comment-to-DM + Follow Gate (ADR-021)',
     dynamodb.put.mockReturnValue(resolved({}));
     dynamodb.update.mockReturnValue(resolved({}));
     dynamodb.delete.mockReturnValue(resolved({}));
+    InstagramCommentService.markCommentReplied.mockResolvedValue(undefined);
   });
 
   // ── _matchesCommentConfig (the fireTrigger filter) ──
@@ -2459,6 +2464,13 @@ describe('AutomationEngine — Instagram comment-to-DM + Follow Gate (ADR-021)',
       const variants = ['A', 'B', 'C'];
       await engine._runAction(CID, { type: 'send_instagram_private_reply', config: { replyVariants: variants } }, { commentId: COMMENT_ID });
       expect(variants).toContain(InstagramSendService.sendPrivateReply.mock.calls[0][2]);
+    });
+
+    test('flips the stored comment to replied (ADR-022 D1.4) using the comment coords from context', async () => {
+      InstagramSendService.sendPrivateReply.mockResolvedValue({ mid: 'mid_pr', igsid: RECIP });
+      const ctx = { commentId: COMMENT_ID, mediaId: MEDIA_ID, commentTs: 1700000000000 };
+      await engine._runAction(CID, { type: 'send_instagram_private_reply', config: { messageText: 'Follow us!' } }, ctx);
+      expect(InstagramCommentService.markCommentReplied).toHaveBeenCalledWith(CID, MEDIA_ID, COMMENT_ID, 1700000000000);
     });
   });
 

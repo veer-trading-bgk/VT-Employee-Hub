@@ -119,6 +119,19 @@ function igContactSK()                  { return 'CURRENT'; }
 function igCommentClaimPK(companyId, commentId) { return `IGCOMMENT#${companyId}#${commentId}`; }
 function igCommentClaimSK()                      { return 'CLAIM'; }
 
+// Instagram post-grouped comment store (Instagram page v3 — see ADR-022). A
+// SEPARATE entity from IGCONTACT#: comments are grouped by the post/Reel they
+// were made on (mediaId), so the Comments tab can Query all comments for a post
+// directly (post-grouped view), which a contact-grouped store could not serve.
+// The IGCOMMENT#{commentId}/CLAIM marker above stays as the dedup gate; this is
+// the readable store, written once the claim is held. Comments are NOT written
+// into the IGCONTACT#/MSG# DM thread — the two are separate stores/tabs.
+//   PK = IGPOST#${companyId}#${mediaId}
+//   SK = META (post summary + best-effort counts) | CMT#${timestamp}#${commentId}
+function igPostPK(companyId, mediaId)          { return `IGPOST#${companyId}#${mediaId}`; }
+function igPostMetaSK()                         { return 'META'; }
+function igPostCommentSK(timestamp, commentId) { return `CMT#${timestamp}#${commentId}`; }
+
 // ─── EMPLOYEES TABLE ──────────────────────────────────────────────────────────
 
 // Employee entity
@@ -192,6 +205,9 @@ module.exports = {
   igContactSK,
   igCommentClaimPK,
   igCommentClaimSK,
+  igPostPK,
+  igPostMetaSK,
+  igPostCommentSK,
   // Employees
   empPK,
   empSK,

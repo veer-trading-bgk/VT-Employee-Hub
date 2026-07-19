@@ -39,6 +39,7 @@ jest.mock('../src/services/InstagramContactService', () => ({
 }));
 jest.mock('../src/routes/automations', () => ({ runAutomations: jest.fn() }));
 jest.mock('../src/services/AutomationEngine', () => ({ resumeOnInstagramReply: jest.fn() }));
+jest.mock('../src/services/InstagramCommentService', () => ({ recordComment: jest.fn() }));
 
 const logger = require('../src/config/logger');
 const dynamodb = require('../src/config/dynamodb');
@@ -47,6 +48,7 @@ const igGraphApiHelpers = require('../src/services/igGraphApiHelpers');
 const InstagramContactService = require('../src/services/InstagramContactService');
 const { runAutomations } = require('../src/routes/automations');
 const AutomationEngine = require('../src/services/AutomationEngine');
+const InstagramCommentService = require('../src/services/InstagramCommentService');
 const instagramRouter = require('../src/routes/instagram');
 
 function getRouteHandler(router, path, method) {
@@ -124,6 +126,7 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
     InstagramContactService.recordMessage.mockResolvedValue(undefined);
     runAutomations.mockResolvedValue(undefined);
     AutomationEngine.resumeOnInstagramReply.mockResolvedValue(0); // default: no paused Follow Gate
+    InstagramCommentService.recordComment.mockResolvedValue(undefined); // comment store (ADR-022)
     dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) }); // dedupPut claim succeeds
   });
 
@@ -227,18 +230,35 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
   });
 
   // ── entry.changes[] comment events (comment-to-DM v2, ADR-021) ──
-  test('a top-level comment on a post claims the comment and fires comment_received with commentId/mediaId/text', async () => {
+  test('a top-level comment on a post claims the comment, STORES it (ADR-022), and fires comment_received with commentId/mediaId/text/commentTs', async () => {
     const res = mockRes();
     await postWebhook(req({ entry: [{ id: IG_BUSINESS_ID, changes: [{ field: 'comments', value: {
-      id: 'cmt_1', text: 'send me the link', from: { id: 'ig_commenter_1', username: 'jane' }, media: { id: 'media_99' },
+      id: 'cmt_1', text: 'send me the link', from: { id: 'ig_commenter_1', username: 'jane' }, media: { id: 'media_99', media_product_type: 'FEED' },
     } }] }] }), res);
 
     expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
       Item: expect.objectContaining({ PK: `IGCOMMENT#${CID}#cmt_1`, SK: 'CLAIM' }),
     }));
+    expect(InstagramCommentService.recordComment).toHaveBeenCalledWith(CID, expect.objectContaining({
+      mediaId: 'media_99', commentId: 'cmt_1', commenterIgsid: 'ig_commenter_1', fromUsername: 'jane',
+      commentText: 'send me the link', mediaProductType: 'FEED',
+    }));
     expect(runAutomations).toHaveBeenCalledWith(CID, 'comment_received', expect.objectContaining({
       igsid: 'ig_commenter_1', commentId: 'cmt_1', mediaId: 'media_99', commentText: 'send me the link',
+      commentTs: expect.any(Number),
     }));
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('a comment-store failure is best-effort — the automation still fires and it still 200s', async () => {
+    InstagramCommentService.recordComment.mockRejectedValue(new Error('ddb down'));
+    const res = mockRes();
+    await postWebhook(req({ entry: [{ id: IG_BUSINESS_ID, changes: [{ field: 'comments', value: {
+      id: 'cmt_be', text: 'link please', from: { id: 'ig_c2' }, media: { id: 'media_99' },
+    } }] }] }), res);
+
+    expect(runAutomations).toHaveBeenCalledWith(CID, 'comment_received', expect.objectContaining({ commentId: 'cmt_be' }));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('comment store failed'));
     expect(res.sendStatus).toHaveBeenCalledWith(200);
   });
 
@@ -249,6 +269,7 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
     } }] }] }), res);
 
     expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(InstagramCommentService.recordComment).not.toHaveBeenCalled();
     expect(runAutomations).not.toHaveBeenCalled();
     expect(res.sendStatus).toHaveBeenCalledWith(200);
   });
@@ -260,6 +281,7 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
     } }] }] }), res);
 
     expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(InstagramCommentService.recordComment).not.toHaveBeenCalled();
     expect(runAutomations).not.toHaveBeenCalled();
     expect(res.sendStatus).toHaveBeenCalledWith(200);
   });
@@ -271,6 +293,7 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
       id: 'cmt_dup', text: 'send link', from: { id: 'ig_commenter_3' }, media: { id: 'media_99' },
     } }] }] }), res);
 
+    expect(InstagramCommentService.recordComment).not.toHaveBeenCalled(); // claim lost → no store
     expect(runAutomations).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('duplicate comment'));
     expect(res.sendStatus).toHaveBeenCalledWith(200);
