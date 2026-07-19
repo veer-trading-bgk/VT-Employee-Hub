@@ -1,20 +1,22 @@
 'use client';
 
-// Instagram Settings tab — a minimal, self-contained connect/disconnect panel
-// (GET /config, GET /auth/init popup, DELETE /connection), so PR3's page is
-// fully self-contained. The DEFINITIVE extraction of the existing
-// settings-page InstagramSection into a single shared component (used by both
-// this page and the main Settings page) + removal of the Settings nav entry is
-// PR4's job — see ADR-022's phased plan. This intentionally does NOT touch
-// settings/page.tsx.
+// Instagram connect/disconnect panel (GET /config, GET /auth/init popup,
+// DELETE /connection). PR4: the single shared component the settings-page
+// InstagramSection was extracted into (ADR-022's "definitive extraction").
+// The main Settings page no longer renders Instagram at all — this page's own
+// Settings tab is now the ONE place it's configured, per the original design
+// ("consolidates... replacing the standalone Settings → Instagram panel, not
+// duplicating it"). Kept as its own component (not inlined into the page) so
+// it stays independently reusable if a future surface ever needs it again.
 
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
-import { Camera, ExternalLink } from 'lucide-react';
+import { ExternalLink } from 'lucide-react';
 import { apiFetch, apiErrorMessage } from '@/lib/api';
 import { toast } from 'sonner';
 import { Badge, Button, Card, Skeleton } from '@/components/v3/ui';
+import { InstagramIcon } from '@/components/icons/BrandIcons';
 
 interface IgConfig {
   connected: boolean;
@@ -24,7 +26,7 @@ interface IgConfig {
   tokenExpiresAt: string | null;
 }
 
-export function InstagramSettingsTab() {
+export function InstagramSettingsPanel() {
   const qc = useQueryClient();
   const [connecting, setConnecting] = useState(false);
 
@@ -75,12 +77,12 @@ export function InstagramSettingsTab() {
   return (
     <div className="mx-auto max-w-2xl p-6">
       <h2 className="mb-1 text-lg font-semibold text-neutral-800 dark:text-neutral-100">Instagram connection</h2>
-      <p className="mb-4 text-sm text-neutral-500">Connect the Instagram account whose DMs and comments this page manages.</p>
+      <p className="mb-4 text-sm text-neutral-500">Connect the Instagram professional account whose DMs and comments this workspace manages.</p>
 
       <Card noPadding>
         <div className="flex items-center gap-4 p-5">
           <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary-50 text-primary-600 dark:bg-primary-900/30">
-            <Camera className="h-5 w-5" />
+            <InstagramIcon className="h-5 w-5" />
           </div>
           <div className="min-w-0 flex-1">
             {isLoading ? (

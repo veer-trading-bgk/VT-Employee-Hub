@@ -143,3 +143,6 @@ attribute only on `CURRENT` / `META` items (a dedicated value, not raw
   the ship-date-forward sparse-attribute + migration pattern for the eventual GSI
 - `src/routes/contacts.js` — the admin-only `INBOX#` Scan this mirrors
 - `src/core/entityKeys.js` — `igPostPK` / `igPostMetaSK` / `igPostCommentSK`
+- `docs/bible/19_DECISION_LOG.md` Era 56 — the implementation record for all
+  4 PRs this ADR governs (data model, reads + real-time, the frontend page,
+  and the nav/Settings consolidation)

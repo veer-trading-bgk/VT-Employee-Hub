@@ -22,17 +22,15 @@ function safeFormat(v: string | number | null, fmt: string): string {
 }
 
 // ── Contact list (left) ──────────────────────────────────────────────────────
-// The list refetches live via the global EVENT_QUERY_MAP (instagram_message →
-// ['instagram-contacts']), so no local subscription is needed here.
-function ContactList({ activeIgsid, onSelect }: { activeIgsid: string | null; onSelect: (c: IgContact) => void }) {
-  const { data, isLoading, isError, refetch } = useQuery<IgContactsResponse>({
-    queryKey: ['instagram-contacts'],
-    queryFn: () => apiFetch<IgContactsResponse>('/api/instagram/contacts'),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
-  });
-  const contacts = data?.contacts ?? [];
-
+// The query lives in the parent (InstagramMessagesTab), not here — so the
+// currently-open Thread can derive its header from the SAME live data instead
+// of a stale snapshot from the moment of selection (see the comment on
+// activeContact below). The list still refetches live via the global
+// EVENT_QUERY_MAP (instagram_message → ['instagram-contacts']).
+function ContactList({ contacts, isLoading, isError, onRetry, activeIgsid, onSelect }: {
+  contacts: IgContact[]; isLoading: boolean; isError: boolean; onRetry: () => void;
+  activeIgsid: string | null; onSelect: (igsid: string) => void;
+}) {
   return (
     <div className="flex h-full w-[300px] shrink-0 flex-col border-r border-neutral-200 dark:border-neutral-800">
       <div className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
@@ -42,7 +40,7 @@ function ContactList({ activeIgsid, onSelect }: { activeIgsid: string | null; on
         {isLoading ? (
           <div className="space-y-1 p-2">{Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} />)}</div>
         ) : isError ? (
-          <ErrorState title="Couldn't load contacts" onRetry={() => refetch()} />
+          <ErrorState title="Couldn't load contacts" onRetry={onRetry} />
         ) : contacts.length === 0 ? (
           <EmptyState icon={MessageSquare} title="No conversations yet" description="Instagram DMs will appear here once people message you." />
         ) : (
@@ -52,7 +50,7 @@ function ContactList({ activeIgsid, onSelect }: { activeIgsid: string | null; on
             return (
               <button
                 key={c.igsid}
-                onClick={() => onSelect(c)}
+                onClick={() => onSelect(c.igsid)}
                 className={cn(
                   'flex w-full items-center gap-3 px-3 py-2.5 text-left transition',
                   active ? 'bg-primary-50 dark:bg-primary-900/20' : 'hover:bg-neutral-50 dark:hover:bg-neutral-900',
@@ -161,11 +159,32 @@ function Thread({ contact }: { contact: IgContact | null }) {
 }
 
 export function InstagramMessagesTab() {
-  const [active, setActive] = useState<IgContact | null>(null);
+  const [activeIgsid, setActiveIgsid] = useState<string | null>(null);
+
+  const { data, isLoading, isError, refetch } = useQuery<IgContactsResponse>({
+    queryKey: ['instagram-contacts'],
+    queryFn: () => apiFetch<IgContactsResponse>('/api/instagram/contacts'),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+  const contacts = data?.contacts ?? [];
+
+  // Derived fresh from the list query every render — NOT a snapshot captured
+  // at selection time. Without this, a Follow Gate resolving (or any other
+  // field changing) while this contact's thread is open would show a stale
+  // badge in the Thread header until the contact was re-selected, even though
+  // the list itself refetches correctly on every instagram_message WS event
+  // (global EVENT_QUERY_MAP). Keying by igsid instead of storing the whole
+  // object is what makes this refresh automatic.
+  const activeContact = contacts.find((c) => c.igsid === activeIgsid) ?? null;
+
   return (
     <div className="flex h-full">
-      <ContactList activeIgsid={active?.igsid ?? null} onSelect={setActive} />
-      <Thread contact={active} />
+      <ContactList
+        contacts={contacts} isLoading={isLoading} isError={isError} onRetry={() => refetch()}
+        activeIgsid={activeIgsid} onSelect={setActiveIgsid}
+      />
+      <Thread contact={activeContact} />
     </div>
   );
 }

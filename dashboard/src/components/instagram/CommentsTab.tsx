@@ -22,16 +22,14 @@ function safeFormat(v: string | number | null, fmt: string): string {
   try { return format(new Date(v), fmt); } catch { return ''; }
 }
 
-// ── Posts list (left) — refetches live via the global map (instagram_comment). ─
-function PostsList({ activeMediaId, onSelect }: { activeMediaId: string | null; onSelect: (p: IgPost) => void }) {
-  const { data, isLoading, isError, refetch } = useQuery<IgPostsResponse>({
-    queryKey: ['instagram-posts'],
-    queryFn: () => apiFetch<IgPostsResponse>('/api/instagram/posts'),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
-  });
-  const posts = data?.posts ?? [];
-
+// ── Posts list (left) — query lives in the parent (InstagramCommentsTab), not
+// here, so the open CommentsPanel's header derives from the SAME live data
+// instead of a stale snapshot (see activePost below). Still refetches live via
+// the global map (instagram_comment → ['instagram-posts']).
+function PostsList({ posts, isLoading, isError, onRetry, activeMediaId, onSelect }: {
+  posts: IgPost[]; isLoading: boolean; isError: boolean; onRetry: () => void;
+  activeMediaId: string | null; onSelect: (mediaId: string) => void;
+}) {
   return (
     <div className="flex h-full w-[300px] shrink-0 flex-col border-r border-neutral-200 dark:border-neutral-800">
       <div className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
@@ -41,7 +39,7 @@ function PostsList({ activeMediaId, onSelect }: { activeMediaId: string | null; 
         {isLoading ? (
           <div className="space-y-1 p-2">{Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} />)}</div>
         ) : isError ? (
-          <ErrorState title="Couldn't load posts" onRetry={() => refetch()} />
+          <ErrorState title="Couldn't load posts" onRetry={onRetry} />
         ) : posts.length === 0 ? (
           <EmptyState icon={ImageIcon} title="No commented posts yet" description="Posts that receive comments appear here." />
         ) : (
@@ -50,7 +48,7 @@ function PostsList({ activeMediaId, onSelect }: { activeMediaId: string | null; 
             return (
               <button
                 key={p.mediaId}
-                onClick={() => onSelect(p)}
+                onClick={() => onSelect(p.mediaId)}
                 className={cn(
                   'flex w-full items-center gap-3 px-3 py-2.5 text-left transition',
                   active ? 'bg-primary-50 dark:bg-primary-900/20' : 'hover:bg-neutral-50 dark:hover:bg-neutral-900',
@@ -190,11 +188,29 @@ function CommentsPanel({ post }: { post: IgPost | null }) {
 }
 
 export function InstagramCommentsTab() {
-  const [active, setActive] = useState<IgPost | null>(null);
+  const [activeMediaId, setActiveMediaId] = useState<string | null>(null);
+
+  const { data, isLoading, isError, refetch } = useQuery<IgPostsResponse>({
+    queryKey: ['instagram-posts'],
+    queryFn: () => apiFetch<IgPostsResponse>('/api/instagram/posts'),
+    staleTime: 15_000,
+    refetchInterval: 30_000,
+  });
+  const posts = data?.posts ?? [];
+
+  // Derived fresh from the list query every render, not a selection-time
+  // snapshot — so the open CommentsPanel's unreplied/total counts update the
+  // instant a manual reply (or the instagram_comment WS event) invalidates
+  // ['instagram-posts'], without needing the post to be re-selected.
+  const activePost = posts.find((p) => p.mediaId === activeMediaId) ?? null;
+
   return (
     <div className="flex h-full">
-      <PostsList activeMediaId={active?.mediaId ?? null} onSelect={setActive} />
-      <CommentsPanel post={active} />
+      <PostsList
+        posts={posts} isLoading={isLoading} isError={isError} onRetry={() => refetch()}
+        activeMediaId={activeMediaId} onSelect={setActiveMediaId}
+      />
+      <CommentsPanel post={activePost} />
     </div>
   );
 }

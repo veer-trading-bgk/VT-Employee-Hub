@@ -6,7 +6,7 @@ import { cn } from '@/lib/cn';
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 import { InstagramMessagesTab } from '@/components/instagram/MessagesTab';
 import { InstagramCommentsTab } from '@/components/instagram/CommentsTab';
-import { InstagramSettingsTab } from '@/components/instagram/SettingsTab';
+import { InstagramSettingsPanel } from '@/components/instagram/InstagramSettingsPanel';
 
 type IgTab = 'messages' | 'comments' | 'settings';
 
@@ -45,7 +45,7 @@ function InstagramPageInner() {
       <div className="min-h-0 flex-1">
         {tab === 'messages' && <InstagramMessagesTab />}
         {tab === 'comments' && <InstagramCommentsTab />}
-        {tab === 'settings' && <InstagramSettingsTab />}
+        {tab === 'settings' && <InstagramSettingsPanel />}
       </div>
     </div>
   );

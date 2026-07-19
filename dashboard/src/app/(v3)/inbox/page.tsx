@@ -38,6 +38,7 @@ import { useAddNote, useEditNote, useDeleteNote, canModifyNote, type InternalNot
 import { useContactMutations } from '@/hooks/useContactMutations';
 import { EditableName } from '@/components/shared/EditableName';
 import { formatRelativeTime } from '@/utils/formatters';
+import { WhatsAppIcon, InstagramIcon } from '@/components/icons/BrandIcons';
 
 // ── V2 API shapes (backend response shapes, never invented) ───────────────────
 
@@ -2398,6 +2399,16 @@ function CommunicationsContent() {
   const [activeConv, setActiveConv] = useState<WaConversation | null>(null);
   const [snapshotOpen, setSnapshotOpen] = useState(false);
 
+  // The Instagram page is admin-only end to end (every /api/instagram/* data
+  // route is checkRole(['admin']), and the page itself is
+  // ProtectedRoute allowedRoles={['admin']}) — unlike WhatsApp/Broadcast, this
+  // page has no role gate of its own, so a non-admin CAN reach this switcher.
+  // Hiding the icon for non-admins avoids a click-then-bounce-to-/home round
+  // trip; superadmin bypasses every role gate elsewhere in this codebase, so
+  // it does here too.
+  const { user } = useAuth();
+  const canSeeInstagram = user?.role === 'admin' || user?.role === 'superadmin';
+
   // Deep-link from the Templates module's Send button (/inbox?template={id}).
   // Captured once via the lazy initializer — later URL changes (including our
   // own cleanup below) must not re-read the param and re-trigger this.
@@ -2420,15 +2431,39 @@ function CommunicationsContent() {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* Mode switcher */}
+      {/* Channel + mode switcher. WhatsApp is the existing 'inbox' mode,
+          rendered with a brand icon instead of the old "Inbox" text label —
+          same state, same behavior, unchanged. Instagram is a REAL navigation
+          entry (a <Link>, not a mode) to the standalone /instagram page (PR3) —
+          it has no corresponding CommPageMode value and never shows "active".
+          Broadcast is completely untouched: same label, same onClick, same
+          active-class logic as before this change. */}
       <div className="flex items-center gap-3 border-b border-neutral-200 bg-white px-4 py-2 dark:border-neutral-800 dark:bg-neutral-950">
-        <div className="flex gap-1 rounded-lg border border-neutral-200 p-0.5 dark:border-neutral-700">
-          {([['inbox', 'Inbox'], ['broadcast', 'Broadcast']] as const).map(([id, label]) => (
-            <button key={id} onClick={() => setMode(id)}
-              className={cn('rounded-md px-4 py-1.5 text-xs font-medium transition', mode === id ? 'bg-primary-600 text-white' : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200')}>
-              {label}
-            </button>
-          ))}
+        <div className="flex items-center gap-1 rounded-lg border border-neutral-200 p-0.5 dark:border-neutral-700">
+          <button
+            onClick={() => setMode('inbox')}
+            aria-label="WhatsApp"
+            title="WhatsApp"
+            className={cn('rounded-md p-1.5 transition', mode === 'inbox' ? 'bg-primary-600 text-white' : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200')}
+          >
+            <WhatsAppIcon className="h-4 w-4" />
+          </button>
+          {canSeeInstagram && (
+            <Link
+              href="/instagram"
+              aria-label="Instagram"
+              title="Instagram"
+              className="rounded-md p-1.5 text-neutral-500 transition hover:text-neutral-800 dark:hover:text-neutral-200"
+            >
+              <InstagramIcon className="h-4 w-4" />
+            </Link>
+          )}
+          <button
+            onClick={() => setMode('broadcast')}
+            className={cn('rounded-md px-4 py-1.5 text-xs font-medium transition', mode === 'broadcast' ? 'bg-primary-600 text-white' : 'text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200')}
+          >
+            Broadcast
+          </button>
         </div>
       </div>
 
