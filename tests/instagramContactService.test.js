@@ -109,7 +109,11 @@ describe('InstagramContactService.recordMessage', () => {
     const putItem = dynamodb.put.mock.calls[0][0].Item;
     expect(putItem.PK).toBe(`IGCONTACT#${CID}#${IGSID}`);
     expect(putItem.SK).toBe('MSG#1732000000000#mid_abc');
-    expect(putItem).toMatchObject({ direction: 'inbound', content: 'hi there', type: 'text', igMid: 'mid_abc' });
+    expect(putItem).toMatchObject({ direction: 'inbound', content: 'hi there', type: 'text', igMid: 'mid_abc', sentAt: 1732000000000 });
+    // The stored attribute must never be a bare `timestamp` — the
+    // FlowResponsesByCompany GSI declares that name as a String-typed key
+    // table-wide, so a Number-typed `timestamp` anywhere rejects the write.
+    expect(putItem.timestamp).toBeUndefined();
 
     expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
       Key: { PK: `IGCONTACT#${CID}#${IGSID}`, SK: 'CURRENT' },

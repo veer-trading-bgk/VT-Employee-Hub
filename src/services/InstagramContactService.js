@@ -83,8 +83,25 @@ async function resolveOrCreate(companyId, igsid, displayName) {
 /**
  * Best-effort conversation-history write — never blocks the webhook handler
  * or a send on a write failure, same posture as PENDINGFLOW#/CAPILOG#
- * best-effort writes elsewhere in this codebase. `timestamp` is epoch
- * milliseconds (Meta's messaging webhook convention).
+ * best-effort writes elsewhere in this codebase. `timestamp` (the function's
+ * own param name) is epoch milliseconds (Meta's messaging webhook convention).
+ *
+ * The stored attribute is named `sentAt`, NOT `timestamp` — a real
+ * 2026-07-19 production incident: this table's `FlowResponsesByCompany` GSI
+ * declares `timestamp` as a String-typed key table-wide, so ANY item written
+ * anywhere in this table with a Number-typed `timestamp` attribute is
+ * rejected outright by DynamoDB, regardless of whether that item has
+ * anything to do with Flow responses. Because this write is best-effort
+ * (caught + logged, never thrown), the failure was completely silent: NOT
+ * ONE inbound or outbound Instagram message has ever been persisted as a
+ * MSG# item since this feature shipped (v1, 2026-07-18) — `lastMessageAt`
+ * only ever reflected the contact's own creation time (set by
+ * resolveOrCreate), never a real message. Renaming to a distinct,
+ * entity-specific attribute (not just fixing the type) is the fix, so no
+ * future GSI naming `timestamp` (or any other generic name) can ever
+ * collide with this store again. See docs/bible/19_DECISION_LOG.md and
+ * InstagramCommentService.recordComment's matching fix (same root cause,
+ * same incident).
  */
 async function recordMessage(companyId, igsid, { direction, content, timestamp, mid }) {
   try {
@@ -94,7 +111,7 @@ async function recordMessage(companyId, igsid, { direction, content, timestamp, 
       Item: {
         PK: igContactPK(companyId, igsid),
         SK: inboxMsgSK(ts, mid ?? String(ts)),
-        companyId, igsid, direction, content, timestamp: ts, type: 'text',
+        companyId, igsid, direction, content, sentAt: ts, type: 'text', // NOT `timestamp` — see doc comment above.
         ...(mid ? { igMid: mid } : {}),
       },
     }).promise();

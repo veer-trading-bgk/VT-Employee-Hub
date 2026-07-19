@@ -34,10 +34,24 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 /**
  * Persist one inbound comment as a readable, post-grouped record, and bump the
  * post's summary + best-effort counts. Called once-per-comment (gated by the
- * caller's IGCOMMENT# claim). `timestamp` is epoch milliseconds — it orders the
- * CMT# sort key (same convention as MSG# items); the META summary carries ISO
- * timestamps for display + in-memory recency sort, mirroring
- * InstagramContactService's MSG#(epoch)/CURRENT(ISO) split.
+ * caller's IGCOMMENT# claim). `timestamp` (the function's own param name) is
+ * epoch milliseconds — it orders the CMT# sort key (same convention as MSG#
+ * items); the META summary carries ISO timestamps for display + in-memory
+ * recency sort, mirroring InstagramContactService's MSG#(epoch)/CURRENT(ISO)
+ * split.
+ *
+ * The stored attribute is named `commentedAt`, NOT `timestamp` — a real
+ * 2026-07-19 production incident: this table's `FlowResponsesByCompany` GSI
+ * declares `timestamp` as a String-typed key table-wide, so ANY item written
+ * anywhere in this table with a Number-typed `timestamp` attribute is
+ * rejected outright by DynamoDB, regardless of whether that item has
+ * anything to do with Flow responses. This silently failed on every single
+ * inbound comment since this file shipped (PR1) — no MSG#/CMT# item was ever
+ * successfully written. A distinct, entity-specific attribute name (not just
+ * fixing the type) is the fix, so no future GSI naming `timestamp` (or any
+ * other generic name) can ever collide with this store again. See
+ * docs/bible/19_DECISION_LOG.md and InstagramContactService.recordMessage's
+ * matching fix (same root cause, same incident).
  */
 async function recordComment(companyId, { mediaId, commentId, commenterIgsid, fromUsername, commentText, timestamp, mediaProductType }) {
   if (!companyId) throw new Error('[InstagramCommentService] companyId is required');
@@ -56,7 +70,7 @@ async function recordComment(companyId, { mediaId, commentId, commenterIgsid, fr
       commenterIgsid: commenterIgsid ?? null,
       fromUsername:   fromUsername ?? null,
       commentText,
-      timestamp: ts,
+      commentedAt: ts, // NOT `timestamp` — see the doc comment above.
       source: 'comment',
       replyStatus: 'unreplied',
     },
@@ -83,8 +97,9 @@ async function recordComment(companyId, { mediaId, commentId, commenterIgsid, fr
  * decrement idempotent — a retry / re-run / already-replied comment fails the
  * condition and skips the decrement. Never throws (best-effort, like
  * InstagramContactService.recordMessage); returns silently on any miss. Needs
- * the comment's stored `timestamp` to address its CMT# sort key — the caller
- * carries it in the comment_received context as ctx.commentTs.
+ * the comment's timestamp VALUE (not the stored `commentedAt` attribute name
+ * — this is just the local `timestamp` parameter) to address its CMT# sort
+ * key — the caller carries it in the comment_received context as ctx.commentTs.
  */
 async function markCommentReplied(companyId, mediaId, commentId, timestamp) {
   if (!companyId || !mediaId || !commentId || !timestamp) return; // not a comment-sourced context

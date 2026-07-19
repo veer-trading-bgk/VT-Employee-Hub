@@ -182,7 +182,12 @@ router.get('/contacts/:igsid/messages', authMiddleware, checkRole(['admin']), as
       mid: m.igMid ?? null,
       direction: m.direction,
       content: m.content,
-      timestamp: m.timestamp,
+      // API/frontend contract keeps "timestamp" — only the DynamoDB storage
+      // attribute is named sentAt (renamed off `timestamp` after a real
+      // production incident: this table's FlowResponsesByCompany GSI
+      // declares `timestamp` as a String-typed key table-wide, rejecting any
+      // Number-typed `timestamp` attribute anywhere in the table).
+      timestamp: m.sentAt,
       type: m.type ?? 'text',
     })).reverse(); // …then reverse to chronological for display
 
@@ -251,7 +256,10 @@ router.get('/posts/:mediaId/comments', authMiddleware, checkRole(['admin']), asy
       commenterIgsid: c.commenterIgsid ?? null,
       fromUsername: c.fromUsername ?? null,
       commentText: c.commentText,
-      timestamp: c.timestamp,
+      // API/frontend contract keeps "timestamp" — only the DynamoDB storage
+      // attribute is named commentedAt (same GSI-collision incident as the
+      // messages route above; see InstagramCommentService.recordComment).
+      timestamp: c.commentedAt,
       replyStatus: c.replyStatus ?? 'unreplied',
       repliedAt: c.repliedAt ?? null,
     }));
@@ -269,7 +277,8 @@ router.get('/posts/:mediaId/comments', authMiddleware, checkRole(['admin']), asy
 // Meta allows exactly ONE private reply per comment, so an already-'replied'
 // comment is refused up front (409) rather than sent and bounced. Finding the
 // stored comment by commentId within the post partition also yields its
-// timestamp, needed to address the CMT# record for the status flip.
+// commentedAt (the stored attribute — see InstagramCommentService.recordComment),
+// needed to address the CMT# record for the status flip.
 router.post('/posts/:mediaId/comments/:commentId/reply', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
     const companyId = req.user.companyId;
@@ -299,7 +308,7 @@ router.post('/posts/:mediaId/comments/:commentId/reply', authMiddleware, checkRo
 
     // Same status flip as the automated node — conditional, decrements the
     // unreplied badge exactly once. Best-effort; never throws.
-    await require('../services/InstagramCommentService').markCommentReplied(companyId, mediaId, commentId, comment.timestamp);
+    await require('../services/InstagramCommentService').markCommentReplied(companyId, mediaId, commentId, comment.commentedAt);
 
     res.json({ success: true, mid: r.mid, igsid: r.igsid ?? null });
   } catch (err) {

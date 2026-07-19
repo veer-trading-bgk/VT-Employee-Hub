@@ -40,8 +40,12 @@ describe('InstagramCommentService.recordComment', () => {
     expect(item.SK).toBe(`CMT#${TS}#${CMT}`);
     expect(item).toMatchObject({
       commentId: CMT, mediaId: MEDIA, commenterIgsid: 'ig_c1', fromUsername: 'jane',
-      commentText: 'send link', source: 'comment', replyStatus: 'unreplied', timestamp: TS,
+      commentText: 'send link', source: 'comment', replyStatus: 'unreplied', commentedAt: TS,
     });
+    // The stored attribute must never be a bare `timestamp` — the
+    // FlowResponsesByCompany GSI declares that name as a String-typed key
+    // table-wide, so a Number-typed `timestamp` anywhere rejects the write.
+    expect(item.timestamp).toBeUndefined();
   });
 
   test('upserts the per-post META summary, increments both best-effort counts, ISO recency stamps', async () => {

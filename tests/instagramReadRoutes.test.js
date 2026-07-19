@@ -110,9 +110,9 @@ describe('GET /api/instagram/contacts/:igsid/messages', () => {
 
   test('PK-Queries the contact\'s MSG# items and returns them chronological (oldest→newest)', async () => {
     dynamodb.query.mockReturnValue(resolved({ Items: [
-      { direction: 'outbound', content: 'hi back', timestamp: 1700000002000, type: 'text', igMid: 'mid2' },
-      { direction: 'inbound',  content: 'hello',   timestamp: 1700000001000, type: 'text', igMid: 'mid1' },
-    ] })); // returned newest-first by the query (ScanIndexForward:false)
+      { direction: 'outbound', content: 'hi back', sentAt: 1700000002000, type: 'text', igMid: 'mid2' },
+      { direction: 'inbound',  content: 'hello',   sentAt: 1700000001000, type: 'text', igMid: 'mid1' },
+    ] })); // returned newest-first by the query (ScanIndexForward:false); stored attribute is sentAt, not timestamp
 
     const res = mockRes();
     await handler({ user: { companyId: CID, role: 'admin' }, params: { igsid: 'ig_1' }, query: {} }, res, jest.fn());
@@ -120,6 +120,9 @@ describe('GET /api/instagram/contacts/:igsid/messages', () => {
     const body = res.json.mock.calls[0][0];
     expect(body.igsid).toBe('ig_1');
     expect(body.messages.map((m) => m.mid)).toEqual(['mid1', 'mid2']); // reversed to chronological
+    // API contract keeps "timestamp"; must be mapped from the stored sentAt.
+    expect(body.messages.find((m) => m.mid === 'mid1').timestamp).toBe(1700000001000);
+    expect(body.messages.find((m) => m.mid === 'mid2').timestamp).toBe(1700000002000);
     const params = dynamodb.query.mock.calls[0][0];
     expect(params.ExpressionAttributeValues[':pk']).toBe(`IGCONTACT#${CID}#ig_1`); // company-scoped PK
     expect(params.ExpressionAttributeValues[':msg']).toBe('MSG#');
@@ -164,9 +167,9 @@ describe('GET /api/instagram/posts/:mediaId/comments', () => {
 
   test('PK-Queries the post\'s CMT# items with text + reply status, company-scoped', async () => {
     dynamodb.query.mockReturnValue(resolved({ Items: [
-      { commentId: 'c2', commenterIgsid: 'ig_x', fromUsername: 'x', commentText: 'second', timestamp: 1700000002000, replyStatus: 'replied', repliedAt: '2026-07-19T09:00:00.000Z' },
-      { commentId: 'c1', fromUsername: 'y', commentText: 'first', timestamp: 1700000001000, replyStatus: 'unreplied' },
-    ] }));
+      { commentId: 'c2', commenterIgsid: 'ig_x', fromUsername: 'x', commentText: 'second', commentedAt: 1700000002000, replyStatus: 'replied', repliedAt: '2026-07-19T09:00:00.000Z' },
+      { commentId: 'c1', fromUsername: 'y', commentText: 'first', commentedAt: 1700000001000, replyStatus: 'unreplied' },
+    ] })); // stored attribute is commentedAt, not timestamp
 
     const res = mockRes();
     await handler({ user: { companyId: CID, role: 'admin' }, params: { mediaId: 'media_a' }, query: {} }, res, jest.fn());
@@ -175,6 +178,9 @@ describe('GET /api/instagram/posts/:mediaId/comments', () => {
     expect(body.mediaId).toBe('media_a');
     expect(body.comments[0]).toMatchObject({ commentId: 'c2', commentText: 'second', replyStatus: 'replied' });
     expect(body.comments[1]).toMatchObject({ commentId: 'c1', replyStatus: 'unreplied' });
+    // API contract keeps "timestamp"; must be mapped from the stored commentedAt.
+    expect(body.comments[0].timestamp).toBe(1700000002000);
+    expect(body.comments[1].timestamp).toBe(1700000001000);
     const params = dynamodb.query.mock.calls[0][0];
     expect(params.ExpressionAttributeValues[':pk']).toBe(`IGPOST#${CID}#media_a`); // company-scoped PK
     expect(params.ExpressionAttributeValues[':cmt']).toBe('CMT#');
@@ -200,7 +206,7 @@ describe('POST /api/instagram/posts/:mediaId/comments/:commentId/reply — manua
   });
 
   test('happy path: finds the unreplied comment, sends the private reply, flips its status', async () => {
-    dynamodb.query.mockReturnValue(resolved({ Items: [{ commentId: 'c1', timestamp: 1700000000000, replyStatus: 'unreplied' }] }));
+    dynamodb.query.mockReturnValue(resolved({ Items: [{ commentId: 'c1', commentedAt: 1700000000000, replyStatus: 'unreplied' }] }));
     const res = mockRes();
     await handler(okReq(), res, jest.fn());
 
@@ -212,7 +218,7 @@ describe('POST /api/instagram/posts/:mediaId/comments/:commentId/reply — manua
   });
 
   test('REFUSES a second reply: an already-replied comment gets 409, no send (Meta one-reply-per-comment limit)', async () => {
-    dynamodb.query.mockReturnValue(resolved({ Items: [{ commentId: 'c1', timestamp: 1700000000000, replyStatus: 'replied' }] }));
+    dynamodb.query.mockReturnValue(resolved({ Items: [{ commentId: 'c1', commentedAt: 1700000000000, replyStatus: 'replied' }] }));
     const res = mockRes();
     await handler(okReq(), res, jest.fn());
 
@@ -238,7 +244,7 @@ describe('POST /api/instagram/posts/:mediaId/comments/:commentId/reply — manua
   });
 
   test('surfaces a Meta send error as-is and does NOT flip the status', async () => {
-    dynamodb.query.mockReturnValue(resolved({ Items: [{ commentId: 'c1', timestamp: 1700000000000, replyStatus: 'unreplied' }] }));
+    dynamodb.query.mockReturnValue(resolved({ Items: [{ commentId: 'c1', commentedAt: 1700000000000, replyStatus: 'unreplied' }] }));
     InstagramSendService.sendPrivateReply.mockRejectedValue(Object.assign(new Error('This comment can no longer be replied to.'), { status: 400 }));
     const res = mockRes();
     await handler(okReq(), res, jest.fn());
