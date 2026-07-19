@@ -2,7 +2,7 @@
 
 import {
   MessageCircle, UserPlus, GitMerge, Tag, CheckSquare, Timer, Square,
-  Zap, Hash, Webhook, Copy, RefreshCw, X, Plus, FileText, Bot, ClipboardCheck,
+  Zap, Hash, Webhook, Copy, RefreshCw, X, Plus, FileText, Bot, ClipboardCheck, Camera,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
@@ -17,7 +17,7 @@ import {
   type WorkflowTrigger, type WorkflowStep, type ActionType,
   type TriggerType, type KeywordMatchMode, type KeywordTriggerConfig,
   type FlowCompletedTriggerConfig, type StageMembershipTriggerConfig,
-  type WorkflowCondition,
+  type CommentReceivedTriggerConfig, type WorkflowCondition,
   TRIGGER_META,
 } from '@/types/automations';
 import { FlowPicker } from '@/components/shared/ButtonListEditor';
@@ -54,6 +54,7 @@ export const ACTION_ICONS: Record<string, React.ElementType> = {
   inbound_webhook:              Webhook,
   form_submitted:               FileText,
   flow_completed:               ClipboardCheck,
+  comment_received:             Camera,
 };
 
 // ── Trigger editor ────────────────────────────────────────────────────────────
@@ -62,7 +63,7 @@ export const ACTION_ICONS: Record<string, React.ElementType> = {
 // TriggerNode has no config UI of its own, this is the only trigger editor.
 export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: WorkflowTrigger; onChange: (t: WorkflowTrigger) => void; workflowId?: string }) {
   const TRIGGER_OPTIONS: TriggerType[] = [
-    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'stage_membership', 'tag_added', 'keyword_message', 'inbound_webhook', 'form_submitted', 'flow_completed',
+    'whatsapp_conversation_started', 'lead_created', 'stage_changed', 'stage_membership', 'tag_added', 'keyword_message', 'inbound_webhook', 'form_submitted', 'flow_completed', 'comment_received',
   ];
 
   // Only the two heavier picker fetches below are gated behind `enabled`.
@@ -209,6 +210,13 @@ export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: Work
         />
       )}
 
+      {trigger.type === 'comment_received' && (
+        <CommentReceivedConfigFields
+          config={(trigger.config as CommentReceivedTriggerConfig | undefined) ?? { mediaId: '', matchMode: 'contains', keywords: [''], caseSensitive: false }}
+          onChange={(config) => onChange({ ...trigger, config })}
+        />
+      )}
+
       {/* Conditions */}
       {trigger.conditions.length > 0 && (
         <div className="space-y-2">
@@ -262,8 +270,11 @@ export function TriggerEditor({ trigger, onChange, workflowId }: { trigger: Work
 // any_of uses a repeatable keyword list (same add/remove-row pattern as the
 // conditions list above, for visual/interaction consistency). Also matches a
 // button or list-row tap whose title matches the same rules — no separate
-// toggle for that, it's always on for this trigger type.
-function KeywordConfigFields({ config, onChange }: { config: KeywordTriggerConfig; onChange: (c: KeywordTriggerConfig) => void }) {
+// toggle for that, it's always on for this trigger type. Exported — reused
+// verbatim by CommentReceivedConfigFields below (comment_received's config is
+// a superset of KeywordTriggerConfig, see CommentReceivedTriggerConfig), so
+// there's exactly one place that knows how to edit keyword-match config, not two.
+export function KeywordConfigFields({ config, onChange }: { config: KeywordTriggerConfig; onChange: (c: KeywordTriggerConfig) => void }) {
   const keywords = config.keywords.length > 0 ? config.keywords : [''];
 
   function setMode(matchMode: KeywordMatchMode) {
@@ -345,6 +356,54 @@ function KeywordConfigFields({ config, onChange }: { config: KeywordTriggerConfi
       <p className="text-[11px] text-neutral-400">
         Also matches when a customer taps a button or list option with matching text.
       </p>
+    </div>
+  );
+}
+
+// ── comment_received trigger config (ADR-021) — a required post/Reel picker
+// plus the exact same keyword UI keyword_message uses (reused verbatim, not
+// rebuilt). GET /api/instagram/media (not /api/instagram/posts — that route
+// only lists posts that already have a stored comment, since its IGPOST#
+// META item is created lazily on first comment; /media is the route already
+// reserved for this exact picker, see its own doc comment in instagram.js)
+// is comment-count-independent, so a freshly published post can be targeted
+// before anyone has commented on it.
+function PostPicker({ value, onChange }: { value: string; onChange: (mediaId: string) => void }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['instagram-media'],
+    queryFn: () => apiFetch<{ media: Array<{ id: string; caption?: string; media_product_type?: string }> }>('/api/instagram/media'),
+    staleTime: 60_000,
+  });
+  const media = data?.media ?? [];
+
+  if (isLoading) return <p className="text-[11px] text-neutral-400">Loading posts…</p>;
+  if (media.length === 0) {
+    return <p className="text-[11px] text-neutral-400">No posts found — connect Instagram in Settings, or publish a post first.</p>;
+  }
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} className={selectCls}>
+      <option value="">Select a post or Reel…</option>
+      {media.map((m) => (
+        <option key={m.id} value={m.id}>
+          {(m.caption ?? '').trim().slice(0, 60) || `${m.media_product_type ?? 'Post'} (${m.id})`}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function CommentReceivedConfigFields({ config, onChange }: { config: CommentReceivedTriggerConfig; onChange: (c: CommentReceivedTriggerConfig) => void }) {
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1.5 rounded-lg border border-neutral-200 p-3 dark:border-neutral-700">
+        <label className="block text-xs font-medium text-neutral-600 dark:text-neutral-400">Post / Reel</label>
+        <PostPicker value={config.mediaId ?? ''} onChange={(mediaId) => onChange({ ...config, mediaId })} />
+        <p className="text-[11px] text-neutral-400">Only comments on this specific post or Reel fire this workflow.</p>
+      </div>
+      <KeywordConfigFields
+        config={config}
+        onChange={(kwConfig) => onChange({ ...config, ...kwConfig })}
+      />
     </div>
   );
 }

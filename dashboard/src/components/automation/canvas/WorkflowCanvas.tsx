@@ -17,7 +17,8 @@ import { TriggerConfigPanel } from './TriggerConfigPanel';
 import {
   toReactFlow, fromReactFlow, applyDagreLayout, needsLayout,
   newNodeId, newEdgeId, defaultConditionConfig, defaultSendButtonsConfig, defaultSendDocumentConfig,
-  defaultSendMessageConfig, defaultSendListConfig, defaultSendLocationConfig, defaultSendFlowConfig, defaultMetaSignalConfig, defaultSendInstagramMessageConfig, nextNodePosition,
+  defaultSendMessageConfig, defaultSendListConfig, defaultSendLocationConfig, defaultSendFlowConfig, defaultMetaSignalConfig, defaultSendInstagramMessageConfig,
+  defaultSendInstagramPrivateReplyConfig, defaultWaitInstagramReplyConfig, nextNodePosition,
   findIncompleteBranches, TRIGGER_NODE_ID, type CanvasNodeData,
 } from '@/lib/automationGraph';
 import { defaultConfig } from '../WorkflowBuilder';
@@ -46,6 +47,7 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
       workflow.edges ?? [],
       workflow.entryNodeId,
       getTriggerLabel(workflow),
+      normalizeTrigger(workflow.trigger),
     );
     const laidOut = requiresLayout ? applyDagreLayout(nodes, edges) : nodes;
     return { initialNodes: laidOut, initialEdges: edges };
@@ -82,7 +84,9 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
   function handleTriggerChange(next: WorkflowTrigger) {
     setTrigger(next);
     const label = TRIGGER_META[next.type]?.label ?? next.type;
-    setNodes((nds) => nds.map((n) => (n.id === TRIGGER_NODE_ID ? { ...n, data: { ...n.data, label } } : n)));
+    setNodes((nds) => nds.map((n) => (n.id === TRIGGER_NODE_ID
+      ? { ...n, data: { ...n.data, label, triggerType: next.type, triggerConfig: next.config } }
+      : n)));
   }
 
   // Drawing an edge by dragging from a node's Handle to another node — React
@@ -120,6 +124,8 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
       type === 'send_flow'     ? defaultSendFlowConfig() :
       type === 'meta_signal'   ? defaultMetaSignalConfig() :
       type === 'send_instagram_message' ? defaultSendInstagramMessageConfig() :
+      type === 'send_instagram_private_reply' ? defaultSendInstagramPrivateReplyConfig() :
+      type === 'wait_instagram_reply' ? defaultWaitInstagramReplyConfig() :
                                   defaultConfig(type as ActionType);
     const newNode: Node<CanvasNodeData> = {
       id: newNodeId(),

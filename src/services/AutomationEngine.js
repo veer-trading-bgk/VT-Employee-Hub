@@ -249,9 +249,19 @@ class AutomationEngine {
         if (path.length > 0 && path[path.length - 1].nodeId === nodeId) path[path.length - 1] = resolvedEntry;
         else path.push(resolvedEntry);
 
+        // sourceHandle == null (not strict !==) — the canvas serializes the
+        // default/no-handle edge as `undefined` (automationGraph.ts's
+        // fromReactFlow), never a literal `null`, so this must catch both.
+        // Without this filter a resumed node with >1 outgoing edge (e.g.
+        // wait_instagram_reply once its optional timeout handle is wired)
+        // would pick whichever edge happens to be first in the array,
+        // regardless of handle — a real reply could silently route down the
+        // timeout branch. Every other resume path (condition/send_buttons/
+        // send_list) always sets an explicit branchKey and never reaches this
+        // fallback, so this is a no-op for them.
         const edge = pending.branchKey !== undefined
           ? edges.find((e) => e.source === nodeId && e.sourceHandle === pending.branchKey)
-          : edges.find((e) => e.source === nodeId);
+          : edges.find((e) => e.source === nodeId && e.sourceHandle == null);
         nodeId  = edge?.target ?? null;
         pending = null;
         continue;

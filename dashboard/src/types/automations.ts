@@ -11,7 +11,8 @@ export type TriggerType =
   | 'keyword_message'
   | 'inbound_webhook'
   | 'form_submitted'
-  | 'flow_completed';
+  | 'flow_completed'
+  | 'comment_received'; // Instagram comment automation (ADR-021) — see CommentReceivedTriggerConfig
 
 export type ActionType =
   | 'send_template'
@@ -49,6 +50,16 @@ export interface KeywordTriggerConfig {
   caseSensitive?: boolean;    // default false
 }
 
+// comment_received trigger's own config (ADR-021) — the same keyword shape
+// as KeywordTriggerConfig plus a required mediaId (specific post/Reel
+// targeting, ADR-021 R4). AutomationEngine.js's _matchesCommentConfig()
+// requires BOTH a mediaId match AND a keyword hit — a blank mediaId never
+// matches anything, so this is required, not optional like flow_completed's
+// flowId.
+export interface CommentReceivedTriggerConfig extends KeywordTriggerConfig {
+  mediaId: string;
+}
+
 // flow_completed trigger's own config — which registered Flow's completion
 // fires this workflow. Unlike KeywordTriggerConfig, entirely optional: a
 // blank/absent flowId is the documented "any Flow" catch-all, not an
@@ -72,7 +83,7 @@ export interface WorkflowTrigger {
   // keyword_message, flow_completed, and stage_membership each carry their
   // own config shape; consumers narrow by trigger.type (no discriminant on
   // the config itself).
-  config?:    KeywordTriggerConfig | FlowCompletedTriggerConfig | StageMembershipTriggerConfig;
+  config?:    KeywordTriggerConfig | FlowCompletedTriggerConfig | StageMembershipTriggerConfig | CommentReceivedTriggerConfig;
   // inbound_webhook only — server-generated capability-URL token (read-only,
   // present once the workflow has been saved at least once with this trigger type).
   webhookToken?:     string;
@@ -146,7 +157,8 @@ export interface WorkflowStep {
 // 'send_buttons'/'send_document' are graph-only — deliberately not added to
 // ActionType, which the legacy linear model also uses and has no equivalent for.
 export type NodeType = ActionType | 'condition' | 'send_buttons' | 'send_document'
-  | 'send_message' | 'send_list' | 'send_location' | 'send_flow' | 'meta_signal' | 'send_instagram_message';
+  | 'send_message' | 'send_list' | 'send_location' | 'send_flow' | 'meta_signal' | 'send_instagram_message'
+  | 'send_instagram_private_reply' | 'wait_instagram_reply';
 
 // Optional image/video/document shown above the body text — Meta's Interactive
 // Message header field. WhatsAppSendService.sendInteractive() is a raw pass-through
@@ -276,6 +288,32 @@ export interface SendInstagramMessageConfig {
   messageText: string;
 }
 
+// Instagram private-reply node — DM #1 of a comment_received Follow Gate flow
+// (ADR-021 R1/R2/R6). Only reachable from a comment_received-triggered flow's
+// context (ctx.commentId) — see AutomationEngine.js's send_instagram_private_reply
+// case. replyVariants is the anti-spam multi-message feature (ADR-021 R6):
+// Instagram can flag identical repeated replies as spam, so >=2 variants lets
+// the engine pick one at random per send; a single messageText remains valid
+// (AutomationEngine.js's _pickInstagramVariant() accepts either shape).
+export interface SendInstagramPrivateReplyConfig {
+  messageText?:   string;
+  replyVariants?: string[];
+}
+
+// Instagram reply-wait node — the Follow Gate's pause point (ADR-021 R5).
+// Unlike the plain 'wait' node (WaitConfig: amount/unit, single edge, no
+// branching), this mirrors send_buttons/send_list's opt-in per-branch shape:
+// an unset timeout waits effectively unboundedly (AutomationEngine.js's
+// UNBOUNDED_REPLY_WAIT_MS), and the node's own canvas handles let a workflow
+// author wire a distinct "no reply" branch (TIMEOUT_HANDLE_ID) alongside the
+// default "replied" edge. Field names are this node's own — NOT WaitConfig's
+// amount/unit, and NOT SendButtonsConfig's replyTimeoutAmount/replyTimeoutUnit
+// — confirmed against AutomationEngine.js's wait_instagram_reply handling.
+export interface WaitInstagramReplyConfig {
+  timeoutAmount?: number;
+  timeoutUnit?:   'minutes' | 'hours' | 'days';
+}
+
 export type ConditionMode = 'field_match' | 'boolean' | 'button_reply';
 
 export interface ConditionBranch {
@@ -298,7 +336,7 @@ export interface ConditionNodeConfig {
 
 export type NodeConfig = StepConfig | ConditionNodeConfig | SendButtonsConfig | SendDocumentConfig
   | SendMessageConfig | SendListConfig | SendLocationConfig | SendFlowConfig | MetaSignalConfig
-  | SendInstagramMessageConfig;
+  | SendInstagramMessageConfig | SendInstagramPrivateReplyConfig | WaitInstagramReplyConfig;
 
 export interface NodePosition {
   x: number;
@@ -451,6 +489,7 @@ export const TRIGGER_META: Record<string, { label: string; description: string }
   inbound_webhook:               { label: 'Inbound Webhook',      description: 'An external system posts to this workflow\'s own URL'      },
   form_submitted:                { label: 'Form Submitted',       description: 'A lead submits a form via the public API (traits available as {{trait.*}} variables)' },
   flow_completed:                { label: 'Flow Completed',       description: 'A customer submits a WhatsApp Flow — optionally only a specific one' },
+  comment_received:              { label: 'Comment Received',     description: 'A customer comments a matching keyword on a specific Instagram post or Reel' },
 };
 
 export const ACTION_META: Record<ActionType, { label: string; description: string }> = {

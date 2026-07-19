@@ -3,8 +3,9 @@ import type { Node, Edge } from '@xyflow/react';
 import type {
   GraphNode, GraphEdge, NodeType, NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig,
   SendMessageConfig, SendListConfig, SendLocationConfig, SendFlowConfig, MetaSignalConfig, SendInstagramMessageConfig,
+  SendInstagramPrivateReplyConfig, WaitInstagramReplyConfig,
   SendTemplateConfig, AssignEmployeeConfig, ChangeStageConfig, AddTagConfig, CreateTaskConfig,
-  StartAiConversationConfig,
+  StartAiConversationConfig, TriggerType, WorkflowTrigger,
 } from '@/types/automations';
 
 // A synthetic, non-persisted node representing the workflow's trigger — always
@@ -16,6 +17,13 @@ export interface CanvasNodeData extends Record<string, unknown> {
   nodeType: NodeType | 'trigger';
   config:   NodeConfig;
   label?:   string;
+  // Trigger node only — its real trigger.type/config, threaded through so
+  // TriggerNode.tsx can render a config-aware summary (e.g. comment_received's
+  // post + keyword) the same way SendFlowNode.tsx resolves flowId -> name.
+  // Separate from `config` (typed NodeConfig, a different union) rather than
+  // overloading it. Every other node type leaves both of these undefined.
+  triggerType?:   TriggerType;
+  triggerConfig?: WorkflowTrigger['config'];
 }
 
 export type CanvasNode = Node<CanvasNodeData>;
@@ -27,6 +35,7 @@ export function toReactFlow(
   edges: GraphEdge[],
   entryNodeId: string | undefined,
   triggerLabel: string,
+  trigger?: WorkflowTrigger,
 ): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
   const rfNodes: CanvasNode[] = [
     {
@@ -34,7 +43,7 @@ export function toReactFlow(
       type: 'trigger',
       position: { x: 0, y: 0 },
       deletable: false,
-      data: { nodeType: 'trigger', config: {}, label: triggerLabel },
+      data: { nodeType: 'trigger', config: {}, label: triggerLabel, triggerType: trigger?.type, triggerConfig: trigger?.config },
     },
     ...nodes.map((n): CanvasNode => ({
       id: n.id,
@@ -106,6 +115,8 @@ const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
   send_flow:     { width: 256, height: 84 },
   meta_signal:   { width: 256, height: 84 },
   send_instagram_message: { width: 256, height: 84 },
+  send_instagram_private_reply: { width: 256, height: 84 },
+  wait_instagram_reply:          { width: 224, height: 92 },
 };
 const DEFAULT_DIMENSIONS = { width: 240, height: 76 };
 
@@ -214,6 +225,14 @@ export function defaultMetaSignalConfig(): MetaSignalConfig {
 
 export function defaultSendInstagramMessageConfig(): SendInstagramMessageConfig {
   return { messageText: '' };
+}
+
+export function defaultSendInstagramPrivateReplyConfig(): SendInstagramPrivateReplyConfig {
+  return { messageText: '' };
+}
+
+export function defaultWaitInstagramReplyConfig(): WaitInstagramReplyConfig {
+  return {}; // unset timeout -> AutomationEngine.js's UNBOUNDED_REPLY_WAIT_MS, same as an unset send_buttons reply timeout
 }
 
 // ── Save-time validation: unconnected branches ────────────────────────────────

@@ -1,9 +1,9 @@
 'use client';
 
-import { X, Trash2, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin, Workflow, Radio, Camera } from 'lucide-react';
+import { X, Trash2, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin, Workflow, Radio, Camera, Reply, Timer } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ACTION_META, isConditionConfig, type ActionType, type NodeType } from '@/types/automations';
-import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig, SendMessageConfig, SendListConfig, SendLocationConfig, SendFlowConfig, MetaSignalConfig, SendInstagramMessageConfig, StepConfig } from '@/types/automations';
+import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig, SendMessageConfig, SendListConfig, SendLocationConfig, SendFlowConfig, MetaSignalConfig, SendInstagramMessageConfig, SendInstagramPrivateReplyConfig, WaitInstagramReplyConfig, StepConfig } from '@/types/automations';
 import { ActionEditor } from '../ActionEditor';
 import { ConditionEditor } from '../ConditionEditor';
 import { SendButtonsEditor } from '../SendButtonsEditor';
@@ -14,6 +14,8 @@ import { SendLocationEditor } from '../SendLocationEditor';
 import { SendFlowEditor } from '../SendFlowEditor';
 import { MetaSignalEditor } from '../MetaSignalEditor';
 import { SendInstagramMessageEditor } from '../SendInstagramMessageEditor';
+import { SendInstagramPrivateReplyEditor } from '../SendInstagramPrivateReplyEditor';
+import { WaitInstagramReplyEditor } from '../WaitInstagramReplyEditor';
 import { ACTION_ICONS } from '../WorkflowBuilder';
 
 interface NodeConfigPanelProps {
@@ -35,6 +37,8 @@ const EXTRA_TITLES: Partial<Record<NodeType, { label: string; icon: typeof GitBr
   send_flow:     { label: 'Send Flow',     icon: Workflow },
   meta_signal:   { label: 'Meta Signal',   icon: Radio },
   send_instagram_message: { label: 'Instagram DM Reply', icon: Camera },
+  send_instagram_private_reply: { label: 'Send Instagram Reply', icon: Reply },
+  wait_instagram_reply:         { label: 'Wait for Instagram Reply', icon: Timer },
 };
 
 /**
@@ -135,6 +139,16 @@ export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose, o
         ) : nodeType === 'send_instagram_message' ? (
           <SendInstagramMessageEditor
             config={config as SendInstagramMessageConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'send_instagram_private_reply' ? (
+          <SendInstagramPrivateReplyEditor
+            config={config as SendInstagramPrivateReplyConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'wait_instagram_reply' ? (
+          <WaitInstagramReplyEditor
+            config={config as WaitInstagramReplyConfig}
             onChange={(c) => onChange(c)}
           />
         ) : (
