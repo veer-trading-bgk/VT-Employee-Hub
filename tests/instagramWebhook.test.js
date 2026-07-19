@@ -40,6 +40,7 @@ jest.mock('../src/services/InstagramContactService', () => ({
 jest.mock('../src/routes/automations', () => ({ runAutomations: jest.fn() }));
 jest.mock('../src/services/AutomationEngine', () => ({ resumeOnInstagramReply: jest.fn() }));
 jest.mock('../src/services/InstagramCommentService', () => ({ recordComment: jest.fn() }));
+jest.mock('../src/utils/wsNotify', () => ({ notifyCompany: jest.fn() }));
 
 const logger = require('../src/config/logger');
 const dynamodb = require('../src/config/dynamodb');
@@ -49,6 +50,7 @@ const InstagramContactService = require('../src/services/InstagramContactService
 const { runAutomations } = require('../src/routes/automations');
 const AutomationEngine = require('../src/services/AutomationEngine');
 const InstagramCommentService = require('../src/services/InstagramCommentService');
+const { notifyCompany } = require('../src/utils/wsNotify');
 const instagramRouter = require('../src/routes/instagram');
 
 function getRouteHandler(router, path, method) {
@@ -127,6 +129,7 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
     runAutomations.mockResolvedValue(undefined);
     AutomationEngine.resumeOnInstagramReply.mockResolvedValue(0); // default: no paused Follow Gate
     InstagramCommentService.recordComment.mockResolvedValue(undefined); // comment store (ADR-022)
+    notifyCompany.mockResolvedValue(undefined); // WS push (PR2)
     dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) }); // dedupPut claim succeeds
   });
 
@@ -151,6 +154,9 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
     });
     expect(runAutomations).toHaveBeenCalledWith(CID, 'keyword_message', expect.objectContaining({
       contactId: IGSID, igsid: IGSID, messageText: 'hello there',
+    }));
+    expect(notifyCompany).toHaveBeenCalledWith(CID, expect.objectContaining({
+      event: 'instagram_message', igsid: IGSID, preview: 'hello there', direction: 'inbound',
     }));
     expect(res.sendStatus).toHaveBeenCalledWith(200);
   });
@@ -242,6 +248,9 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
     expect(InstagramCommentService.recordComment).toHaveBeenCalledWith(CID, expect.objectContaining({
       mediaId: 'media_99', commentId: 'cmt_1', commenterIgsid: 'ig_commenter_1', fromUsername: 'jane',
       commentText: 'send me the link', mediaProductType: 'FEED',
+    }));
+    expect(notifyCompany).toHaveBeenCalledWith(CID, expect.objectContaining({
+      event: 'instagram_comment', mediaId: 'media_99', commentId: 'cmt_1', username: 'jane', preview: 'send me the link',
     }));
     expect(runAutomations).toHaveBeenCalledWith(CID, 'comment_received', expect.objectContaining({
       igsid: 'ig_commenter_1', commentId: 'cmt_1', mediaId: 'media_99', commentText: 'send me the link',

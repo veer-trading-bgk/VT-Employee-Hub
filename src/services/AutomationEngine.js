@@ -636,6 +636,33 @@ class AutomationEngine {
     return resumed;
   }
 
+  // ── Read-only companion to resumeOnInstagramReply (Instagram page, PR2) ────
+  // The set of IGSIDs that currently have a paused Follow Gate (a
+  // wait_instagram_reply node awaiting their reply). In-flight ONLY — a
+  // completed or timed-out gate's AUTO_WAIT# item is already deleted, so it has
+  // no separate record (accepted for v3). Reuses the EXACT same
+  // AUTO_WAIT#{companyId} Query + awaitReply.igsid filter as
+  // resumeOnInstagramReply, so the page's "pending gate" badge and the resume
+  // path can never disagree on what "pending" means. Degrades to an empty set on
+  // any read failure — a missing badge must never fail the contacts list.
+  async pendingInstagramReplyIgsids(companyId) {
+    const out = new Set();
+    try {
+      const { Items = [] } = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk',
+        ExpressionAttributeValues: { ':pk': `AUTO_WAIT#${companyId}` },
+        Limit: 100,
+      }).promise();
+      for (const item of Items) {
+        if (item.awaitReply?.igsid) out.add(item.awaitReply.igsid);
+      }
+    } catch (e) {
+      logger.warn(`AutomationEngine.pendingInstagramReplyIgsids: ${e.message}`);
+    }
+    return out;
+  }
+
   // ── Cancel a contact's paused button-reply waits, WITHOUT resuming ────────
   // Finding 1 (Era 49, 2026-07-15). Free text on an unengaged, unassigned
   // conversation engages the AI and overrides a whatsapp_conversation_started

@@ -35,10 +35,16 @@ const WsContext = createContext<WsContextValue>({
 // static arrays below, their real invalidation target (['contact', leadId])
 // depends on the leadId carried in each push's own payload.
 const EVENT_QUERY_MAP: Record<string, string[][]> = {
-  metric_added:      [['admin-team-summary'], ['my-metrics'], ['admin-leaderboard-monthly']],
-  metric_verified:   [['admin-team-summary'], ['my-metrics'], ['pending-metrics']],
-  whatsapp_message:  [['wa-inbox'], ['dashboard-wa']],
-  attendance_marked: [['attendance']],
+  metric_added:       [['admin-team-summary'], ['my-metrics'], ['admin-leaderboard-monthly']],
+  metric_verified:    [['admin-team-summary'], ['my-metrics'], ['pending-metrics']],
+  whatsapp_message:   [['wa-inbox'], ['dashboard-wa']],
+  attendance_marked:  [['attendance']],
+  // Instagram page (v3, PR2) — the Messages tab's contact list and the Comments
+  // tab's post list. Finer-grained live updates (the open DM thread / a post's
+  // comment list) are handled by PR3 subscribing to wsClient directly, mirroring
+  // how the WhatsApp Inbox's ThreadPane consumes whatsapp_message.
+  instagram_message:  [['instagram-contacts']],
+  instagram_comment:  [['instagram-posts']],
 };
 
 export function WebSocketProvider({ children }: { children: ReactNode }) {

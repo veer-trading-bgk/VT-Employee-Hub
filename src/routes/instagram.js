@@ -40,8 +40,9 @@ const dynamodb = require('../config/dynamodb');
 const logger = require('../config/logger');
 const { authMiddleware, checkRole } = require('../middleware/auth');
 const { verifyMetaWebhookSignature } = require('../utils/verifyMetaWebhookSignature');
-const { igConfigPK, igConfigSK, igIdConfigPK, igIdConfigSK, igCommentClaimPK, igCommentClaimSK } = require('../core/entityKeys');
+const { igConfigPK, igConfigSK, igIdConfigPK, igIdConfigSK, igCommentClaimPK, igCommentClaimSK, igContactPK, igContactSK, igPostPK, igPostMetaSK } = require('../core/entityKeys');
 const { dedupPut } = require('../utils/dedupPut');
+const { notifyCompany } = require('../utils/wsNotify');
 const igGraphApiHelpers = require('../services/igGraphApiHelpers');
 const InstagramContactService = require('../services/InstagramContactService');
 const AutomationEngine = require('../services/AutomationEngine');
@@ -108,6 +109,155 @@ router.get('/media', authMiddleware, checkRole(['admin']), async (req, res, next
       logger.error('Instagram media list error', JSON.stringify(err.response.data));
       return res.status(400).json({ error: err.response.data?.error?.message ?? 'Failed to fetch Instagram media' });
     }
+    next(err);
+  }
+});
+
+// ── Instagram page read APIs (v3, PR2) — all admin-only, matching every v1 IG
+// data route. Multi-tenant safe by construction: the companyId is baked into
+// every PK/prefix, so a company can only ever read its own IGCONTACT#/IGPOST#
+// partitions. See ADR-022 (interim Scan for the two list views; direct
+// PK-Query for the two per-entity views).
+
+// GET /api/instagram/contacts — DM contact list for the Messages tab. Interim
+// Scan of this company's IGCONTACT# CURRENT items (ADR-022 D2.1), drained + sorted
+// by lastMessageAt (ISO, sorts lexically), paginated in-memory. Each contact
+// carries a pendingFollowGate flag from a single AUTO_WAIT#{companyId} read.
+router.get('/contacts', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+    const limit  = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+
+    const items = [];
+    let lek;
+    do {
+      const r = await dynamodb.scan({
+        TableName: TABLE,
+        FilterExpression: 'begins_with(PK, :pfx) AND SK = :sk',
+        ExpressionAttributeValues: { ':pfx': igContactPK(companyId, ''), ':sk': igContactSK() },
+        ...(lek && { ExclusiveStartKey: lek }),
+      }).promise();
+      items.push(...(r.Items ?? []));
+      lek = r.LastEvaluatedKey;
+    } while (lek);
+
+    items.sort((a, b) => String(b.lastMessageAt ?? '').localeCompare(String(a.lastMessageAt ?? '')));
+
+    const pending = await AutomationEngine.pendingInstagramReplyIgsids(companyId);
+
+    const contacts = items.slice(offset, offset + limit).map((c) => ({
+      igsid: c.igsid,
+      igUsername: c.igUsername ?? null,
+      tags: c.tags ?? [],
+      lastMessageAt: c.lastMessageAt ?? null,
+      createdAt: c.createdAt ?? null,
+      pendingFollowGate: pending.has(c.igsid),
+    }));
+
+    res.json({ contacts, total: items.length, hasMore: offset + limit < items.length });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/instagram/contacts/:igsid/messages — one contact's DM history. Direct
+// PK-Query on IGCONTACT#{companyId}#{igsid}, MSG# items only, newest-first then
+// reversed to chronological (oldest→newest) for a thread view.
+router.get('/contacts/:igsid/messages', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+    const { igsid } = req.params;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 200);
+
+    const r = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :msg)',
+      ExpressionAttributeValues: { ':pk': igContactPK(companyId, igsid), ':msg': 'MSG#' },
+      ScanIndexForward: false, // newest first, so Limit keeps the latest N…
+      Limit: limit,
+    }).promise();
+
+    const messages = (r.Items ?? []).map((m) => ({
+      mid: m.igMid ?? null,
+      direction: m.direction,
+      content: m.content,
+      timestamp: m.timestamp,
+      type: m.type ?? 'text',
+    })).reverse(); // …then reverse to chronological for display
+
+    res.json({ igsid, messages });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/instagram/posts — post list for the Comments tab. Interim Scan of this
+// company's IGPOST# META summaries (ADR-022 D2.1), sorted by lastCommentAt, each
+// carrying the best-effort total/unreplied badge counts.
+router.get('/posts', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+
+    const items = [];
+    let lek;
+    do {
+      const r = await dynamodb.scan({
+        TableName: TABLE,
+        FilterExpression: 'begins_with(PK, :pfx) AND SK = :sk',
+        ExpressionAttributeValues: { ':pfx': igPostPK(companyId, ''), ':sk': igPostMetaSK() },
+        ...(lek && { ExclusiveStartKey: lek }),
+      }).promise();
+      items.push(...(r.Items ?? []));
+      lek = r.LastEvaluatedKey;
+    } while (lek);
+
+    items.sort((a, b) => String(b.lastCommentAt ?? '').localeCompare(String(a.lastCommentAt ?? '')));
+
+    const posts = items.map((p) => ({
+      mediaId: p.mediaId,
+      mediaProductType: p.mediaProductType ?? null,
+      totalComments: p.totalComments ?? 0,
+      unrepliedComments: p.unrepliedComments ?? 0,
+      firstCommentAt: p.firstCommentAt ?? null,
+      lastCommentAt: p.lastCommentAt ?? null,
+    }));
+
+    res.json({ posts });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/instagram/posts/:mediaId/comments — one post's comments. Direct
+// PK-Query on IGPOST#{companyId}#{mediaId}, CMT# items only (the META summary is
+// excluded by the begins_with), newest-first.
+router.get('/posts/:mediaId/comments', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const companyId = req.user.companyId;
+    const { mediaId } = req.params;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 200);
+
+    const r = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :cmt)',
+      ExpressionAttributeValues: { ':pk': igPostPK(companyId, mediaId), ':cmt': 'CMT#' },
+      ScanIndexForward: false, // newest first
+      Limit: limit,
+    }).promise();
+
+    const comments = (r.Items ?? []).map((c) => ({
+      commentId: c.commentId,
+      commenterIgsid: c.commenterIgsid ?? null,
+      fromUsername: c.fromUsername ?? null,
+      commentText: c.commentText,
+      timestamp: c.timestamp,
+      replyStatus: c.replyStatus ?? 'unreplied',
+      repliedAt: c.repliedAt ?? null,
+    }));
+
+    res.json({ mediaId, comments });
+  } catch (err) {
     next(err);
   }
 });
@@ -287,6 +437,17 @@ async function processCommentEvent(companyId, igBusinessAccountId, value) {
     mediaProductType: value.media?.media_product_type ?? null,
   }).catch((e) => logger.warn('Instagram comment store failed: ' + e.message));
 
+  // Live push for the Instagram page's Comments tab (PR2). Awaited before the
+  // webhook's res.sendStatus(200) so it fires inside this Lambda invocation
+  // (same freeze-avoidance reason as whatsapp.js). Best-effort — a WS failure
+  // must never block automation dispatch.
+  await notifyCompany(companyId, {
+    event: 'instagram_comment',
+    mediaId, commentId,
+    username: value.from?.username ?? null,
+    preview: commentText.slice(0, 100),
+  }).catch((e) => logger.warn('Instagram comment WS push failed: ' + e.message));
+
   const { runAutomations } = require('./automations');
   await runAutomations(companyId, 'comment_received', {
     contactId: commenterIgsid, igsid: commenterIgsid, commentId, mediaId, commentTs,
@@ -388,6 +549,19 @@ router.post('/webhook', async (req, res) => {
             await InstagramContactService.recordMessage(companyId, igsid, {
               direction: 'inbound', content: messageText, timestamp: event.timestamp ?? Date.now(), mid: event.message?.mid,
             });
+
+            // Live push for the Instagram page's Messages tab (PR2). Fires for
+            // every inbound DM — including one that resumes a Follow Gate below —
+            // since the message should appear in the thread live regardless.
+            // Awaited before the handler's res.sendStatus(200) (Lambda-freeze
+            // avoidance); best-effort so a WS failure never blocks processing.
+            await notifyCompany(companyId, {
+              event: 'instagram_message',
+              igsid,
+              username: contact.igUsername ?? null,
+              preview: messageText.slice(0, 100),
+              direction: 'inbound',
+            }).catch((e) => logger.warn('Instagram message WS push failed: ' + e.message));
 
             // A DM that resumes a paused Follow Gate (the user replied to DM #1)
             // is CONSUMED by that gate: it sends DM #2 and must NOT also fire

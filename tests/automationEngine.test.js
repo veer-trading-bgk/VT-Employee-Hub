@@ -2555,6 +2555,21 @@ describe('AutomationEngine — Instagram comment-to-DM + Follow Gate (ADR-021)',
     expect(InstagramSendService.sendText).not.toHaveBeenCalled();
   });
 
+  test('pendingInstagramReplyIgsids returns the set of IGSIDs with a paused gate, ignoring phone/button waits (backs the pendingFollowGate badge)', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [
+      { awaitReply: { igsid: 'ig_a' } },
+      { awaitReply: { igsid: 'ig_b' } },
+      { awaitReply: { phone: '9000000000', expectedButtonIds: ['X'] } }, // WhatsApp wait — no igsid
+      { /* a plain time-wait, no awaitReply */ },
+    ] }));
+
+    const set = await engine.pendingInstagramReplyIgsids(CID);
+
+    expect([...set].sort()).toEqual(['ig_a', 'ig_b']);
+    // Same AUTO_WAIT#{companyId} partition query resumeOnInstagramReply uses.
+    expect(dynamodb.query.mock.calls[0][0].ExpressionAttributeValues[':pk']).toBe(`AUTO_WAIT#${CID}`);
+  });
+
   test('a timeout resume (no reply arrived) does NOT send DM #2 — the flow just ends', async () => {
     const context  = { commentId: COMMENT_ID, igsid: RECIP };
     const execItem = makeExecItem({ path: [{ nodeId: 'n2', type: 'wait_instagram_reply', status: 'waiting_reply' }] });
