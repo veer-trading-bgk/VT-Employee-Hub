@@ -32,25 +32,28 @@ async function get(companyId, igsid) {
 }
 
 /**
- * Get-or-create. Returns { contact, created }. igUsername (when a caller has
- * one — the inbound webhook path does not, since Meta's messaging event
- * doesn't include it; see instagram.js) refreshes an existing record via a
- * targeted SET rather than blocking on the create race below.
+ * Get-or-create. Returns { contact, created }. `displayName` (Meta's `name`
+ * field — NOT a @username; Instagram's Messaging User Profile API doesn't
+ * expose usernames for DM senders at all, see igGraphApiHelpers.fetchDisplayName)
+ * refreshes an existing record via a targeted SET rather than blocking on the
+ * create race below. Callers only have one when they've already fetched it
+ * (conditionally, when the contact is new or name-less) — see instagram.js's
+ * webhook handler and InstagramSendService.sendPrivateReply.
  */
-async function resolveOrCreate(companyId, igsid, igUsername) {
+async function resolveOrCreate(companyId, igsid, displayName) {
   if (!companyId) throw new Error('[InstagramContactService] companyId is required');
   if (!igsid)      throw new Error('[InstagramContactService] igsid is required');
 
   const existing = await get(companyId, igsid);
   if (existing) {
-    if (igUsername && igUsername !== existing.igUsername) {
+    if (displayName && displayName !== existing.displayName) {
       await dynamodb.update({
         TableName: TABLE,
         Key: { PK: igContactPK(companyId, igsid), SK: igContactSK() },
-        UpdateExpression: 'SET igUsername = :u, updatedAt = :ua',
-        ExpressionAttributeValues: { ':u': igUsername, ':ua': new Date().toISOString() },
+        UpdateExpression: 'SET displayName = :n, updatedAt = :ua',
+        ExpressionAttributeValues: { ':n': displayName, ':ua': new Date().toISOString() },
       }).promise();
-      return { contact: { ...existing, igUsername }, created: false };
+      return { contact: { ...existing, displayName }, created: false };
     }
     return { contact: existing, created: false };
   }
@@ -61,7 +64,7 @@ async function resolveOrCreate(companyId, igsid, igUsername) {
     SK: igContactSK(),
     companyId,
     igsid,
-    igUsername: igUsername ?? null,
+    displayName: displayName ?? null,
     tags: [],
     createdAt: now,
     updatedAt: now,

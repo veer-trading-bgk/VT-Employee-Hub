@@ -148,7 +148,7 @@ router.get('/contacts', authMiddleware, checkRole(['admin']), async (req, res, n
 
     const contacts = items.slice(offset, offset + limit).map((c) => ({
       igsid: c.igsid,
-      igUsername: c.igUsername ?? null,
+      displayName: c.displayName ?? null,
       tags: c.tags ?? [],
       lastMessageAt: c.lastMessageAt ?? null,
       createdAt: c.createdAt ?? null,
@@ -587,10 +587,18 @@ router.post('/webhook', async (req, res) => {
             const messageText = event.message?.text;
             if (typeof messageText !== 'string' || !messageText.trim()) continue; // postbacks/reactions — not v1 (echoes already skipped above)
 
-            // Meta's plain messaging event carries no username (confirmed against
-            // the official payload example) — igUsername stays null until a
-            // future profile-lookup enhancement; not built in v1.
-            const { contact } = await InstagramContactService.resolveOrCreate(companyId, igsid, null);
+            // Meta's plain messaging event carries no name at all (confirmed
+            // against the official payload example), so a display name is
+            // fetched separately — only when this contact is new or currently
+            // name-less, never on every message, to avoid an unnecessary Graph
+            // API call on every DM from an already-known contact. Best-effort:
+            // fetchDisplayName never throws, so a lookup failure just leaves
+            // the contact name-less (falls back to the raw igsid in the UI)
+            // rather than blocking message processing.
+            const existingContact = await InstagramContactService.get(companyId, igsid);
+            const displayName = existingContact?.displayName
+              ?? await igGraphApiHelpers.fetchDisplayName(companyId, igsid);
+            const { contact } = await InstagramContactService.resolveOrCreate(companyId, igsid, displayName);
             await InstagramContactService.recordMessage(companyId, igsid, {
               direction: 'inbound', content: messageText, timestamp: event.timestamp ?? Date.now(), mid: event.message?.mid,
             });
@@ -603,7 +611,7 @@ router.post('/webhook', async (req, res) => {
             await notifyCompany(companyId, {
               event: 'instagram_message',
               igsid,
-              username: contact.igUsername ?? null,
+              username: contact.displayName ?? null,
               preview: messageText.slice(0, 100),
               direction: 'inbound',
             }).catch((e) => logger.warn('Instagram message WS push failed: ' + e.message));
@@ -618,7 +626,7 @@ router.post('/webhook', async (req, res) => {
 
             const { runAutomations } = require('./automations');
             await runAutomations(companyId, 'keyword_message', {
-              contactId: igsid, igsid, igUsername: contact.igUsername, messageText, tags: contact.tags ?? [],
+              contactId: igsid, igsid, displayName: contact.displayName, messageText, tags: contact.tags ?? [],
             }).catch((e) => logger.warn('Instagram automation error: ' + e.message));
           }
         }

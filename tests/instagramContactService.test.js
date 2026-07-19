@@ -53,7 +53,7 @@ describe('InstagramContactService.resolveOrCreate', () => {
   });
 
   test('second message from the same igsid: returns the existing record, does not create a duplicate', async () => {
-    const existing = { PK: `IGCONTACT#${CID}#${IGSID}`, SK: 'CURRENT', companyId: CID, igsid: IGSID, igUsername: null, tags: [] };
+    const existing = { PK: `IGCONTACT#${CID}#${IGSID}`, SK: 'CURRENT', companyId: CID, igsid: IGSID, displayName: null, tags: [] };
     dynamodb.get.mockReturnValue(okPromise({ Item: existing }));
 
     const { contact, created } = await InstagramContactService.resolveOrCreate(CID, IGSID, null);
@@ -63,26 +63,26 @@ describe('InstagramContactService.resolveOrCreate', () => {
     expect(dynamodb.put).not.toHaveBeenCalled();
   });
 
-  test('a new igUsername on an existing contact refreshes it via a targeted SET, not a full overwrite', async () => {
-    const existing = { PK: `IGCONTACT#${CID}#${IGSID}`, SK: 'CURRENT', companyId: CID, igsid: IGSID, igUsername: 'old_handle', tags: ['vip'] };
+  test('a new displayName on an existing contact refreshes it via a targeted SET, not a full overwrite', async () => {
+    const existing = { PK: `IGCONTACT#${CID}#${IGSID}`, SK: 'CURRENT', companyId: CID, igsid: IGSID, displayName: 'Old Name', tags: ['vip'] };
     dynamodb.get.mockReturnValue(okPromise({ Item: existing }));
     dynamodb.update.mockReturnValue(okPromise());
 
-    const { contact } = await InstagramContactService.resolveOrCreate(CID, IGSID, 'new_handle');
+    const { contact } = await InstagramContactService.resolveOrCreate(CID, IGSID, 'New Name');
 
-    expect(contact.igUsername).toBe('new_handle');
-    expect(contact.tags).toEqual(['vip']); // untouched by the username refresh
+    expect(contact.displayName).toBe('New Name');
+    expect(contact.tags).toEqual(['vip']); // untouched by the name refresh
     expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
       Key: { PK: `IGCONTACT#${CID}#${IGSID}`, SK: 'CURRENT' },
-      UpdateExpression: 'SET igUsername = :u, updatedAt = :ua',
-      ExpressionAttributeValues: { ':u': 'new_handle', ':ua': expect.any(String) },
+      UpdateExpression: 'SET displayName = :n, updatedAt = :ua',
+      ExpressionAttributeValues: { ':n': 'New Name', ':ua': expect.any(String) },
     }));
   });
 
   test('concurrent first-message race: the create loses to a conditional-put conflict, so it reads and returns the winner instead of a phantom draft', async () => {
     dynamodb.get
       .mockReturnValueOnce(okPromise({})) // no existing record on the first check
-      .mockReturnValueOnce(okPromise({ Item: { PK: `IGCONTACT#${CID}#${IGSID}`, SK: 'CURRENT', companyId: CID, igsid: IGSID, igUsername: null, tags: [] } })); // the winner's record
+      .mockReturnValueOnce(okPromise({ Item: { PK: `IGCONTACT#${CID}#${IGSID}`, SK: 'CURRENT', companyId: CID, igsid: IGSID, displayName: null, tags: [] } })); // the winner's record
     dynamodb.put.mockReturnValue({
       promise: () => Promise.reject(Object.assign(new Error('conditional'), { code: 'ConditionalCheckFailedException' })),
     });

@@ -45,7 +45,7 @@ function ContactList({ contacts, isLoading, isError, onRetry, activeIgsid, onSel
           <EmptyState icon={MessageSquare} title="No conversations yet" description="Instagram DMs will appear here once people message you." />
         ) : (
           contacts.map((c) => {
-            const name = c.igUsername ? `@${c.igUsername}` : c.igsid;
+            const name = c.displayName ?? c.igsid;
             const active = c.igsid === activeIgsid;
             return (
               <button
@@ -96,7 +96,7 @@ function Thread({ contact }: { contact: IgContact | null }) {
     return <div className="flex h-full flex-1 items-center justify-center text-sm text-neutral-400">Select a conversation</div>;
   }
 
-  const name = contact.igUsername ? `@${contact.igUsername}` : contact.igsid;
+  const name = contact.displayName ?? contact.igsid;
   const messages = data?.messages ?? [];
 
   // Messages arrive chronological from the API; group by day for separators.
@@ -110,7 +110,7 @@ function Thread({ contact }: { contact: IgContact | null }) {
 
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
-      {/* Minimal contact card — igUsername only. NO stage/assign/CRM (ADR-020/021). */}
+      {/* Minimal contact card — display name only (never a @username; see types.ts). NO stage/assign/CRM (ADR-020/021). */}
       <div className="flex items-center gap-3 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
         <Avatar name={name} size={32} />
         <div className="min-w-0">

@@ -2343,7 +2343,7 @@ describe('AutomationEngine — send_instagram_message action (Instagram DM autom
     const result = await engine._runAction(
       CID,
       { type: 'send_instagram_message', config: { messageText: 'Thanks for reaching out!' } },
-      { igsid: IGSID, igUsername: 'someuser', messageText: 'demat' },
+      { igsid: IGSID, displayName: 'Some User', messageText: 'demat' },
     );
 
     expect(InstagramSendService.sendText).toHaveBeenCalledWith(CID, IGSID, 'Thanks for reaching out!');

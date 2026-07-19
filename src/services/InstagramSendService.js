@@ -121,9 +121,16 @@ async function sendPrivateReply(companyId, commentId, text) {
   // Persist against the canonical IGSID from the response. resolveOrCreate first
   // (unlike sendText, whose callers always have a pre-existing contact) because
   // a commenter may have no IGCONTACT# yet — recordMessage's bare lastMessageAt
-  // update would otherwise leave a malformed, field-less contact record.
+  // update would otherwise leave a malformed, field-less contact record. The
+  // display name is fetched only when this contact is new or currently
+  // name-less (never on every reply) — same conditional-fetch rule as the
+  // inbound-DM webhook handler; fetchDisplayName never throws, so a lookup
+  // failure just leaves the contact name-less rather than blocking the send.
   if (igsid) {
-    await InstagramContactService.resolveOrCreate(companyId, igsid, null);
+    const existingContact = await InstagramContactService.get(companyId, igsid);
+    const displayName = existingContact?.displayName
+      ?? await igGraphApiHelpers.fetchDisplayName(companyId, igsid);
+    await InstagramContactService.resolveOrCreate(companyId, igsid, displayName);
     await InstagramContactService.recordMessage(companyId, igsid, {
       direction: 'outbound', content: text, timestamp: Date.now(), mid,
     });

@@ -13,7 +13,9 @@
  * analog. See ADR-020.
  */
 
+const axios = require('axios');
 const dynamodb = require('../config/dynamodb');
+const logger = require('../config/logger');
 const { igConfigPK, igConfigSK, igIdConfigPK, igIdConfigSK } = require('../core/entityKeys');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -66,6 +68,33 @@ async function getCompanyByIgBusinessId(igBusinessAccountId) {
   return companyId;
 }
 
+// Look up an Instagram-scoped user's DISPLAY NAME (never a @username — Meta's
+// Messaging User Profile API does not expose usernames for DM senders at all;
+// confirmed against the live API, which rejects a `username` field request
+// with "Tried accessing nonexisting field." `name` is the field readable
+// contact names actually come from). Same scopes already granted
+// (instagram_business_basic + instagram_business_manage_messages) — no new
+// permission needed. Requires the user to have already messaged the business
+// ("user consent"), which both callers (an inbound DM, or a private reply to
+// a commenter) satisfy by construction. Best-effort: returns null on ANY
+// failure rather than throwing — a missing display name is a cosmetic gap
+// (falls back to the raw igsid in the UI), never a reason to fail contact
+// resolution or a message send.
+async function fetchDisplayName(companyId, igsid) {
+  try {
+    const cfg = await getIgConfig(companyId);
+    if (!cfg?.accessToken) return null;
+    const res = await axios.get(`${resolveIgGraphUrl()}/${igsid}`, {
+      params: { fields: 'name', access_token: cfg.accessToken },
+      timeout: 8000,
+    });
+    return res.data?.name ?? null;
+  } catch (e) {
+    logger.warn(`igGraphApiHelpers.fetchDisplayName: ${e.message}`);
+    return null;
+  }
+}
+
 module.exports = {
   IG_GRAPH,
   resolveIgGraphUrl,
@@ -73,4 +102,5 @@ module.exports = {
   getCachedIgConfig,
   invalidateIgConfigCache,
   getCompanyByIgBusinessId,
+  fetchDisplayName,
 };

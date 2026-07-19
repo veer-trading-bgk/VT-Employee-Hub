@@ -3,7 +3,11 @@
 
 export interface IgContact {
   igsid: string;
-  igUsername: string | null;
+  // Meta's "name" field (a display name) — NOT a @username. Instagram's
+  // Messaging User Profile API doesn't expose usernames for DM senders at
+  // all (confirmed against the live API); only IgComment.fromUsername below
+  // is a real handle, sourced from the separate Comments Field API.
+  displayName: string | null;
   tags: string[];
   lastMessageAt: string | null;
   createdAt: string | null;

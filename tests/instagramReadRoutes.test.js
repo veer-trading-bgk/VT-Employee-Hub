@@ -70,10 +70,10 @@ beforeEach(() => {
 describe('GET /api/instagram/contacts', () => {
   const handler = getRouteHandler(instagramRouter, '/contacts', 'get');
 
-  test('lists this company\'s IGCONTACT# CURRENT items, newest-first, with the pendingFollowGate flag', async () => {
+  test('lists this company\'s IGCONTACT# CURRENT items, newest-first, with the pendingFollowGate flag and displayName (never a @username)', async () => {
     dynamodb.scan.mockReturnValue(resolved({ Items: [
-      { igsid: 'ig_1', igUsername: 'alice', tags: ['vip'], lastMessageAt: '2026-07-19T10:00:00.000Z', createdAt: '2026-07-18T00:00:00.000Z' },
-      { igsid: 'ig_2', igUsername: 'bob',   tags: [],      lastMessageAt: '2026-07-19T12:00:00.000Z', createdAt: '2026-07-17T00:00:00.000Z' },
+      { igsid: 'ig_1', displayName: 'Alice Smith', tags: ['vip'], lastMessageAt: '2026-07-19T10:00:00.000Z', createdAt: '2026-07-18T00:00:00.000Z' },
+      { igsid: 'ig_2', displayName: 'Bob Jones',   tags: [],      lastMessageAt: '2026-07-19T12:00:00.000Z', createdAt: '2026-07-17T00:00:00.000Z' },
     ] }));
     AutomationEngine.pendingInstagramReplyIgsids.mockResolvedValue(new Set(['ig_1']));
 
@@ -82,8 +82,8 @@ describe('GET /api/instagram/contacts', () => {
 
     const body = res.json.mock.calls[0][0];
     expect(body.contacts.map((c) => c.igsid)).toEqual(['ig_2', 'ig_1']); // sorted by lastMessageAt desc
-    expect(body.contacts.find((c) => c.igsid === 'ig_1').pendingFollowGate).toBe(true);
-    expect(body.contacts.find((c) => c.igsid === 'ig_2').pendingFollowGate).toBe(false);
+    expect(body.contacts.find((c) => c.igsid === 'ig_1')).toMatchObject({ displayName: 'Alice Smith', pendingFollowGate: true });
+    expect(body.contacts.find((c) => c.igsid === 'ig_2')).toMatchObject({ displayName: 'Bob Jones', pendingFollowGate: false });
     expect(body).toMatchObject({ total: 2, hasMore: false });
   });
 

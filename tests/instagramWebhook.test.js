@@ -32,8 +32,10 @@ jest.mock('../src/services/igGraphApiHelpers', () => ({
   getIgConfig: jest.fn(),
   invalidateIgConfigCache: jest.fn(),
   resolveIgGraphUrl: jest.fn(() => 'https://graph.instagram.com/v24.0'),
+  fetchDisplayName: jest.fn(),
 }));
 jest.mock('../src/services/InstagramContactService', () => ({
+  get: jest.fn(),
   resolveOrCreate: jest.fn(),
   recordMessage: jest.fn(),
 }));
@@ -124,7 +126,13 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
     jest.clearAllMocks();
     verifyMetaWebhookSignature.mockReturnValue(true);
     igGraphApiHelpers.getCompanyByIgBusinessId.mockResolvedValue(CID);
-    InstagramContactService.resolveOrCreate.mockResolvedValue({ contact: { igsid: IGSID, igUsername: null, tags: [] }, created: true });
+    // Default: no existing contact, and Meta has no display name on file either
+    // — the shape that preserves every pre-existing test's resolveOrCreate(CID,
+    // IGSID, null) expectation. Tests specifically about the conditional-fetch
+    // behavior override these explicitly (see the dedicated describe below).
+    InstagramContactService.get.mockResolvedValue(null);
+    igGraphApiHelpers.fetchDisplayName.mockResolvedValue(null);
+    InstagramContactService.resolveOrCreate.mockResolvedValue({ contact: { igsid: IGSID, displayName: null, tags: [] }, created: true });
     InstagramContactService.recordMessage.mockResolvedValue(undefined);
     runAutomations.mockResolvedValue(undefined);
     AutomationEngine.resumeOnInstagramReply.mockResolvedValue(0); // default: no paused Follow Gate
@@ -158,6 +166,55 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
     expect(notifyCompany).toHaveBeenCalledWith(CID, expect.objectContaining({
       event: 'instagram_message', igsid: IGSID, preview: 'hello there', direction: 'inbound',
     }));
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('a brand-new contact (no existing record): fetches a display name from Meta and passes it to resolveOrCreate', async () => {
+    InstagramContactService.get.mockResolvedValue(null); // no existing IGCONTACT#
+    igGraphApiHelpers.fetchDisplayName.mockResolvedValue('Yukta');
+    const res = mockRes();
+    await postWebhook(req({
+      entry: [{ id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, message: { mid: 'mid_new', text: 'hi' } }] }],
+    }), res);
+
+    expect(igGraphApiHelpers.fetchDisplayName).toHaveBeenCalledWith(CID, IGSID);
+    expect(InstagramContactService.resolveOrCreate).toHaveBeenCalledWith(CID, IGSID, 'Yukta');
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
+  test('an existing but name-less contact: still fetches (once) and passes the fetched name through', async () => {
+    InstagramContactService.get.mockResolvedValue({ igsid: IGSID, displayName: null, tags: [] });
+    igGraphApiHelpers.fetchDisplayName.mockResolvedValue('Vivaan');
+    const res = mockRes();
+    await postWebhook(req({
+      entry: [{ id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, message: { mid: 'mid_backfill', text: 'hi again' } }] }],
+    }), res);
+
+    expect(igGraphApiHelpers.fetchDisplayName).toHaveBeenCalledWith(CID, IGSID);
+    expect(InstagramContactService.resolveOrCreate).toHaveBeenCalledWith(CID, IGSID, 'Vivaan');
+  });
+
+  test('an existing contact that ALREADY has a display name: does NOT re-fetch — no unnecessary Graph API call on every message', async () => {
+    InstagramContactService.get.mockResolvedValue({ igsid: IGSID, displayName: 'Already Named', tags: [] });
+    const res = mockRes();
+    await postWebhook(req({
+      entry: [{ id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, message: { mid: 'mid_known', text: 'hi once more' } }] }],
+    }), res);
+
+    expect(igGraphApiHelpers.fetchDisplayName).not.toHaveBeenCalled();
+    expect(InstagramContactService.resolveOrCreate).toHaveBeenCalledWith(CID, IGSID, 'Already Named');
+  });
+
+  test('a fetchDisplayName that resolves null (lookup failed or Meta has no name on file) still processes the message normally', async () => {
+    InstagramContactService.get.mockResolvedValue(null);
+    igGraphApiHelpers.fetchDisplayName.mockResolvedValue(null);
+    const res = mockRes();
+    await postWebhook(req({
+      entry: [{ id: IG_BUSINESS_ID, messaging: [{ sender: { id: IGSID }, message: { mid: 'mid_noname', text: 'hi' } }] }],
+    }), res);
+
+    expect(InstagramContactService.resolveOrCreate).toHaveBeenCalledWith(CID, IGSID, null);
+    expect(InstagramContactService.recordMessage).toHaveBeenCalled();
     expect(res.sendStatus).toHaveBeenCalledWith(200);
   });
 
