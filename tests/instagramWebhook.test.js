@@ -172,6 +172,23 @@ describe('POST /api/instagram/webhook — payload parsing', () => {
     expect(res.sendStatus).toHaveBeenCalledWith(200);
   });
 
+  test('message echo (is_echo true) — skipped entirely: no contact resolve, no record, no keyword fire (guards against self-send 2534014)', async () => {
+    const res = mockRes();
+    // An echo of the business's own outbound reply: sender.id is the BUSINESS
+    // account, recipient.id is the user, and message.text carries the sent text.
+    await postWebhook(req({
+      entry: [{ id: IG_BUSINESS_ID, messaging: [{
+        sender: { id: IG_BUSINESS_ID }, recipient: { id: IGSID },
+        message: { mid: 'mid_echo', is_echo: true, text: 'Hello — welcome!' },
+      }] }],
+    }), res);
+
+    expect(InstagramContactService.resolveOrCreate).not.toHaveBeenCalled();
+    expect(InstagramContactService.recordMessage).not.toHaveBeenCalled();
+    expect(runAutomations).not.toHaveBeenCalled();
+    expect(res.sendStatus).toHaveBeenCalledWith(200);
+  });
+
   test('postback/reaction events with no message.text are skipped silently — not an error', async () => {
     const res = mockRes();
     await postWebhook(req({

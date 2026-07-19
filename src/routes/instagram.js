@@ -214,10 +214,6 @@ router.post('/webhook', async (req, res) => {
   // (WhatsApp) secret rejected every real delivery with 401 (2026-07-18
   // production incident; see verifyMetaWebhookSignature + DECISION_LOG Era 54).
   const sigIg = verifyMetaWebhookSignature(req, process.env.INSTAGRAM_APP_SECRET);
-  // TEMPORARY live diagnostic (remove after verification against real traffic):
-  // confirms the inbound signature validates against the Instagram app secret
-  // and NOT the WhatsApp app secret. Booleans only — no secret or body logged.
-  logger.info(`Instagram webhook sig-diag: ig=${sigIg} meta=${verifyMetaWebhookSignature(req, process.env.META_APP_SECRET)}`);
   if (!sigIg) {
     logger.warn('Instagram webhook signature verification failed');
     return res.sendStatus(401);
@@ -253,6 +249,18 @@ router.post('/webhook', async (req, res) => {
       const igsid = event.sender?.id;
       if (!igsid) continue;
 
+      // Echo of an outbound message (message_echo). Meta delivers one for
+      // EVERY DM the business sends — including the ones this automation itself
+      // sends via InstagramSendService. An echo's sender.id is the BUSINESS
+      // account, not a user, and it carries message.text, so without this guard
+      // it slips past the empty-text filter below, gets mis-keyed as an inbound
+      // from igsid=<our own business id>, and fires keyword_message — which then
+      // tries to DM our own account id and gets Meta error 100 / subcode
+      // 2534014 "The requested user cannot be found" (2026-07-19 production
+      // incident). The outbound message is already persisted by
+      // InstagramSendService.recordMessage, so an echo has nothing to do in v1.
+      if (event.message?.is_echo) continue;
+
       // v1 stubs — logged, not processed, structurally ready for v2.
       if (event.message?.reply_to?.story) {
         logger.info(`Instagram webhook: story reply received, deferred (v1 stub), igsid=${igsid}`);
@@ -264,7 +272,7 @@ router.post('/webhook', async (req, res) => {
       }
 
       const messageText = event.message?.text;
-      if (typeof messageText !== 'string' || !messageText.trim()) continue; // postbacks/reactions/echoes — not v1
+      if (typeof messageText !== 'string' || !messageText.trim()) continue; // postbacks/reactions — not v1 (echoes already skipped above)
 
       // Meta's plain messaging event carries no username (confirmed against
       // the official payload example) — igUsername stays null until a
