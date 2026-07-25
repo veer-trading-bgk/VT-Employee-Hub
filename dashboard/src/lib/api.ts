@@ -183,6 +183,24 @@ export const api = {
 
   logout: () => apiFetch('/api/auth/logout', { method: 'POST', retries: 0 }),
 
+  // Self-service password reset. Named distinctly from the existing
+  // admin-initiated `resetPassword` (PUT /api/admin/employees/:id/reset-password)
+  // above — different auth model (unauthenticated + a token proves identity,
+  // vs an authenticated admin acting on someone else's account).
+  requestPasswordReset: (email: string) =>
+    apiFetch<{ success: true; message: string }>('/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+      retries: 0,
+    }),
+
+  confirmPasswordReset: (token: string, newPassword: string) =>
+    apiFetch<{ success: true; message: string }>('/api/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, newPassword }),
+      retries: 0,
+    }),
+
   me: () => apiFetch<UserShape>('/api/auth/me'),
 
   // B3 finding #11 — self-service profile update. Field allowlist is

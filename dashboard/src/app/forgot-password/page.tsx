@@ -2,18 +2,32 @@
 
 import { useState, FormEvent } from 'react';
 import Link from 'next/link';
+import { api, ApiClientError } from '@/lib/api';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 1000));
-    setSent(true);
-    setSubmitting(false);
+    setError(null);
+    try {
+      // Backend always returns the same { success: true, message } body
+      // whether or not this email is registered — deliberate, see
+      // src/routes/auth.js's POST /forgot-password. `sent` only reflects
+      // "the request went through", never whether an account exists.
+      await api.requestPasswordReset(email);
+      setSent(true);
+    } catch (err) {
+      // Only a malformed email or a network/rate-limit failure reaches
+      // here — a real vs. non-existent registered email both resolve above.
+      setError(err instanceof ApiClientError ? err.message : 'Something went wrong. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -52,6 +66,11 @@ export default function ForgotPasswordPage() {
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
+              {error && (
+                <div className="rounded-lg border border-rose-800 bg-rose-950/50 px-3 py-2 text-sm text-rose-300">
+                  {error}
+                </div>
+              )}
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-slate-300">Email address</label>
                 <input
