@@ -34,7 +34,7 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 // Graph URL/config helpers extracted to a shared module (also used by
 // WhatsAppSendService and FlowManagementService). resolveGraphUrl keeps its
 // historical local name so this file's ~40 call sites read unchanged.
-const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig } = require('../services/graphApiHelpers');
+const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks } = require('../services/graphApiHelpers');
 function mediaTypeFromMime(mimeType) {
   if (mimeType.startsWith('image/')) return 'image';
   if (mimeType.startsWith('video/')) return 'video';
@@ -343,8 +343,23 @@ router.get('/auth/callback', async (req, res) => {
       invalidatePhoneIdCache(phoneNumberId);
     }
 
+    let webhookResult = { subscribed: false };
+    if (wabaId) {
+      webhookResult = await subscribeWabaWebhooks({ wabaId, accessToken });
+    }
+
     logger.info(`WABA connected for company ${companyId}: ${phoneNumber}`);
-    res.send(popupHtml(true, `Connected: ${phoneNumber ?? 'WhatsApp Business'}`));
+    // Two genuinely different failure cases, previously conflated under one
+    // "webhook subscription failed" message: wabaId === null means Meta
+    // never returned a WABA at all, so subscribeWabaWebhooks was never even
+    // called — telling the user to "check the WhatsApp Health Check" is
+    // misleading, since there was nothing to subscribe in the first place.
+    const connectMessage = !wabaId
+      ? `Connected: ${phoneNumber ?? 'WhatsApp Business'} (no WhatsApp Business Account found on this Meta account — WhatsApp features will not work until a WABA is linked)`
+      : webhookResult.subscribed
+        ? `Connected: ${phoneNumber ?? 'WhatsApp Business'}`
+        : `Connected: ${phoneNumber ?? 'WhatsApp Business'} (webhook subscription failed — check the WhatsApp Health Check in Settings)`;
+    res.send(popupHtml(true, connectMessage));
   } catch (err) {
     // logger.error only extracts .message from Error instances — passing
     // err.response.data (a plain object) straight through renders as
@@ -454,8 +469,15 @@ router.post('/manual-connect', authMiddleware, checkRole(['admin']), async (req,
     }).promise();
     invalidatePhoneIdCache(phoneNumberId.trim());
 
+    const webhookResult = await subscribeWabaWebhooks({ wabaId, accessToken: accessToken.trim() });
+
     logger.info(`WABA manually connected for company ${req.user.companyId}: ${phoneNumber}`);
-    res.json({ success: true, phoneNumber });
+    res.json({
+      success: true,
+      phoneNumber,
+      webhookSubscribed: webhookResult.subscribed,
+      ...(!webhookResult.subscribed && { webhookWarning: `Webhook subscription failed — inbound messages will not be delivered until this is fixed. ${webhookResult.error}` }),
+    });
   } catch (err) {
     logger.error('manual-connect error', err);
     next(err);

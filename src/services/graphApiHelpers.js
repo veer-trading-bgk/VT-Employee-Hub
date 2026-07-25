@@ -14,6 +14,8 @@
  */
 
 const dynamodb = require('../config/dynamodb');
+const axios = require('axios');
+const logger = require('../config/logger');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0'}`;
@@ -62,6 +64,30 @@ function detectInvalidWabaConfig(cfg) {
   return null;
 }
 
+// Subscribe the app to receive Meta webhooks (messages/status updates) for a
+// WABA. Meta requires this call (POST /{waba-id}/subscribed_apps) separately
+// from storing credentials -- without it, inbound messages/status updates
+// silently never arrive. Called at connect time from both manual-connect and
+// the OAuth callback. Never throws -- a subscribe failure must never fail the
+// connect itself, since the WABA config write already succeeded and should stand.
+async function subscribeWabaWebhooks(cfg) {
+  try {
+    const url = `${resolveGraphUrl(cfg)}/${cfg.wabaId}/subscribed_apps`;
+    await axios.post(url, null, { params: { access_token: cfg.accessToken }, timeout: 10000 });
+    return { subscribed: true };
+  } catch (e) {
+    // Never log e.config/e.request here -- they carry the raw access_token in
+    // the request params. Only e.response.data (Meta's own error body) and
+    // e.response.status are safe; neither ever echoes the token back.
+    const rawError = e.response?.data ?? { message: e.message };
+    logger.error(
+      `subscribeWabaWebhooks: failed to subscribe wabaId=${cfg.wabaId} (status ${e.response?.status ?? 'n/a'})`,
+      JSON.stringify(rawError),
+    );
+    return { subscribed: false, error: rawError?.error?.message ?? e.message ?? 'Webhook subscription failed', rawError };
+  }
+}
+
 module.exports = {
   GRAPH,
   resolveGraphUrl,
@@ -69,4 +95,5 @@ module.exports = {
   getCachedWabaConfig,
   invalidateConfigCache,
   detectInvalidWabaConfig,
+  subscribeWabaWebhooks,
 };
