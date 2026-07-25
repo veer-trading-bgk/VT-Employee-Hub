@@ -3,10 +3,11 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const speakeasy = require('speakeasy');
 const { randomUUID } = require('crypto');
-const { loginSchema, registerSchema, verifyTotpSchema, verifyBackupSchema, companySignupSchema, selfProfileUpdateSchema } = require('../utils/validation');
+const { loginSchema, forgotPasswordSchema, resetPasswordSchema, registerSchema, verifyTotpSchema, verifyBackupSchema, companySignupSchema, selfProfileUpdateSchema } = require('../utils/validation');
 const { logAudit } = require('../utils/audit');
 const { encrypt, decrypt } = require('../utils/encryption');
-const { loginRateLimiter } = require('../middleware/rateLimiter');
+const { loginRateLimiter, passwordResetRateLimiter, rateLimit } = require('../middleware/rateLimiter');
+const PasswordResetService = require('../services/PasswordResetService');
 const { authMiddleware, fetchCompanyPlan } = require('../middleware/auth');
 const { totpRateLimitCheck, recordTotpFailure, clearTotpAttempts } = require('../middleware/totpRateLimiter');
 const dynamodb = require('../config/dynamodb');
@@ -156,6 +157,103 @@ router.post('/login', async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+});
+
+// ── POST /api/auth/forgot-password ────────────────────────────────────────────
+// Public, unauthenticated. MUST return an identical response whether or not
+// the email is registered — anything that differs (status code, body shape,
+// or an error surfacing instead of the generic success body) is an
+// account-enumeration oracle. SES send failures (including the expected
+// sandbox-mode "unverified recipient" case) are swallowed for the same
+// reason — see PasswordResetService.sendResetEmail.
+//
+// Known residual gap, deliberately not addressed here: response TIMING
+// still differs between the two branches (real users get an extra DynamoDB
+// write + SES API call; unknown emails return almost immediately), which is
+// a theoretical timing side-channel on top of the response-body identity
+// this route does guarantee. Flagging rather than silently fixing — closing
+// it would mean adding a fake delay calibrated against SES's own variable
+// latency, a real design decision, not a silent addition.
+const GENERIC_FORGOT_PASSWORD_RESPONSE = {
+  success: true,
+  message: "If that email is registered, we've sent a reset link.",
+};
+
+router.post('/forgot-password', rateLimit(10, 60_000), async (req, res, next) => {
+  let email;
+  try {
+    ({ email } = forgotPasswordSchema.parse(req.body));
+  } catch (err) {
+    return next(err); // malformed input (not email-shaped) isn't an enumeration signal
+  }
+
+  try {
+    if (await passwordResetRateLimiter.isBlocked(email)) {
+      logger.warn(`Password reset rate-limited for ${email} from ${req.ip}`);
+      return res.json(GENERIC_FORGOT_PASSWORD_RESPONSE);
+    }
+    await passwordResetRateLimiter.recordAttempt(email);
+
+    const user = await findUserByEmail(email);
+    // Inactive accounts never get a token — otherwise a deactivated
+    // employee (fired/suspended) could use a still-working reset link to
+    // regain access via a path that was never meant to touch account status.
+    if (user && user.status !== 'inactive') {
+      const token = await PasswordResetService.createResetToken(user);
+      await PasswordResetService.sendResetEmail(user.email, token);
+      await logAudit(user.id, 'password_reset_requested', email, 'success', req.ip, {}, user.companyId).catch(() => {});
+    } else {
+      await logAudit('unknown', 'password_reset_requested', email, 'no_such_account_or_inactive', req.ip).catch(() => {});
+    }
+  } catch (err) {
+    logger.error('forgot-password: unexpected error', err);
+    // Fall through — never let an internal error surface as anything other
+    // than the same generic response.
+  }
+
+  res.json(GENERIC_FORGOT_PASSWORD_RESPONSE);
+});
+
+// ── POST /api/auth/reset-password ─────────────────────────────────────────────
+// Public, unauthenticated. Token carries no company/user info the client
+// needs to supply — validateAndClaimToken looks it up and atomically
+// single-use-claims it in one call (see PasswordResetService).
+router.post('/reset-password', rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const { token, newPassword } = resetPasswordSchema.parse(req.body);
+
+    const claim = await PasswordResetService.validateAndClaimToken(token);
+    if (!claim.valid) {
+      // Deliberately one generic message for missing/expired/already-used —
+      // distinguishing them gives an attacker probing a token they don't
+      // hold extra information for free.
+      return res.status(400).json({ error: 'This reset link is invalid or has expired. Please request a new one.' });
+    }
+
+    const hashed = await bcrypt.hash(newPassword, 10);
+    await dynamodb.update({
+      TableName: process.env.DYNAMODB_TABLE_EMPLOYEES,
+      Key: { id: claim.employeeId },
+      // NOTE: field is "password", not "passwordHash" — matches recover-admin.js's
+      // own comment on this exact point. Deliberately does NOT touch `status`:
+      // unlike recover-admin.js (an operator tool), a self-service reset must
+      // never be able to reactivate an account an admin deactivated.
+      UpdateExpression: 'SET #pw = :hash, updatedAt = :now',
+      ExpressionAttributeNames: { '#pw': 'password' },
+      ExpressionAttributeValues: { ':hash': hashed, ':now': new Date().toISOString() },
+    }).promise();
+
+    // A successful reset proves ownership of the account's email — clear
+    // any login lockout too, so a locked-out user isn't still stuck for the
+    // rest of the window after proving who they are.
+    await loginRateLimiter.reset(claim.email).catch(() => {});
+    await logAudit(claim.employeeId, 'password_reset_completed', claim.email, 'success', req.ip).catch(() => {});
+    logger.info(`Password reset completed for ${claim.email}`);
+
+    res.json({ success: true, message: 'Password reset successful. You can now log in with your new password.' });
+  } catch (err) {
+    next(err);
   }
 });
 

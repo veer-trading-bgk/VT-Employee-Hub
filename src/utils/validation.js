@@ -65,6 +65,22 @@ const loginSchema = z.object({
   password: z.string().min(8, 'Password must be at least 8 characters')
 });
 
+// Self-service password reset (2026-07-25). newPassword rule intentionally
+// matches scripts/recover-admin.js's validatePassword() (8+ chars, 1
+// uppercase, 1 number) — not registerSchema's stricter 12-char/special-char
+// rule below — per explicit spec.
+const forgotPasswordSchema = z.object({
+  email: z.string().email('Invalid email'),
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(1, 'Token is required'),
+  newPassword: z.string()
+    .min(8, 'Password must be at least 8 characters')
+    .regex(/[A-Z]/, 'Password must contain an uppercase letter')
+    .regex(/[0-9]/, 'Password must contain a number'),
+});
+
 // Settings > AI tab — master switch + per-useCase module toggles (ADR-015 point 13).
 const aiConfigSchema = z.object({
   masterEnabled: z.boolean(),
@@ -410,6 +426,8 @@ const welcomeConfigSchema = z.object({
 
 module.exports = {
   loginSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
   stripStorageMetadata,
   aiConfigSchema,
   aiAdminGeneralSchema,

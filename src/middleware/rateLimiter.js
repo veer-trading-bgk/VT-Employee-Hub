@@ -112,4 +112,39 @@ const loginRateLimiter = {
   },
 };
 
-module.exports = { rateLimit, apiKeyRateLimit, loginRateLimiter, atomicIncrement, getCount };
+// ── Per-email password-reset rate limiter ─────────────────────────────────────
+// Same shape/primitive as loginRateLimiter, lower threshold: legitimate use
+// rarely needs more than 1-2 requests, and without this an attacker (or an
+// impatient real user) could email-bomb a victim's inbox with reset links,
+// or repeatedly churn SES sends during the sandbox-mode/production-quota
+// period. Deliberately does NOT block the HTTP response when tripped — see
+// auth.js's /forgot-password, which still returns its identical generic
+// response either way (an observable "you're rate-limited" response would
+// itself leak that the email is registered, same as any other differing
+// response would).
+const MAX_RESET_REQUESTS = 3;
+const RESET_WINDOW_MS = 15 * 60 * 1000;
+
+function resetWindowKey(email) {
+  const windowStart = Math.floor(Date.now() / RESET_WINDOW_MS) * RESET_WINDOW_MS;
+  return { pk: `pwreset_limit#${email.toLowerCase()}`, sk: `window#${windowStart}` };
+}
+
+const passwordResetRateLimiter = {
+  async isBlocked(email) {
+    const { pk, sk } = resetWindowKey(email);
+    const count = await getCount(pk, sk);
+    return count >= MAX_RESET_REQUESTS;
+  },
+
+  async recordAttempt(email) {
+    const { pk, sk } = resetWindowKey(email);
+    const count = await atomicIncrement(pk, sk, RESET_WINDOW_MS);
+    if (count >= MAX_RESET_REQUESTS) {
+      logger.warn(`Password reset rate-limited by email: ${email} (${count} requests)`);
+    }
+    return count;
+  },
+};
+
+module.exports = { rateLimit, apiKeyRateLimit, loginRateLimiter, passwordResetRateLimiter, atomicIncrement, getCount };

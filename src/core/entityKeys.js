@@ -132,7 +132,30 @@ function igPostPK(companyId, mediaId)          { return `IGPOST#${companyId}#${m
 function igPostMetaSK()                         { return 'META'; }
 function igPostCommentSK(timestamp, commentId) { return `CMT#${timestamp}#${commentId}`; }
 
+// Password reset token (2026-07-25) — single-use, TTL'd claim, looked up
+// directly by the token value from the reset link (not scoped by
+// company/employee first), so PK is keyed on the token itself for O(1)
+// lookup. Same "atomic claim via conditional update" idiom as IDEM#, but
+// single-use (SET usedAt with ConditionExpression: attribute_not_exists)
+// rather than delete-based.
+// TTL: DynamoDB TTL attribute 'ttl' is set for eventual cleanup, but the
+// authoritative expiry check is the explicit `expiresAt` field compared
+// against Date.now() in PasswordResetService — DynamoDB TTL deletion is
+// NOT instantaneous (AWS docs: up to 48h), so it cannot be relied on alone
+// for security enforcement.
+// PK = PWRESET#${token}  SK = TOKEN
+function pwResetPK(token) { return `PWRESET#${token}`; }
+function pwResetSK()       { return 'TOKEN'; }
+
 // ─── EMPLOYEES TABLE ──────────────────────────────────────────────────────────
+// NOTE (2026-07-25): the real, live key schema for this table is a SIMPLE
+// `{ id }` partition key — verified against every actual dynamodb.get/
+// update/delete/put call site (auth.js, admin.js, recover-admin.js all use
+// `Key: { id }`). empPK/empSK below do NOT match live usage anywhere in
+// this codebase; do not use them for new EMPLOYEES-table code. Left as-is
+// rather than deleted, since removing them is outside this change's scope
+// — flagging here so the next reader doesn't get misled the way this one
+// almost did.
 
 // Employee entity
 // PK = EMP#${companyId}  SK = ${employeeId}
@@ -208,6 +231,9 @@ module.exports = {
   igPostPK,
   igPostMetaSK,
   igPostCommentSK,
+  // Password reset token
+  pwResetPK,
+  pwResetSK,
   // Employees
   empPK,
   empSK,
