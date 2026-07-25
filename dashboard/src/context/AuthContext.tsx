@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
+import * as Sentry from '@sentry/nextjs';
 import { api, ApiClientError, UserShape, setMemoryToken } from '@/lib/api';
 import type { User } from '@/types';
 
@@ -75,6 +76,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     })();
   }, [pathname, refreshUser]);
+
+  // Tags every Sentry event captured in this browser tab with the current
+  // session's companyId — the single most useful piece of context for
+  // triaging which customer hit what in a multi-tenant app. A single global
+  // tag is safe here (unlike the Lambda side, one tab = one user).
+  useEffect(() => {
+    if (!user) {
+      Sentry.setUser(null);
+      return;
+    }
+    // BFSI data — id only, no email/PII sent to third-party Sentry.
+    Sentry.setUser({ id: user.id });
+    if (user.companyId) Sentry.setTag('companyId', user.companyId);
+  }, [user]);
 
   // Global handler: apiFetch dispatches this when a 401 survives even after a
   // token refresh attempt — meaning the refresh token is also expired/invalid.

@@ -18,6 +18,7 @@ jest.mock('../src/config/logger', () => ({
 
 const { errorHandler } = require('../src/middleware/errorHandler');
 const { loginSchema, addMetricSchema } = require('../src/utils/validation');
+const logger = require('../src/config/logger');
 
 function mockRes() {
   return { status: jest.fn().mockReturnThis(), json: jest.fn() };
@@ -90,5 +91,30 @@ describe('errorHandler — ZodError branch', () => {
     const [jsonBody] = res.json.mock.calls[0];
     expect(jsonBody.error).toBe('Something else broke');
     expect(jsonBody.details).toBeUndefined(); // never present outside the ZodError branch
+  });
+});
+
+describe('errorHandler — companyId forwarded to logger.error (Sentry tagging)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  test('an authenticated request forwards req.user.companyId as the 3rd arg', () => {
+    const res = mockRes();
+    const err = new Error('Something else broke');
+    const req = { ip: '127.0.0.1', user: { id: 'u1', companyId: 'company_123' } };
+
+    errorHandler(err, req, res, jest.fn());
+
+    expect(logger.error).toHaveBeenCalledWith('Error occurred', err, 'company_123');
+  });
+
+  test('an unauthenticated/public request (no req.user) forwards undefined, not a crash', () => {
+    const res = mockRes();
+    const err = new Error('Something else broke');
+    const req = { ip: '127.0.0.1' };
+
+    errorHandler(err, req, res, jest.fn());
+
+    expect(logger.error).toHaveBeenCalledWith('Error occurred', err, undefined);
+    expect(res.status).toHaveBeenCalledWith(500);
   });
 });

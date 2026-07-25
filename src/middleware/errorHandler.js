@@ -20,8 +20,11 @@ const errorHandler = (err, req, res, next) => {
     return res.status(401).json({ error: 'Invalid token' });
   }
 
-  // Everything else is a real server error — alert on Telegram
-  logger.error('Error occurred', err);
+  // Everything else is a real server error — alert on Telegram + Sentry.
+  // companyId tags the Sentry event when this is an authenticated request
+  // (authMiddleware sets req.user); public/webhook routes have no req.user
+  // and the event is simply reported untagged.
+  logger.error('Error occurred', err, req.user?.companyId);
 
   // Default error
   res.status(err.status || 500).json({

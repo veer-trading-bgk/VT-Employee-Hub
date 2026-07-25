@@ -38,9 +38,13 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
+
+# Sentry build plugin writes a local auth token file here during `next build`
+.env.sentry-build-plugin
 
 # typescript
 *.tsbuildinfo

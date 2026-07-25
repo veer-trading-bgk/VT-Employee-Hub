@@ -1,5 +1,19 @@
 // AWS Lambda entrypoint. Wraps the existing Express app (src/app.js) with
 // serverless-http so it can run behind API Gateway without any route changes.
+
+// Sentry must init before `require('./app')` — its Node SDK instruments
+// modules (http, etc.) at require-time, so anything required before init
+// runs uninstrumented. SENTRY_DSN comes from the Lambda's plain environment
+// variables (scripts/lambda-env.json), not Secrets Manager, so it's already
+// present at this point — no need to wait on loadSecrets() below.
+// Error-only: no tracesSampleRate set, so no performance/transaction data
+// is collected, just exception/message capture (see logger.js, errorHandler.js).
+const Sentry = require('@sentry/node');
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  environment: process.env.NODE_ENV || 'development',
+});
+
 const serverless = require('serverless-http');
 const { loadSecrets } = require('./config/secrets');
 const app = require('./app');
@@ -35,12 +49,25 @@ exports.handler = async (event, context) => {
   // tokens are long-lived (60 days) but DO expire and need refreshing,
   // unlike WhatsApp's Tech-Provider tokens; self-throttles to once daily.
   // See docs/bible/19_DECISION_LOG.md Era 54.
-  if (event.source === 'aws.events' && event['detail-type'] === 'Scheduled Event') {
-    return Promise.allSettled([
-      runDueCampaigns(), runDueLeadScoring(), AutomationEngine.processAllDueWaits(), runStageMembershipSweep(),
-      runDueInstagramTokenRefresh(),
-    ]);
-  }
+  try {
+    if (event.source === 'aws.events' && event['detail-type'] === 'Scheduled Event') {
+      return await Promise.allSettled([
+        runDueCampaigns(), runDueLeadScoring(), AutomationEngine.processAllDueWaits(), runStageMembershipSweep(),
+        runDueInstagramTokenRefresh(),
+      ]);
+    }
 
-  return handler(event, context);
+    return await handler(event, context);
+  } catch (err) {
+    // Anything that escapes serverless-http itself (as opposed to a route
+    // error, which errorHandler.js/logger.js already report) — genuinely
+    // unhandled at this point.
+    Sentry.captureException(err);
+    throw err;
+  } finally {
+    // Lambda can freeze/kill the process as soon as this function returns —
+    // without an explicit flush, an event captured near the end of an
+    // invocation can be dropped before Sentry's async transport sends it.
+    await Sentry.flush(2000);
+  }
 };

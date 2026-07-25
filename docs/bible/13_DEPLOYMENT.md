@@ -293,7 +293,8 @@ NODE_ENV, JWT_SECRET, JWT_EXPIRE, REFRESH_TOKEN_SECRET, TELEGRAM_BOT_TOKEN,
 TELEGRAM_ADMIN_CHAT_ID, DYNAMODB_TABLE_EMPLOYEES, DYNAMODB_TABLE_METRICS,
 DYNAMODB_TABLE_AUDIT, DYNAMODB_TABLE_BADGES, DYNAMODB_TABLE_USERS, ANTHROPIC_API_KEY,
 ENCRYPTION_KEY, ADMIN_EMAIL, SESSION_TIMEOUT_MINUTES, MAX_LOGIN_ATTEMPTS, FRONTEND_URL,
-META_WEBHOOK_VERIFY_TOKEN, BACKEND_URL, WA_MEDIA_BUCKET, WS_CONNECTIONS_TABLE, WS_ENDPOINT
+META_WEBHOOK_VERIFY_TOKEN, BACKEND_URL, WA_MEDIA_BUCKET, WS_CONNECTIONS_TABLE, WS_ENDPOINT,
+SENTRY_DSN
 ```
 
 This file is the **source of the Lambda's environment variable block** when `deploy:env` is run
@@ -368,6 +369,42 @@ empty cache immediately and does not call AWS at all. Local env vars come from `
 if reachable) — every other environment variable has exactly one source of truth: whatever is
 currently set on the Lambda's configuration, last written by someone running `deploy:env`
 manually. GitHub Actions never touches either layer.
+
+---
+
+## Error Monitoring (Sentry)
+
+Added 2026-07-25. Error capture only — no Slack/email alerting is wired to Sentry yet
+(Telegram, via `src/config/logger.js`'s existing `tgAlert()`, remains the only live
+alert channel). Two independent DSNs, two independent projects (backend Node, frontend
+Next.js) — not shared.
+
+**Backend:** `SENTRY_DSN` — a plain Lambda environment variable (`scripts/lambda-env.json`,
+like every other non-`MANAGED_KEYS` var — see the "two layers" section above), **not** in
+AWS Secrets Manager. `src/handler.js` calls `Sentry.init()` with it before `require('./app')`,
+so it's live for both the EventBridge-scheduler branch and every HTTP request. Capture is
+wired through the existing single point of truth for "this is a reportable error" —
+`src/config/logger.js`'s `error()`/`alert()` (already the source of every Telegram alert) —
+so all ~100 existing `logger.error(...)` call sites got Sentry coverage with no per-call-site
+changes. `errorHandler.js` additionally passes `req.user?.companyId` through for the
+request-scoped 500 path. Blank/unset `SENTRY_DSN` disables the SDK — it's a safe no-op, not
+an error.
+
+**Frontend:** `NEXT_PUBLIC_SENTRY_DSN` — read by `dashboard/src/instrumentation-client.ts`
+(client) and `dashboard/src/instrumentation.ts` (server/edge), the current Next.js
+15.3+/16 instrumentation convention (not the older `sentry.client.config.ts` /
+`sentry.server.config.ts` files — those are superseded for this Next.js version; see
+`dashboard/AGENTS.md`'s warning about relying on pre-15.3 conventions). Tagged with the
+session's `companyId` from `AuthContext.tsx`. Optional `SENTRY_ORG` / `SENTRY_PROJECT` /
+`SENTRY_AUTH_TOKEN` enable source-map upload during `next build` (`next.config.ts`'s
+`withSentryConfig` wrapper) — without them the build just skips that step.
+
+**Important gap vs. every other env var in this chapter:** unlike `AWS_ACCESS_KEY_ID` /
+`VERCEL_TOKEN` / etc., `NEXT_PUBLIC_SENTRY_DSN` (and the optional `SENTRY_ORG`/`SENTRY_PROJECT`/
+`SENTRY_AUTH_TOKEN`) are **not** passed through `deploy.yml` — `deploy-dashboard` never sets
+`NEXT_PUBLIC_*` build vars itself; Vercel's `vercel deploy --prod` builds using whatever env
+vars are configured directly in the Vercel project dashboard. These must be added there by a
+human with Vercel project access — pushing this code alone does not turn frontend capture on.
 
 ---
 
