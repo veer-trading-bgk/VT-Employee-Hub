@@ -183,10 +183,23 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
 
 ## External / waiting-on-Meta
 
-- **Meta App Review — submitted, status "in review."** Submitted 2026-07-12; Meta's stated review
-  window is up to 20 days. The `apforce.in` marketing page and the public legal pages (Privacy
-  Policy, Terms, Data Deletion) were shipped as prerequisites. No action pending on our side —
-  waiting on Meta's response.
+- **Meta App Review — Business Verification and Access Verification both cleared; App Review itself
+  still pending as of 2026-07-25.** Submitted 2026-07-12 (13 days elapsed at last check); Meta's
+  stated review window is up to 20 days, so this is not yet overdue. The `apforce.in` marketing page
+  and the public legal pages (Privacy Policy, Terms, Data Deletion) were shipped as prerequisites.
+  Business Verification and Access Verification — two separate Meta gates that sit ahead of App
+  Review itself — are both confirmed cleared. No action pending on our side — waiting on Meta's
+  response.
+
+  **No Embedded Signup config exists yet.** The current WABA connect flow
+  (`src/routes/whatsapp.js`'s `/auth/callback`, redirecting to `https://www.facebook.com/dialog/oauth`)
+  is plain Facebook Login OAuth, confirmed in code — not Meta's dedicated WhatsApp Embedded Signup JS
+  SDK flow. `docs/bible/19_DECISION_LOG.md`'s mention of "Embedded Signup" refers only to a historical
+  commit message (`2e8bcf3`); no Embedded Signup integration exists in the live codebase today.
+  Standard OAuth is sufficient for the current Tech-Provider-mediated connect flow — Embedded Signup
+  would only become relevant for a future self-service onboarding flow that doesn't require an admin
+  to manually complete Meta's OAuth dialog. Not scoped as work; noted here so it isn't mistaken for
+  already-built.
   *Detail:* `docs/bible/19_DECISION_LOG.md` Era 44.
 - **DNS/email (`apforce.in`, `support@apforce.in`) — fully live, no action needed.** Confirmed
   correct: all 3 DNS records DNS-only/unproxied in Cloudflare, correct values. Listed here only so

@@ -1,5 +1,13 @@
 # Phase 3 — Technical Debt
 
+## entityKeys.js's empPK/empSK Don't Match the Real EMPLOYEES Table Key Shape
+
+**Issue (found 2026-07-25, while building the password-reset feature — unrelated to that feature itself):** `src/core/entityKeys.js`'s `empPK(companyId)` (`EMP#${companyId}`) / `empSK(employeeId)` document a `PK`/`SK` composite key for the EMPLOYEES table that does not match live usage anywhere in the codebase. Every real `dynamodb.get`/`update`/`delete`/`put` call against `DYNAMODB_TABLE_EMPLOYEES` (`auth.js`, `admin.js`, `scripts/recover-admin.js`) uses a simple `Key: { id: employeeId }` — confirmed by grep across every call site, not assumption. `empPK`/`empSK` are unused, aspirational documentation that actively misleads — almost caused the password-reset feature to target the wrong key shape.
+
+**Fix:** either delete `empPK`/`empSK` (and their exports) since nothing uses them, or update the comment to describe the real `{ id }` key shape. Left as-is for now (a comment flagging the discrepancy was added inline instead) since removing/changing shared key-constructor exports is outside the scope of the feature that surfaced this.
+
+**Priority:** Low — no functional bug (nothing currently calls `empPK`/`empSK`), but a real trap for the next person who reaches for them assuming they're accurate.
+
 ## WebSocket Connection URL Embeds the Live Session JWT — dashboard/src/lib/wsClient.ts
 
 **Issue (found 2026-07-25, during a Sentry-scrub audit — unrelated to Sentry itself):** `wsClient.ts`'s `_open()` builds the WebSocket connection URL as `` `${this.baseUrl}?token=${token}` `` (~line 151), embedding the live session JWT — the same token used as the `Authorization: Bearer` header for every other API call (`api.ts`'s `_memToken`) — directly in the URL query string, rather than via a WebSocket subprotocol, an initial post-connect auth message, or similar. Query-string secrets can end up in server access logs and, in some contexts, browser history — a real weakness independent of any specific consumer of that URL.
@@ -1289,3 +1297,37 @@ A sweep of all 35 useQuery call sites in the dashboard found only these 2 — th
 **Fix (not done, deliberately deferred per explicit instruction):** cache `referral` (or just `ctwa_clid` + the derived campaign tag) onto the `INBOX#…#CONTACT` item at the same `if_not_exists`-guarded first-write `whatsapp.js` already does, then read it back and pass it into whichever call eventually does `resolveOrCreate()` for that contact (`ConversationalAgentService.startForLead()`, or the manual CRM "assign unknown contact" flow) — same "config-time capture, execution-time consumption" shape already used elsewhere in this codebase (e.g. `SendLocationConfig`/`SendFlowConfig`), just for referral data instead of workflow config.
 
 **Priority:** Low — this is a data-completeness gap (missing attribution metadata on some leads), not a functional break; the WhatsApp conversation itself proceeds normally either way, and the base case (AI enabled, no first-contact workflow) already captures it correctly.
+
+## `/forgot-password` timing side-channel — existing-vs-non-existent email distinguishable by response latency (found 2026-07-25, adversarial review of the password reset feature)
+
+**Issue:** `POST /forgot-password` is designed to return an identical response body/status regardless of whether the submitted email matches a real account (account-enumeration protection) — but the *time* to produce that response differs measurably between the two cases. An existing, active email takes the full path (GSI lookup via `emailIndex` → token generation → DynamoDB write → SES `sendEmail` call) before responding; a non-existent email short-circuits right after the GSI lookup returns nothing. Measured via live timing tests during this feature's adversarial review: an ~83-90ms delta between the two cases, ~3.5σ effect size — well outside noise, a real, exploitable distinguishing signal for anyone able to send repeated requests and measure response time (a realistic capability against a public unauthenticated endpoint).
+
+**Escalation found in the same review:** the delta is calibratable. Since this app supports company self-signup, an attacker can create their own account with a known email, use it to measure this app's own request/DynamoDB/SES latency baseline under current load, and use that calibration to sharpen the enumeration signal against arbitrary target emails — turning a noisy timing side-channel into a more reliable oracle than the raw delta alone would suggest.
+
+**Fix (not implemented):** pad the fast (non-existent-email) path to match the slow path's typical latency — e.g. an artificial delay sized to the observed real-path duration — or restructure both branches to always perform an equivalent-cost operation (a dummy DynamoDB read/write and a no-op SES call shape) rather than branching early. Needs care: a fixed delay that's too short doesn't close the gap, and one that's too long adds latency to every legitimate request.
+
+**Priority:** Medium — real and measured, not theoretical, but requires an attacker to already be running a timing-analysis campaign against this specific endpoint; not exploitable by casual use. Reported to Viir at the time it was found; deferred pending explicit prioritization, same as the session-invalidation gap (`docs/adr/ADR-023-password-reset-session-invalidation-gap.md`).
+
+**Reference:** `src/routes/auth.js`'s `POST /forgot-password`; `src/services/PasswordResetService.js`'s `createResetToken`/`sendResetEmail`.
+
+## Password reset — previously-issued, unused tokens are not invalidated when a new one is requested (found 2026-07-25, building the self-service password reset feature)
+
+**Issue:** `PasswordResetService.createResetToken()` (`src/services/PasswordResetService.js:26-49`) always writes a brand-new `PWRESET#{token}` item; it never queries for or deletes any prior unclaimed token belonging to the same employee. If a user requests a password reset more than once before using the first link (a common real pattern — "didn't see the email, try again"), multiple valid, unexpired tokens can exist simultaneously for the same account, each independently claimable via `validateAndClaimToken()`'s single-use atomic claim.
+
+**Effect:** low real risk — each token is still an independent 256-bit unguessable value with its own 45-minute TTL, so this doesn't weaken the security of any individual token. The only effect is hygiene: an old reset link a user forgot they generated (e.g. left open in an email client, or an old email thread) stays live and usable until its own TTL expires, rather than being implicitly killed by requesting a newer one.
+
+**Fix (not implemented):** query existing unclaimed tokens for the employee (would need a new access pattern — e.g. a GSI on `employeeId`, since `PWRESET#` is currently only keyed by the token itself with no reverse lookup) and mark them used/deleted when a fresh one is issued. Low value relative to the access-pattern cost of building it — likely only worth doing if bundled with the `tokenVersion` fix from `docs/adr/ADR-023-password-reset-session-invalidation-gap.md`, since both want an `employeeId`-keyed lookup.
+
+**Priority:** Low — hygiene, not a real exploitable weakness; each token remains independently secure regardless of how many co-exist.
+
+**Reference:** `src/services/PasswordResetService.js`'s `createResetToken()`; `src/core/entityKeys.js`'s `pwResetPK`/`pwResetSK`.
+
+## CI — `actions/checkout@v4`/`actions/setup-node@v4` emit Node 20 deprecation warnings under GitHub's newer runner (found 2026-07-25, doc consolidation pass)
+
+**Issue:** `.github/workflows/deploy.yml` is the only CI workflow in this repo, with 4 jobs: `changes`, `deploy-backend` (Node 22), `e2e` (Playwright, Node 24), `deploy-dashboard` (Node 22). `actions/checkout@v4` runs in all 4 jobs; `actions/setup-node@v4` runs in the 3 that need Node (`node-version` there is the *project's own* runtime for building/testing this app — unrelated to the warning below). Both `@v4` actions are themselves built against GitHub's Node 20 action runtime; GitHub's hosted runners have started force-running Node-20-targeted actions under a newer Node runtime, which prints a deprecation warning on every job that uses either action — cosmetic today, but GitHub has a track record of eventually turning these warnings into hard failures on a future runner image update (the same pattern that previously retired Node 12- and Node 16-based actions).
+
+**Fix (not implemented):** bump to whichever major version of `actions/checkout`/`actions/setup-node` targets the newer Node runtime natively, once that version is confirmed stable in GitHub's own actions marketplace/changelog — don't guess a version number here without checking at the time this is picked up.
+
+**Priority:** Low — warning-only today, no functional CI failure. Worth closing before GitHub actually deprecates the Node 20 action runtime for good, rather than waiting for a hard break.
+
+**Reference:** `.github/workflows/deploy.yml`.
