@@ -9,9 +9,40 @@
 // Error-only: no tracesSampleRate set, so no performance/transaction data
 // is collected, just exception/message capture (see logger.js, errorHandler.js).
 const Sentry = require('@sentry/node');
+const { deepScrubSecrets } = require('./config/sentryScrub');
 Sentry.init({
   dsn: process.env.SENTRY_DSN,
   environment: process.env.NODE_ENV || 'development',
+  // beforeBreadcrumb: the confirmed leak — Sentry's own Http/NodeFetch
+  // integrations auto-record every outbound request as a breadcrumb
+  // (this app's Meta Graph API calls carry access_token/client_secret as
+  // URL query params, not headers). beforeSend: defense-in-depth, scrubs
+  // the entire outgoing event in case a token-shaped value ever ends up
+  // anywhere else (request context, extra, contexts...), not just here.
+  // See src/config/sentryScrub.js for the full rationale.
+  //
+  // Both hooks are wrapped in try/catch as a last line of defense:
+  // deepScrubSecrets already guards its own internals, but Sentry's
+  // addBreadcrumb() calls beforeBreadcrumb with no try/catch of its own --
+  // an uncaught throw here would propagate out and break Sentry capture
+  // entirely, which is strictly worse than the leak this exists to close.
+  // On beforeBreadcrumb failure, drop just that one breadcrumb (return
+  // null) rather than let a possibly-unscrubbed object through. On
+  // beforeSend failure, drop the event for the same reason.
+  beforeBreadcrumb(breadcrumb) {
+    try {
+      return deepScrubSecrets(breadcrumb);
+    } catch (_e) {
+      return null;
+    }
+  },
+  beforeSend(event) {
+    try {
+      return deepScrubSecrets(event);
+    } catch (_e) {
+      return null;
+    }
+  },
 });
 
 const serverless = require('serverless-http');

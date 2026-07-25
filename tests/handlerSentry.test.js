@@ -43,10 +43,21 @@ describe('handler.js — Sentry wiring', () => {
   test('Sentry.init runs at module load, using SENTRY_DSN and NODE_ENV from the environment', () => {
     require('../src/handler');
 
-    expect(mockSentryInit).toHaveBeenCalledWith({
+    expect(mockSentryInit).toHaveBeenCalledWith(expect.objectContaining({
       dsn: 'https://test@example.ingest.sentry.io/1',
       environment: 'production',
-    });
+    }));
+    // beforeBreadcrumb/beforeSend wire in src/config/sentryScrub.js's
+    // deepScrubSecrets (see docs/adr and sentryScrub.js's own header
+    // comment for why: Sentry's default integrations otherwise record
+    // Meta Graph API access_token/client_secret query params verbatim).
+    // Asserted as functions here, not exact-object-matched above, so this
+    // test doesn't need editing every time Sentry.init grows another
+    // option -- the scrubbing behavior itself belongs in sentryScrub's own
+    // tests, not re-implemented against this mocked SDK.
+    const initArg = mockSentryInit.mock.calls[0][0];
+    expect(typeof initArg.beforeBreadcrumb).toBe('function');
+    expect(typeof initArg.beforeSend).toBe('function');
   });
 
   test('flushes after a normal successful invocation', async () => {
