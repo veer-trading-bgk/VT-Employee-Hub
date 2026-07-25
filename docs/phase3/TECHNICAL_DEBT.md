@@ -1,5 +1,15 @@
 # Phase 3 — Technical Debt
 
+## WebSocket Connection URL Embeds the Live Session JWT — dashboard/src/lib/wsClient.ts
+
+**Issue (found 2026-07-25, during a Sentry-scrub audit — unrelated to Sentry itself):** `wsClient.ts`'s `_open()` builds the WebSocket connection URL as `` `${this.baseUrl}?token=${token}` `` (~line 151), embedding the live session JWT — the same token used as the `Authorization: Bearer` header for every other API call (`api.ts`'s `_memToken`) — directly in the URL query string, rather than via a WebSocket subprotocol, an initial post-connect auth message, or similar. Query-string secrets can end up in server access logs and, in some contexts, browser history — a real weakness independent of any specific consumer of that URL.
+
+**Confirmed NOT currently a Sentry-leak vector:** traced through the real installed `@sentry/browser` 10.68.0 source as part of the same audit — no WebSocket-specific breadcrumb/instrumentation integration exists in this SDK version, and `wsClient.ts`'s own `catch { this._scheduleReconnect(); return; }` around `new WebSocket(url)` silently swallows any construction error before it could reach any Sentry capture path anyway (no `Sentry.captureException` call anywhere in the file). The frontend Sentry scrub (`dashboard/src/lib/sentryScrub.ts`) does correctly redact this URL shape if it ever did reach a breadcrumb/event — verified — but that's defense-in-depth for a path that isn't live today, not a fix for the underlying issue below.
+
+**Fix:** move the JWT out of the URL entirely — e.g. pass it as a WebSocket subprotocol (`new WebSocket(url, [token])`) or send it in a first post-open message, with the server-side `$connect`/message handler deferring auth until that message arrives, instead of requiring the JWT to be present in the handshake URL.
+
+**Priority:** Low — no active Sentry-leak path today (confirmed above), and the WS endpoint itself is otherwise unauthenticated-URL-only already (not a new class of exposure this introduces). Real architectural weakness worth closing eventually, but not urgent and explicitly out of scope for the Sentry-scrub work that surfaced it.
+
 ## Embedding Provider Timeout — Alerting Gap for a Pure Connection-Level Outage
 
 **Context (2026-07-15):** `EmbeddingService.embed()` calls Voyage on the live WhatsApp turn's critical path (its vector feeds the prompt via `ConversationalAgentService._fetchKnowledgeContext`). A morning of intermittent Voyage latency produced ~27% query-embed timeouts for `viir_trading` (6 of 22 attempts; 0 the prior day), each firing a `logger.error` → Telegram "Production Error" page even though the turn recovered fine (callers degrade to keyword matching). Two things were fixed: the timeout was cut 10s→5s (moved to `embeddingConfig.js.timeoutMs`, ADR-017 home) to halve the worst-case dead wait, and the catch path was changed to route by **error class** — a response-bearing error (401 bad key, 429, 4xx/5xx) still pages immediately via `logger.error`; a timeout / connection failure (no HTTP response) logs `logger.warn` only (CloudWatch, no page).
