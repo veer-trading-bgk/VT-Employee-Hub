@@ -58,31 +58,17 @@ around it.
 
 ## 4. Review tiers — how much ceremony a change needs
 
-Classify every task before starting:
+Tier 1/2/3 risk classification — definitions, per-tier workflow, and the
+task-type-vs-files-touched classification rule — is defined exclusively in
+`WORKFLOW_ENGINEERING_POLICY.md` at the repo root. That document is the
+single project-wide source of truth for tiers; do not define tiers inline
+here or anywhere else.
 
-**Tier 1 — full verification required. Hold for explicit approval before committing.**
-- Auth, RBAC, session/cookie handling
-- `WhatsAppSendService`, `CustomerIdentityService`, or any send/identity path
-- CORS, security middleware, anything gating who can reach what
-- Data integrity: concurrent writes, race conditions, conditional writes, anything
-  that can silently lose or corrupt data
-- Architecture decisions: new services, new patterns, anything an ADR governs
-- Destructive operations: delete routes, purge routes, bulk mutations
-
-For Tier 1: implement, self-test, then stop and report status with the real diff
-(not a summary). Do not commit until the actual diff has been reviewed and approved.
-
-**Tier 2 — routine, no ceremony needed. Implement, test, commit, and push on your
-own judgment.**
-- Mechanical fixes: renames, typos, lint fixes, single-line changes
-- Documentation updates
-- Precedented refactors: applying an already-approved pattern to more files
-- Standard bug fixes with no security/data-integrity dimension
-
-**When unsure which tier applies, default to Tier 1.** If a Tier 2 task turns up
-something unexpected mid-implementation (a security implication, a data-race risk,
-an architectural question), stop and escalate it to Tier 1 treatment rather than
-finishing it as Tier 2.
+Note the direction: under `WORKFLOW_ENGINEERING_POLICY.md`, Tier 1 is fully
+automated / lowest risk, and Tier 3 is manual-approval-required / highest
+risk — the opposite of this file's previous usage, where "Tier 1" meant
+"hold for explicit approval." Always check `WORKFLOW_ENGINEERING_POLICY.md`
+directly; never assume which way "Tier 1" points from memory.
 
 ## 5. Push evidence standard
 
@@ -109,5 +95,6 @@ same weight that implies.
 ## 7. Definition of done
 
 A change is complete only when: architecture is respected, documentation is updated
-if it changed, tests pass, and — for Tier 1 work — the diff has been shown and
-approved before it's committed.
+if it changed, tests pass, and — per the tier assigned under
+`WORKFLOW_ENGINEERING_POLICY.md` — any required review/approval for that tier has
+happened before it's committed.

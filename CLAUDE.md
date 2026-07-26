@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-**APForce Root Bootstrap** Version: 3.0
+**APForce Root Bootstrap** Version: 3.1
 
 > This is the primary instruction file for Claude Code. Detailed
 > documentation lives under `/docs`. This file defines how to think,
@@ -149,10 +149,26 @@ Before starting any task, confirm the effort level matches complexity:
 Do not switch effort mid-session unless necessary — it resets the cache
 and forces a full-price re-read of the conversation.
 
+------------------------------------------------------------------------
+
+# 11. Review Tiering — What Needs Full Verification
+
+Tier 1/2/3 risk classification — definitions, per-tier workflow, and the
+task-type-vs-files-touched classification rule — is defined exclusively
+in `WORKFLOW_ENGINEERING_POLICY.md` at the repo root. That document is
+the single project-wide source of truth for tiers; do not define tiers
+inline here or anywhere else.
+
+Note the direction: under `WORKFLOW_ENGINEERING_POLICY.md`, Tier 1 is
+fully automated / lowest risk, and Tier 3 is manual-approval-required /
+highest risk. This is the opposite of this project's earlier informal
+usage, where "Tier 1" meant "hold for explicit approval." Always check
+`WORKFLOW_ENGINEERING_POLICY.md` directly — never assume which way
+"Tier 1" points from memory.
 
 ------------------------------------------------------------------------
 
-# 11. Testing
+# 12. Testing
 
 Before merge:
 
@@ -166,7 +182,7 @@ Encourage Playwright for UI and API/unit tests for backend.
 
 ------------------------------------------------------------------------
 
-# 12. Deployment
+# 13. Deployment
 
 Backend: Git Push → GitHub Actions → AWS Lambda
 
@@ -176,7 +192,7 @@ Never deploy directly from Claude Code.
 
 ------------------------------------------------------------------------
 
-# 13. Documentation Updates
+# 14. Documentation Updates
 
 If architecture, APIs, database, or module ownership changes:
 
@@ -190,7 +206,7 @@ Documentation is part of the feature.
 
 ------------------------------------------------------------------------
 
-# 14. Anti-Patterns
+# 15. Anti-Patterns
 
 Never:
 
@@ -205,7 +221,7 @@ Never:
 
 ------------------------------------------------------------------------
 
-# 15. Code Review Checklist
+# 16. Code Review Checklist
 
 Verify:
 
@@ -221,7 +237,7 @@ Verify:
 
 ------------------------------------------------------------------------
 
-# 16. Definition of Done
+# 17. Definition of Done
 
 A feature is complete only when:
 
@@ -234,7 +250,7 @@ A feature is complete only when:
 
 ------------------------------------------------------------------------
 
-# 17. Read Order
+# 18. Read Order
 
 1.  docs/bible/20_CURRENT_STATE.md
 2.  docs/APFORCE_BIBLE.md
