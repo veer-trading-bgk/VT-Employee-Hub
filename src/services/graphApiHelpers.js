@@ -203,6 +203,75 @@ async function getBusinessProfile(cfg) {
   }
 }
 
+// Pushes a partial set of Business Profile fields to Meta. `fields` should
+// already be validated by the caller (route-level, against Meta's documented
+// per-field constraints) -- this just performs the write and reports the
+// outcome, same shape as every other write helper here.
+async function updateBusinessProfile(cfg, fields) {
+  try {
+    await axios.post(
+      `${resolveGraphUrl(cfg)}/${cfg.phoneNumberId}/whatsapp_business_profile`,
+      { messaging_product: 'whatsapp', ...fields },
+      { headers: { 'Content-Type': 'application/json' }, params: { access_token: cfg.accessToken }, timeout: 15000 },
+    );
+    return { updated: true };
+  } catch (e) {
+    const rawError = e.response?.data ?? { message: e.message };
+    logger.error(
+      `updateBusinessProfile: failed for phoneNumberId=${cfg.phoneNumberId} (status ${e.response?.status ?? 'n/a'})`,
+      JSON.stringify(rawError),
+    );
+    return { updated: false, error: rawError?.error?.message ?? e.message ?? 'Profile update failed', rawError };
+  }
+}
+
+// Uploads a new profile photo via Meta's Resumable Upload API (verified
+// against Meta's own docs, 2026-07-28 -- easy to get wrong, two gotchas):
+//  1. The session id Meta returns from step 1 already includes the
+//     "upload:" prefix (e.g. "upload:ABC123") -- used as-is as the next
+//     URL's path segment, never re-prefixed.
+//  2. Step 2's auth is a header, "Authorization: OAuth <token>" -- NOT the
+//     query-string access_token convention every other call in this file
+//     uses, and NOT a Bearer scheme.
+// Requires META_APP_ID (the session-start endpoint is scoped to an app id,
+// not a WABA/phone id).
+async function uploadProfilePhoto(cfg, buffer, mimeType, filename) {
+  const appId = process.env.META_APP_ID;
+  if (!appId) return { uploaded: false, error: 'META_APP_ID is not configured — required for photo upload.' };
+  const graph = resolveGraphUrl(cfg);
+
+  try {
+    const sessionRes = await axios.post(`${graph}/${appId}/uploads`, null, {
+      params: { file_name: filename ?? 'profile-photo', file_length: buffer.length, file_type: mimeType, access_token: cfg.accessToken },
+      timeout: 15000,
+    });
+    const sessionId = sessionRes.data?.id;
+    if (!sessionId) return { uploaded: false, error: 'Meta did not return an upload session id.' };
+
+    const uploadRes = await axios.post(`${graph}/${sessionId}`, buffer, {
+      headers: { Authorization: `OAuth ${cfg.accessToken}`, file_offset: '0', 'Content-Type': 'application/octet-stream' },
+      timeout: 30000,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+    const handle = uploadRes.data?.h;
+    if (!handle) return { uploaded: false, error: 'Meta did not return a file handle.' };
+
+    return updateBusinessProfile(cfg, { profile_picture_handle: handle }).then((r) =>
+      r.updated ? { uploaded: true } : { uploaded: false, error: r.error, rawError: r.rawError },
+    );
+  } catch (e) {
+    // Never log e.config/e.request -- step 2 carries the raw access_token in
+    // an Authorization header, not even in params this time.
+    const rawError = e.response?.data ?? { message: e.message };
+    logger.error(
+      `uploadProfilePhoto: failed for phoneNumberId=${cfg.phoneNumberId} (status ${e.response?.status ?? 'n/a'})`,
+      JSON.stringify(rawError),
+    );
+    return { uploaded: false, error: rawError?.error?.message ?? e.message ?? 'Photo upload failed', rawError };
+  }
+}
+
 module.exports = {
   GRAPH,
   resolveGraphUrl,
@@ -213,4 +282,6 @@ module.exports = {
   subscribeWabaWebhooks,
   registerPhoneNumber,
   getBusinessProfile,
+  updateBusinessProfile,
+  uploadProfilePhoto,
 };

@@ -34,7 +34,20 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 // Graph URL/config helpers extracted to a shared module (also used by
 // WhatsAppSendService and FlowManagementService). resolveGraphUrl keeps its
 // historical local name so this file's ~40 call sites read unchanged.
-const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks, registerPhoneNumber, getBusinessProfile } = require('../services/graphApiHelpers');
+const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks, registerPhoneNumber, getBusinessProfile, updateBusinessProfile, uploadProfilePhoto } = require('../services/graphApiHelpers');
+
+// Meta's closed enum for whatsapp_business_profile's `vertical` field.
+// Verified live against Meta's own field constraints, 2026-07-28.
+const BUSINESS_PROFILE_VERTICALS = new Set([
+  'UNDEFINED', 'OTHER', 'AUTO', 'BEAUTY', 'APPAREL', 'EDU', 'ENTERTAIN', 'EVENT_PLAN',
+  'FINANCE', 'GROCERY', 'GOVT', 'HOTEL', 'HEALTH', 'NONPROFIT', 'PROF_SERVICES',
+  'RETAIL', 'TRAVEL', 'RESTAURANT', 'NOT_A_BIZ',
+]);
+// Profile photos are restricted to what Meta's Resumable Upload API supports
+// for this use case (jpeg/png) -- narrower than the general ALLOWED_MIME set,
+// which also includes video/audio/documents/gif/webp, none of which make
+// sense for a profile picture.
+const PROFILE_PHOTO_MIME = new Set(['image/jpeg', 'image/png']);
 function mediaTypeFromMime(mimeType) {
   if (mimeType.startsWith('image/')) return 'image';
   if (mimeType.startsWith('video/')) return 'video';
@@ -1098,6 +1111,110 @@ router.get('/profile', authMiddleware, checkRole(['admin']), async (req, res, ne
     }
     const profile = await getBusinessProfile(cfg);
     res.json({ success: true, profile, lastChecked: new Date().toISOString() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/whatsapp/profile — push business profile field edits ──────────
+// Accepts any subset of about/address/description/email/websites/vertical.
+// Validated here against Meta's documented per-field constraints before ever
+// calling Meta, so an obviously invalid value 400s locally instead of
+// round-tripping. Display Name is deliberately not accepted here -- it is
+// not part of this endpoint at all; Meta controls it via a separate,
+// human-reviewed name-change process with no simple write API.
+router.post('/profile', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg?.phoneNumberId || !cfg?.accessToken) {
+      return res.status(400).json({ error: 'No WhatsApp configuration — connect first via Settings → WhatsApp.' });
+    }
+
+    const { about, address, description, email, websites, vertical } = req.body;
+    const fields = {};
+
+    if (about !== undefined) {
+      if (about !== '' && (about.length < 1 || about.length > 139)) return res.status(400).json({ error: 'about must be 1-139 characters' });
+      fields.about = about;
+    }
+    if (address !== undefined) {
+      if (address.length > 256) return res.status(400).json({ error: 'address must be under 256 characters' });
+      fields.address = address;
+    }
+    if (description !== undefined) {
+      if (description.length > 512) return res.status(400).json({ error: 'description must be under 512 characters' });
+      fields.description = description;
+    }
+    if (email !== undefined) {
+      if (email !== '' && (email.length > 128 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+        return res.status(400).json({ error: 'email must be a valid address under 128 characters' });
+      }
+      fields.email = email;
+    }
+    if (websites !== undefined) {
+      if (!Array.isArray(websites) || websites.some((w) => typeof w !== 'string' || !/^https?:\/\//.test(w))) {
+        return res.status(400).json({ error: 'websites must be an array of http(s):// URLs' });
+      }
+      fields.websites = websites;
+    }
+    if (vertical !== undefined) {
+      // Meta docs: vertical cannot be reset to empty/UNDEFINED after being set --
+      // enforced Meta-side, not duplicated here; a rejection surfaces via rawError.
+      if (!BUSINESS_PROFILE_VERTICALS.has(vertical)) {
+        return res.status(400).json({ error: `vertical must be one of: ${[...BUSINESS_PROFILE_VERTICALS].join(', ')}` });
+      }
+      fields.vertical = vertical;
+    }
+
+    if (Object.keys(fields).length === 0) {
+      return res.status(400).json({ error: 'At least one profile field is required.' });
+    }
+
+    const result = await updateBusinessProfile(cfg, fields);
+    if (!result.updated) {
+      return res.status(400).json({ error: 'Could not update business profile with Meta.', rawError: result.rawError });
+    }
+
+    const profile = await getBusinessProfile(cfg);
+    res.json({ success: true, profile });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/whatsapp/profile/photo — upload a new profile photo ───────────
+// Called after the browser has PUT the file directly to S3 via the existing
+// GET /upload-url presigned flow (same pattern as /upload-send) -- reads the
+// object from S3, then hands it to Meta's Resumable Upload API.
+router.post('/profile/photo', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const { s3Key, mimeType, filename } = req.body;
+    if (!s3Key || !mimeType) return res.status(400).json({ error: 's3Key and mimeType are required' });
+    if (!MEDIA_BUCKET) return res.status(500).json({ error: 'WA_MEDIA_BUCKET env var not set' });
+    if (!PROFILE_PHOTO_MIME.has(mimeType)) return res.status(400).json({ error: 'Profile photo must be JPEG or PNG.' });
+
+    const companyId = req.user.companyId;
+    if (!s3Key.startsWith(`uploads/${companyId}/`)) {
+      return res.status(403).json({ error: 'Invalid S3 key' });
+    }
+
+    const cfg = await getWabaConfig(companyId);
+    if (!cfg?.phoneNumberId || !cfg?.accessToken) {
+      return res.status(400).json({ error: 'No WhatsApp configuration — connect first via Settings → WhatsApp.' });
+    }
+
+    const s3Obj = await s3Client.getObject({ Bucket: MEDIA_BUCKET, Key: s3Key }).promise();
+    if (s3Obj.ContentLength > META_SIZE_LIMITS.image) {
+      return res.status(400).json({ error: `Profile photo must be under ${META_SIZE_LIMITS.image / 1024 / 1024} MB.` });
+    }
+
+    const result = await uploadProfilePhoto(cfg, s3Obj.Body, mimeType, filename);
+    if (!result.uploaded) {
+      return res.status(400).json({ error: 'Could not upload profile photo to Meta.', rawError: result.rawError });
+    }
+
+    const profile = await getBusinessProfile(cfg);
+    res.json({ success: true, profile });
   } catch (err) {
     next(err);
   }
