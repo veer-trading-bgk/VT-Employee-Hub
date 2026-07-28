@@ -34,7 +34,7 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 // Graph URL/config helpers extracted to a shared module (also used by
 // WhatsAppSendService and FlowManagementService). resolveGraphUrl keeps its
 // historical local name so this file's ~40 call sites read unchanged.
-const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks } = require('../services/graphApiHelpers');
+const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks, registerPhoneNumber } = require('../services/graphApiHelpers');
 function mediaTypeFromMime(mimeType) {
   if (mimeType.startsWith('image/')) return 'image';
   if (mimeType.startsWith('video/')) return 'video';
@@ -344,8 +344,12 @@ router.get('/auth/callback', async (req, res) => {
     }
 
     let webhookResult = { subscribed: false };
+    let registrationResult = { registered: false };
     if (wabaId) {
       webhookResult = await subscribeWabaWebhooks({ wabaId, accessToken });
+      if (phoneNumberId) {
+        registrationResult = await registerPhoneNumber({ wabaId, phoneNumberId, accessToken, companyId });
+      }
     }
 
     logger.info(`WABA connected for company ${companyId}: ${phoneNumber}`);
@@ -359,7 +363,11 @@ router.get('/auth/callback', async (req, res) => {
       : webhookResult.subscribed
         ? `Connected: ${phoneNumber ?? 'WhatsApp Business'}`
         : `Connected: ${phoneNumber ?? 'WhatsApp Business'} (webhook subscription failed — check the WhatsApp Health Check in Settings)`;
-    res.send(popupHtml(true, connectMessage));
+    // Registration failure is deliberately not folded into connectMessage (that
+    // string gets embedded raw into an inline onclick handler — see popupHtml —
+    // and free-text Meta error text could contain a quote that breaks it). A
+    // freshly generated PIN is safe to pass through (always exactly 6 digits).
+    res.send(popupHtml(true, connectMessage, registrationResult.pin));
   } catch (err) {
     // logger.error only extracts .message from Error instances — passing
     // err.response.data (a plain object) straight through renders as
@@ -470,6 +478,10 @@ router.post('/manual-connect', authMiddleware, checkRole(['admin']), async (req,
     invalidatePhoneIdCache(phoneNumberId.trim());
 
     const webhookResult = await subscribeWabaWebhooks({ wabaId, accessToken: accessToken.trim() });
+    const registrationResult = await registerPhoneNumber({
+      wabaId, phoneNumberId: phoneNumberId.trim(), accessToken: accessToken.trim(), companyId: req.user.companyId,
+    });
+    const registered = registrationResult.alreadyRegistered || registrationResult.registered;
 
     logger.info(`WABA manually connected for company ${req.user.companyId}: ${phoneNumber}`);
     res.json({
@@ -477,6 +489,9 @@ router.post('/manual-connect', authMiddleware, checkRole(['admin']), async (req,
       phoneNumber,
       webhookSubscribed: webhookResult.subscribed,
       ...(!webhookResult.subscribed && { webhookWarning: `Webhook subscription failed — inbound messages will not be delivered until this is fixed. ${webhookResult.error}` }),
+      registered,
+      ...(registrationResult.registered && registrationResult.pin && { pinGenerated: registrationResult.pin }),
+      ...(!registered && { registrationWarning: `Two-step verification registration incomplete — ${registrationResult.error}` }),
     });
   } catch (err) {
     logger.error('manual-connect error', err);
@@ -575,9 +590,15 @@ router.put('/config', authMiddleware, checkRole(['admin']), async (req, res, nex
     // silently stays unsubscribed forever, since subscribing only ever ran
     // at connect time (manual-connect / OAuth callback), never here.
     let webhookResult = null;
+    let registrationResult = null;
     if (wabaIdChanged || tokenChanged) {
       webhookResult = await subscribeWabaWebhooks({ wabaId, accessToken: resolvedToken, graphApiVersion: updatedItem.graphApiVersion });
+      registrationResult = await registerPhoneNumber({
+        wabaId, phoneNumberId, accessToken: resolvedToken, companyId: req.user.companyId,
+        graphApiVersion: updatedItem.graphApiVersion, lastRegisterAttemptAt: cfg.lastRegisterAttemptAt,
+      });
     }
+    const registered = registrationResult && (registrationResult.alreadyRegistered || registrationResult.registered);
 
     logger.info(`WABA config updated for company ${req.user.companyId}`);
     res.json({
@@ -586,6 +607,11 @@ router.put('/config', authMiddleware, checkRole(['admin']), async (req, res, nex
       ...(webhookResult && {
         webhookSubscribed: webhookResult.subscribed,
         ...(!webhookResult.subscribed && { webhookWarning: `Webhook subscription failed — inbound messages will not be delivered until this is fixed. ${webhookResult.error}` }),
+      }),
+      ...(registrationResult && {
+        registered,
+        ...(registrationResult.registered && registrationResult.pin && { pinGenerated: registrationResult.pin }),
+        ...(!registered && { registrationWarning: `Two-step verification registration incomplete — ${registrationResult.error}` }),
       }),
     });
   } catch (err) {
@@ -4430,8 +4456,11 @@ router.post('/upload-send', authMiddleware, rateLimit(20, 60_000), async (req, r
   }
 });
 
-// HTML page returned to popup after OAuth completes
-function popupHtml(success, message) {
+// HTML page returned to popup after OAuth completes.
+// pin: optional, only ever a freshly-generated 6-digit string (registerPhoneNumber's
+// output) -- safe to embed raw in the inline onclick literal below since it can
+// never contain a quote/apostrophe that would break the JS string, unlike message.
+function popupHtml(success, message, pin) {
   const color = success ? '#10b981' : '#ef4444';
   const icon = success ? '✅' : '❌';
   return `<!DOCTYPE html><html><head><title>WhatsApp ${success ? 'Connected' : 'Failed'}</title>
@@ -4440,7 +4469,7 @@ function popupHtml(success, message) {
 h2{color:${color};margin:0 0 8px;} p{color:#64748b;margin:0 0 16px;font-size:14px;}
 button{background:${color};color:white;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600;}</style></head>
 <body><div class="box"><div style="font-size:48px">${icon}</div><h2>${success ? 'Connected!' : 'Failed'}</h2>
-<p>${message}</p><button onclick="window.opener&&window.opener.postMessage({type:'waba_${success ? 'connected' : 'failed'}',message:'${message}'},'*');window.close()">
+<p>${message}</p><button onclick="window.opener&&window.opener.postMessage({type:'waba_${success ? 'connected' : 'failed'}',message:'${message}'${pin ? `,pin:'${pin}'` : ''}},'*');window.close()">
 ${success ? 'Done — Close Window' : 'Close & Retry'}</button></div></body></html>`;
 }
 

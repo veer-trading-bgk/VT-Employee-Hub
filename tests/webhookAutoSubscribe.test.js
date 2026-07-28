@@ -178,15 +178,19 @@ describe('PUT /api/whatsapp/config — webhook re-subscribe on wabaId/token chan
 
   test('wabaId changed, token unchanged: re-subscribes with the new wabaId and the existing (unchanged) token', async () => {
     mockStoredConfig();
+    // No credential re-validation GET is expected here -- only wabaId changed,
+    // not phoneNumberId/accessToken. The one GET that does happen is
+    // registerPhoneNumber's is_pin_enabled check (2026-07-28 PR) -- mocked
+    // "already registered" so it short-circuits without an extra POST,
+    // keeping this test's focus purely on webhook re-subscribe behavior.
+    axios.get.mockResolvedValueOnce({ data: { is_pin_enabled: true } });
     axios.post.mockResolvedValueOnce({ data: {} });
 
     const handler = getRouteHandler(whatsappRouter, '/config', 'put');
     const res = mockRes();
     await handler({ body: { wabaId: 'waba_new' }, user: USER }, res, jest.fn());
 
-    // No credential re-validation GET is expected here -- only wabaId changed,
-    // not phoneNumberId/accessToken -- so the only axios call is the subscribe POST.
-    expect(axios.get).not.toHaveBeenCalled();
+    expect(axios.get).toHaveBeenCalledTimes(1);
     expect(axios.post).toHaveBeenCalledTimes(1);
     const [postUrl, , options] = axios.post.mock.calls[0];
     expect(postUrl).toContain('waba_new/subscribed_apps');
@@ -199,7 +203,9 @@ describe('PUT /api/whatsapp/config — webhook re-subscribe on wabaId/token chan
   test('accessToken changed: validates against Meta, then re-subscribes with the new token', async () => {
     mockStoredConfig();
     const NEW_TOKEN = 'EAAbrandnewtoken_should_never_appear_in_any_log_ABC123';
-    axios.get.mockResolvedValueOnce({ data: { id: 'pid_old' } }); // credential re-validation
+    axios.get
+      .mockResolvedValueOnce({ data: { id: 'pid_old' } }) // credential re-validation
+      .mockResolvedValueOnce({ data: { is_pin_enabled: true } }); // registerPhoneNumber's check (2026-07-28 PR)
     axios.post.mockResolvedValueOnce({ data: {} });
 
     const handler = getRouteHandler(whatsappRouter, '/config', 'put');
@@ -228,6 +234,7 @@ describe('PUT /api/whatsapp/config — webhook re-subscribe on wabaId/token chan
 
   test('wabaId changed but the re-subscribe fails: route still succeeds, webhookWarning surfaced, token never logged', async () => {
     mockStoredConfig();
+    axios.get.mockResolvedValueOnce({ data: { is_pin_enabled: true } }); // registerPhoneNumber's check (2026-07-28 PR)
     axios.post.mockRejectedValueOnce({ response: { status: 400, data: META_ERROR } });
 
     const handler = getRouteHandler(whatsappRouter, '/config', 'put');

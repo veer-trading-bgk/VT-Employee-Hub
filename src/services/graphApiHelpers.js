@@ -15,6 +15,7 @@
 
 const dynamodb = require('../config/dynamodb');
 const axios = require('axios');
+const crypto = require('crypto');
 const logger = require('../config/logger');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -88,6 +89,83 @@ async function subscribeWabaWebhooks(cfg) {
   }
 }
 
+// Meta rate-limits /register to 10 calls/72h/number (error 133016 if exceeded).
+// Every caller here is human-triggered (connect, edit-config, repair button),
+// not a loop, but this cooldown stops a user mashing a button from wasting
+// that budget while a transient failure is being retried.
+const REGISTER_COOLDOWN_MS = 5 * 60 * 1000;
+
+function generatePin() {
+  return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+}
+
+async function markRegisterAttempt(companyId, field, value) {
+  if (!companyId) return;
+  try {
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#WABA#${companyId}`, SK: 'CURRENT' },
+      UpdateExpression: `SET ${field} = :v`,
+      ExpressionAttributeValues: { ':v': value },
+    }).promise();
+    invalidateConfigCache(companyId);
+  } catch { /* non-fatal -- the register call itself already succeeded/failed independently */ }
+}
+
+// Completes the Cloud API registration handshake (POST /{phone-number-id}/register),
+// which also sets the two-step-verification PIN. Cloud API messaging works without
+// ever calling this, but WhatsApp Manager's 2FA toggle -- and full Cloud API
+// "registered" status -- requires it; skipping it produces "Account does not exist
+// in Cloud API" (found live 2026-07-28, WABA 1024855430389913). Never calls
+// /register if is_pin_enabled is already true -- required by Meta's 10-calls/72h
+// rate limit and by explicit product requirement (never re-register an
+// already-registered number). The generated PIN is returned once, never stored --
+// only the fact that registration happened (pinRegisteredAt) is persisted.
+async function registerPhoneNumber(cfg) {
+  const graph = resolveGraphUrl(cfg);
+  try {
+    const pinRes = await axios.get(`${graph}/${cfg.phoneNumberId}`, {
+      params: { fields: 'is_pin_enabled', access_token: cfg.accessToken },
+      timeout: 10000,
+    });
+    if (pinRes.data?.is_pin_enabled) return { alreadyRegistered: true, registered: false };
+  } catch (e) {
+    const rawError = e.response?.data ?? { message: e.message };
+    logger.error(
+      `registerPhoneNumber: is_pin_enabled check failed for phoneNumberId=${cfg.phoneNumberId} (status ${e.response?.status ?? 'n/a'})`,
+      JSON.stringify(rawError),
+    );
+    return { alreadyRegistered: false, registered: false, error: rawError?.error?.message ?? e.message ?? 'Could not check registration status' };
+  }
+
+  if (cfg.lastRegisterAttemptAt && Date.now() - new Date(cfg.lastRegisterAttemptAt).getTime() < REGISTER_COOLDOWN_MS) {
+    return { alreadyRegistered: false, registered: false, skipped: true, error: 'A registration attempt was made in the last 5 minutes — please wait before retrying.' };
+  }
+
+  const now = new Date().toISOString();
+  await markRegisterAttempt(cfg.companyId, 'lastRegisterAttemptAt', now);
+
+  const pin = generatePin();
+  try {
+    await axios.post(
+      `${graph}/${cfg.phoneNumberId}/register`,
+      { messaging_product: 'whatsapp', pin },
+      { headers: { 'Content-Type': 'application/json' }, params: { access_token: cfg.accessToken }, timeout: 15000 },
+    );
+    await markRegisterAttempt(cfg.companyId, 'pinRegisteredAt', now);
+    return { alreadyRegistered: false, registered: true, pin };
+  } catch (e) {
+    // Never log e.config/e.request -- they carry the raw access_token and the
+    // PIN itself in the request params/body. Only e.response.data is safe.
+    const rawError = e.response?.data ?? { message: e.message };
+    logger.error(
+      `registerPhoneNumber: /register failed for phoneNumberId=${cfg.phoneNumberId} (status ${e.response?.status ?? 'n/a'})`,
+      JSON.stringify(rawError),
+    );
+    return { alreadyRegistered: false, registered: false, error: rawError?.error?.message ?? e.message ?? 'Registration failed', rawError };
+  }
+}
+
 module.exports = {
   GRAPH,
   resolveGraphUrl,
@@ -96,4 +174,5 @@ module.exports = {
   invalidateConfigCache,
   detectInvalidWabaConfig,
   subscribeWabaWebhooks,
+  registerPhoneNumber,
 };
