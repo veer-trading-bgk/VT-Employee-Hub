@@ -272,6 +272,379 @@ async function uploadProfilePhoto(cfg, buffer, mimeType, filename) {
   }
 }
 
+// Compute a plain-English root cause from health-check state (shown in UI and logs).
+// Moved here from routes/whatsapp.js, 2026-07-28, so computeHealthSnapshot (and
+// autoRepair, which needs the same snapshot) can share one implementation
+// instead of the route and the repair orchestrator each computing it differently.
+function computeRootCause(cfg, token, waba, webhooks, pin) {
+  if (!cfg) return 'No WhatsApp configuration stored. Connect via Settings → WhatsApp.';
+  if (!cfg.configValid) {
+    if (cfg.wabaId && cfg.phoneNumberId && cfg.wabaId === cfg.phoneNumberId) {
+      if (!waba?.accessible) {
+        return 'The WABA ID stored during initial setup equals the Phone Number ID — a known bug in the original connection code. Auto-repair requires the whatsapp_business_management permission, which the stored token does not have. Either grant that permission to your System User and regenerate the token, or enter your WABA ID manually using the field in the repair section.';
+      }
+      return 'The WABA ID stored during initial setup equals the Phone Number ID. Click "Repair Config Automatically" to correct it, or enter your WABA ID manually.';
+    }
+    if (!cfg.wabaId) return 'No WABA ID is stored. Reconnect via Settings → WhatsApp.';
+  }
+  if (token && token.valid === false) {
+    return 'The stored access token is invalid or expired. Generate a new permanent token in Meta Business Suite → System Users → Generate Token.';
+  }
+  if (token?.valid && !waba?.accessible) {
+    const scopesMissing = token.scopes?.length > 0 && !token.scopes.includes('whatsapp_business_management');
+    const scopesUnknown = !token.scopes?.length;
+    if (scopesMissing || scopesUnknown) {
+      return 'The access token does not have the whatsapp_business_management permission. This permission is required for template management and WABA configuration. Messaging works without it (whatsapp_business_messaging is present), but templates will fail until this permission is granted.';
+    }
+    return 'The stored WABA ID is not accessible from Meta — it may be incorrect or your account may have changed.';
+  }
+  if (webhooks && webhooks.subscribed === false) {
+    return 'This WABA is not subscribed to receive Meta webhooks — inbound messages and status updates will not arrive. Click "Auto Repair" to subscribe automatically.';
+  }
+  if (pin && pin.enabled === false) {
+    return 'Two-step verification has not been set up for this number — Meta\'s Cloud API registration handshake was never completed. This also blocks the Two-Step Verification toggle in WhatsApp Manager ("Account does not exist in Cloud API"). Click "Auto Repair" to complete it automatically.';
+  }
+  return null;
+}
+
+// Compute ordered remediation steps for the UI "Recommended Fix" section.
+function computeRecommendedFix(cfg, token, waba, webhooks, pin) {
+  if (!cfg) return ['Connect WhatsApp via Settings → WhatsApp.'];
+  if (!cfg.configValid && cfg.wabaId === cfg.phoneNumberId) {
+    if (!waba?.accessible) {
+      return [
+        'In Meta Business Suite → System Users: select your system user → Edit → Add Permissions → enable whatsapp_business_management.',
+        'After adding the permission, generate a new permanent access token for this system user.',
+        'In APForce: Settings → WhatsApp → Disconnect, then reconnect. Your WABA ID will be auto-detected with the new token.',
+        'If you prefer not to change the token now: find your WABA ID in Meta Business Suite → WhatsApp Accounts (15–16 digit number next to your account name, different from the Phone Number ID in API Setup) and use "Apply Manual Override" in the repair section.',
+      ];
+    }
+    return ['Click "Repair Config Automatically" to auto-detect and correct your WABA ID.'];
+  }
+  if (token && token.valid === false) {
+    return [
+      'In Meta Business Suite → System Users: select your system user → Generate New Token.',
+      'Ensure both whatsapp_business_messaging AND whatsapp_business_management are enabled for the system user.',
+      'In APForce: Settings → WhatsApp → Disconnect, then reconnect with the new token.',
+    ];
+  }
+  if (token?.valid && !waba?.accessible) {
+    return [
+      'Verify your WABA ID is correct in Meta Business Suite → WhatsApp Accounts.',
+      'If your token lacks whatsapp_business_management: Meta Business Suite → System Users → Edit → Add Permissions.',
+    ];
+  }
+  if (webhooks && webhooks.subscribed === false) {
+    return ['Click "Auto Repair" (or re-save your WhatsApp config) to subscribe to Meta webhooks automatically.'];
+  }
+  if (pin && pin.enabled === false) {
+    return ['Click "Auto Repair" (or re-save your WhatsApp config) to complete Cloud API registration and set a two-step-verification PIN automatically.'];
+  }
+  return [];
+}
+
+// Computes the full WABA health diagnostic: config validity, token, phone,
+// WABA, webhook subscription, PIN/registration status, business profile, and
+// derived capabilities/root-cause/recommended-fix. Single implementation
+// shared by GET /connection/health and autoRepair() (which needs the exact
+// same before/after picture) -- extracted 2026-07-28 so the two never drift.
+async function computeHealthSnapshot(cfg) {
+  const graphApiVersion = cfg?.graphApiVersion ?? process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0';
+
+  if (!cfg) {
+    return {
+      connected: false, graphApiVersion,
+      config: null, token: null, waba: null, phone: null, webhooks: null, pin: null, profile: null, capabilities: null,
+      issues: ['No WABA configuration — connect via Settings → WhatsApp.'],
+      rootCause: 'No WhatsApp configuration stored. Connect via Settings → WhatsApp.',
+      recommendedFix: ['Connect WhatsApp via Settings → WhatsApp.'],
+    };
+  }
+
+  const graph = resolveGraphUrl(cfg);
+  const configIssue = detectInvalidWabaConfig(cfg);
+  const config = {
+    wabaId: cfg.wabaId ?? null,
+    phoneNumberId: cfg.phoneNumberId ?? null,
+    displayNumber: cfg.phoneNumber ?? null,
+    connectedAt: cfg.connectedAt ?? null,
+    setupMethod: cfg.setupMethod ?? 'oauth',
+    configValid: !configIssue,
+    ...(configIssue && { configIssue }),
+  };
+  const issues = configIssue ? [configIssue] : [];
+
+  // ── Token validity ───────────────────────────────────────────────────────
+  let token = { valid: false, scopes: [], scopesConfirmed: false, type: null, appId: null, expiresAt: null };
+  const appId = process.env.META_APP_ID;
+  const appSecret = process.env.META_APP_SECRET;
+  if (cfg.accessToken) {
+    try {
+      if (appId && appSecret) {
+        const debugRes = await axios.get(`${graph}/debug_token`, {
+          params: { input_token: cfg.accessToken, access_token: `${appId}|${appSecret}` },
+          timeout: 10000,
+        });
+        const d = debugRes.data?.data ?? {};
+        token = {
+          valid: d.is_valid ?? false,
+          scopes: d.scopes ?? [],
+          scopesConfirmed: true,
+          type: d.type ?? null,
+          appId: String(d.app_id ?? appId ?? ''),
+          expiresAt: d.expires_at ? new Date(d.expires_at * 1000).toISOString() : null,
+        };
+      } else {
+        const meRes = await axios.get(`${graph}/me`, {
+          params: { fields: 'id,name', access_token: cfg.accessToken },
+          timeout: 10000,
+        });
+        token = { valid: !!meRes.data?.id, scopes: [], scopesConfirmed: false, type: null, appId: appId ?? null, expiresAt: null };
+      }
+      if (!token.valid) issues.push('Access token is invalid or expired.');
+    } catch {
+      issues.push('Access token validation failed — token may be expired or revoked.');
+    }
+  } else {
+    issues.push('No access token stored.');
+  }
+
+  // ── Phone number check ───────────────────────────────────────────────────
+  let phone = { accessible: false, id: cfg.phoneNumberId, displayNumber: cfg.phoneNumber, verifiedName: null, qualityRating: null, verificationStatus: null, status: null };
+  let pin = { enabled: false, registeredAt: cfg.pinRegisteredAt ?? null };
+  if (cfg.phoneNumberId && cfg.accessToken) {
+    try {
+      const phoneRes = await axios.get(`${graph}/${cfg.phoneNumberId}`, {
+        params: { fields: 'id,display_phone_number,verified_name,quality_rating,code_verification_status,name_status,is_pin_enabled', access_token: cfg.accessToken },
+        timeout: 10000,
+      });
+      const p = phoneRes.data ?? {};
+      phone = {
+        accessible: true, id: p.id ?? cfg.phoneNumberId,
+        displayNumber: p.display_phone_number ?? cfg.phoneNumber,
+        verifiedName: p.verified_name ?? null,
+        qualityRating: p.quality_rating ?? null,
+        verificationStatus: p.code_verification_status ?? null,
+        status: p.name_status ?? null,
+      };
+      pin = { enabled: p.is_pin_enabled ?? false, registeredAt: cfg.pinRegisteredAt ?? null };
+      if (!pin.enabled) issues.push('Two-step verification PIN is not set — Cloud API registration is incomplete.');
+    } catch {
+      issues.push('Phone Number ID is inaccessible — check token permissions (whatsapp_business_messaging).');
+    }
+  }
+
+  // ── Business profile (best-effort, non-fatal) ───────────────────────────
+  let profile = { accessible: false, about: null, address: null, description: null, email: null, profilePictureUrl: null, websites: [], vertical: null };
+  if (phone.accessible) {
+    profile = await getBusinessProfile(cfg);
+  }
+
+  // ── WABA check (skip if config is known-invalid) ────────────────────────
+  let waba = { accessible: false, id: cfg.wabaId, name: null, reviewStatus: null, currency: null, templateNamespace: null, businessId: null };
+  let webhooks = { subscribed: false, appId: null };
+  if (cfg.wabaId && cfg.accessToken && !configIssue) {
+    try {
+      const wabaRes = await axios.get(`${graph}/${cfg.wabaId}`, {
+        params: { fields: 'id,name,account_review_status,currency,message_template_namespace,on_behalf_of_business_info', access_token: cfg.accessToken },
+        timeout: 10000,
+      });
+      const w = wabaRes.data ?? {};
+      waba = {
+        accessible: true, id: w.id ?? cfg.wabaId,
+        name: w.name ?? null,
+        reviewStatus: w.account_review_status ?? null,
+        currency: w.currency ?? null,
+        templateNamespace: w.message_template_namespace ?? null,
+        businessId: w.on_behalf_of_business_info?.id ?? null,
+      };
+      try {
+        const whRes = await axios.get(`${graph}/${cfg.wabaId}/subscribed_apps`, {
+          params: { access_token: cfg.accessToken },
+          timeout: 8000,
+        });
+        const apps = whRes.data?.data ?? [];
+        webhooks = { subscribed: apps.length > 0, appId: apps[0]?.id ?? null };
+        // Previously only reflected in rootCause/recommendedFix, never in the
+        // flat `issues` list -- meant autoRepair's remainingIssues (= after.issues)
+        // could silently omit a still-broken webhook subscription. Found while
+        // building PR 4, 2026-07-28.
+        if (!webhooks.subscribed) issues.push('WABA is not subscribed to receive Meta webhooks — inbound messages and status updates will not arrive.');
+      } catch { /* non-fatal: webhooks check is best-effort */ }
+    } catch {
+      issues.push('WABA ID is inaccessible — the ID may be incorrect or the token lacks whatsapp_business_management permission.');
+    }
+  } else if (configIssue) {
+    issues.push('WABA check skipped — configuration is invalid (WABA ID equals Phone Number ID).');
+  }
+
+  if (!token.scopesConfirmed) {
+    if (waba.accessible) {
+      token.scopes = ['whatsapp_business_messaging (inferred)', 'whatsapp_business_management (inferred)'];
+    } else if (phone.accessible) {
+      token.scopes = ['whatsapp_business_messaging (inferred)'];
+      issues.push('Token likely lacks whatsapp_business_management — WABA is inaccessible while Phone is accessible. Set META_APP_ID and META_APP_SECRET in Lambda env vars to confirm exact scopes.');
+    }
+  }
+
+  const capabilities = {
+    messaging: phone.accessible && token.valid,
+    templates: waba.accessible && token.valid && !configIssue,
+    webhooks: webhooks.subscribed,
+    mediaUpload: phone.accessible && token.valid,
+  };
+
+  return {
+    connected: true, graphApiVersion,
+    config, token, waba, phone, webhooks, pin, profile, capabilities,
+    issues: [...new Set(issues)],
+    rootCause: computeRootCause(config, token, waba, webhooks, pin),
+    recommendedFix: computeRecommendedFix(config, token, waba, webhooks, pin),
+  };
+}
+
+// Structured, secret-free audit line for every repair action autoRepair takes
+// (requirement: log every repair action -- timestamp/companyId/action/result/
+// duration -- never tokens/PINs/secrets). logger.info, not .error: most
+// outcomes here are routine (fixed/already-healthy), not incidents; the
+// underlying helpers (subscribeWabaWebhooks/registerPhoneNumber) already
+// logger.error their own Meta failures with full redacted detail.
+function logRepairAction(companyId, action, result, durationMs) {
+  logger.info(`autoRepair: company=${companyId} action=${action} result=${result} durationMs=${durationMs}`);
+}
+
+// Repair actions autoRepair can take -- each only runs if isHealthy() says no
+// and canRepair() says the prerequisite for attempting it is met. Order
+// matters only for readability here; each is independent (subscribing
+// webhooks doesn't depend on PIN state or vice versa).
+const REPAIR_CHECKS = [
+  {
+    key: 'webhooks',
+    label: 'Subscribe webhook',
+    isHealthy: (before) => before.webhooks?.subscribed === true,
+    canRepair: (before) => before.waba?.accessible === true,
+    repair: async (cfg) => {
+      const r = await subscribeWabaWebhooks(cfg);
+      return r.subscribed
+        ? { status: 'fixed', detail: 'Subscribed to Meta webhooks.' }
+        : { status: 'failed', detail: r.error };
+    },
+  },
+  {
+    key: 'pin',
+    label: 'Register Cloud API & enable PIN',
+    isHealthy: (before) => before.pin?.enabled === true,
+    canRepair: (before) => before.phone?.accessible === true,
+    repair: async (cfg) => {
+      const r = await registerPhoneNumber(cfg);
+      if (r.alreadyRegistered) return { status: 'skipped', reason: 'already_healthy', detail: 'Already registered.' };
+      if (r.skipped) return { status: 'skipped', reason: 'cooldown_active', detail: r.error };
+      return r.registered
+        ? { status: 'fixed', detail: 'Cloud API registration completed and two-step PIN set.' }
+        : { status: 'failed', detail: r.error };
+    },
+  },
+];
+
+// Read-only checks with no corresponding write action -- reported as
+// "already healthy" when passing; when failing, they're already reflected in
+// the snapshot's own `issues` array (surfaced via `remainingIssues` in the
+// repair report), not duplicated into a separate taxonomy here.
+const READONLY_CHECKS = [
+  { key: 'token', label: 'Access token', isHealthy: (before) => before.token?.valid === true },
+  { key: 'waba', label: 'WABA access', isHealthy: (before) => before.waba?.accessible === true },
+  { key: 'phone', label: 'Phone access', isHealthy: (before) => before.phone?.accessible === true },
+  { key: 'messaging', label: 'Messaging capability', isHealthy: (before) => before.capabilities?.messaging === true },
+  { key: 'templates', label: 'Templates capability', isHealthy: (before) => before.capabilities?.templates === true },
+  { key: 'mediaUpload', label: 'Media upload capability', isHealthy: (before) => before.capabilities?.mediaUpload === true },
+];
+
+// Detects and repairs only what's actually broken. Never touches anything
+// already healthy (each repair action gates on isHealthy() first, computed
+// from a fresh health snapshot) -- running this twice on an already-healthy
+// account makes zero Meta write calls the second time. Never destructive:
+// the only writes possible are subscribeWabaWebhooks (idempotent per Meta)
+// and registerPhoneNumber (which itself refuses to re-register an
+// already-registered number). Business profile content is never auto-edited
+// here -- that's a human decision (PR 3's endpoints exist for it), so
+// "Refresh Business Profile" means re-reading current data, not changing it.
+async function autoRepair(cfg) {
+  const startedAt = Date.now();
+  const before = await computeHealthSnapshot(cfg);
+
+  if (!before.connected) {
+    return {
+      success: true,
+      before, repairPlan: [], executed: [], skipped: [], after: before,
+      remainingIssues: before.issues,
+      summary: { fixed: 0, failed: 0, alreadyHealthy: 0, otherSkipped: 0 },
+      durationMs: Date.now() - startedAt,
+    };
+  }
+
+  const repairPlan = [];
+  const executed = [];
+  const skipped = [];
+
+  for (const check of REPAIR_CHECKS) {
+    if (check.isHealthy(before)) {
+      skipped.push({ action: check.key, label: check.label, reason: 'already_healthy' });
+      logRepairAction(cfg.companyId, check.key, 'already_healthy', 0);
+    } else if (!check.canRepair(before)) {
+      skipped.push({ action: check.key, label: check.label, reason: 'prerequisite_not_met' });
+      logRepairAction(cfg.companyId, check.key, 'prerequisite_not_met', 0);
+    } else {
+      repairPlan.push({ action: check.key, label: check.label });
+    }
+  }
+
+  for (const check of REPAIR_CHECKS) {
+    if (!repairPlan.some((p) => p.action === check.key)) continue;
+    const stepStart = Date.now();
+    let result;
+    try {
+      result = await check.repair(cfg);
+    } catch (e) {
+      result = { status: 'failed', detail: e.message ?? 'Unexpected error' };
+    }
+    const durationMs = Date.now() - stepStart;
+    logRepairAction(cfg.companyId, check.key, result.status, durationMs);
+    if (result.status === 'skipped') {
+      skipped.push({ action: check.key, label: check.label, reason: result.reason, detail: result.detail });
+    } else {
+      executed.push({ action: check.key, label: check.label, status: result.status, detail: result.detail, durationMs });
+    }
+  }
+
+  for (const check of READONLY_CHECKS) {
+    if (check.isHealthy(before)) {
+      skipped.push({ action: check.key, label: check.label, reason: 'already_healthy' });
+    }
+  }
+
+  // Profile refresh is read-only (no field/photo is ever auto-edited) -- the
+  // `after` snapshot below already re-reads it, so this is a reporting entry,
+  // not a second API call.
+  executed.push({ action: 'refresh_profile', label: 'Refresh business profile', status: 'fixed', detail: 'Profile data refreshed from Meta.', durationMs: 0 });
+
+  const after = await computeHealthSnapshot(cfg);
+
+  const summary = {
+    fixed: executed.filter((e) => e.status === 'fixed').length,
+    failed: executed.filter((e) => e.status === 'failed').length,
+    alreadyHealthy: skipped.filter((s) => s.reason === 'already_healthy').length,
+    otherSkipped: skipped.filter((s) => s.reason !== 'already_healthy').length,
+  };
+
+  return {
+    success: true,
+    before, repairPlan, executed, skipped, after,
+    remainingIssues: after.issues,
+    summary,
+    durationMs: Date.now() - startedAt,
+  };
+}
+
 module.exports = {
   GRAPH,
   resolveGraphUrl,
@@ -284,4 +657,6 @@ module.exports = {
   getBusinessProfile,
   updateBusinessProfile,
   uploadProfilePhoto,
+  computeHealthSnapshot,
+  autoRepair,
 };

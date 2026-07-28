@@ -34,7 +34,7 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 // Graph URL/config helpers extracted to a shared module (also used by
 // WhatsAppSendService and FlowManagementService). resolveGraphUrl keeps its
 // historical local name so this file's ~40 call sites read unchanged.
-const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks, registerPhoneNumber, getBusinessProfile, updateBusinessProfile, uploadProfilePhoto } = require('../services/graphApiHelpers');
+const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks, registerPhoneNumber, getBusinessProfile, updateBusinessProfile, uploadProfilePhoto, computeHealthSnapshot, autoRepair } = require('../services/graphApiHelpers');
 
 // Meta's closed enum for whatsapp_business_profile's `vertical` field.
 // Verified live against Meta's own field constraints, 2026-07-28.
@@ -59,77 +59,10 @@ function mediaTypeFromMime(mimeType) {
 // (imported above) — moved there so FlowManagementService can apply the same
 // credential gate without requiring this route module.
 
-// Compute a plain-English root cause from health-check state (shown in UI and logs).
-// webhooks/pin are optional (only whatsapp.js's health-check route passes them) --
-// previously this function never referenced them at all, so the UI's root-cause
-// banner stayed silently empty whenever one of those was the *only* failing
-// check (found while building the Meta Health effort, 2026-07-28).
-function computeRootCause(cfg, token, waba, webhooks, pin) {
-  if (!cfg) return 'No WhatsApp configuration stored. Connect via Settings → WhatsApp.';
-  if (!cfg.configValid) {
-    if (cfg.wabaId && cfg.phoneNumberId && cfg.wabaId === cfg.phoneNumberId) {
-      if (!waba?.accessible) {
-        return 'The WABA ID stored during initial setup equals the Phone Number ID — a known bug in the original connection code. Auto-repair requires the whatsapp_business_management permission, which the stored token does not have. Either grant that permission to your System User and regenerate the token, or enter your WABA ID manually using the field in the repair section.';
-      }
-      return 'The WABA ID stored during initial setup equals the Phone Number ID. Click "Repair Config Automatically" to correct it, or enter your WABA ID manually.';
-    }
-    if (!cfg.wabaId) return 'No WABA ID is stored. Reconnect via Settings → WhatsApp.';
-  }
-  if (token && token.valid === false) {
-    return 'The stored access token is invalid or expired. Generate a new permanent token in Meta Business Suite → System Users → Generate Token.';
-  }
-  if (token?.valid && !waba?.accessible) {
-    const scopesMissing = token.scopes?.length > 0 && !token.scopes.includes('whatsapp_business_management');
-    const scopesUnknown = !token.scopes?.length;
-    if (scopesMissing || scopesUnknown) {
-      return 'The access token does not have the whatsapp_business_management permission. This permission is required for template management and WABA configuration. Messaging works without it (whatsapp_business_messaging is present), but templates will fail until this permission is granted.';
-    }
-    return 'The stored WABA ID is not accessible from Meta — it may be incorrect or your account may have changed.';
-  }
-  if (webhooks && webhooks.subscribed === false) {
-    return 'This WABA is not subscribed to receive Meta webhooks — inbound messages and status updates will not arrive. Click "Auto Repair" to subscribe automatically.';
-  }
-  if (pin && pin.enabled === false) {
-    return 'Two-step verification has not been set up for this number — Meta\'s Cloud API registration handshake was never completed. This also blocks the Two-Step Verification toggle in WhatsApp Manager ("Account does not exist in Cloud API"). Click "Auto Repair" to complete it automatically.';
-  }
-  return null;
-}
-
-// Compute ordered remediation steps for the UI "Recommended Fix" section.
-function computeRecommendedFix(cfg, token, waba, webhooks, pin) {
-  if (!cfg) return ['Connect WhatsApp via Settings → WhatsApp.'];
-  if (!cfg.configValid && cfg.wabaId === cfg.phoneNumberId) {
-    if (!waba?.accessible) {
-      return [
-        'In Meta Business Suite → System Users: select your system user → Edit → Add Permissions → enable whatsapp_business_management.',
-        'After adding the permission, generate a new permanent access token for this system user.',
-        'In APForce: Settings → WhatsApp → Disconnect, then reconnect. Your WABA ID will be auto-detected with the new token.',
-        'If you prefer not to change the token now: find your WABA ID in Meta Business Suite → WhatsApp Accounts (15–16 digit number next to your account name, different from the Phone Number ID in API Setup) and use "Apply Manual Override" in the repair section.',
-      ];
-    }
-    return ['Click "Repair Config Automatically" to auto-detect and correct your WABA ID.'];
-  }
-  if (token && token.valid === false) {
-    return [
-      'In Meta Business Suite → System Users: select your system user → Generate New Token.',
-      'Ensure both whatsapp_business_messaging AND whatsapp_business_management are enabled for the system user.',
-      'In APForce: Settings → WhatsApp → Disconnect, then reconnect with the new token.',
-    ];
-  }
-  if (token?.valid && !waba?.accessible) {
-    return [
-      'Verify your WABA ID is correct in Meta Business Suite → WhatsApp Accounts.',
-      'If your token lacks whatsapp_business_management: Meta Business Suite → System Users → Edit → Add Permissions.',
-    ];
-  }
-  if (webhooks && webhooks.subscribed === false) {
-    return ['Click "Auto Repair" (or re-save your WhatsApp config) to subscribe to Meta webhooks automatically.'];
-  }
-  if (pin && pin.enabled === false) {
-    return ['Click "Auto Repair" (or re-save your WhatsApp config) to complete Cloud API registration and set a two-step-verification PIN automatically.'];
-  }
-  return [];
-}
+// computeRootCause/computeRecommendedFix moved to services/graphApiHelpers.js,
+// 2026-07-28 -- folded into computeHealthSnapshot() there so GET
+// /connection/health and autoRepair() share one implementation instead of
+// each computing health state separately.
 
 // FIX 7: In-memory cache + DDB reverse-index to avoid full table scan on every webhook message.
 // When a company connects WABA, a CONFIG#PHONEID# item is also written (see callbacks below).
@@ -852,158 +785,34 @@ router.post('/connection/repair', authMiddleware, checkRole(['admin']), async (r
 });
 
 // ── GET /api/whatsapp/connection/health — comprehensive WABA diagnostic ────────
+// Thin wrapper: all computation lives in graphApiHelpers.computeHealthSnapshot,
+// shared with autoRepair() (2026-07-28) so the two never compute health
+// differently. Response shape unchanged from before this refactor.
 router.get('/connection/health', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
     const cfg = await getWabaConfig(req.user.companyId);
     const now = new Date().toISOString();
-    const graphApiVersion = cfg?.graphApiVersion ?? process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0';
+    const snapshot = await computeHealthSnapshot(cfg);
+    res.json({ success: true, lastChecked: now, ...snapshot });
+  } catch (err) {
+    next(err);
+  }
+});
 
+// ── POST /api/whatsapp/repair — one-click Auto Repair ──────────────────────────
+// Detects and repairs only what's actually broken (subscribeWabaWebhooks/
+// registerPhoneNumber, both already idempotent/non-destructive) via
+// graphApiHelpers.autoRepair(). Never touches an already-healthy account --
+// running this twice in a row on a healthy WABA makes zero Meta write calls
+// the second time.
+router.post('/repair', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const cfg = await getWabaConfig(req.user.companyId);
     if (!cfg) {
-      return res.json({ success: true, connected: false, graphApiVersion, lastChecked: now, issues: ['No WABA configuration — connect via Settings → WhatsApp.'], rootCause: 'No WhatsApp configuration stored. Connect via Settings → WhatsApp.', recommendedFix: ['Connect WhatsApp via Settings → WhatsApp.'] });
+      return res.status(400).json({ error: 'No WhatsApp configuration — connect first via Settings → WhatsApp.' });
     }
-
-    const configIssue = detectInvalidWabaConfig(cfg);
-    const config = {
-      wabaId: cfg.wabaId ?? null,
-      phoneNumberId: cfg.phoneNumberId ?? null,
-      displayNumber: cfg.phoneNumber ?? null,
-      connectedAt: cfg.connectedAt ?? null,
-      setupMethod: cfg.setupMethod ?? 'oauth',
-      configValid: !configIssue,
-      ...(configIssue && { configIssue }),
-    };
-    const issues = configIssue ? [configIssue] : [];
-
-    // ── Token validity ─────────────────────────────────────────────────────────
-    let token = { valid: false, scopes: [], scopesConfirmed: false, type: null, appId: null, expiresAt: null };
-    const appId = process.env.META_APP_ID;
-    const appSecret = process.env.META_APP_SECRET;
-    if (cfg.accessToken) {
-      try {
-        if (appId && appSecret) {
-          const debugRes = await axios.get(`${getGraphUrl(cfg)}/debug_token`, {
-            params: { input_token: cfg.accessToken, access_token: `${appId}|${appSecret}` },
-            timeout: 10000,
-          });
-          const d = debugRes.data?.data ?? {};
-          token = {
-            valid: d.is_valid ?? false,
-            scopes: d.scopes ?? [],
-            scopesConfirmed: true,
-            type: d.type ?? null,
-            appId: String(d.app_id ?? appId ?? ''),
-            expiresAt: d.expires_at ? new Date(d.expires_at * 1000).toISOString() : null,
-          };
-        } else {
-          const meRes = await axios.get(`${getGraphUrl(cfg)}/me`, {
-            params: { fields: 'id,name', access_token: cfg.accessToken },
-            timeout: 10000,
-          });
-          token = { valid: !!meRes.data?.id, scopes: [], scopesConfirmed: false, type: null, appId: appId ?? null, expiresAt: null };
-        }
-        if (!token.valid) issues.push('Access token is invalid or expired.');
-      } catch {
-        issues.push('Access token validation failed — token may be expired or revoked.');
-      }
-    } else {
-      issues.push('No access token stored.');
-    }
-
-    // ── Phone number check ─────────────────────────────────────────────────────
-    let phone = { accessible: false, id: cfg.phoneNumberId, displayNumber: cfg.phoneNumber, verifiedName: null, qualityRating: null, verificationStatus: null, status: null };
-    let pin = { enabled: false, registeredAt: cfg.pinRegisteredAt ?? null };
-    if (cfg.phoneNumberId && cfg.accessToken) {
-      try {
-        const phoneRes = await axios.get(`${getGraphUrl(cfg)}/${cfg.phoneNumberId}`, {
-          params: { fields: 'id,display_phone_number,verified_name,quality_rating,code_verification_status,name_status,is_pin_enabled', access_token: cfg.accessToken },
-          timeout: 10000,
-        });
-        const p = phoneRes.data ?? {};
-        phone = {
-          accessible: true, id: p.id ?? cfg.phoneNumberId,
-          displayNumber: p.display_phone_number ?? cfg.phoneNumber,
-          verifiedName: p.verified_name ?? null,
-          qualityRating: p.quality_rating ?? null,
-          verificationStatus: p.code_verification_status ?? null,
-          status: p.name_status ?? null,
-        };
-        pin = { enabled: p.is_pin_enabled ?? false, registeredAt: cfg.pinRegisteredAt ?? null };
-        if (!pin.enabled) issues.push('Two-step verification PIN is not set — Cloud API registration is incomplete.');
-      } catch {
-        issues.push('Phone Number ID is inaccessible — check token permissions (whatsapp_business_messaging).');
-      }
-    }
-
-    // ── Business profile (best-effort, non-fatal — a profile read failure
-    // never blocks the rest of the health check, same as the webhooks check) ──
-    let profile = { accessible: false, about: null, address: null, description: null, email: null, profilePictureUrl: null, websites: [], vertical: null };
-    if (phone.accessible) {
-      profile = await getBusinessProfile(cfg);
-    }
-
-    // ── WABA check (skip if config is known-invalid) ───────────────────────────
-    let waba = { accessible: false, id: cfg.wabaId, name: null, reviewStatus: null, currency: null, templateNamespace: null, businessId: null };
-    let webhooks = { subscribed: false, appId: null };
-    if (cfg.wabaId && cfg.accessToken && !configIssue) {
-      try {
-        const wabaRes = await axios.get(`${getGraphUrl(cfg)}/${cfg.wabaId}`, {
-          params: { fields: 'id,name,account_review_status,currency,message_template_namespace,on_behalf_of_business_info', access_token: cfg.accessToken },
-          timeout: 10000,
-        });
-        const w = wabaRes.data ?? {};
-        waba = {
-          accessible: true, id: w.id ?? cfg.wabaId,
-          name: w.name ?? null,
-          reviewStatus: w.account_review_status ?? null,
-          currency: w.currency ?? null,
-          templateNamespace: w.message_template_namespace ?? null,
-          businessId: w.on_behalf_of_business_info?.id ?? null,
-        };
-        // ── Webhook subscription check (only if WABA is accessible) ───────────
-        try {
-          const whRes = await axios.get(`${getGraphUrl(cfg)}/${cfg.wabaId}/subscribed_apps`, {
-            params: { access_token: cfg.accessToken },
-            timeout: 8000,
-          });
-          const apps = whRes.data?.data ?? [];
-          webhooks = { subscribed: apps.length > 0, appId: apps[0]?.id ?? null };
-        } catch { /* non-fatal: webhooks check is best-effort */ }
-      } catch {
-        issues.push('WABA ID is inaccessible — the ID may be incorrect or the token lacks whatsapp_business_management permission.');
-      }
-    } else if (configIssue) {
-      issues.push('WABA check skipped — configuration is invalid (WABA ID equals Phone Number ID).');
-    }
-
-    // ── Scope inference when debug_token is unavailable ────────────────────────
-    // If scopes were not confirmed (no META_APP_ID/SECRET), infer from WABA accessibility.
-    if (!token.scopesConfirmed) {
-      if (waba.accessible) {
-        token.scopes = ['whatsapp_business_messaging (inferred)', 'whatsapp_business_management (inferred)'];
-      } else if (phone.accessible) {
-        token.scopes = ['whatsapp_business_messaging (inferred)'];
-        issues.push('Token likely lacks whatsapp_business_management — WABA is inaccessible while Phone is accessible. Set META_APP_ID and META_APP_SECRET in Lambda env vars to confirm exact scopes.');
-      }
-    }
-
-    const capabilities = {
-      messaging: phone.accessible && token.valid,
-      templates: waba.accessible && token.valid && !configIssue,
-      webhooks: webhooks.subscribed,
-      mediaUpload: phone.accessible && token.valid,
-    };
-
-    const rootCause = computeRootCause(config, token, waba, webhooks, pin);
-    const recommendedFix = computeRecommendedFix(config, token, waba, webhooks, pin);
-
-    res.json({
-      success: true, connected: true,
-      config, graphApiVersion, lastChecked: now,
-      token, waba, phone, webhooks, pin, profile, capabilities,
-      issues: [...new Set(issues)],
-      rootCause,
-      recommendedFix,
-    });
+    const result = await autoRepair(cfg);
+    res.json(result);
   } catch (err) {
     next(err);
   }
