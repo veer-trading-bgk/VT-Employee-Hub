@@ -80,6 +80,21 @@ Observations:
 
 ---
 
+## Meta Health — WhatsApp Cloud API self-healing effort (2026-07-28)
+
+Not a git-tagged milestone (consistent with this chapter's own observation above that tagging has only ever covered two pre-planned phases, not ongoing feature work) — recorded here as the closest equivalent to release notes this repo has, per the plan at the time this was built.
+
+**Context:** the `angelbrokingbgk@gmail.com` WABA (`1024855430389913`) sat in a broken "Pending" state because Meta's Cloud API registration handshake (`POST /{phone-number-id}/register`, which also sets the two-step-verification PIN) was never called anywhere in the connect flow — messaging worked, but WhatsApp Manager's 2FA toggle failed with "Account does not exist in Cloud API." Fixed manually for that one account first, then built out permanently as four independently-shipped, independently-verified PRs:
+
+- **PR 1** (`d3bc43a`) — `graphApiHelpers.registerPhoneNumber()`: completes Cloud API registration + sets a PIN, wired into `manual-connect`/OAuth callback/`PUT /config`. Never re-registers an already-registered number (Meta rate-limits `/register` to 10 calls/72h). PIN generated fresh each time, never stored/logged.
+- **PR 2** (`fa3cb4b`) — `GET /connection/health` extended with `pin`/`profile` fields; closed a gap where `computeRootCause`/`computeRecommendedFix` never referenced `webhooks.subscribed` or `pin.enabled`, so the UI's root-cause banner stayed silently empty when one of those was the only failing check.
+- **PR 3** (`b72d82c`) — `graphApiHelpers.updateBusinessProfile()`/`uploadProfilePhoto()`: push profile field edits and photo uploads via Meta's Resumable Upload API. Live-verified with real production values (real APForce branding, real logo) after tracing a genuine credential mismatch (Lambda's `META_APP_ID` was pointed at the wrong Meta app entirely — resolved by cross-referencing Meta's own `subscribed_apps` record for the WABA).
+- **PR 4** (`8b3fe63`) — `graphApiHelpers.autoRepair()` + `POST /api/whatsapp/repair`: one-click repair that only touches what's actually broken (webhook subscription, Cloud API registration/PIN), building on PR 1's already-idempotent primitives. Refactored `GET /connection/health`'s logic into a shared `computeHealthSnapshot()` so the route and Auto Repair can never compute health differently. Live-verified twice back-to-back against the (already-healthy) production WABA: zero Meta write calls either time, proving idempotency against a real account.
+
+All four PRs deployed via the normal `main`-push pipeline (per "Current Model" above — no separate release process exists or was introduced for this effort), each with its own passing GitHub Actions run and live production verification before commit. Remaining, not yet shipped as of this entry: a "Send Test Message" endpoint (PR 5) and a consolidated frontend panel (PR 6).
+
+---
+
 ## Feature Flags
 
 A real feature-flag mechanism exists: `src/utils/featureFlags.js`, covered by `tests/featureFlags.test.js`.
