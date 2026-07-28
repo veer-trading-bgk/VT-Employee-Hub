@@ -51,7 +51,7 @@ import type { Role } from '@/types';
 import { toast } from 'sonner';
 import { EmployeesSection } from '@/components/v3/team/EmployeesSection';
 import { AISection } from '@/components/v3/settings/AISection';
-import { WabaHealthPanel } from '@/components/settings/WabaHealthPanel';
+import { MetaHealthPanel } from '@/components/settings/MetaHealthPanel';
 import { WhatsAppFlowsPanel } from '@/components/settings/WhatsAppFlowsPanel';
 import { BranchesPanel } from '@/components/settings/BranchesPanel';
 import { SettingsTemplatesSection } from '@/components/settings/SettingsTemplatesSection';
@@ -941,8 +941,10 @@ function WhatsAppSection() {
         </div>
       </Card>
 
-      {/* ── WABA Health Check (connected only) ───────────────────── */}
-      {connected && <WabaHealthPanel />}
+      {/* ── Meta Health — connection/token/phone/webhook/registration/PIN/
+          messaging/templates/profile status, Auto Repair, Send Test Message
+          (connected only) ─────────────────────────────────────────── */}
+      {connected && <MetaHealthPanel />}
 
       {/* ── WhatsApp Flows (connected only) ─────────────────────── */}
       {connected && <WhatsAppFlowsPanel />}
