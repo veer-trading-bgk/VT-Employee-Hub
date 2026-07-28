@@ -34,7 +34,7 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 // Graph URL/config helpers extracted to a shared module (also used by
 // WhatsAppSendService and FlowManagementService). resolveGraphUrl keeps its
 // historical local name so this file's ~40 call sites read unchanged.
-const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks, registerPhoneNumber } = require('../services/graphApiHelpers');
+const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks, registerPhoneNumber, getBusinessProfile } = require('../services/graphApiHelpers');
 function mediaTypeFromMime(mimeType) {
   if (mimeType.startsWith('image/')) return 'image';
   if (mimeType.startsWith('video/')) return 'video';
@@ -47,7 +47,11 @@ function mediaTypeFromMime(mimeType) {
 // credential gate without requiring this route module.
 
 // Compute a plain-English root cause from health-check state (shown in UI and logs).
-function computeRootCause(cfg, token, waba) {
+// webhooks/pin are optional (only whatsapp.js's health-check route passes them) --
+// previously this function never referenced them at all, so the UI's root-cause
+// banner stayed silently empty whenever one of those was the *only* failing
+// check (found while building the Meta Health effort, 2026-07-28).
+function computeRootCause(cfg, token, waba, webhooks, pin) {
   if (!cfg) return 'No WhatsApp configuration stored. Connect via Settings → WhatsApp.';
   if (!cfg.configValid) {
     if (cfg.wabaId && cfg.phoneNumberId && cfg.wabaId === cfg.phoneNumberId) {
@@ -69,11 +73,17 @@ function computeRootCause(cfg, token, waba) {
     }
     return 'The stored WABA ID is not accessible from Meta — it may be incorrect or your account may have changed.';
   }
+  if (webhooks && webhooks.subscribed === false) {
+    return 'This WABA is not subscribed to receive Meta webhooks — inbound messages and status updates will not arrive. Click "Auto Repair" to subscribe automatically.';
+  }
+  if (pin && pin.enabled === false) {
+    return 'Two-step verification has not been set up for this number — Meta\'s Cloud API registration handshake was never completed. This also blocks the Two-Step Verification toggle in WhatsApp Manager ("Account does not exist in Cloud API"). Click "Auto Repair" to complete it automatically.';
+  }
   return null;
 }
 
 // Compute ordered remediation steps for the UI "Recommended Fix" section.
-function computeRecommendedFix(cfg, token, waba) {
+function computeRecommendedFix(cfg, token, waba, webhooks, pin) {
   if (!cfg) return ['Connect WhatsApp via Settings → WhatsApp.'];
   if (!cfg.configValid && cfg.wabaId === cfg.phoneNumberId) {
     if (!waba?.accessible) {
@@ -98,6 +108,12 @@ function computeRecommendedFix(cfg, token, waba) {
       'Verify your WABA ID is correct in Meta Business Suite → WhatsApp Accounts.',
       'If your token lacks whatsapp_business_management: Meta Business Suite → System Users → Edit → Add Permissions.',
     ];
+  }
+  if (webhooks && webhooks.subscribed === false) {
+    return ['Click "Auto Repair" (or re-save your WhatsApp config) to subscribe to Meta webhooks automatically.'];
+  }
+  if (pin && pin.enabled === false) {
+    return ['Click "Auto Repair" (or re-save your WhatsApp config) to complete Cloud API registration and set a two-step-verification PIN automatically.'];
   }
   return [];
 }
@@ -882,10 +898,11 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
 
     // ── Phone number check ─────────────────────────────────────────────────────
     let phone = { accessible: false, id: cfg.phoneNumberId, displayNumber: cfg.phoneNumber, verifiedName: null, qualityRating: null, verificationStatus: null, status: null };
+    let pin = { enabled: false, registeredAt: cfg.pinRegisteredAt ?? null };
     if (cfg.phoneNumberId && cfg.accessToken) {
       try {
         const phoneRes = await axios.get(`${getGraphUrl(cfg)}/${cfg.phoneNumberId}`, {
-          params: { fields: 'id,display_phone_number,verified_name,quality_rating,code_verification_status,name_status', access_token: cfg.accessToken },
+          params: { fields: 'id,display_phone_number,verified_name,quality_rating,code_verification_status,name_status,is_pin_enabled', access_token: cfg.accessToken },
           timeout: 10000,
         });
         const p = phoneRes.data ?? {};
@@ -897,9 +914,18 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
           verificationStatus: p.code_verification_status ?? null,
           status: p.name_status ?? null,
         };
+        pin = { enabled: p.is_pin_enabled ?? false, registeredAt: cfg.pinRegisteredAt ?? null };
+        if (!pin.enabled) issues.push('Two-step verification PIN is not set — Cloud API registration is incomplete.');
       } catch {
         issues.push('Phone Number ID is inaccessible — check token permissions (whatsapp_business_messaging).');
       }
+    }
+
+    // ── Business profile (best-effort, non-fatal — a profile read failure
+    // never blocks the rest of the health check, same as the webhooks check) ──
+    let profile = { accessible: false, about: null, address: null, description: null, email: null, profilePictureUrl: null, websites: [], vertical: null };
+    if (phone.accessible) {
+      profile = await getBusinessProfile(cfg);
     }
 
     // ── WABA check (skip if config is known-invalid) ───────────────────────────
@@ -954,13 +980,13 @@ router.get('/connection/health', authMiddleware, checkRole(['admin']), async (re
       mediaUpload: phone.accessible && token.valid,
     };
 
-    const rootCause = computeRootCause(config, token, waba);
-    const recommendedFix = computeRecommendedFix(config, token, waba);
+    const rootCause = computeRootCause(config, token, waba, webhooks, pin);
+    const recommendedFix = computeRecommendedFix(config, token, waba, webhooks, pin);
 
     res.json({
       success: true, connected: true,
       config, graphApiVersion, lastChecked: now,
-      token, waba, phone, webhooks, capabilities,
+      token, waba, phone, webhooks, pin, profile, capabilities,
       issues: [...new Set(issues)],
       rootCause,
       recommendedFix,
@@ -1056,6 +1082,22 @@ router.get('/connection/diagnose', authMiddleware, checkRole(['admin']), async (
       },
       results,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── GET /api/whatsapp/profile — read the WhatsApp Business Profile ────────────
+// Thin wrapper around getBusinessProfile, for the frontend's standalone
+// "refresh profile" action without re-running the full health check.
+router.get('/profile', authMiddleware, checkRole(['admin']), async (req, res, next) => {
+  try {
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg?.phoneNumberId || !cfg?.accessToken) {
+      return res.status(400).json({ error: 'No WhatsApp configuration — connect first via Settings → WhatsApp.' });
+    }
+    const profile = await getBusinessProfile(cfg);
+    res.json({ success: true, profile, lastChecked: new Date().toISOString() });
   } catch (err) {
     next(err);
   }

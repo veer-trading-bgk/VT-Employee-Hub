@@ -166,6 +166,43 @@ async function registerPhoneNumber(cfg) {
   }
 }
 
+// Read-only pull of the WhatsApp Business Profile (about/address/description/
+// email/websites/vertical/profile picture). This is a Graph API *connection*,
+// not a flat node -- responses come back as {data: [{...}]}, one element,
+// unlike the phone-number-id node's flat object shape (verified live against
+// a real WABA, 2026-07-28). Fields Meta has never had set are simply absent
+// from the response rather than null, so every field is defaulted here.
+async function getBusinessProfile(cfg) {
+  try {
+    const res = await axios.get(`${resolveGraphUrl(cfg)}/${cfg.phoneNumberId}/whatsapp_business_profile`, {
+      params: { fields: 'about,address,description,email,profile_picture_url,websites,vertical', access_token: cfg.accessToken },
+      timeout: 10000,
+    });
+    const p = res.data?.data?.[0] ?? {};
+    return {
+      accessible: true,
+      about: p.about ?? null,
+      address: p.address ?? null,
+      description: p.description ?? null,
+      email: p.email ?? null,
+      profilePictureUrl: p.profile_picture_url ?? null,
+      websites: p.websites ?? [],
+      vertical: p.vertical ?? null,
+    };
+  } catch (e) {
+    const rawError = e.response?.data ?? { message: e.message };
+    logger.error(
+      `getBusinessProfile: failed for phoneNumberId=${cfg.phoneNumberId} (status ${e.response?.status ?? 'n/a'})`,
+      JSON.stringify(rawError),
+    );
+    return {
+      accessible: false, about: null, address: null, description: null, email: null,
+      profilePictureUrl: null, websites: [], vertical: null,
+      error: rawError?.error?.message ?? e.message ?? 'Could not read business profile',
+    };
+  }
+}
+
 module.exports = {
   GRAPH,
   resolveGraphUrl,
@@ -175,4 +212,5 @@ module.exports = {
   detectInvalidWabaConfig,
   subscribeWabaWebhooks,
   registerPhoneNumber,
+  getBusinessProfile,
 };
