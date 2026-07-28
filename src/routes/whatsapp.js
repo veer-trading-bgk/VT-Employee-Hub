@@ -3580,6 +3580,85 @@ router.post('/send-template', authMiddleware, rateLimit(20, 60_000), async (req,
   }
 });
 
+// E.164: '+' followed by 8-15 digits total (country code + subscriber number),
+// no leading zero right after the '+'.
+const E164_PHONE_REGEX = /^\+[1-9]\d{7,14}$/;
+
+// ── POST /api/whatsapp/send-test — send a template to any E.164 phone number ──
+// For onboarding/troubleshooting verification, before any real lead exists
+// (Meta Health effort, PR 5). Reuses WhatsAppSendService.sendTemplate()
+// unmodified via its existing `resolvedContact` escape hatch (already used by
+// broadcast loops) -- stays inside ADR-012 (all outbound sends go through
+// WhatsAppSendService), adds zero new code to that shared file. The synthetic
+// contact's PK lives under a dedicated TESTSEND# namespace so it can never
+// appear in Inbox/CRM listings (which only query LEAD#/INBOX# prefixes) -- a
+// test send never creates or touches a real lead or conversation.
+router.post('/send-test', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const { toPhone, templateId, variableValues, headerVariableValue } = req.body;
+    if (!toPhone || !templateId) {
+      return res.status(400).json({ error: 'toPhone and templateId are required' });
+    }
+    if (!E164_PHONE_REGEX.test(toPhone)) {
+      return res.status(400).json({ error: 'toPhone must be in E.164 format, e.g. +14155552671' });
+    }
+
+    const cfg = await getWabaConfig(req.user.companyId);
+    if (!cfg?.accessToken || !cfg?.phoneNumberId) {
+      return res.status(400).json({ error: 'WhatsApp not configured — connect first via Settings → WhatsApp.' });
+    }
+
+    // Pre-check the template's approval status for a clear, specific error --
+    // sendTemplate() itself would still work, but Meta's own rejection for a
+    // non-approved template name is a much less useful message than this.
+    const tmplRes = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${templateId}` },
+    }).promise();
+    if (!tmplRes.Item) return res.status(404).json({ error: 'Template not found' });
+    if (tmplRes.Item.status !== 'APPROVED') {
+      return res.status(400).json({ error: `Template is not approved yet (status: ${tmplRes.Item.status}) — only APPROVED templates can be sent.` });
+    }
+
+    const phoneDigits = toPhone.replace(/\D/g, '');
+    const target = {
+      resolvedContact: {
+        pk: `TESTSEND#${req.user.companyId}#${phoneDigits}`,
+        phone: phoneDigits,
+        leadItem: null,
+        isLead: false,
+      },
+    };
+
+    const result = await WASendSvc.sendTemplate(
+      req.user.companyId,
+      target,
+      templateId,
+      variableValues ?? [],
+      req.user,
+      { headerVariableValue: headerVariableValue ?? null, content: '[Test message]', extraFields: { isTestSend: true } },
+    );
+    res.json({ success: true, messageId: result.wamid, timestamp: result.timestamp });
+  } catch (err) {
+    // Same pattern as /send-template just above -- a real Meta/axios rejection
+    // from sendTemplate()'s unwrapped axios.post() carries err.response.data,
+    // never a top-level err.status (only set on this service's own
+    // custom-thrown errors, e.g. "Template not found").
+    const rawError = err.response?.data;
+    if (rawError) {
+      logger.error('send-test error', JSON.stringify(rawError));
+      const metaErr = rawError?.error ?? {};
+      const friendlyMessage = metaErr.error_user_msg || metaErr.message || 'Meta API error';
+      return res.status(err.response?.status ?? 400).json({ error: friendlyMessage, rawError });
+    }
+    if (err.status) {
+      logger.error('send-test error', err.message);
+      return res.status(err.status).json({ error: err.message });
+    }
+    next(err);
+  }
+});
+
 // Converts a raw MSG# item into text for AIService's conversationHistory —
 // non-text message types get a bracketed summary rather than raw/empty content.
 function _messageSummary(m) {
