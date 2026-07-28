@@ -526,6 +526,7 @@ router.put('/config', authMiddleware, checkRole(['admin']), async (req, res, nex
     // Validate changed credentials against Meta
     const tokenChanged = !!(newToken?.trim()) && newToken.trim() !== cfg.accessToken;
     const phoneChanged = phoneNumberId !== cfg.phoneNumberId;
+    const wabaIdChanged = wabaId !== cfg.wabaId;
     if (tokenChanged || phoneChanged) {
       try {
         await axios.get(`${GRAPH}/${phoneNumberId}`, {
@@ -569,8 +570,24 @@ router.put('/config', authMiddleware, checkRole(['admin']), async (req, res, nex
       invalidatePhoneIdCache(phoneNumberId);
     }
 
+    // Re-subscribe to Meta webhooks whenever the wabaId or token changed --
+    // otherwise a corrected wabaId/token (e.g. fixing a bad manual-connect)
+    // silently stays unsubscribed forever, since subscribing only ever ran
+    // at connect time (manual-connect / OAuth callback), never here.
+    let webhookResult = null;
+    if (wabaIdChanged || tokenChanged) {
+      webhookResult = await subscribeWabaWebhooks({ wabaId, accessToken: resolvedToken, graphApiVersion: updatedItem.graphApiVersion });
+    }
+
     logger.info(`WABA config updated for company ${req.user.companyId}`);
-    res.json({ success: true, message: 'Configuration updated successfully.' });
+    res.json({
+      success: true,
+      message: 'Configuration updated successfully.',
+      ...(webhookResult && {
+        webhookSubscribed: webhookResult.subscribed,
+        ...(!webhookResult.subscribed && { webhookWarning: `Webhook subscription failed — inbound messages will not be delivered until this is fixed. ${webhookResult.error}` }),
+      }),
+    });
   } catch (err) {
     logger.error('PUT /config error', err);
     next(err);
@@ -4301,7 +4318,20 @@ router.get('/media/:mediaId', authMiddleware, async (req, res, next) => {
     res.setHeader('Content-Type', mediaRes.headers['content-type'] ?? 'application/octet-stream');
     res.setHeader('Cache-Control', 'private, max-age=300');
     res.send(Buffer.from(mediaRes.data));
-  } catch (err) { next(err); }
+  } catch (err) {
+    // Meta deletes media after its retention window -- GET /{media-id} then
+    // fails with this exact structured error (code 100, subcode 33, "does
+    // not exist"). Expected and unrecoverable (nothing we do restores it),
+    // not a bug: don't page Telegram/Sentry for every old attachment someone
+    // opens in Inbox. Anything else still falls through to the generic
+    // handler and alerts as before.
+    const metaErr = err.response?.data?.error;
+    if (metaErr?.code === 100 && metaErr?.error_subcode === 33) {
+      logger.warn(`Media ${req.params.mediaId} no longer available on Meta (expired): ${metaErr.message}`);
+      return res.status(404).json({ error: 'Media no longer available' });
+    }
+    next(err);
+  }
 });
 
 // ── POST /api/whatsapp/send-media — send image/document to lead ───────────────

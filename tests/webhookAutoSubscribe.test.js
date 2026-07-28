@@ -15,6 +15,13 @@
  * tests/whatsappConnectionErrorLogging.test.js and
  * tests/whatsappOauthInitScope.test.js: no HTTP, no auth, dynamodb/logger/
  * axios/WhatsAppSendService mocked.
+ *
+ * A second gap (found 2026-07-28 via a live customer onboarding: WABA
+ * 1024855430389913): PUT /api/whatsapp/config never called
+ * subscribeWabaWebhooks at all, so correcting a bad wabaId/accessToken
+ * post-connect (e.g. via this route, right after a manual-connect whose
+ * initial subscribe failed) left the webhook silently unsubscribed forever.
+ * Fixed by re-subscribing whenever wabaId or accessToken changes.
  */
 
 jest.mock('axios');
@@ -153,6 +160,85 @@ describe('POST /api/whatsapp/manual-connect — webhook auto-subscribe', () => {
       webhookWarning: expect.stringContaining('Webhook subscription failed'),
     }));
 
+    expectNoTokenInLogs();
+  });
+});
+
+describe('PUT /api/whatsapp/config — webhook re-subscribe on wabaId/token change', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const STORED_CFG = {
+    phoneNumberId: 'pid_old', wabaId: 'waba_old', accessToken: FAKE_TOKEN, businessManagerId: null,
+  };
+
+  function mockStoredConfig(cfg = STORED_CFG) {
+    dynamodb.get.mockReturnValue(resolved({ Item: cfg }));
+    dynamodb.put.mockReturnValue(resolved({}));
+  }
+
+  test('wabaId changed, token unchanged: re-subscribes with the new wabaId and the existing (unchanged) token', async () => {
+    mockStoredConfig();
+    axios.post.mockResolvedValueOnce({ data: {} });
+
+    const handler = getRouteHandler(whatsappRouter, '/config', 'put');
+    const res = mockRes();
+    await handler({ body: { wabaId: 'waba_new' }, user: USER }, res, jest.fn());
+
+    // No credential re-validation GET is expected here -- only wabaId changed,
+    // not phoneNumberId/accessToken -- so the only axios call is the subscribe POST.
+    expect(axios.get).not.toHaveBeenCalled();
+    expect(axios.post).toHaveBeenCalledTimes(1);
+    const [postUrl, , options] = axios.post.mock.calls[0];
+    expect(postUrl).toContain('waba_new/subscribed_apps');
+    expect(options.params.access_token).toBe(FAKE_TOKEN);
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, webhookSubscribed: true }));
+    expectNoTokenInLogs();
+  });
+
+  test('accessToken changed: validates against Meta, then re-subscribes with the new token', async () => {
+    mockStoredConfig();
+    const NEW_TOKEN = 'EAAbrandnewtoken_should_never_appear_in_any_log_ABC123';
+    axios.get.mockResolvedValueOnce({ data: { id: 'pid_old' } }); // credential re-validation
+    axios.post.mockResolvedValueOnce({ data: {} });
+
+    const handler = getRouteHandler(whatsappRouter, '/config', 'put');
+    const res = mockRes();
+    await handler({ body: { accessToken: NEW_TOKEN }, user: USER }, res, jest.fn());
+
+    const [postUrl, , options] = axios.post.mock.calls[0];
+    expect(postUrl).toContain('waba_old/subscribed_apps');
+    expect(options.params.access_token).toBe(NEW_TOKEN);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true, webhookSubscribed: true }));
+  });
+
+  test('neither wabaId nor accessToken changed (e.g. only businessManagerId edited): never re-subscribes', async () => {
+    mockStoredConfig();
+
+    const handler = getRouteHandler(whatsappRouter, '/config', 'put');
+    const res = mockRes();
+    await handler({ body: { businessManagerId: 'bm_123' }, user: USER }, res, jest.fn());
+
+    expect(axios.post).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    const [body] = res.json.mock.calls[0];
+    expect(body).not.toHaveProperty('webhookSubscribed');
+    expect(body).not.toHaveProperty('webhookWarning');
+  });
+
+  test('wabaId changed but the re-subscribe fails: route still succeeds, webhookWarning surfaced, token never logged', async () => {
+    mockStoredConfig();
+    axios.post.mockRejectedValueOnce({ response: { status: 400, data: META_ERROR } });
+
+    const handler = getRouteHandler(whatsappRouter, '/config', 'put');
+    const res = mockRes();
+    await handler({ body: { wabaId: 'waba_new' }, user: USER }, res, jest.fn());
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      webhookSubscribed: false,
+      webhookWarning: expect.stringContaining('Webhook subscription failed'),
+    }));
     expectNoTokenInLogs();
   });
 });
