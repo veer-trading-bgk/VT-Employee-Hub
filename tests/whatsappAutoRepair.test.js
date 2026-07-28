@@ -126,6 +126,29 @@ describe('graphApiHelpers.autoRepair', () => {
     expect(result.remainingIssues).toEqual([]);
   });
 
+  test('a fresh registration surfaces the generated PIN in the executed entry (2026-07-28 fix -- previously discarded, meaning nobody could ever retrieve it)', async () => {
+    queueHealthSnapshotGets({ pinEnabled: false, webhookSubscribed: true });
+    axios.get.mockResolvedValueOnce({ data: { is_pin_enabled: false } });
+    axios.post.mockResolvedValueOnce({ data: { success: true } });
+    queueHealthSnapshotGets({ pinEnabled: true, webhookSubscribed: true });
+
+    const result = await autoRepair(CFG);
+
+    const pinResult = result.executed.find((e) => e.action === 'pin');
+    expect(pinResult.pinGenerated).toMatch(/^\d{6}$/);
+  });
+
+  test('already-registered short-circuit never surfaces a pinGenerated field (nothing was generated)', async () => {
+    queueHealthSnapshotGets({ pinEnabled: true, webhookSubscribed: true });
+    queueHealthSnapshotGets({ pinEnabled: true, webhookSubscribed: true });
+
+    const result = await autoRepair(CFG);
+
+    const pinSkip = result.skipped.find((s) => s.action === 'pin');
+    expect(pinSkip).toBeDefined();
+    expect(pinSkip.pinGenerated).toBeUndefined();
+  });
+
   test('invalid token: reflected in remainingIssues, no repair attempted for it (no fix action exists), no crash', async () => {
     queueHealthSnapshotGets({ pinEnabled: true, webhookSubscribed: true, tokenValid: false }); // before
     queueHealthSnapshotGets({ pinEnabled: true, webhookSubscribed: true, tokenValid: false }); // after

@@ -539,8 +539,14 @@ const REPAIR_CHECKS = [
       const r = await registerPhoneNumber(cfg);
       if (r.alreadyRegistered) return { status: 'skipped', reason: 'already_healthy', detail: 'Already registered.' };
       if (r.skipped) return { status: 'skipped', reason: 'cooldown_active', detail: r.error };
+      // r.pin is only ever present on a genuinely fresh registration -- must
+      // reach the API response (once) so the caller can record it, exactly
+      // like manual-connect/PUT config already do. Found while building PR 6:
+      // this repair check previously discarded r.pin entirely, meaning a real
+      // Auto Repair run that completed a fresh registration would silently
+      // set a PIN nobody could ever retrieve.
       return r.registered
-        ? { status: 'fixed', detail: 'Cloud API registration completed and two-step PIN set.' }
+        ? { status: 'fixed', detail: 'Cloud API registration completed and two-step PIN set.', pin: r.pin }
         : { status: 'failed', detail: r.error };
     },
   },
@@ -612,7 +618,10 @@ async function autoRepair(cfg) {
     if (result.status === 'skipped') {
       skipped.push({ action: check.key, label: check.label, reason: result.reason, detail: result.detail });
     } else {
-      executed.push({ action: check.key, label: check.label, status: result.status, detail: result.detail, durationMs });
+      executed.push({
+        action: check.key, label: check.label, status: result.status, detail: result.detail, durationMs,
+        ...(result.pin && { pinGenerated: result.pin }),
+      });
     }
   }
 
