@@ -478,6 +478,31 @@ Everything else (`_normPhone`, `_findByPhone`, `_createCustomer`, `_enrichCustom
 
 ---
 
+### `src/services/PasswordResetService.js` (self-service password reset, 2026-07-25; production-validated 2026-07-29)
+
+**Purpose:** The third, distinct password-recovery path — an unauthenticated employee proving
+control of their own registered email address — separate from `PUT /employees/:id/reset-password`
+(admin-initiated, `admin.js`) and `scripts/recover-admin.js` (operator CLI).
+
+**Key exports:**
+- `createResetToken(user)` — 256-bit CSPRNG token, stored in the shared metrics table
+  (`pwResetPK`/`pwResetSK`, `src/core/entityKeys.js`), 45-minute expiry.
+- `sendResetEmail(email, token, meta = {})` — sends via `src/config/ses.js` (Amazon SES). Never
+  throws — a send failure must never change the caller's response (anti-enumeration). Logs the SES
+  `MessageId` + safe metadata (`template`, `companyId`, `userId` from `meta`) on success only
+  (added 2026-07-29, commit `366d4b6`) — never the token, link, or email body.
+- `validateAndClaimToken(token)` — validates AND atomically single-use-claims in one call
+  (conditional `UPDATE ... SET usedAt = :now`, `attribute_not_exists(usedAt)` guard), returning a
+  uniform `{ valid: false }` for missing/expired/already-used (no distinguishing oracle).
+
+**Depended on by:** `src/routes/auth.js` (`POST /forgot-password`, `POST /reset-password`).
+
+**Production validation:** see `docs/reports/PASSWORD_RESET_PRODUCTION_SIGNOFF_2026-07-29.md` for
+the full live end-to-end record, including a real infrastructure defect found and fixed (the Lambda
+execution role initially had no `ses:SendEmail` permission at all).
+
+---
+
 ### `src/services/TagService.js` (single owner of the tag catalog + tag filter matching)
 
 **Purpose:** Single source of truth for the company tag catalog (`TAG_CATALOG#<companyId>` / `CATALOG`) and for tag-filter matching semantics across the platform.

@@ -131,6 +131,7 @@ opt-in, added per-route by whoever wrote that route. Concretely:
 |---|---|---|---|---|
 | `loginRateLimiter` | per-email | 10 failed attempts | 15 min | `POST /api/auth/login` only |
 | `totpRateLimitCheck` | per-email | 5 failed attempts | 15 min | `POST /api/auth/verify-totp`, `POST /api/auth/verify-totp-backup` |
+| `passwordResetRateLimiter` | per-email | 3 requests | 15 min | `POST /api/auth/forgot-password` (layered under the route's own generic per-IP limiter below) |
 | `rateLimit(limit, windowMs)` generic IP limiter | per-IP | varies (5–30 requests) | 60 s (all current call sites) | ~30 specific write routes (see below) — **not applied globally** |
 
 Generic `rateLimit()` call-site thresholds as grepped from `src/routes/*.js` (all use a 60-second window):
@@ -178,6 +179,42 @@ Dependency: `speakeasy` (`^2.0.0`, confirmed in `package.json`). QR provisioning
   `TOTP_DISABLED_FOR_DEV === 'true'` (accepts any 6-digit code) and `TEST_TOTP_CODE` (accepts one fixed
   code). Both are hard-gated behind `process.env.NODE_ENV !== 'production'` — cannot activate in the
   production Lambda unless `NODE_ENV` itself were misconfigured there.
+
+## Password Reset — Self-Service Flow (2026-07-25; production-validated 2026-07-29)
+
+`POST /api/auth/forgot-password` / `POST /api/auth/reset-password`
+(`src/services/PasswordResetService.js`) — the third, distinct recovery path alongside
+admin-initiated reset (`PUT /employees/:id/reset-password`) and the operator CLI
+(`scripts/recover-admin.js`).
+
+- **Token:** 256-bit CSPRNG (`crypto.randomBytes(32)`), stored server-side in DynamoDB — never
+  re-derivable from the link alone, not predictable from user/time data.
+- **Expiry:** 45 minutes, checked explicitly against a stored `expiresAt` field on every use —
+  independent of (and not relied upon in place of) DynamoDB's own best-effort `ttl` cleanup.
+- **Single-use:** atomic conditional claim (`UPDATE ... SET usedAt = :now`,
+  `ConditionExpression: attribute_not_exists(usedAt)`) — race-safe against two concurrent
+  redemption attempts on the same token, not just check-then-act.
+- **Anti-enumeration:** `POST /forgot-password` returns one identical generic response regardless
+  of whether the account exists, is inactive, or the SES send itself fails.
+  `POST /reset-password` returns one identical generic `400` for missing/expired/already-used
+  tokens (deliberately not distinguished). **Known, accepted residual gap:** response *timing*
+  still differs slightly between a real account (extra DDB write + SES call) and a non-existent
+  one — a theoretical timing side-channel, flagged in code comments rather than silently patched.
+- **Password hashing:** bcrypt, same as the rest of the codebase.
+- **Rate limiting:** `passwordResetRateLimiter`, 3 requests/email/15 min (see Rate Limiting above),
+  layered under the route's own generic per-IP `rateLimit(10, 60_000)`.
+- **Audit logging:** every request (success and no-such-account/inactive branches) writes an
+  audit record via `logAudit()`.
+- **Email delivery:** Amazon SES (`src/config/ses.js`), domain `apforce.in` (verified, DKIM
+  signed, production access enabled — sandbox lifted). The Lambda execution role
+  (`vt-employee-bot-lambda-role`) required a dedicated inline IAM policy
+  (`vt-employee-bot-ses-access`, granting `ses:SendEmail`/`ses:SendRawEmail` on both the identity
+  ARN and its attached configuration-set ARN) before real sends could succeed — a real,
+  confirmed-and-fixed infrastructure gap, not a code defect. Full incident record:
+  `docs/reports/PASSWORD_RESET_PRODUCTION_SIGNOFF_2026-07-29.md`.
+- **Observability (2026-07-29, `366d4b6`):** the SES `MessageId` is logged on every successful
+  send, along with `template`/`companyId`/`userId` — never the token, reset link, password, or
+  email body.
 
 ## Secrets Management
 

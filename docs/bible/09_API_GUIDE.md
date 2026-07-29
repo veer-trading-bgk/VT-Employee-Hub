@@ -92,10 +92,16 @@ Login, 2FA (TOTP + backup codes), token refresh, employee registration, self-ser
 | `POST /logout` | `authMiddleware` | — | `{ success, message }`, clears cookies | — |
 | `POST /company-signup` | Public | Zod `companySignupSchema`: `{ companyName, broker, city, adminEmail, adminName, password, adminMobile? }` | `201 { success, message, token, user, company }` — creates `COMPANY_PROFILE` + admin user, 14-day trial | 409 email already registered |
 | `GET /me` | `authMiddleware` | — | Full employee record minus `password`/`totpSecret`/`backupCodes`, plus `token` if cookie present (no `success` wrapper) | 404 user not found |
+| `POST /forgot-password` | Public, `rateLimit(10, 60_000)` + `passwordResetRateLimiter` (3/email/15min) | `{ email }` | `200 { success: true, message: "If that email is registered, we've sent a reset link." }` — **always this exact response**, regardless of whether the account exists/is active/the SES send succeeds (anti-enumeration) | Never a distinguishable error for a bad email — see `11_SECURITY.md`'s Password Reset section |
+| `POST /reset-password` | Public, `rateLimit(10, 60_000)` | `{ token, newPassword }` (8+ chars, upper+digit — Zod `resetPasswordSchema`) | `200 { success, message }` | `400` one generic message for missing/expired/already-used token (not distinguished) |
 
 Notes: `planStatus`/`trialEndsAt`/`plan` are embedded in the JWT at issue time (`attachPlan()`) so
 `subscriptionMiddleware` never needs a DB round-trip. No `/setup-2fa` route exists here — 2FA enrollment
 is admin-initiated via `POST /api/admin/employees/:id/setup-2fa` (see Admin section), not self-service.
+Self-service password reset (`/forgot-password`, `/reset-password`) is a third, distinct recovery path
+alongside `PUT /employees/:id/reset-password` (admin-initiated, Admin section below) and
+`scripts/recover-admin.js` (operator CLI) — see `docs/reports/PASSWORD_RESET_PRODUCTION_SIGNOFF_2026-07-29.md`
+for the full production validation record.
 
 ---
 
