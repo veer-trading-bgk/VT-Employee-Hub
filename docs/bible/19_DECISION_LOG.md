@@ -2435,6 +2435,83 @@ A validation pass against `github.com/fbsamples/graph-api-webhooks-samples` (arc
 
 ---
 
+## Era 57 — Embedded Signup: a third, zero-manual-configuration WABA-connect method, 3 PRs (2026-07-29)
+
+**What shipped, as one completed unit.** Meta's real Embedded Signup product (`FB.login()` with a
+`config_id` — Meta itself renders Business Manager/WABA/Phone Number selection-or-creation inside its own
+popup) added as a third `setupMethod` alongside the existing `manual`/`oauth` paths, governed by
+ADR-024. `docs/PENDING_WORK.md` had explicitly flagged this as "not scoped as work" before this Era —
+closing that gap is the whole point of this feature. Sequenced as 3 PRs:
+
+- **PR 7a — backend** (`31a1556`): `src/services/EmbeddedSignupService.js`, a new orchestrator
+  (kept separate from `graphApiHelpers.js`, which stays the shared home for generic per-operation Meta
+  helpers, not stateful pipelines) exposing `getEmbeddedSignupConfig()`, `exchangeSignupCode()`, and a
+  6-step automatic configuration pipeline (`persistConfig → subscribeWebhooks → registerPhone →
+  syncBusinessProfile → syncTemplates → healthCheck`) reusing every existing Meta-calling helper
+  unmodified. Three new admin-only routes under `/embedded-signup/*`. `graphApiHelpers.getWabaConfig()`
+  gained transparent decrypt-on-read for the new `accessTokenEncrypted` flag — the single choke point
+  every existing caller (`WhatsAppSendService`, `FlowManagementService`, etc.) passes through, so zero
+  other call site needed to change. `POST /templates/sync`'s fetch/diff/import logic was extracted into
+  `graphApiHelpers.syncTemplatesFromMeta()` (pure refactor, no behavior change) so the pipeline's
+  `syncTemplates` step and the existing route share one implementation.
+- **PR 7b — frontend wizard** (`30b1fd1`): a Drawer-based 4-screen wizard (Welcome → a waiting screen
+  while Meta's own hosted UI runs → Confirmation → Success) — deliberately NOT 7 custom screens; the
+  three "selection" steps in the feature's original spec are Meta's own hosted UI, not APForce-rendered.
+  New `facebookSdk.ts` (lazy-loaded Meta JS SDK, never a global `<Script>`) and
+  `embeddedSignupCorrelation.ts` (pure functions joining `FB.login`'s authorization code with the
+  separately-posted `WA_EMBEDDED_SIGNUP` message — the two can arrive in either order). Fixed a latent
+  display bug found while wiring the new CTA in: `setupMethod`'s view showed "OAuth" for any non-manual
+  value, which would have mislabeled `embedded_signup` connections.
+- **PR 7c — error handling, resume, tests** (`46b5d40`): a duplicate-phone-number guard in `persistConfig`
+  (a phone number already owned by a *different* company now fails cleanly with `DUPLICATE_PHONE_NUMBER`
+  instead of silently stealing that company's webhook routing — a real pre-existing gap across all three
+  connect methods, closed here for the new path only, flagged as out of scope for `manual`/`oauth` in
+  ADR-024's Non-goals). Structured `{error, code, retryable}` on every exchange/resume failure path,
+  including previously-unstructured unexpected exceptions. A "Retry Failed Steps" action on the wizard's
+  own Success screen plus a standalone `OnboardingResumeBanner` on Settings → WhatsApp for a session
+  resumed after the tab closed — both call the same `POST /embedded-signup/resume`. 7 Playwright E2E
+  scenarios, actually executed against a live dev server (not just authored) — the origin-gated
+  `WA_EMBEDDED_SIGNUP` message required routing a real cross-origin popup through
+  `BrowserContext.route()` (not `page.route()`, which doesn't cover popups) to genuinely exercise the
+  trust check rather than fake it same-origin. 27 new Jest tests.
+
+**Connection semantics, decided and unchanged across all 3 PRs:** `persistConfig` succeeding is the sole
+connection boundary. `GET /config/full`'s `connected` flips true once it does, regardless of whether a
+later step (e.g. `syncTemplates`) failed — a later failure is always reported transparently in
+`onboardingStatus.steps`, never surfaced as a connection failure. There is deliberately no automatic
+"send a test message" pipeline step (no destination number exists during an unattended run) — the
+already-shipped PR 5 Send Test Message button is what proves messaging end-to-end after onboarding, per
+the feature's own acceptance criteria.
+
+**Encryption asymmetry, decided:** only `embedded_signup`-issued tokens are encrypted at rest
+(`accessTokenEncrypted: true`, reusing `src/utils/encryption.js`, previously only used for 2FA backup
+codes). Existing `manual`/`oauth` tokens stay plaintext, deliberately un-migrated — see ADR-024 and
+`11_SECURITY.md`'s new "WhatsApp Access Token Storage" section for the full reasoning and revisit trigger.
+
+**Open items, explicitly NOT closed by this Era:** (1) live end-to-end verification is blocked on the
+user creating a "WhatsApp Embedded Signup" Configuration in the Meta App Dashboard (`config_id`) — a
+manual Meta-console step outside this codebase's control; `META_EMBEDDED_SIGNUP_CONFIG_ID` is unset in
+every environment as of this Era. (2) Whether Embedded Signup's code-exchange needs a `redirect_uri` or a
+long-lived-token exchange hop (`grant_type=fb_exchange_token`) is unverified against Meta's current docs
+— `exchangeSignupCode()` mirrors classic OAuth's mechanic as the closest existing precedent, flagged
+inline for confirmation once real testing is possible. (3) The exact Meta origin(s) for the
+`WA_EMBEDDED_SIGNUP` postMessage are assumed (`https://www.facebook.com`/`https://web.facebook.com`), not
+confirmed against current Meta documentation. (4) `GET /webhook`'s pre-existing gap (only checks the
+global `META_WEBHOOK_VERIFY_TOKEN`, never the per-company `webhookVerifyToken` override) is unchanged —
+explicitly out of scope per ADR-024's Non-goals. (5) No migration of existing plaintext tokens — see
+above.
+
+**Reference:** `src/services/EmbeddedSignupService.js`, `src/services/graphApiHelpers.js`
+(`getWabaConfig`, `syncTemplatesFromMeta`), `src/routes/whatsapp.js` (`/embedded-signup/*`, `/config/full`),
+`dashboard/src/components/settings/EmbeddedSignupWizard.tsx`, `OnboardingResumeBanner.tsx`,
+`dashboard/src/lib/facebookSdk.ts`, `embeddedSignupCorrelation.ts`, `dashboard/src/types/embeddedSignup.ts`,
+`dashboard/e2e/smoke/embeddedSignupWizard.spec.ts`, `tests/embeddedSignupService.test.js`,
+`tests/whatsappEmbeddedSignupRoutes.test.js`, `docs/adr/ADR-024-embedded-signup-onboarding.md`,
+`docs/bible/07_DATABASE.md` §2.3, `docs/bible/09_API_GUIDE.md` (Embedded Signup section),
+`docs/bible/11_SECURITY.md` (WhatsApp Access Token Storage).
+
+---
+
 ## Open architectural questions / not yet decided
 
 These are documented gaps or deferrals found directly in ADRs, Phase 2 docs, or

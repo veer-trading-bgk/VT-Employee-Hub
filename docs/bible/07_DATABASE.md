@@ -172,20 +172,53 @@ Unless otherwise noted, all entities below live in the METRICS table.
 
 - **PK:** `CONFIG#WABA#{companyId}`
 - **SK:** `CURRENT` (fixed — single current config, no history)
-- **Fields:** `companyId, accessToken, phoneNumberId, wabaId, graphApiVersion,
-  configValid` (plus fields inferred from health-check logic: token validity flags).
-- **Owner:** `whatsapp.js` connect/reconnect/health-check routes (`PUT
-  /connect`, OAuth callback, manual-override repair endpoints).
+- **Fields (all three `setupMethod`s):** `companyId, accessToken, phoneNumberId,
+  wabaId, phoneNumber, graphApiVersion, businessManagerId, webhookVerifyToken,
+  connectedBy, connectedAt, setupMethod ('manual'|'oauth'|'embedded_signup'),
+  lastRegisterAttemptAt, pinRegisteredAt, repairedAt, repairedBy, repairMethod,
+  updatedAt, updatedBy`. `configValid` is NOT stored — it's derived at read time
+  by `detectInvalidWabaConfig()`, never persisted.
+- **Embedded Signup only (ADR-024, PR 7a):**
+  - `accessTokenEncrypted: true` — the ONLY setupMethod that encrypts
+    `accessToken` at rest (AES-256-CBC via `src/utils/encryption.js`, format
+    `iv:cipher`). `manual`/`oauth` connections keep writing plaintext,
+    deliberately un-migrated — see ADR-024's "additive only" decision.
+    `graphApiHelpers.getWabaConfig()` is the single choke point that decrypts
+    transparently on read when this flag is set; every other reader in the
+    codebase (`WhatsAppSendService`, `FlowManagementService`, this file's own
+    helpers) needs no awareness of the flag at all.
+  - `metaBusinessId` — the Meta Business ID from Embedded Signup's own
+    `WA_EMBEDDED_SIGNUP` postMessage payload. Neither `manual` nor `oauth`
+    capture this today.
+  - `onboardingStatus: { startedAt, completedAt, steps: { persistConfig,
+    subscribeWebhooks, registerPhone, syncBusinessProfile, syncTemplates,
+    healthCheck } }` — each step `{ status: 'pending'|'done'|'failed', at,
+    error?, ... }`. The resumability ledger for the automatic configuration
+    pipeline (`src/services/EmbeddedSignupService.js`), persisted to DDB after
+    every single step so a partial failure is durably recoverable via
+    `POST /api/whatsapp/embedded-signup/resume`. `null`/absent for `manual`/
+    `oauth` connections. Exposed to the frontend via `GET /config/full` so
+    Settings → WhatsApp can show an "incomplete setup" resume banner.
+- **Owner:** `whatsapp.js` connect/reconnect/health-check routes (`POST
+  /manual-connect`, `GET /auth/callback`, `PUT /config`, repair endpoints) for
+  the two classic methods; `src/services/EmbeddedSignupService.js` for
+  `embedded_signup` (the only writer of `accessTokenEncrypted`/`metaBusinessId`/
+  `onboardingStatus`).
 - **Readers:** `WhatsAppSendService._getConfig()` (10-minute in-process cache,
-  invalidated via `invalidateConfigCache(companyId)` per ADR-012), `whatsapp.js`
-  `getWabaConfig()`, `campaigns.js` (indirectly, via `WhatsAppSendService`).
+  invalidated via `invalidateConfigCache(companyId)` per ADR-012),
+  `graphApiHelpers.getWabaConfig()`/`getCachedWabaConfig()`, `whatsapp.js`,
+  `campaigns.js` (indirectly, via `WhatsAppSendService`).
 - **Related reverse-index:** `CONFIG#PHONEID#{phoneNumberId}` / SK `CURRENT` —
   `{ companyId, phoneNumberId }` only. Exists purely so the inbound webhook can
   resolve `phoneNumberId → companyId` in O(1) without scanning every `CONFIG#WABA#*`
   item (`whatsapp.js:146-199`, comment: *"FIX 7: In-memory cache + DDB reverse-index
   to avoid full table scan on every webhook message."*). See §4 for the documented
   fallback Scan this reverse-index replaced (still present as a defensive path for
-  pre-migration data).
+  pre-migration data). Embedded Signup's `persistConfig` step checks this index
+  before writing — a phone number already owned by a *different* company fails
+  the pipeline (`DUPLICATE_PHONE_NUMBER`) rather than silently overwriting it;
+  this check does not exist on the `manual`/`oauth` write paths (a pre-existing
+  gap those two share, out of scope for ADR-024 — see its Non-goals).
 
 ### 2.4 CONFIG#TMPL — WhatsApp message template registry
 

@@ -1,6 +1,19 @@
 # 10 — Testing Guide
 
 Status: verified against repo state 2026-07-02 (commit `43b89af`, branch `main`).
+**Update 2026-07-29 (scoped, PR 7a-7c, ADR-024):** the backend suite is now 142 suites / 2271 tests (both
+figures verified via a live run this session — the "18 suites / 433 tests" figure below is stale and not
+re-verified in this pass; treat it as a historical snapshot, not current). Two new Jest files:
+`tests/embeddedSignupService.test.js` (the Embedded Signup pipeline's orchestration — full success,
+partial failure leaving independent later steps still attempted, `persistConfig` failure short-circuiting
+before any other step runs, the duplicate-phone-number guard, resume-only-incomplete-steps) and
+`tests/whatsappEmbeddedSignupRoutes.test.js` (the 3 new routes' request validation/response shapes/error
+codes, `GET /config/full`'s new `onboardingStatus` field, and a regression check on `POST /templates/sync`
+after its extraction into `graphApiHelpers.syncTemplatesFromMeta()`). One new Playwright spec:
+`dashboard/e2e/smoke/embeddedSignupWizard.spec.ts` (7 tests — see its own file header for the
+cross-origin-popup technique used to genuinely exercise the `WA_EMBEDDED_SIGNUP` postMessage origin
+check, not fake it same-origin). Neither the rest of this chapter's inventory nor its narrative sections
+below were re-audited in this pass.
 
 **Correction:** an earlier internal planning table labeled the backend runner "Vitest." That was wrong.
 There is no Vitest anywhere in this repo. The backend runner is **Jest**. Confirmed directly from

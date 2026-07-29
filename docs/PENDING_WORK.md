@@ -191,16 +191,17 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
   Review itself — are both confirmed cleared. No action pending on our side — waiting on Meta's
   response.
 
-  **No Embedded Signup config exists yet.** The current WABA connect flow
-  (`src/routes/whatsapp.js`'s `/auth/callback`, redirecting to `https://www.facebook.com/dialog/oauth`)
-  is plain Facebook Login OAuth, confirmed in code — not Meta's dedicated WhatsApp Embedded Signup JS
-  SDK flow. `docs/bible/19_DECISION_LOG.md`'s mention of "Embedded Signup" refers only to a historical
-  commit message (`2e8bcf3`); no Embedded Signup integration exists in the live codebase today.
-  Standard OAuth is sufficient for the current Tech-Provider-mediated connect flow — Embedded Signup
-  would only become relevant for a future self-service onboarding flow that doesn't require an admin
-  to manually complete Meta's OAuth dialog. Not scoped as work; noted here so it isn't mistaken for
-  already-built.
-  *Detail:* `docs/bible/19_DECISION_LOG.md` Era 44.
+  **Embedded Signup is built (PR 7a-7c, ADR-024, 2026-07-29) but blocked on a Meta-console config_id
+  the user must create.** Superseded by this — the entry above described the pre-PR-7 state (plain
+  OAuth only) and no longer reflects the codebase: `src/services/EmbeddedSignupService.js` plus 3 new
+  `/api/whatsapp/embedded-signup/*` routes and a full frontend wizard now exist as a third `setupMethod`
+  alongside `manual`/`oauth`. **What's still needed before this is live-usable:** create a "WhatsApp
+  Embedded Signup" Configuration in the Meta App Dashboard (Business Manager → the app → WhatsApp →
+  Embedded Signup → Configurations) and set `META_EMBEDDED_SIGNUP_CONFIG_ID` in the Lambda environment —
+  a manual, one-time Meta-console step outside this codebase's control. Until then, `GET
+  /embedded-signup/config` returns 501 and the frontend's "Connect WhatsApp (Guided Setup)" button
+  stays disabled — the existing OAuth/manual paths are unaffected and remain the working fallback.
+  *Detail:* `docs/bible/19_DECISION_LOG.md` Era 57; `docs/adr/ADR-024-embedded-signup-onboarding.md`.
 - **DNS/email (`apforce.in`, `support@apforce.in`) — fully live, no action needed.** Confirmed
   correct: all 3 DNS records DNS-only/unproxied in Cloudflare, correct values. Listed here only so
   a future session doesn't waste time re-checking something already closed.

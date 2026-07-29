@@ -114,6 +114,15 @@ unacceptable residual risk — at that point, a dedicated migration PR should en
 
 ---
 
+## Implementation record
+
+Shipped as 3 sequential PRs, each reviewed and committed separately: **PR 7a** (`31a1556` — backend
+pipeline, routes, decrypt-on-read), **PR 7b** (`30b1fd1` — frontend wizard), **PR 7c** (`46b5d40` —
+duplicate-phone-number guard, structured error codes, resume/retry flow, Playwright + Jest coverage). See
+`docs/bible/19_DECISION_LOG.md` Era 57 for the full account, including what's still open (live
+verification blocked on the user creating a `config_id` in the Meta App Dashboard) and what was
+deliberately left out of scope.
+
 ## Related
 
 - `src/services/EmbeddedSignupService.js` — the pipeline implementation
@@ -123,3 +132,5 @@ unacceptable residual risk — at that point, a dedicated migration PR should en
 - ADR-012 — outbound WhatsApp messaging (the pipeline has no send step, deliberately; the existing
   Send Test Message path stays the only sender, unchanged)
 - `docs/PENDING_WORK.md` — the entry recording that Embedded Signup was previously "not scoped as work"
+- `docs/bible/07_DATABASE.md` §2.3, `docs/bible/09_API_GUIDE.md`, `docs/bible/11_SECURITY.md` — data
+  model, API, and security documentation updated alongside this ADR (PR 7d)

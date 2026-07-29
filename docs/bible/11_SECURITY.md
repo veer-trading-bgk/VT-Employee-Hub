@@ -1,6 +1,9 @@
 # 11 — Security
 
 Status: verified against repo state 2026-07-02 (commit `43b89af`, branch `main`).
+**Update 2026-07-29:** added the "WhatsApp Access Token Storage" section (ADR-024, PR 7a-7c) — a scoped
+addition for the new dual plaintext/encrypted `accessToken` model; the rest of this chapter was not
+re-audited in this pass.
 
 **Document type: Hybrid.** Everything above the "POLICY GAPS" section is generated directly from code —
 file paths and line behavior are accurate as of the commit above. The POLICY GAPS section is not generated
@@ -207,6 +210,34 @@ File: `src/config/secrets.js` (`loadSecrets()`).
 - `ENCRYPTION_KEY` (used by `src/utils/encryption.js` for backup-code AES-256-CBC) must be a 64-char hex
   string (32 bytes) — enforced by a runtime `throw` in `getKey()` if malformed or missing, not by any secret
   schema validation.
+
+## WhatsApp Access Token Storage — a deliberate, documented asymmetry (ADR-024, 2026-07-29)
+
+`CONFIG#WABA#{companyId}`'s `accessToken` field has **two different storage states depending on how the
+company connected**, and this is intentional, not an oversight:
+
+- **`manual`/`oauth` connections (all of them, historical and future):** `accessToken` is stored as
+  **plaintext** in DynamoDB. This has been true since PR1-6 and remains true — no migration was performed
+  or is currently planned.
+- **`embedded_signup` connections only:** `accessToken` is AES-256-CBC **encrypted** at rest
+  (`accessTokenEncrypted: true`, using the same `src/utils/encryption.js` primitive §"Backup codes" above
+  already established for 2FA backup codes — `ENCRYPTION_KEY` is shared, not a separate key).
+  `graphApiHelpers.getWabaConfig()` is the single choke point that decrypts transparently on read when the
+  flag is set; a bad `ENCRYPTION_KEY` or corrupt ciphertext fails closed (`accessToken: null` + a logged
+  error) rather than throwing, so one company's decrypt problem can never crash reads for every other
+  (plaintext) company sharing the same function.
+
+**Why this asymmetry was accepted rather than fixed uniformly:** encrypting the existing plaintext tokens
+for every already-connected `manual`/`oauth` company is a separate, higher-risk change — it touches every
+live customer's config, not just new signups, and was explicitly scoped out of PR 7 (ADR-024) to keep the
+blast radius of a brand-new connect method small. See ADR-024's "Revisit trigger" for when this should be
+reconsidered (a BFSI security audit or customer-count threshold, not "someday").
+
+**Net effect for anyone auditing this system:** do not assume `accessToken` is encrypted just because
+`src/utils/encryption.js` exists in the codebase — check `accessTokenEncrypted` on the specific item, or
+equivalently, check `setupMethod`. The large majority of currently-connected companies (everyone who
+connected before this PR, and everyone who continues to connect via `manual`/`oauth` after it) have
+plaintext tokens today.
 
 ## CORS
 

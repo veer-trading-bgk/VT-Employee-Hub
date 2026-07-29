@@ -218,7 +218,7 @@ the OAuth callback (`GET /auth/callback`) are intentionally public (Meta calls t
 | Method & Path | Request | Response | Notable errors |
 |---|---|---|---|
 | `GET /connection` | — | `{ connected, phoneNumber, phoneNumberId, wabaId, connectedAt, setupMethod, configValid, configIssue? }` | — |
-| `GET /config/full` | — | Full editable config incl. `accessTokenPreview` (masked), `webhookCallbackUrl` | — |
+| `GET /config/full` | — | Full editable config incl. `accessTokenPreview` (masked), `webhookCallbackUrl`, `onboardingStatus` (only ever non-null for `setupMethod: 'embedded_signup'` — PR 7c) | — |
 | `GET /auth/init` | — | `{ url }` — Meta OAuth dialog URL | 500 `META_APP_ID` not configured |
 | `GET /auth/callback` | Public (query: `code, state`) | HTML popup-closer page (`popupHtml()`) | Renders failure HTML on any OAuth error — never JSON |
 | `POST /manual-connect` | `{ accessToken, phoneNumberId, wabaId? }` | `{ success, phoneNumber }` — verifies against Meta, auto-derives WABA ID if not given | 400 invalid credentials / WABA ID undiscoverable / equals phoneNumberId |
@@ -232,6 +232,27 @@ the OAuth callback (`GET /auth/callback`) are intentionally public (Meta calls t
 | `POST /profile` | `{ about?, address?, description?, email?, websites?, vertical? }` (any subset) | `{ success, profile }` — pushes edits to Meta, each field validated locally against Meta's documented constraints first (about ≤139 chars, description ≤512, email format, vertical against Meta's closed enum) | 400 invalid field value / no fields provided / no config / Meta rejects |
 | `POST /profile/photo` | `{ s3Key, mimeType, filename? }` — `s3Key` from the existing `GET /upload-url` presigned-S3 flow | `{ success, profile }` — uploads via Meta's Resumable Upload API (session → bytes → `profile_picture_handle`) | 400 non-jpeg/png / over 5MB / invalid S3 key (not scoped to caller's company) / no config |
 | `POST /repair` | — | One-click Auto Repair: `{ success, before, repairPlan, executed, skipped, after, remainingIssues, summary, durationMs }` — `graphApiHelpers.autoRepair()`. Only repairs webhook subscription and Cloud API registration/PIN (both already idempotent); never edits profile content/photo or touches an already-healthy item. Safe to call repeatedly — a no-op on a healthy account. If a fresh registration generates a new PIN, the `pin` action's `executed[]` entry carries a one-time `pinGenerated` field (2026-07-28 fix — previously discarded, meaning nobody could retrieve a PIN Auto Repair had just set) | 400 no config |
+
+### Embedded Signup (admin only, ADR-024, PR 7a-7c 2026-07-29)
+
+A third WABA-connect method alongside `manual`/`oauth` above — Meta's own hosted UI handles Business
+Manager/WABA/Phone Number selection-or-creation entirely inside `FB.login()`'s popup; these routes only
+handle what happens after that hosted flow finishes. See `src/services/EmbeddedSignupService.js` for the
+pipeline and §2.3 of `07_DATABASE.md` for the `onboardingStatus` ledger shape.
+
+| Method & Path | Request | Response | Notable errors |
+|---|---|---|---|
+| `GET /embedded-signup/config` | — | `{ appId, configId, graphApiVersion }` for the frontend's `FB.init()`/`FB.login()` call | 501 `EMBEDDED_SIGNUP_NOT_CONFIGURED` if `META_APP_ID`/`META_EMBEDDED_SIGNUP_CONFIG_ID` aren't both set — the frontend disables its entry point on this rather than failing mid-flow |
+| `POST /embedded-signup/exchange` | `{ code, wabaId, phoneNumberId, businessId? }` — `code` from `FB.login`'s own callback, the three ids from the separately-posted `WA_EMBEDDED_SIGNUP` message | `{ success, onboardingStatus }` — exchanges the code for a token, then runs the automatic configuration pipeline (persist encrypted config → subscribe webhooks → register phone/PIN → sync business profile → sync templates → health check) | 400 `MISSING_FIELDS` / `CODE_EXCHANGE_FAILED` (not retryable — the code is dead, must redo `FB.login()`) / `DUPLICATE_PHONE_NUMBER` (surfaced inside `onboardingStatus.steps.persistConfig`, not as a top-level error — see below) / 500 `PIPELINE_ERROR` (retryable) on a genuinely unexpected failure |
+| `POST /embedded-signup/resume` | — (companyId from JWT) | `{ success, onboardingStatus }` — re-runs only steps not already `done`; idempotent no-op if already complete | 400 `NO_CONFIG` if no WABA config exists yet (not retryable) / 500 `PIPELINE_ERROR` (retryable) |
+
+**Connection semantics:** `persistConfig` succeeding is the only connection boundary — `GET
+/config/full`'s `connected` flips true once it does, regardless of whether a later step (e.g.
+`syncTemplates`) failed. A later step's failure is reported transparently in `onboardingStatus.steps`,
+never surfaced as a top-level error; the frontend's Success screen and the Settings → WhatsApp resume
+banner both read the per-step detail rather than a pass/fail boolean. Only a `persistConfig` failure
+itself (including `DUPLICATE_PHONE_NUMBER` — the phone number is already connected to a different
+company) is a real connect failure, since nothing was persisted.
 
 ### Webhook (public — Meta calls these directly)
 
