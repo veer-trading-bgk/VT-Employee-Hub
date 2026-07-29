@@ -181,6 +181,36 @@ async function runOnboardingPipeline({ companyId, userId, accessToken, wabaId, p
   const startedAt = new Date().toISOString();
   const status = { startedAt, completedAt: null, steps: emptySteps() };
 
+  // A phone number can only route webhooks to one company at a time (the
+  // CONFIG#PHONEID# reverse index is global, not per-company) -- writing
+  // over an existing entry owned by a DIFFERENT company would silently
+  // steal that company's inbound messages. This is a pre-existing gap in
+  // the classic manual/OAuth connect paths too (neither checks before
+  // overwriting), but Embedded Signup is new code in this PR, so it gets
+  // the guard: reject outright rather than reproduce the same gap.
+  // Reconnecting the SAME company's own existing number is allowed --
+  // that's just a legitimate re-run of onboarding.
+  try {
+    const existing = await dynamodb.get({
+      TableName: TABLE,
+      Key: { PK: `CONFIG#PHONEID#${phoneNumberId}`, SK: 'CURRENT' },
+    }).promise();
+    if (existing.Item && existing.Item.companyId !== companyId) {
+      markStep(status, 'persistConfig', {
+        status: 'failed',
+        error: 'This phone number is already connected to a different APForce company. Disconnect it there first, or use a different phone number.',
+        code: 'DUPLICATE_PHONE_NUMBER',
+      });
+      return status;
+    }
+  } catch (e) {
+    // A failed pre-check must not silently allow an unsafe write through --
+    // fail closed, same as every other step here.
+    markStep(status, 'persistConfig', { status: 'failed', error: e.message });
+    logger.error(`runOnboardingPipeline: duplicate-phone pre-check failed for company=${companyId}`, e.message);
+    return status;
+  }
+
   try {
     await dynamodb.put({
       TableName: TABLE,

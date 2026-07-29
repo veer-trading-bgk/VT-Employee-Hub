@@ -1,0 +1,47 @@
+// Shared types for Meta Embedded Signup (ADR-024) — mirror
+// EmbeddedSignupService's onboardingStatus shape exactly
+// (src/services/EmbeddedSignupService.js is authoritative). Used by the
+// onboarding wizard, the resume banner, and the Settings > WhatsApp page's
+// FullWabaConfig type — pulled into one file so all three read the same
+// contract instead of three hand-copied versions drifting apart.
+
+export type StepKey =
+  | 'persistConfig'
+  | 'subscribeWebhooks'
+  | 'registerPhone'
+  | 'syncBusinessProfile'
+  | 'syncTemplates'
+  | 'healthCheck';
+
+export interface OnboardingStepResult {
+  status: 'pending' | 'done' | 'failed';
+  at?: string;
+  error?: string;
+  detail?: string;
+  pinGenerated?: string;
+  code?: string;
+}
+
+export interface OnboardingStatus {
+  startedAt: string;
+  completedAt: string | null;
+  steps: Record<StepKey, OnboardingStepResult>;
+}
+
+export const STEP_ORDER: StepKey[] = [
+  'persistConfig', 'subscribeWebhooks', 'registerPhone', 'syncBusinessProfile', 'syncTemplates', 'healthCheck',
+];
+
+export const STEP_LABELS: Record<StepKey, string> = {
+  persistConfig: 'Saving configuration',
+  subscribeWebhooks: 'Subscribing to webhooks',
+  registerPhone: 'Registering phone number & PIN',
+  syncBusinessProfile: 'Syncing business profile',
+  syncTemplates: 'Syncing message templates',
+  healthCheck: 'Running health check',
+};
+
+export function isOnboardingComplete(status: OnboardingStatus | null | undefined): boolean {
+  if (!status) return false;
+  return STEP_ORDER.every((k) => status.steps[k]?.status === 'done');
+}

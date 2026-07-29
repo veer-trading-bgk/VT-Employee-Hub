@@ -53,6 +53,8 @@ import { EmployeesSection } from '@/components/v3/team/EmployeesSection';
 import { AISection } from '@/components/v3/settings/AISection';
 import { MetaHealthPanel } from '@/components/settings/MetaHealthPanel';
 import { EmbeddedSignupWizard } from '@/components/settings/EmbeddedSignupWizard';
+import { OnboardingResumeBanner } from '@/components/settings/OnboardingResumeBanner';
+import { isOnboardingComplete, type OnboardingStatus } from '@/types/embeddedSignup';
 import { WhatsAppFlowsPanel } from '@/components/settings/WhatsAppFlowsPanel';
 import { BranchesPanel } from '@/components/settings/BranchesPanel';
 import { SettingsTemplatesSection } from '@/components/settings/SettingsTemplatesSection';
@@ -270,6 +272,7 @@ interface FullWabaConfig {
   webhookCallbackUrl: string;
   connectedAt: string | null;
   setupMethod: string | null;
+  onboardingStatus: OnboardingStatus | null;
   configValid: boolean;
   configIssue: string | null;
 }
@@ -622,6 +625,18 @@ function WhatsAppSection() {
           {connected ? 'Connected' : 'Not Connected'}
         </Badge>
       </div>
+
+      {/* ── Incomplete Embedded Signup onboarding — resume prompt ── */}
+      {connected && cfg?.onboardingStatus && !isOnboardingComplete(cfg.onboardingStatus) && (
+        <OnboardingResumeBanner
+          onboardingStatus={cfg.onboardingStatus}
+          onResumed={() => {
+            setJustOnboarded(true);
+            qc.invalidateQueries({ queryKey: ['whatsapp-config-full'] });
+            qc.invalidateQueries({ queryKey: ['whatsapp-connection'] });
+          }}
+        />
+      )}
 
       {/* ── Configuration card ──────────────────────────────────── */}
       <Card>

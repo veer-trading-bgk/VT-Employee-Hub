@@ -11,41 +11,17 @@ import {
   isEmbeddedSignupMessage, correlateSignupResult,
   type EmbeddedSignupMessageData,
 } from '@/lib/embeddedSignupCorrelation';
-
-// ── Types — mirror EmbeddedSignupService's onboardingStatus shape exactly
-// (src/services/EmbeddedSignupService.js) — that file is authoritative. ────
-
-interface OnboardingStepResult {
-  status: 'pending' | 'done' | 'failed';
-  at?: string;
-  error?: string;
-  detail?: string;
-  pinGenerated?: string;
-}
-
-type StepKey = 'persistConfig' | 'subscribeWebhooks' | 'registerPhone' | 'syncBusinessProfile' | 'syncTemplates' | 'healthCheck';
-
-interface OnboardingStatus {
-  startedAt: string;
-  completedAt: string | null;
-  steps: Record<StepKey, OnboardingStepResult>;
-}
+import { STEP_ORDER, STEP_LABELS, isOnboardingComplete, type OnboardingStatus, type OnboardingStepResult } from '@/types/embeddedSignup';
 
 interface ExchangeResponse {
   success: boolean;
   onboardingStatus: OnboardingStatus;
 }
 
-const STEP_ORDER: StepKey[] = ['persistConfig', 'subscribeWebhooks', 'registerPhone', 'syncBusinessProfile', 'syncTemplates', 'healthCheck'];
-
-const STEP_LABELS: Record<StepKey, string> = {
-  persistConfig: 'Saving configuration',
-  subscribeWebhooks: 'Subscribing to webhooks',
-  registerPhone: 'Registering phone number & PIN',
-  syncBusinessProfile: 'Syncing business profile',
-  syncTemplates: 'Syncing message templates',
-  healthCheck: 'Running health check',
-};
+interface ResumeResponse {
+  success: boolean;
+  onboardingStatus: OnboardingStatus;
+}
 
 type Screen = 'welcome' | 'waiting' | 'confirmation' | 'success' | 'error';
 
@@ -85,6 +61,8 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
   const [errorRetryable, setErrorRetryable] = useState(false);
   const [exchanging, setExchanging] = useState(false);
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
 
   const correlation = correlateSignupResult({ code, signupData });
   // Computed at render time, not via an effect + extra state: the instant
@@ -200,11 +178,29 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
     setStatus(null);
   }
 
+  // Re-runs only the steps still marked failed/pending — no need to redo
+  // Facebook login, since persistConfig already succeeded (that's the only
+  // way this button is reachable at all). Same endpoint the standalone
+  // OnboardingResumeBanner uses for a session resumed after the tab closed.
+  async function handleRetryFailedSteps() {
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      const data = await apiFetch<ResumeResponse>('/api/whatsapp/embedded-signup/resume', { method: 'POST', retries: 0 });
+      setStatus(data.onboardingStatus);
+      onOnboarded();
+    } catch (e: unknown) {
+      setRetryError(apiErrorMessage(e, 'Could not retry the remaining setup steps.'));
+    } finally {
+      setRetrying(false);
+    }
+  }
+
   function handleFinish() {
     onClose();
   }
 
-  const allStepsDone = status ? STEP_ORDER.every((k) => status.steps[k]?.status === 'done') : false;
+  const allStepsDone = isOnboardingComplete(status);
 
   return (
     <Drawer
@@ -276,6 +272,14 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
               <StepRow key={key} label={STEP_LABELS[key]} result={status.steps[key]} />
             ))}
           </div>
+          {!allStepsDone && (
+            <div className="space-y-2">
+              <Button variant="secondary" size="sm" loading={retrying} onClick={handleRetryFailedSteps} iconLeft={<RefreshCw className="h-3.5 w-3.5" />}>
+                Retry Failed Steps
+              </Button>
+              {retryError && <p className="text-xs text-error-600 dark:text-error-400">{retryError}</p>}
+            </div>
+          )}
         </div>
       )}
 

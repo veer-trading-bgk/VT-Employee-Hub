@@ -195,6 +195,10 @@ router.get('/config/full', authMiddleware, checkRole(['admin']), async (req, res
       setupMethod: cfg.setupMethod ?? 'oauth',
       configValid: !configIssue,
       configIssue: configIssue ?? null,
+      // Only ever set for setupMethod === 'embedded_signup' (PR 7a). Drives
+      // the "resume onboarding" banner (PR 7c) when a pipeline run didn't
+      // finish -- absent/undefined for every manual/oauth connection.
+      onboardingStatus: cfg.onboardingStatus ?? null,
     });
   } catch (err) {
     next(err);
@@ -391,10 +395,16 @@ router.post('/embedded-signup/exchange', authMiddleware, checkRole(['admin']), r
     logger.info(`Embedded Signup: onboarding pipeline ran for company ${req.user.companyId}`);
     res.json({ success: true, onboardingStatus: status });
   } catch (err) {
+    // runOnboardingPipeline itself never throws (every step catches its own
+    // errors into a status entry) -- reaching here means something genuinely
+    // unexpected happened (a bug, or an infra failure outside any single
+    // step). Still return the same structured {error, code, retryable}
+    // shape the frontend expects everywhere else, rather than falling
+    // through to the generic error handler's untyped response.
     // Never log err.config/err.request — same redaction discipline as every
     // other Meta-calling handler in this file (raw access_token in params).
     logger.error('embedded-signup/exchange error', JSON.stringify(err?.response?.data ?? { message: err.message }));
-    next(err);
+    res.status(500).json({ error: 'Something went wrong completing the WhatsApp connection. Please try again.', code: 'PIPELINE_ERROR', retryable: true });
   }
 });
 
@@ -406,8 +416,9 @@ router.post('/embedded-signup/resume', authMiddleware, checkRole(['admin']), rat
     const status = await EmbeddedSignupService.resumeOnboardingPipeline({ companyId: req.user.companyId });
     res.json({ success: true, onboardingStatus: status });
   } catch (err) {
-    if (err.code === 'NO_CONFIG') return res.status(400).json({ error: err.message, code: err.code });
-    next(err);
+    if (err.code === 'NO_CONFIG') return res.status(400).json({ error: err.message, code: err.code, retryable: false });
+    logger.error('embedded-signup/resume error', err.message);
+    res.status(500).json({ error: 'Something went wrong resuming WhatsApp setup. Please try again.', code: 'PIPELINE_ERROR', retryable: true });
   }
 });
 
