@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import {
   CheckCircle, XCircle, AlertTriangle, Info, RefreshCw, Wrench,
   ChevronDown, ChevronUp, Send, Copy, ShieldAlert,
@@ -122,7 +122,16 @@ function computeOverall(h: HealthSnapshot): { status: RowStatus; label: string }
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function MetaHealthPanel() {
+interface MetaHealthPanelProps {
+  /** Set right after the Embedded Signup wizard completes — runs a health
+   * check automatically on mount instead of waiting for a manual "Refresh
+   * Health" click. The panel mounts fresh in that case (it's conditionally
+   * rendered on `connected`, which only flips true once onboarding
+   * succeeds), so a plain mount-effect is enough — no re-trigger guard needed. */
+  autoRefreshOnMount?: boolean;
+}
+
+export function MetaHealthPanel({ autoRefreshOnMount = false }: MetaHealthPanelProps = {}) {
   const qc = useQueryClient();
 
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -154,6 +163,15 @@ export function MetaHealthPanel() {
       setLoading(false);
     }
   }, []);
+
+  // This panel only mounts once `connected` flips true, so a prop that's
+  // true here means "the wizard just finished, fetch fresh health once on
+  // this fresh mount" — the canonical "subscribe/fetch on mount" effect use
+  // case, not state being needlessly mirrored between effects.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (autoRefreshOnMount) runCheck();
+  }, [autoRefreshOnMount, runCheck]);
 
   async function runAutoRepair() {
     setRepairing(true);

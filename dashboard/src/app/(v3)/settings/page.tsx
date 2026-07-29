@@ -52,6 +52,7 @@ import { toast } from 'sonner';
 import { EmployeesSection } from '@/components/v3/team/EmployeesSection';
 import { AISection } from '@/components/v3/settings/AISection';
 import { MetaHealthPanel } from '@/components/settings/MetaHealthPanel';
+import { EmbeddedSignupWizard } from '@/components/settings/EmbeddedSignupWizard';
 import { WhatsAppFlowsPanel } from '@/components/settings/WhatsAppFlowsPanel';
 import { BranchesPanel } from '@/components/settings/BranchesPanel';
 import { SettingsTemplatesSection } from '@/components/settings/SettingsTemplatesSection';
@@ -303,6 +304,17 @@ interface WabaTestResult {
   rawError?: unknown;
 }
 
+// setupMethod now has three real values (manual/oauth/embedded_signup, see
+// ADR-024) — a bare `=== 'manual' ? 'Manual' : 'OAuth'` ternary would
+// mislabel embedded_signup connections as "OAuth". Shared by both display
+// sites below.
+function setupMethodLabel(method: string | null | undefined): string {
+  if (method === 'manual') return 'Manual';
+  if (method === 'oauth') return 'OAuth';
+  if (method === 'embedded_signup') return 'Guided Setup';
+  return method ?? '—';
+}
+
 // ── View-mode read-only row with optional copy button ─────────────────────────
 function ViewRow({ label, value, mono = false, onCopy, helpText }: {
   label: string; value: string | null | undefined; mono?: boolean;
@@ -369,11 +381,24 @@ function WhatsAppSection() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<WabaTestResult | null>(null);
   const [showTestRaw, setShowTestRaw] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardKey, setWizardKey] = useState(0);
+  const [justOnboarded, setJustOnboarded] = useState(false);
 
   const { data: cfg, isLoading, isError, refetch } = useQuery<FullWabaConfig>({
     queryKey: ['whatsapp-config-full'],
     queryFn: () => apiFetch<FullWabaConfig>('/api/whatsapp/config/full'),
     staleTime: 30_000,
+  });
+
+  // Gates the Embedded Signup CTA — a 501 here just means this environment
+  // hasn't got META_EMBEDDED_SIGNUP_CONFIG_ID set yet (see ADR-024), not an
+  // error worth toasting or retrying: the button disables itself instead.
+  const { data: embeddedSignupCfg } = useQuery<{ appId: string; configId: string; graphApiVersion: string }>({
+    queryKey: ['embedded-signup-config'],
+    queryFn: () => apiFetch<{ appId: string; configId: string; graphApiVersion: string }>('/api/whatsapp/embedded-signup/config', { retries: 0 }),
+    staleTime: 5 * 60_000,
+    retry: false,
   });
 
   const connected = cfg?.connected ?? false;
@@ -618,7 +643,7 @@ function WhatsAppSection() {
                 {mode === 'edit'
                   ? 'Update credentials and settings below — save when done'
                   : connected
-                  ? `Meta Cloud API · ${cfg?.setupMethod === 'manual' ? 'Manual setup' : 'OAuth'}`
+                  ? `Meta Cloud API · ${setupMethodLabel(cfg?.setupMethod)}`
                   : 'Enter your Meta WhatsApp Business credentials to get started'}
               </p>
             </div>
@@ -689,7 +714,7 @@ function WhatsAppSection() {
             />
             <ViewRow
               label="Setup Method"
-              value={cfg.setupMethod === 'manual' ? 'Manual' : cfg.setupMethod === 'oauth' ? 'OAuth' : (cfg.setupMethod ?? '—')}
+              value={setupMethodLabel(cfg.setupMethod)}
             />
           </div>
         )}
@@ -701,10 +726,27 @@ function WhatsAppSection() {
           </div>
         )}
 
-        {/* ── CONNECT MODE: OAuth button ─────────────────────────── */}
+        {/* ── CONNECT MODE: Embedded Signup, OAuth, or manual ────── */}
         {mode === 'connect' && (
           <div className="mt-4 space-y-3">
-            <Button onClick={handleOAuth} className="w-full">
+            <Button
+              onClick={() => { setWizardKey((k) => k + 1); setWizardOpen(true); }}
+              disabled={!embeddedSignupCfg}
+              className="w-full"
+            >
+              Connect WhatsApp (Guided Setup)
+            </Button>
+            {!embeddedSignupCfg && (
+              <p className="text-xs text-neutral-500">
+                Guided setup isn&apos;t configured for this environment yet — use OAuth or manual setup below.
+              </p>
+            )}
+            <div className="flex items-center gap-2">
+              <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
+              <span className="text-xs text-neutral-400">or</span>
+              <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
+            </div>
+            <Button onClick={handleOAuth} variant="secondary" className="w-full">
               Connect with Meta (OAuth)
             </Button>
             <div className="flex items-center gap-2">
@@ -713,6 +755,20 @@ function WhatsAppSection() {
               <div className="h-px flex-1 bg-neutral-200 dark:bg-neutral-700" />
             </div>
           </div>
+        )}
+
+        {embeddedSignupCfg && (
+          <EmbeddedSignupWizard
+            key={wizardKey}
+            open={wizardOpen}
+            onClose={() => setWizardOpen(false)}
+            onOnboarded={() => {
+              setJustOnboarded(true);
+              qc.invalidateQueries({ queryKey: ['whatsapp-config-full'] });
+              qc.invalidateQueries({ queryKey: ['whatsapp-connection'] });
+            }}
+            config={embeddedSignupCfg}
+          />
         )}
 
         {/* ── FORM fields (edit + connect modes) ──────────────────── */}
@@ -944,7 +1000,7 @@ function WhatsAppSection() {
       {/* ── Meta Health — connection/token/phone/webhook/registration/PIN/
           messaging/templates/profile status, Auto Repair, Send Test Message
           (connected only) ─────────────────────────────────────────── */}
-      {connected && <MetaHealthPanel />}
+      {connected && <MetaHealthPanel autoRefreshOnMount={justOnboarded} />}
 
       {/* ── WhatsApp Flows (connected only) ─────────────────────── */}
       {connected && <WhatsAppFlowsPanel />}
