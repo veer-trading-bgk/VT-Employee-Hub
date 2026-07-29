@@ -17,6 +17,7 @@ const dynamodb = require('../config/dynamodb');
 const axios = require('axios');
 const crypto = require('crypto');
 const logger = require('../config/logger');
+const { decrypt } = require('../utils/encryption');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 const GRAPH = `https://graph.facebook.com/${process.env.WHATSAPP_GRAPH_VERSION ?? 'v25.0'}`;
@@ -27,12 +28,31 @@ function resolveGraphUrl(cfg) {
     : GRAPH;
 }
 
+// Only the Embedded Signup connect path (ADR-024) writes accessTokenEncrypted
+// -- classic OAuth/manual-connect keep writing plaintext, untouched, exactly
+// as before. This is the single choke point: every caller in the codebase
+// (WhatsAppSendService, FlowManagementService, this file's own helpers, and
+// routes/whatsapp.js) reads cfg.accessToken via getWabaConfig()/
+// getCachedWabaConfig() and nowhere else, so decrypting here transparently
+// covers all of them with zero other call site changed. Fails closed on a
+// bad ENCRYPTION_KEY or corrupt ciphertext -- returns accessToken: null
+// rather than throwing, so one company's decrypt problem can never crash
+// reads for every other (plaintext) company sharing this same function.
 async function getWabaConfig(companyId) {
   const result = await dynamodb.get({
     TableName: TABLE,
     Key: { PK: `CONFIG#WABA#${companyId}`, SK: 'CURRENT' },
   }).promise();
-  return result.Item ?? null;
+  const item = result.Item ?? null;
+  if (item?.accessTokenEncrypted && item.accessToken) {
+    try {
+      item.accessToken = decrypt(item.accessToken);
+    } catch (e) {
+      logger.error(`getWabaConfig: token decrypt failed for company=${companyId}`, e.message);
+      item.accessToken = null;
+    }
+  }
+  return item;
 }
 
 // In-process WABA config cache — null results are cached too (a company
@@ -270,6 +290,94 @@ async function uploadProfilePhoto(cfg, buffer, mimeType, filename) {
     );
     return { uploaded: false, error: rawError?.error?.message ?? e.message ?? 'Photo upload failed', rawError };
   }
+}
+
+// Pulls template status/quality from Meta and syncs into our local
+// CONFIG#TMPL# store: imports Meta-native templates not yet known locally,
+// updates status/quality on ones that changed. Extracted from the
+// POST /templates/sync route handler, 2026-07-29 (PR 7a) -- pure extraction,
+// no behavior change -- so the Embedded Signup onboarding pipeline's
+// syncTemplates step can call the exact same logic the route already uses
+// instead of duplicating it; the route is now a thin wrapper around this.
+async function syncTemplatesFromMeta(cfg, companyId) {
+  const fields = 'id,name,status,quality_score,category,rejected_reason,language,components';
+  const metaTemplates = [];
+  let nextUrl = `${GRAPH}/${cfg.wabaId}/message_templates?fields=${fields}&limit=100`;
+  while (nextUrl) {
+    const metaRes = await axios.get(nextUrl, { headers: { Authorization: `Bearer ${cfg.accessToken}` }, timeout: 15000 });
+    metaTemplates.push(...(metaRes.data?.data ?? []));
+    nextUrl = metaRes.data?.paging?.next ?? null;
+  }
+
+  const localItems = [];
+  let localLastKey;
+  do {
+    const localPage = await dynamodb.query({
+      TableName: TABLE,
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+      ExpressionAttributeValues: { ':pk': `CONFIG#TMPL#${companyId}`, ':sk': 'TMPL#' },
+      ...(localLastKey && { ExclusiveStartKey: localLastKey }),
+    }).promise();
+    localItems.push(...(localPage.Items ?? []));
+    localLastKey = localPage.LastEvaluatedKey;
+  } while (localLastKey);
+  const localByName = Object.fromEntries(localItems.map((t) => [t.templateName, t]));
+
+  const statusMap = {
+    APPROVED: 'APPROVED', REJECTED: 'REJECTED', PENDING: 'PENDING',
+    PAUSED: 'PAUSED', DISABLED: 'DISABLED', FLAGGED: 'FLAGGED',
+    IN_APPEAL: 'IN_APPEAL', REINSTATED: 'REINSTATED', PENDING_DELETION: 'PENDING_DELETION',
+  };
+  const qualityMap = { GREEN: 'HIGH', YELLOW: 'MEDIUM', RED: 'LOW', UNKNOWN: 'UNKNOWN' };
+
+  const now = new Date().toISOString();
+  let synced = 0;
+  let imported = 0;
+  for (const mt of metaTemplates) {
+    const local = localByName[mt.name];
+    const newStatus = statusMap[mt.status] ?? mt.status;
+    const newQuality = qualityMap[mt.quality_score?.score ?? 'UNKNOWN'] ?? 'UNKNOWN';
+
+    if (!local) {
+      const bodyComp = (mt.components ?? []).find((c) => c.type === 'BODY');
+      const newId = crypto.randomUUID();
+      await dynamodb.put({
+        TableName: TABLE,
+        ConditionExpression: 'attribute_not_exists(PK)',
+        Item: {
+          PK: `CONFIG#TMPL#${companyId}`, SK: `TMPL#${newId}`,
+          id: newId, companyId,
+          name: mt.name, templateName: mt.name,
+          language: mt.language ?? 'en', category: mt.category,
+          bodyPreview: (bodyComp?.text ?? '').slice(0, 100),
+          variables: [],
+          components: mt.components ?? null,
+          status: newStatus, qualityScore: newQuality,
+          allowCategoryChange: true, metaTemplateId: mt.id,
+          rejectedReason: mt.rejected_reason ?? null,
+          createdAt: now, updatedAt: now,
+          statusHistory: [{ status: newStatus, ts: now, reason: null }],
+        },
+      }).promise().catch(() => {}); // skip on duplicate race
+      imported++;
+      continue;
+    }
+
+    if (local.status === newStatus && local.qualityScore === newQuality) continue;
+    await dynamodb.update({
+      TableName: TABLE,
+      Key: { PK: local.PK, SK: local.SK },
+      UpdateExpression: 'SET #s = :s, qualityScore = :q, metaTemplateId = :mid, rejectedReason = :r, updatedAt = :ua, statusHistory = list_append(if_not_exists(statusHistory, :empty), :h)',
+      ExpressionAttributeNames: { '#s': 'status' },
+      ExpressionAttributeValues: {
+        ':s': newStatus, ':q': newQuality, ':mid': mt.id,
+        ':r': mt.rejected_reason ?? null, ':ua': now,
+        ':empty': [], ':h': [{ status: newStatus, ts: now, reason: mt.rejected_reason ?? null }],
+      },
+    }).promise();
+    synced++;
+  }
+  return { synced, imported, total: metaTemplates.length };
 }
 
 // Compute a plain-English root cause from health-check state (shown in UI and logs).
@@ -666,6 +774,7 @@ module.exports = {
   getBusinessProfile,
   updateBusinessProfile,
   uploadProfilePhoto,
+  syncTemplatesFromMeta,
   computeHealthSnapshot,
   autoRepair,
 };

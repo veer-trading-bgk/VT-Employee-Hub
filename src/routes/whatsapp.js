@@ -19,6 +19,7 @@ const AIService = require('../services/AIService');
 const { sendAIError } = require('./ai');
 const WASendSvc            = require('../services/WhatsAppSendService');
 const FlowManagementService = require('../services/FlowManagementService');
+const EmbeddedSignupService = require('../services/EmbeddedSignupService');
 const TagService           = require('../services/TagService');
 const ContactService       = require('../services/ContactService');
 const TeamScopeService     = require('../services/TeamScopeService');
@@ -34,7 +35,7 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 // Graph URL/config helpers extracted to a shared module (also used by
 // WhatsAppSendService and FlowManagementService). resolveGraphUrl keeps its
 // historical local name so this file's ~40 call sites read unchanged.
-const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks, registerPhoneNumber, getBusinessProfile, updateBusinessProfile, uploadProfilePhoto, computeHealthSnapshot, autoRepair } = require('../services/graphApiHelpers');
+const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks, registerPhoneNumber, getBusinessProfile, updateBusinessProfile, uploadProfilePhoto, syncTemplatesFromMeta, computeHealthSnapshot, autoRepair } = require('../services/graphApiHelpers');
 
 // Meta's closed enum for whatsapp_business_profile's `vertical` field.
 // Verified live against Meta's own field constraints, 2026-07-28.
@@ -338,6 +339,75 @@ router.get('/auth/callback', async (req, res) => {
     // access_token in the request params) — only response.data/message.
     logger.error('WABA OAuth callback error', JSON.stringify(err?.response?.data ?? { message: err.message }));
     res.send(popupHtml(false, 'Connection failed — check app credentials'));
+  }
+});
+
+// ── Embedded Signup (PR 7a, ADR-024) ────────────────────────────────────────
+// Meta's Embedded Signup product hosts Business Manager/WABA/Phone Number
+// selection itself, entirely inside FB.login()'s popup -- these three routes
+// only handle what happens after the user finishes that hosted flow:
+// exchanging the authorization code for an access token, then running the
+// same automatic configuration steps Auto Repair already performs against
+// the newly-created WABA. See EmbeddedSignupService.js for the pipeline.
+
+// GET /api/whatsapp/embedded-signup/config — appId/configId for FB.init()/FB.login()
+router.get('/embedded-signup/config', authMiddleware, checkRole(['admin']), (req, res) => {
+  const cfg = EmbeddedSignupService.getEmbeddedSignupConfig();
+  if (!cfg.available) {
+    return res.status(501).json({
+      error: 'Embedded Signup is not configured for this environment — set META_APP_ID and META_EMBEDDED_SIGNUP_CONFIG_ID.',
+      code: 'EMBEDDED_SIGNUP_NOT_CONFIGURED',
+    });
+  }
+  res.json({ appId: cfg.appId, configId: cfg.configId, graphApiVersion: cfg.graphApiVersion });
+});
+
+// POST /api/whatsapp/embedded-signup/exchange — code → token → automatic pipeline
+// Body: { code, wabaId, phoneNumberId, businessId } — code comes from FB.login's
+// own callback, the ids from the WA_EMBEDDED_SIGNUP postMessage event Meta's
+// hosted flow posts separately (see PR 7b's frontend correlation logic).
+router.post('/embedded-signup/exchange', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const { code, wabaId, phoneNumberId, businessId } = req.body;
+    if (!code || !wabaId || !phoneNumberId) {
+      return res.status(400).json({ error: 'code, wabaId, and phoneNumberId are required', code: 'MISSING_FIELDS' });
+    }
+
+    let accessToken;
+    try {
+      ({ accessToken } = await EmbeddedSignupService.exchangeSignupCode({ code }));
+    } catch (e) {
+      return res.status(400).json({ error: e.message, code: e.code ?? 'CODE_EXCHANGE_FAILED', retryable: false });
+    }
+
+    const status = await EmbeddedSignupService.runOnboardingPipeline({
+      companyId: req.user.companyId,
+      userId: req.user.id,
+      accessToken,
+      wabaId,
+      phoneNumberId,
+      businessId,
+    });
+    logger.info(`Embedded Signup: onboarding pipeline ran for company ${req.user.companyId}`);
+    res.json({ success: true, onboardingStatus: status });
+  } catch (err) {
+    // Never log err.config/err.request — same redaction discipline as every
+    // other Meta-calling handler in this file (raw access_token in params).
+    logger.error('embedded-signup/exchange error', JSON.stringify(err?.response?.data ?? { message: err.message }));
+    next(err);
+  }
+});
+
+// POST /api/whatsapp/embedded-signup/resume — re-run only incomplete pipeline steps
+// (e.g. the user closed the tab mid-pipeline, or a transient Meta error failed one
+// step). Idempotent — a no-op if onboarding already completed.
+router.post('/embedded-signup/resume', authMiddleware, checkRole(['admin']), rateLimit(10, 60_000), async (req, res, next) => {
+  try {
+    const status = await EmbeddedSignupService.resumeOnboardingPipeline({ companyId: req.user.companyId });
+    res.json({ success: true, onboardingStatus: status });
+  } catch (err) {
+    if (err.code === 'NO_CONFIG') return res.status(400).json({ error: err.message, code: err.code });
+    next(err);
   }
 });
 
@@ -3381,6 +3451,10 @@ router.post('/templates/:id/submit', authMiddleware, checkRole(['admin']), rateL
 });
 
 // ── POST /api/whatsapp/templates/sync — pull latest status from Meta ──────────
+// Thin wrapper: the fetch/diff/import logic lives in
+// graphApiHelpers.syncTemplatesFromMeta() (extracted 2026-07-29, PR 7a) so the
+// Embedded Signup onboarding pipeline's syncTemplates step can call the exact
+// same implementation instead of duplicating it.
 router.post('/templates/sync', authMiddleware, checkRole(['admin', 'manager']), rateLimit(5, 60_000), async (req, res, next) => {
   try {
     const cfg = await getWabaConfig(req.user.companyId);
@@ -3390,87 +3464,8 @@ router.post('/templates/sync', authMiddleware, checkRole(['admin', 'manager']), 
     const cfgIssue = detectInvalidWabaConfig(cfg);
     if (cfgIssue) return res.status(400).json({ error: cfgIssue, code: 'INVALID_WABA_CONFIG' });
 
-    // Fetch ALL templates from Meta with cursor pagination
-    const fields = 'id,name,status,quality_score,category,rejected_reason,language,components';
-    const metaTemplates = [];
-    let nextUrl = `${GRAPH}/${cfg.wabaId}/message_templates?fields=${fields}&limit=100`;
-    while (nextUrl) {
-      const metaRes = await axios.get(nextUrl, { headers: { Authorization: `Bearer ${cfg.accessToken}` }, timeout: 15000 });
-      metaTemplates.push(...(metaRes.data?.data ?? []));
-      nextUrl = metaRes.data?.paging?.next ?? null;
-    }
-
-    // Fetch our local templates
-    const localItems = [];
-    let localLastKey;
-    do {
-      const localPage = await dynamodb.query({
-        TableName: TABLE,
-        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
-        ExpressionAttributeValues: { ':pk': `CONFIG#TMPL#${req.user.companyId}`, ':sk': 'TMPL#' },
-        ...(localLastKey && { ExclusiveStartKey: localLastKey }),
-      }).promise();
-      localItems.push(...(localPage.Items ?? []));
-      localLastKey = localPage.LastEvaluatedKey;
-    } while (localLastKey);
-    const localByName = Object.fromEntries(localItems.map((t) => [t.templateName, t]));
-
-    const statusMap = {
-      APPROVED: 'APPROVED', REJECTED: 'REJECTED', PENDING: 'PENDING',
-      PAUSED: 'PAUSED', DISABLED: 'DISABLED', FLAGGED: 'FLAGGED',
-      IN_APPEAL: 'IN_APPEAL', REINSTATED: 'REINSTATED', PENDING_DELETION: 'PENDING_DELETION',
-    };
-    const qualityMap = { GREEN: 'HIGH', YELLOW: 'MEDIUM', RED: 'LOW', UNKNOWN: 'UNKNOWN' };
-
-    const now = new Date().toISOString();
-    let synced = 0;
-    let imported = 0;
-    for (const mt of metaTemplates) {
-      const local = localByName[mt.name];
-      const newStatus = statusMap[mt.status] ?? mt.status;
-      const newQuality = qualityMap[mt.quality_score?.score ?? 'UNKNOWN'] ?? 'UNKNOWN';
-
-      if (!local) {
-        // Import Meta-native template not yet in our database
-        const bodyComp = (mt.components ?? []).find((c) => c.type === 'BODY');
-        const newId = randomUUID();
-        await dynamodb.put({
-          TableName: TABLE,
-          ConditionExpression: 'attribute_not_exists(PK)',
-          Item: {
-            PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${newId}`,
-            id: newId, companyId: req.user.companyId,
-            name: mt.name, templateName: mt.name,
-            language: mt.language ?? 'en', category: mt.category,
-            bodyPreview: (bodyComp?.text ?? '').slice(0, 100),
-            variables: [],
-            components: mt.components ?? null,
-            status: newStatus, qualityScore: newQuality,
-            allowCategoryChange: true, metaTemplateId: mt.id,
-            rejectedReason: mt.rejected_reason ?? null,
-            createdAt: now, updatedAt: now,
-            statusHistory: [{ status: newStatus, ts: now, reason: null }],
-          },
-        }).promise().catch(() => {}); // skip on duplicate race
-        imported++;
-        continue;
-      }
-
-      if (local.status === newStatus && local.qualityScore === newQuality) continue;
-      await dynamodb.update({
-        TableName: TABLE,
-        Key: { PK: local.PK, SK: local.SK },
-        UpdateExpression: 'SET #s = :s, qualityScore = :q, metaTemplateId = :mid, rejectedReason = :r, updatedAt = :ua, statusHistory = list_append(if_not_exists(statusHistory, :empty), :h)',
-        ExpressionAttributeNames: { '#s': 'status' },
-        ExpressionAttributeValues: {
-          ':s': newStatus, ':q': newQuality, ':mid': mt.id,
-          ':r': mt.rejected_reason ?? null, ':ua': now,
-          ':empty': [], ':h': [{ status: newStatus, ts: now, reason: mt.rejected_reason ?? null }],
-        },
-      }).promise();
-      synced++;
-    }
-    res.json({ success: true, synced, imported, total: metaTemplates.length });
+    const result = await syncTemplatesFromMeta(cfg, req.user.companyId);
+    res.json({ success: true, ...result });
   } catch (err) {
     if (err.response?.data) {
       logger.error('sync templates from Meta failed', err.response.data);
