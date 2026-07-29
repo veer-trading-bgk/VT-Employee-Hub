@@ -52,7 +52,9 @@ async function createResetToken(user) {
 // "MessageRejected: unverified recipient" case) must never change the
 // caller's response, or it becomes an account-enumeration + deliverability
 // oracle. Logs only; caller decides what (if anything) to tell the client.
-async function sendResetEmail(email, token) {
+// `meta` (companyId/userId) is observability-only -- optional, additive,
+// never affects the send itself or the returned boolean.
+async function sendResetEmail(email, token, meta = {}) {
   const resetLink = `${RESET_BASE_URL}?token=${token}`;
   const minutes = Math.round(TOKEN_TTL_MS / 60000);
   const params = {
@@ -80,7 +82,15 @@ async function sendResetEmail(email, token) {
   };
 
   try {
-    await sesClient.sendEmail(params).promise();
+    const result = await sesClient.sendEmail(params).promise();
+    // Safe metadata only -- no token, no reset link, no email body. See
+    // the module header on why nothing here can ever gate/change behavior.
+    logger.info(`PasswordResetService: Password reset email sent ${JSON.stringify({
+      messageId: result.MessageId,
+      template: 'password-reset',
+      companyId: meta.companyId ?? null,
+      userId: meta.userId ?? null,
+    })}`);
     return true;
   } catch (err) {
     logger.error(

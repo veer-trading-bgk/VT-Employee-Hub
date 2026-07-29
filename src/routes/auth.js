@@ -201,7 +201,7 @@ router.post('/forgot-password', rateLimit(10, 60_000), async (req, res, next) =>
     // regain access via a path that was never meant to touch account status.
     if (user && user.status !== 'inactive') {
       const token = await PasswordResetService.createResetToken(user);
-      await PasswordResetService.sendResetEmail(user.email, token);
+      await PasswordResetService.sendResetEmail(user.email, token, { companyId: user.companyId, userId: user.id });
       await logAudit(user.id, 'password_reset_requested', email, 'success', req.ip, {}, user.companyId).catch(() => {});
     } else {
       await logAudit('unknown', 'password_reset_requested', email, 'no_such_account_or_inactive', req.ip).catch(() => {});
