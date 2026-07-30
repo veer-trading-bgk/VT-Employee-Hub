@@ -191,7 +191,7 @@ test.describe('Embedded Signup Wizard', () => {
     expect(exchangeReq.method()).toBe('POST');
 
     await expect(dialog.getByText('WhatsApp is connected and fully configured.')).toBeVisible();
-    for (const label of ['Saving configuration', 'Subscribing to webhooks', 'Registering phone number & PIN', 'Syncing business profile', 'Syncing message templates', 'Running health check']) {
+    for (const label of ['Saving your connection details', 'Turning on instant messaging', 'Activating your phone number', 'Loading your business profile', 'Loading your message templates', 'Checking your connection']) {
       await expect(dialog.getByText(label)).toBeVisible();
     }
 
