@@ -9,7 +9,7 @@ import {
   MessageSquare, Search, Send, MoreHorizontal, Phone,
   CheckCheck, Check, Clock, AlertCircle, X, ChevronLeft,
   FileText, Download, ZoomIn, MapPin, Info,
-  Loader2, ChevronDown, Lock, AlertTriangle,
+  Loader2, ChevronDown, Lock, AlertTriangle, PartyPopper, UserPlus, Sparkles,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { ContactTags } from '@/components/tags/ContactTags';
@@ -40,6 +40,7 @@ import { useContactMutations } from '@/hooks/useContactMutations';
 import { EditableName } from '@/components/shared/EditableName';
 import { formatRelativeTime } from '@/utils/formatters';
 import { WhatsAppIcon, InstagramIcon } from '@/components/icons/BrandIcons';
+import { SendTestMessageWizard } from '@/components/inbox/SendTestMessageWizard';
 
 // ── V2 API shapes (backend response shapes, never invented) ───────────────────
 
@@ -445,6 +446,7 @@ function ConversationList({
   activeId,
   onSelect,
   suppressAutoSelect,
+  isFirstConversationEver,
 }: {
   activeTab: ConvTab;
   onTabChange: (t: ConvTab) => void;
@@ -455,9 +457,15 @@ function ConversationList({
   // deliberately picked, never to whatever this list would otherwise
   // auto-open on its own. True while a template id is pending consumption.
   suppressAutoSelect?: boolean;
+  // Company-wide "exactly one conversation exists, ever" signal, computed
+  // by the parent from its own status=all query (see CommunicationsContent)
+  // — this list is tab-filtered, so it can't tell "first ever" from "first
+  // in this filtered view" on its own.
+  isFirstConversationEver?: boolean;
 }) {
   const [search, setSearch] = useState('');
   const [learnOpen, setLearnOpen] = useState(false);
+  const [sendTestOpen, setSendTestOpen] = useState(false);
   const qc = useQueryClient();
   const router = useRouter();
   const didAutoSelect = useRef(false);
@@ -469,6 +477,17 @@ function ConversationList({
     refetchInterval: 30_000,
     placeholderData: { conversations: [], counts: {} },
   });
+
+  // Reused key (whatsapp-config-full is already fetched by the dashboard
+  // card and Settings > WhatsApp) — only its `connected` flag is read here,
+  // to tell "genuinely no messages yet" apart from "not even connected"
+  // in the empty state below, so the CTAs shown are ones that can actually
+  // work rather than a dead end.
+  const { data: waCfg } = useQuery<{ connected: boolean }>({
+    queryKey: ['whatsapp-config-full'],
+    queryFn: () => apiFetch<{ connected: boolean }>('/api/whatsapp/config/full'),
+  });
+  const connected = waCfg?.connected ?? false;
 
   const conversations = data?.conversations ?? [];
   const counts = data?.counts ?? {};
@@ -602,6 +621,25 @@ function ConversationList({
             description="Try a different search"
             className="py-10"
           />
+        ) : filtered.length === 0 && !connected ? (
+          // Explains WHY it's empty (not connected yet) rather than showing
+          // the same generic message regardless of connection state — and
+          // doesn't offer Send Test Message here, which would just fail
+          // without a connection (no dead ends).
+          <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-neutral-100 dark:bg-neutral-800">
+              <MessageSquare className="h-6 w-6 text-neutral-400" aria-hidden />
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">WhatsApp isn&apos;t connected yet</p>
+              <p className="mx-auto max-w-xs text-sm text-neutral-500">
+                Connect your business WhatsApp number to start sending and receiving messages here.
+              </p>
+            </div>
+            <Button size="sm" className="mt-1" onClick={() => router.push('/settings?tab=whatsapp')}>
+              Connect WhatsApp
+            </Button>
+          </div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-neutral-100 dark:bg-neutral-800">
@@ -610,11 +648,12 @@ function ConversationList({
             <div className="space-y-1">
               <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">No conversations yet</p>
               <p className="mx-auto max-w-xs text-sm text-neutral-500">
-                Once your WhatsApp is connected, messages you send and receive will show up here.
+                You&apos;re connected — messages a customer sends will show up here automatically. Or send
+                yourself a test message to see how it works.
               </p>
             </div>
             <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
-              <Button size="sm" onClick={() => router.push('/settings?tab=whatsapp')}>
+              <Button size="sm" onClick={() => setSendTestOpen(true)}>
                 Send Test Message
               </Button>
               <Button size="sm" variant="secondary" loading={isRefetching} onClick={() => refetch()}>
@@ -626,7 +665,14 @@ function ConversationList({
             </div>
           </div>
         ) : (
-          filtered.map((conv) => {
+          <>
+          {isFirstConversationEver && (
+            <div className="flex items-center gap-2 border-b border-primary-100 bg-primary-50 px-3 py-2 text-xs font-medium text-primary-700 dark:border-primary-900/40 dark:bg-primary-900/20 dark:text-primary-300">
+              <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              This is your first WhatsApp conversation.
+            </div>
+          )}
+          {filtered.map((conv) => {
             const convId = conv.leadId ?? conv.phone;
             const name = convDisplayName(conv);
             const hasUnread = (conv.unreadCount ?? 0) > 0;
@@ -640,6 +686,7 @@ function ConversationList({
                   convId === activeId
                     ? 'bg-primary-50 dark:bg-primary-900/20'
                     : 'hover:bg-neutral-50 dark:hover:bg-neutral-800/30',
+                  isFirstConversationEver && conversations.length === 1 && 'ring-1 ring-inset ring-primary-300 dark:ring-primary-700',
                 )}
               >
                 <Avatar name={name} size={32} />
@@ -681,9 +728,11 @@ function ConversationList({
                 </div>
               </button>
             );
-          })
+          })}
+          </>
         )}
       </div>
+      <SendTestMessageWizard open={sendTestOpen} onClose={() => setSendTestOpen(false)} />
       <Drawer
         open={learnOpen}
         onClose={() => setLearnOpen(false)}
@@ -1199,16 +1248,20 @@ function ExpiredWindowSendBar({
 
 // ── Thread Pane ───────────────────────────────────────────────────────────────
 
+const QUICK_REPLY_SUGGESTIONS = ['Hello 👋', 'Thank you for contacting us.', 'How can we help you today?'];
+
 function ThreadPane({
   conversation,
   onOpenSnapshot,
   autoOpenTemplateId,
   onAutoOpenHandled,
+  isFirstConversationEver,
 }: {
   conversation: WaConversation;
   onOpenSnapshot: () => void;
   autoOpenTemplateId?: string | null;
   onAutoOpenHandled?: () => void;
+  isFirstConversationEver?: boolean;
 }) {
   const qc = useQueryClient();
   const [draft, setDraft] = useState('');
@@ -1584,6 +1637,26 @@ function ThreadPane({
           />
         ) : (
           <>
+            {/* Quick reply suggestions — first conversation only, and only
+                until the first outbound reply is actually sent (messages
+                here means this thread's own history, so this naturally
+                stops applying once the conversation has developed). */}
+            {isFirstConversationEver && messages.length <= 1 && (
+              <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] text-neutral-400">Quick reply:</span>
+                {QUICK_REPLY_SUGGESTIONS.map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    type="button"
+                    onClick={() => { setDraft(suggestion); textareaRef.current?.focus(); }}
+                    className="rounded-full border border-neutral-200 px-2.5 py-1 text-xs text-neutral-600 transition-colors hover:border-primary-300 hover:bg-primary-50 hover:text-primary-700 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-primary-900/20"
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Upload progress indicator */}
             {isUploading && uploadFile && (
               <div className="mb-2 rounded-lg border border-primary-200 bg-primary-50 px-3 py-2 text-xs text-primary-700 dark:border-primary-800 dark:bg-primary-900/20 dark:text-primary-300">
@@ -2437,6 +2510,88 @@ function BroadcastSection() {
   );
 }
 
+// ── First-message celebration (P0.3) ────────────────────────────────────────
+// Shown exactly once ever (see the localStorage check in CommunicationsContent)
+// when the company's very first WhatsApp conversation arrives. "Create
+// Contact" reuses the same POST /api/crm/leads endpoint the existing
+// UnknownContactAssignPicker uses to convert an INBOX# unknown contact into
+// a real CRM lead — just without that flow's mandatory employee-picker step,
+// since here the goal is one click, not assignment. Same role gate
+// (canAssignOwner) as that existing flow, since the backend route itself is
+// checkRole(['admin', 'manager']) — hidden rather than shown-then-403'd for
+// anyone else.
+
+function FirstMessageCelebration({
+  conversation,
+  onOpenConversation,
+  onClose,
+}: {
+  conversation: WaConversation;
+  onOpenConversation: () => void;
+  onClose: () => void;
+}) {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  const [creating, setCreating] = useState(false);
+  const [created, setCreated] = useState(false);
+  const canCreateContact = conversation.type === 'unknown' && canAssignOwner(user?.role);
+
+  async function handleCreateContact() {
+    setCreating(true);
+    try {
+      await apiFetch('/api/crm/leads', {
+        method: 'POST',
+        body: JSON.stringify({
+          phone: conversation.phone,
+          name: conversation.displayName ?? conversation.phone,
+          source: 'whatsapp',
+        }),
+      });
+      setCreated(true);
+      qc.invalidateQueries({ queryKey: ['wa-inbox'] });
+      toast.success('New Contact created');
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Could not create the contact — try again from the conversation.');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="Your WhatsApp is live">
+      <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-center shadow-xl dark:bg-neutral-900">
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-success-50 dark:bg-success-900/20">
+          <PartyPopper className="h-7 w-7 text-success-600 dark:text-success-400" aria-hidden />
+        </div>
+        <h2 className="mt-4 text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+          Your WhatsApp is Live!
+        </h2>
+        <p className="mt-1 text-sm text-neutral-500">
+          Your first conversation has arrived, from {conversation.displayName ?? conversation.phone}.
+        </p>
+        {created && (
+          <p className="mt-3 inline-flex items-center gap-1 rounded-full bg-success-50 px-2.5 py-1 text-xs font-medium text-success-700 dark:bg-success-900/20 dark:text-success-400">
+            <UserPlus className="h-3 w-3" aria-hidden /> New Contact
+          </p>
+        )}
+        <div className="mt-5 flex flex-col gap-2">
+          <Button variant="primary" size="md" className="w-full" onClick={onOpenConversation}>
+            Open Conversation
+          </Button>
+          {canCreateContact && !created && (
+            <Button variant="secondary" size="md" className="w-full" loading={creating} onClick={handleCreateContact} iconLeft={<UserPlus className="h-3.5 w-3.5" />}>
+              Create Contact
+            </Button>
+          )}
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 type CommPageMode = 'inbox' | 'broadcast';
@@ -2476,6 +2631,34 @@ function CommunicationsContent() {
   const handleConvUpdate = useCallback((updates: Partial<WaConversation>) => {
     setActiveConv((prev) => prev ? { ...prev, ...updates } : null);
   }, []);
+
+  // First-message celebration (P0.3) — company-wide "how many conversations
+  // exist, ever" signal, independent of whichever tab is active. Reuses the
+  // same GET /api/whatsapp/inbox endpoint every other view of this page
+  // already calls (status=all), just its own query-key/tab combination so
+  // it isn't affected by the visible tab filter.
+  const { data: allConvData } = useQuery<{ conversations: WaConversation[] }>({
+    queryKey: ['wa-inbox', 'all'],
+    queryFn: () => apiFetch('/api/whatsapp/inbox?status=all'),
+    staleTime: 15_000,
+    placeholderData: { conversations: [] },
+  });
+  const allConversations = useMemo(() => allConvData?.conversations ?? [], [allConvData]);
+  const isFirstConversationEver = allConversations.length === 1;
+
+  const [celebrationConv, setCelebrationConv] = useState<WaConversation | null>(null);
+  const celebrationKey = user?.companyId ? `apforce_wa_first_msg_celebrated_${user.companyId}` : null;
+  // Syncs a one-time localStorage flag into React state on load — a
+  // legitimate external-system read, matching this codebase's established
+  // pattern for the same lint rule elsewhere (e.g. MetaHealthPanel.tsx).
+  useEffect(() => {
+    if (!celebrationKey) return;
+    if (allConversations.length !== 1) return;
+    if (typeof window === 'undefined' || window.localStorage.getItem(celebrationKey)) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCelebrationConv(allConversations[0]);
+    window.localStorage.setItem(celebrationKey, '1'); // once, never repeat
+  }, [allConversations, celebrationKey]);
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -2546,6 +2729,7 @@ function CommunicationsContent() {
               activeId={activeConv ? (activeConv.leadId ?? activeConv.phone) : undefined}
               onSelect={(conv) => { setActiveConv(conv); setSnapshotOpen(false); }}
               suppressAutoSelect={!!pendingSendTemplateId}
+              isFirstConversationEver={isFirstConversationEver}
             />
           </div>
 
@@ -2557,6 +2741,10 @@ function CommunicationsContent() {
                 onOpenSnapshot={() => setSnapshotOpen((o) => !o)}
                 autoOpenTemplateId={pendingSendTemplateId}
                 onAutoOpenHandled={handleAutoOpenHandled}
+                // isFirstConversationEver means "exactly one conversation
+                // exists company-wide" -- if true, whatever's open here IS
+                // that one conversation (there's nothing else to have opened).
+                isFirstConversationEver={isFirstConversationEver}
               />
             </div>
           ) : (
@@ -2579,6 +2767,17 @@ function CommunicationsContent() {
           )}
           </div>
         </div>
+      )}
+      {celebrationConv && (
+        <FirstMessageCelebration
+          conversation={celebrationConv}
+          onOpenConversation={() => {
+            setActiveConv(celebrationConv);
+            setMode('inbox');
+            setCelebrationConv(null);
+          }}
+          onClose={() => setCelebrationConv(null)}
+        />
       )}
     </div>
   );
