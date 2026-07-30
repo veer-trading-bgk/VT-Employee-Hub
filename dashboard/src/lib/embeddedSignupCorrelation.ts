@@ -40,10 +40,28 @@ function isTrustedFacebookOrigin(origin: string): boolean {
   }
 }
 
-export function isEmbeddedSignupMessage(event: MessageEvent): event is MessageEvent<EmbeddedSignupMessage> {
-  if (!isTrustedFacebookOrigin(event.origin)) return false;
-  const data: unknown = event.data;
-  return !!data && typeof data === 'object' && (data as { type?: unknown }).type === 'WA_EMBEDDED_SIGNUP';
+// Meta sends this message's `data` as a JSON-ENCODED STRING in production
+// (confirmed against real Embedded Signup integration references, 2026-07-30
+// live-verification round 2) -- not a live object, which is what Playwright's
+// `postMessage(obj)` in the E2E spec produces (structured-clone, no
+// stringify), so CI could never have caught this. `isEmbeddedSignupMessage`'s
+// old `typeof data === 'object'` check silently rejected the real string
+// payload regardless of origin -- the actual second break in the chain, on
+// top of the origin-allowlist bug fixed earlier today.
+export function parseEmbeddedSignupMessage(event: MessageEvent): EmbeddedSignupMessage | null {
+  if (!isTrustedFacebookOrigin(event.origin)) return null;
+  let parsed: unknown = event.data;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || (parsed as { type?: unknown }).type !== 'WA_EMBEDDED_SIGNUP') {
+    return null;
+  }
+  return parsed as EmbeddedSignupMessage;
 }
 
 export interface SignupCorrelationInput {

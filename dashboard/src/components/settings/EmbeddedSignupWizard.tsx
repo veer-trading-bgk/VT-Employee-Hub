@@ -8,7 +8,7 @@ import { apiFetch, apiErrorMessage, ApiClientError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { loadFacebookSdk, openEmbeddedSignup } from '@/lib/facebookSdk';
 import {
-  isEmbeddedSignupMessage, correlateSignupResult,
+  parseEmbeddedSignupMessage, correlateSignupResult,
   type EmbeddedSignupMessageData,
 } from '@/lib/embeddedSignupCorrelation';
 import { STEP_ORDER, STEP_LABELS, isOnboardingComplete, type OnboardingStatus, type OnboardingStepResult } from '@/types/embeddedSignup';
@@ -78,8 +78,20 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
   useEffect(() => {
     if (!open) return;
     function onMessage(event: MessageEvent) {
-      if (!isEmbeddedSignupMessage(event)) return;
-      const { event: signupEvent, data } = event.data;
+      // TEMP DEBUG — P0.1 investigation (remove once root cause is confirmed
+      // fixed in production). Logs every message this window receives while
+      // the wizard is open, before any filtering, so we can see exactly what
+      // Meta actually sends (origin + raw payload shape) if the drawer still
+      // sticks on "Waiting for Facebook…" after this fix.
+      console.debug('[EmbeddedSignup DEBUG] raw message received', {
+        origin: event.origin,
+        dataType: typeof event.data,
+        rawData: event.data,
+      });
+      const parsed = parseEmbeddedSignupMessage(event);
+      console.debug('[EmbeddedSignup DEBUG] parsed result', parsed);
+      if (!parsed) return;
+      const { event: signupEvent, data } = parsed;
       if (signupEvent === 'CANCEL') {
         setScreen('error');
         setErrorMessage('You cancelled the WhatsApp connection in Facebook.');
