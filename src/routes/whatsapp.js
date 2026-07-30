@@ -35,7 +35,7 @@ const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 // Graph URL/config helpers extracted to a shared module (also used by
 // WhatsAppSendService and FlowManagementService). resolveGraphUrl keeps its
 // historical local name so this file's ~40 call sites read unchanged.
-const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks, registerPhoneNumber, getBusinessProfile, updateBusinessProfile, uploadProfilePhoto, syncTemplatesFromMeta, computeHealthSnapshot, autoRepair } = require('../services/graphApiHelpers');
+const { GRAPH, resolveGraphUrl: getGraphUrl, getWabaConfig, detectInvalidWabaConfig, subscribeWabaWebhooks, registerPhoneNumber, getBusinessProfile, updateBusinessProfile, uploadProfilePhoto, syncTemplatesFromMeta, computeHealthSnapshot, autoRepair, invalidateConfigCache } = require('../services/graphApiHelpers');
 
 // Meta's closed enum for whatsapp_business_profile's `vertical` field.
 // Verified live against Meta's own field constraints, 2026-07-28.
@@ -545,10 +545,26 @@ router.post('/manual-connect', authMiddleware, checkRole(['admin']), async (req,
 // ── DELETE /api/whatsapp/connection — disconnect WABA ─────────────────────────
 router.delete('/connection', authMiddleware, checkRole(['admin']), async (req, res, next) => {
   try {
+    // Read the config first so the phone number's reverse-index entry can be
+    // cleaned up too -- otherwise it dangles, pointing a different company's
+    // future connect attempt for the same number at this (now-disconnected)
+    // company, and the Embedded Signup duplicate-phone guard would wrongly
+    // reject a legitimate reconnect elsewhere.
+    const cfg = await getWabaConfig(req.user.companyId);
     await dynamodb.delete({
       TableName: TABLE,
       Key: { PK: `CONFIG#WABA#${req.user.companyId}`, SK: 'CURRENT' },
     }).promise();
+    if (cfg?.phoneNumberId) {
+      await dynamodb.delete({
+        TableName: TABLE,
+        Key: { PK: `CONFIG#PHONEID#${cfg.phoneNumberId}`, SK: 'CURRENT' },
+      }).promise();
+    }
+    // ADR-012: any route that writes to CONFIG#WABA#{companyId} must
+    // invalidate WhatsAppSendService's cached config -- otherwise sends can
+    // keep using the deleted credentials for up to the cache's TTL.
+    invalidateConfigCache(req.user.companyId);
     res.json({ success: true });
   } catch (err) {
     next(err);
