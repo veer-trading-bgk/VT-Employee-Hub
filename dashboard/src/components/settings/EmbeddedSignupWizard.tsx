@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { CheckCircle, XCircle, Loader2, ShieldCheck, RefreshCw } from 'lucide-react';
 import { Drawer, DrawerFooter } from '@/components/v3/ui/Drawer';
 import { Button } from '@/components/v3/ui/Button';
@@ -42,6 +43,7 @@ interface EmbeddedSignupWizardProps {
 }
 
 export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: EmbeddedSignupWizardProps) {
+  const router = useRouter();
   // No reset-on-open effect: the parent remounts this component with a fresh
   // `key` every time it opens the wizard (see settings/page.tsx), so these
   // initial values ARE the reset — a stale code/signupData from a previous,
@@ -247,8 +249,23 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
     }
   }
 
-  function handleFinish() {
+  // The wizard is now opened from more than one page (Settings, and the
+  // dashboard's WhatsApp connection card) -- these navigate explicitly
+  // rather than just closing, so "Open Inbox" / "WhatsApp Settings" work
+  // correctly regardless of which page the wizard was launched from.
+  function handleOpenInbox() {
     onClose();
+    router.push('/inbox');
+  }
+  function handleOpenSettings() {
+    onClose();
+    router.push('/settings?tab=whatsapp');
+  }
+  function handleOpenMetaHealth() {
+    // Meta Health lives on the same WhatsApp settings tab (rendered below
+    // the config card once connected) -- no separate route exists for it.
+    onClose();
+    router.push('/settings?tab=whatsapp');
   }
 
   const allStepsDone = isOnboardingComplete(status);
@@ -261,7 +278,8 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
       description="Guided setup via Meta Embedded Signup — no IDs or tokens to copy."
       footer={<WizardFooter screen={effectiveScreen} connecting={connecting} exchanging={exchanging} errorRetryable={errorRetryable}
         onClose={onClose} onContinue={handleContinueWithFacebook} onConfirm={handleConfirm}
-        onTryAgain={handleTryAgain} onFinish={handleFinish} />}
+        onTryAgain={handleTryAgain} onOpenInbox={handleOpenInbox} onOpenSettings={handleOpenSettings}
+        onOpenMetaHealth={handleOpenMetaHealth} />}
     >
       {effectiveScreen === 'welcome' && (
         <div className="space-y-4">
@@ -344,9 +362,10 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
   );
 }
 
-function WizardFooter({ screen, connecting, exchanging, errorRetryable, onClose, onContinue, onConfirm, onTryAgain, onFinish }: {
+function WizardFooter({ screen, connecting, exchanging, errorRetryable, onClose, onContinue, onConfirm, onTryAgain, onOpenInbox, onOpenSettings, onOpenMetaHealth }: {
   screen: Screen; connecting: boolean; exchanging: boolean; errorRetryable: boolean;
-  onClose: () => void; onContinue: () => void; onConfirm: () => void; onTryAgain: () => void; onFinish: () => void;
+  onClose: () => void; onContinue: () => void; onConfirm: () => void; onTryAgain: () => void;
+  onOpenInbox: () => void; onOpenSettings: () => void; onOpenMetaHealth: () => void;
 }) {
   if (screen === 'welcome') {
     return (
@@ -373,8 +392,12 @@ function WizardFooter({ screen, connecting, exchanging, errorRetryable, onClose,
   }
   if (screen === 'success') {
     return (
-      <DrawerFooter>
-        <Button variant="primary" size="md" onClick={onFinish}>Go to Meta Health</Button>
+      <DrawerFooter className="justify-between">
+        <Button variant="ghost" size="sm" onClick={onOpenMetaHealth}>Meta Health</Button>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" size="md" onClick={onOpenSettings}>WhatsApp Settings</Button>
+          <Button variant="primary" size="md" onClick={onOpenInbox}>Open Inbox</Button>
+        </div>
       </DrawerFooter>
     );
   }

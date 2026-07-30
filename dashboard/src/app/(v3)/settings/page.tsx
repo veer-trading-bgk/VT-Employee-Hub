@@ -31,6 +31,8 @@ import {
   FileText,
   KeyRound,
   Trash2,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card } from '@/components/v3/ui/Card';
@@ -387,6 +389,7 @@ function WhatsAppSection() {
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardKey, setWizardKey] = useState(0);
   const [justOnboarded, setJustOnboarded] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   const { data: cfg, isLoading, isError, refetch } = useQuery<FullWabaConfig>({
     queryKey: ['whatsapp-config-full'],
@@ -692,35 +695,12 @@ function WhatsAppSection() {
               helpText="Stored securely — last 6 chars shown"
             />
             <ViewRow
-              label="Phone Number ID"
-              value={cfg.phoneNumberId}
-              mono
-              onCopy={() => copy(cfg.phoneNumberId, 'Phone Number ID')}
-            />
-            <ViewRow
-              label="WABA ID"
-              value={cfg.wabaId}
-              mono
-              onCopy={() => copy(cfg.wabaId, 'WABA ID')}
-            />
-            <ViewRow
               label="Business Manager ID"
               value={cfg.businessManagerId}
               mono={!!cfg.businessManagerId}
               onCopy={cfg.businessManagerId ? () => copy(cfg.businessManagerId, 'Business Manager ID') : undefined}
             />
             <ViewRow label="Phone Number" value={cfg.phoneNumber} />
-            <ViewRow label="Graph API Version" value={cfg.graphApiVersion ?? 'v25.0'} />
-            <ViewRow
-              label="Webhook Verify Token"
-              value={cfg.webhookVerifyTokenSet ? '••••• (set)' : 'Not set'}
-            />
-            <ViewRow
-              label="Webhook Callback URL"
-              value={cfg.webhookCallbackUrl}
-              mono
-              onCopy={() => copy(cfg.webhookCallbackUrl, 'Webhook URL')}
-            />
             <ViewRow
               label="Connected"
               value={cfg.connectedAt
@@ -731,6 +711,46 @@ function WhatsAppSection() {
               label="Setup Method"
               value={setupMethodLabel(cfg.setupMethod)}
             />
+
+            {/* Advanced Details — raw IDs/tokens a non-technical admin never
+                needs day to day; kept for support/troubleshooting. */}
+            <div className="py-2.5">
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((v) => !v)}
+                className="flex w-full items-center justify-between text-xs font-medium text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300"
+              >
+                Advanced Details
+                {advancedOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              </button>
+              {advancedOpen && (
+                <div className="mt-1 divide-y divide-neutral-100 dark:divide-neutral-800">
+                  <ViewRow
+                    label="Phone Number ID"
+                    value={cfg.phoneNumberId}
+                    mono
+                    onCopy={() => copy(cfg.phoneNumberId, 'Phone Number ID')}
+                  />
+                  <ViewRow
+                    label="WABA ID"
+                    value={cfg.wabaId}
+                    mono
+                    onCopy={() => copy(cfg.wabaId, 'WABA ID')}
+                  />
+                  <ViewRow label="Graph API Version" value={cfg.graphApiVersion ?? 'v25.0'} />
+                  <ViewRow
+                    label="Webhook Verify Token"
+                    value={cfg.webhookVerifyTokenSet ? '••••• (set)' : 'Not set'}
+                  />
+                  <ViewRow
+                    label="Webhook Callback URL"
+                    value={cfg.webhookCallbackUrl}
+                    mono
+                    onCopy={() => copy(cfg.webhookCallbackUrl, 'Webhook URL')}
+                  />
+                </div>
+              )}
+            </div>
           </div>
         )}
 

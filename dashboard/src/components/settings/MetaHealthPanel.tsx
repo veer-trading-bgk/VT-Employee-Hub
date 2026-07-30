@@ -21,7 +21,7 @@ import { toast } from 'sonner';
 // POST /repair, POST /send-test, GET /templates) — src/services/graphApiHelpers.js
 // (computeHealthSnapshot/autoRepair) and src/routes/whatsapp.js are authoritative. ─
 
-interface HealthSnapshot {
+export interface HealthSnapshot {
   connected: boolean;
   graphApiVersion?: string;
   config: { wabaId: string | null; phoneNumberId: string | null; displayNumber: string | null; connectedAt: string | null; setupMethod: string; configValid: boolean; configIssue?: string } | null;
@@ -37,7 +37,7 @@ interface HealthSnapshot {
   recommendedFix: string[];
 }
 
-interface HealthResponse extends HealthSnapshot {
+export interface HealthResponse extends HealthSnapshot {
   success: boolean;
   lastChecked: string;
 }
@@ -80,7 +80,7 @@ const E164_REGEX = /^\+[1-9]\d{7,14}$/;
 
 // ── Small presentational helpers ──────────────────────────────────────────────
 
-type RowStatus = 'success' | 'warning' | 'error' | 'info';
+export type RowStatus = 'success' | 'warning' | 'error' | 'info';
 
 const ROW_STYLES: Record<RowStatus, { Icon: typeof CheckCircle; cls: string }> = {
   success: { Icon: CheckCircle, cls: 'text-success-600 dark:text-success-400' },
@@ -111,7 +111,7 @@ function InfoRow({ label, value }: { label: string; value: string | null | undef
   );
 }
 
-function computeOverall(h: HealthSnapshot): { status: RowStatus; label: string } {
+export function computeOverall(h: HealthSnapshot): { status: RowStatus; label: string } {
   if (!h.connected) return { status: 'error', label: 'Not Connected' };
   if (!h.token?.valid || !h.waba?.accessible || !h.phone?.accessible) {
     return { status: 'error', label: 'Action Required' };

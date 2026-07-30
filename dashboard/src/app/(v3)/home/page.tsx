@@ -29,6 +29,7 @@ import { useAuth } from '@/context/AuthContext';
 import { toV3Role, type Contact } from '@/types/v3';
 import { usePipelineStages } from '@/hooks/usePipelineStages';
 import { format, isToday, isTomorrow, isPast } from 'date-fns';
+import { WhatsAppConnectionCard, WhatsAppActivationChecklist } from '@/components/v3/home/WhatsAppActivation';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -486,6 +487,7 @@ function KpiCard({ label, value, icon, href }: KpiCardProps) {
 export default function MyWorkPage() {
   const { user } = useAuth();
   const v3Role = toV3Role((user?.role ?? 'telecaller') as Parameters<typeof toV3Role>[0]);
+  const isAdmin = user?.role === 'admin' || user?.role === 'superadmin';
   const today = format(new Date(), 'EEEE, d MMMM');
 
   const { data, isLoading } = useQuery<MyWorkData>({
@@ -537,6 +539,16 @@ export default function MyWorkPage() {
 
       {/* Content */}
       <div className="px-6 py-5">
+        {/* WhatsApp activation — admin-only, since connecting/inviting/
+            automating are all admin actions underneath (checkRole(['admin'])
+            on the backing routes); a non-admin can't act on any of it. */}
+        {isAdmin && (
+          <div className="mb-5 grid gap-5 lg:grid-cols-2">
+            <WhatsAppConnectionCard />
+            <WhatsAppActivationChecklist />
+          </div>
+        )}
+
         {/* Getting started checklist (new employees) */}
         {isNew && (
           <div className="mb-5">

@@ -19,6 +19,7 @@ import { Button } from '@/components/v3/ui/Button';
 import { Select } from '@/components/v3/ui/Select';
 import { SkeletonRow, Skeleton } from '@/components/v3/ui/Skeleton';
 import { EmptyState } from '@/components/v3/ui/EmptyState';
+import { Drawer } from '@/components/v3/ui/Drawer';
 import { cn } from '@/lib/cn';
 import { apiFetch, getMemoryToken, ApiClientError } from '@/lib/api';
 import { invalidateContactCaches } from '@/lib/contactCache';
@@ -456,10 +457,12 @@ function ConversationList({
   suppressAutoSelect?: boolean;
 }) {
   const [search, setSearch] = useState('');
+  const [learnOpen, setLearnOpen] = useState(false);
   const qc = useQueryClient();
+  const router = useRouter();
   const didAutoSelect = useRef(false);
 
-  const { data, isLoading } = useQuery<{ conversations: WaConversation[]; counts: Record<string, number> }>({
+  const { data, isLoading, refetch, isRefetching } = useQuery<{ conversations: WaConversation[]; counts: Record<string, number> }>({
     queryKey: ['wa-inbox', activeTab],
     queryFn: () => apiFetch(`/api/whatsapp/inbox?status=${activeTab}`),
     staleTime: 15_000,
@@ -592,13 +595,36 @@ function ConversationList({
       <div className="scrollbar-thin flex-1 overflow-y-auto">
         {isLoading ? (
           [0, 1, 2, 3, 4].map((i) => <SkeletonRow key={i} className="px-3" />)
-        ) : filtered.length === 0 ? (
+        ) : filtered.length === 0 && search ? (
           <EmptyState
             icon={MessageSquare}
             title="No conversations"
-            description={search ? 'Try a different search' : 'Nothing here yet'}
+            description="Try a different search"
             className="py-10"
           />
+        ) : filtered.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 px-6 py-10 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-neutral-100 dark:bg-neutral-800">
+              <MessageSquare className="h-6 w-6 text-neutral-400" aria-hidden />
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">No conversations yet</p>
+              <p className="mx-auto max-w-xs text-sm text-neutral-500">
+                Once your WhatsApp is connected, messages you send and receive will show up here.
+              </p>
+            </div>
+            <div className="mt-1 flex flex-wrap items-center justify-center gap-2">
+              <Button size="sm" onClick={() => router.push('/settings?tab=whatsapp')}>
+                Send Test Message
+              </Button>
+              <Button size="sm" variant="secondary" loading={isRefetching} onClick={() => refetch()}>
+                Refresh Inbox
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setLearnOpen(true)}>
+                Learn about WhatsApp Messaging
+              </Button>
+            </div>
+          </div>
         ) : (
           filtered.map((conv) => {
             const convId = conv.leadId ?? conv.phone;
@@ -658,6 +684,28 @@ function ConversationList({
           })
         )}
       </div>
+      <Drawer
+        open={learnOpen}
+        onClose={() => setLearnOpen(false)}
+        title="About WhatsApp Messaging"
+        description="How conversations work in APForce"
+      >
+        <div className="space-y-3 text-sm text-neutral-600 dark:text-neutral-400">
+          <p>
+            Once your WhatsApp number is connected, any message a customer sends to it shows up here
+            automatically — no setup needed per conversation.
+          </p>
+          <p>
+            To start a conversation yourself (rather than wait for a customer to message first), WhatsApp
+            requires an approved message template for the first message. After that, you can reply freely
+            for 24 hours.
+          </p>
+          <p>
+            You can manage and create templates from Settings, and check your connection&apos;s health from
+            Settings → WhatsApp.
+          </p>
+        </div>
+      </Drawer>
     </div>
   );
 }
