@@ -391,10 +391,12 @@ function WizardFooter({ screen, connecting, exchanging, errorRetryable, onClose,
     );
   }
   if (screen === 'success') {
+    // flex-wrap, not a fixed row: three buttons in a narrow (mobile) drawer
+    // footer can't be assumed to fit on one line -- wrap rather than clip.
     return (
-      <DrawerFooter className="justify-between">
+      <DrawerFooter className="flex-wrap justify-between gap-2">
         <Button variant="ghost" size="sm" onClick={onOpenMetaHealth}>Meta Health</Button>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="secondary" size="md" onClick={onOpenSettings}>WhatsApp Settings</Button>
           <Button variant="primary" size="md" onClick={onOpenInbox}>Open Inbox</Button>
         </div>

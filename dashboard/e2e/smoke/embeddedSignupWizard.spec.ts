@@ -195,7 +195,7 @@ test.describe('Embedded Signup Wizard', () => {
       await expect(dialog.getByText(label)).toBeVisible();
     }
 
-    await dialog.getByRole('button', { name: 'Go to Meta Health' }).click();
+    await dialog.getByRole('button', { name: 'Meta Health' }).click();
     // Drawer.tsx slides off-screen via a CSS transform rather than
     // unmounting/hiding on close — translate-x-full is its actual closed
     // signal, not toBeHidden() (the element stays in the DOM for the
