@@ -32,13 +32,17 @@ export const STEP_ORDER: StepKey[] = [
   'persistConfig', 'subscribeWebhooks', 'registerPhone', 'syncBusinessProfile', 'syncTemplates', 'healthCheck',
 ];
 
+// Business-friendly wording — these render next to a spinner while pending
+// and a checkmark once done, so phrasing stays natural in both states
+// rather than switching tense (e.g. not "Message Templates Ready" while
+// still spinning).
 export const STEP_LABELS: Record<StepKey, string> = {
-  persistConfig: 'Saving configuration',
-  subscribeWebhooks: 'Subscribing to webhooks',
-  registerPhone: 'Registering phone number & PIN',
-  syncBusinessProfile: 'Syncing business profile',
-  syncTemplates: 'Syncing message templates',
-  healthCheck: 'Running health check',
+  persistConfig: 'Saving your connection details',
+  subscribeWebhooks: 'Turning on instant messaging',
+  registerPhone: 'Activating your phone number',
+  syncBusinessProfile: 'Loading your business profile',
+  syncTemplates: 'Loading your message templates',
+  healthCheck: 'Checking your connection',
 };
 
 export function isOnboardingComplete(status: OnboardingStatus | null | undefined): boolean {

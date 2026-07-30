@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { CheckCircle, XCircle, Loader2, ShieldCheck, RefreshCw } from 'lucide-react';
 import { Drawer, DrawerFooter } from '@/components/v3/ui/Drawer';
@@ -67,35 +67,11 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
   const [retryError, setRetryError] = useState<string | null>(null);
 
   const correlation = correlateSignupResult({ code, signupData });
-  // TEMP DEBUG — P0.1 runtime-evidence pass. Runs every render (correlation
-  // is recomputed every render by design — see comment above), so this
-  // shows every call to correlateSignupResult() and exactly which inputs
-  // determined `ready`.
-  console.debug('[EmbeddedSignup DEBUG] correlateSignupResult() called', {
-    code,
-    signupData,
-    wabaIdPresent: !!signupData?.waba_id,
-    phoneNumberIdPresent: !!signupData?.phone_number_id,
-    result: correlation,
-  });
   // Computed at render time, not via an effect + extra state: the instant
   // both FB.login's code and the WA_EMBEDDED_SIGNUP message have arrived
   // (in either order), the waiting screen renders as Confirmation on that
   // very render — no extra render cycle, no race between two async sources.
   const effectiveScreen: Screen = screen === 'waiting' && correlation.ready ? 'confirmation' : screen;
-
-  // TEMP DEBUG — P0.1 runtime-evidence pass. Logs every screen transition
-  // (Waiting → Confirmation → Success, or any other) as it actually happens.
-  const prevEffectiveScreen = useRef<Screen | null>(null);
-  useEffect(() => {
-    if (prevEffectiveScreen.current !== effectiveScreen) {
-      console.debug('[EmbeddedSignup DEBUG] screen transition', {
-        from: prevEffectiveScreen.current,
-        to: effectiveScreen,
-      });
-      prevEffectiveScreen.current = effectiveScreen;
-    }
-  }, [effectiveScreen]);
 
   // Meta's Embedded Signup posts a WA_EMBEDDED_SIGNUP message to `window`
   // independently of FB.login()'s own callback — this listener runs for the
@@ -104,19 +80,7 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
   useEffect(() => {
     if (!open) return;
     function onMessage(event: MessageEvent) {
-      // TEMP DEBUG — P0.1 investigation (remove once root cause is confirmed
-      // fixed in production). Logs every message this window receives while
-      // the wizard is open, before any filtering, so we can see exactly what
-      // Meta actually sends (origin + raw payload shape) if the drawer still
-      // sticks on "Waiting for Facebook…" after this fix.
-      console.debug('[EmbeddedSignup DEBUG] raw message received', {
-        origin: event.origin,
-        sourceExists: event.source !== null,
-        dataType: typeof event.data,
-        rawData: event.data,
-      });
       const parsed = parseEmbeddedSignupMessage(event);
-      console.debug('[EmbeddedSignup DEBUG] parsed result', parsed);
       if (!parsed) return;
       const { event: signupEvent, data } = parsed;
       if (signupEvent === 'CANCEL') {
@@ -156,8 +120,6 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
       }
       setCode(returnedCode);
     } catch (e: unknown) {
-      // TEMP DEBUG — P0.1 runtime-evidence pass.
-      console.debug('[EmbeddedSignup DEBUG] exception in handleContinueWithFacebook', e);
       setScreen('error');
       setErrorMessage(e instanceof Error ? e.message : 'Could not start the Facebook signup flow.');
       setErrorRetryable(true);
@@ -170,13 +132,6 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
     const result = correlation;
     if (!result.ready) return;
     setExchanging(true);
-    // TEMP DEBUG — P0.1 runtime-evidence pass.
-    console.debug('[EmbeddedSignup DEBUG] calling POST /embedded-signup/exchange', {
-      code: result.code,
-      wabaId: result.wabaId,
-      phoneNumberId: result.phoneNumberId,
-      businessId: result.businessId,
-    });
     try {
       const data = await apiFetch<ExchangeResponse>('/api/whatsapp/embedded-signup/exchange', {
         method: 'POST',
@@ -188,7 +143,6 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
           businessId: result.businessId,
         }),
       });
-      console.debug('[EmbeddedSignup DEBUG] /embedded-signup/exchange returned', data);
       // persistConfig failing means nothing was actually saved -- the
       // company is still unconnected, so this is a real failure (not a
       // "connected but one step degraded" case), and there's nothing to
@@ -207,8 +161,6 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
       // the parent's cache must refresh either way.
       onOnboarded();
     } catch (e: unknown) {
-      // TEMP DEBUG — P0.1 runtime-evidence pass.
-      console.debug('[EmbeddedSignup DEBUG] exception in handleConfirm / exchange call', e);
       // CODE_EXCHANGE_FAILED means the authorization code itself is dead
       // (expired/reused) — retrying can't work without a fresh FB.login(),
       // so this always sends the user back to Welcome, never offers "resume".
@@ -241,8 +193,6 @@ export function EmbeddedSignupWizard({ open, onClose, onOnboarded, config }: Emb
       setStatus(data.onboardingStatus);
       onOnboarded();
     } catch (e: unknown) {
-      // TEMP DEBUG — P0.1 runtime-evidence pass.
-      console.debug('[EmbeddedSignup DEBUG] exception in handleRetryFailedSteps', e);
       setRetryError(apiErrorMessage(e, 'Could not retry the remaining setup steps.'));
     } finally {
       setRetrying(false);

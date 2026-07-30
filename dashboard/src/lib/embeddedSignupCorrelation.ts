@@ -49,33 +49,18 @@ function isTrustedFacebookOrigin(origin: string): boolean {
 // payload regardless of origin -- the actual second break in the chain, on
 // top of the origin-allowlist bug fixed earlier today.
 export function parseEmbeddedSignupMessage(event: MessageEvent): EmbeddedSignupMessage | null {
-  // TEMP DEBUG — P0.1 runtime-evidence pass (2026-07-30). Logs the exact
-  // accept/reject reason at each gate, nothing else changed. Remove once
-  // production verification confirms the full flow completes.
-  if (!isTrustedFacebookOrigin(event.origin)) {
-    console.debug('[EmbeddedSignup DEBUG] REJECTED — untrusted origin', { origin: event.origin });
-    return null;
-  }
+  if (!isTrustedFacebookOrigin(event.origin)) return null;
   let parsed: unknown = event.data;
   if (typeof parsed === 'string') {
     try {
       parsed = JSON.parse(parsed);
-    } catch (e) {
-      console.debug('[EmbeddedSignup DEBUG] REJECTED — JSON.parse failed on string payload', {
-        rawData: event.data,
-        error: e instanceof Error ? e.message : String(e),
-      });
+    } catch {
       return null;
     }
   }
   if (!parsed || typeof parsed !== 'object' || (parsed as { type?: unknown }).type !== 'WA_EMBEDDED_SIGNUP') {
-    console.debug('[EmbeddedSignup DEBUG] REJECTED — wrong shape/type after parse', {
-      parsedType: typeof parsed,
-      parsed,
-    });
     return null;
   }
-  console.debug('[EmbeddedSignup DEBUG] ACCEPTED', { parsed });
   return parsed as EmbeddedSignupMessage;
 }
 

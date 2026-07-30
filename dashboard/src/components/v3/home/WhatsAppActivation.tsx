@@ -81,41 +81,53 @@ export function WhatsAppConnectionCard() {
     }
   }
 
+  // The wizard must render unconditionally (not nested inside the
+  // not-connected branch below) — onOnboarded() invalidates
+  // whatsapp-config-full, which flips `connected` to true and re-renders
+  // this component into the connected branch. If the wizard were only in
+  // the not-connected JSX, React would unmount it (and its Success screen
+  // with Open Inbox/WhatsApp Settings/Meta Health) the instant the
+  // connection actually succeeds, before the user ever saw it. Settings
+  // page's WhatsAppSection already gets this right the same way.
+  const wizard = embeddedSignupCfg && (
+    <EmbeddedSignupWizard
+      key={wizardKey}
+      open={wizardOpen}
+      onClose={() => setWizardOpen(false)}
+      onOnboarded={() => {
+        qc.invalidateQueries({ queryKey: ['whatsapp-config-full'] });
+        qc.invalidateQueries({ queryKey: ['whatsapp-health'] });
+      }}
+      config={embeddedSignupCfg}
+    />
+  );
+
   if (isLoading) {
     return <Card className="h-40 animate-pulse bg-neutral-50 dark:bg-neutral-900/50" />;
   }
 
   if (!connected) {
     return (
-      <Card className="border-primary-200 bg-primary-50 dark:border-primary-900/30 dark:bg-primary-900/10">
-        <div className="flex items-start gap-3">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30">
-            <MessageCircle className="h-5 w-5 text-primary-700 dark:text-primary-300" aria-hidden />
+      <>
+        <Card className="border-primary-200 bg-primary-50 dark:border-primary-900/30 dark:bg-primary-900/10">
+          <div className="flex items-start gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary-100 dark:bg-primary-900/30">
+              <MessageCircle className="h-5 w-5 text-primary-700 dark:text-primary-300" aria-hidden />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-sm font-semibold text-primary-900 dark:text-primary-100">Connect WhatsApp</h3>
+              <p className="mt-0.5 text-xs text-primary-700 dark:text-primary-300">
+                Connect your business WhatsApp number so your team can start chatting with customers —
+                takes about 2 minutes.
+              </p>
+              <Button size="sm" className="mt-3" onClick={handleConnectClick}>
+                Connect WhatsApp
+              </Button>
+            </div>
           </div>
-          <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold text-primary-900 dark:text-primary-100">Connect WhatsApp</h3>
-            <p className="mt-0.5 text-xs text-primary-700 dark:text-primary-300">
-              Connect your business WhatsApp number so your team can start chatting with customers —
-              takes about 2 minutes.
-            </p>
-            <Button size="sm" className="mt-3" onClick={handleConnectClick}>
-              Connect WhatsApp
-            </Button>
-          </div>
-        </div>
-        {embeddedSignupCfg && (
-          <EmbeddedSignupWizard
-            key={wizardKey}
-            open={wizardOpen}
-            onClose={() => setWizardOpen(false)}
-            onOnboarded={() => {
-              qc.invalidateQueries({ queryKey: ['whatsapp-config-full'] });
-              qc.invalidateQueries({ queryKey: ['whatsapp-health'] });
-            }}
-            config={embeddedSignupCfg}
-          />
-        )}
-      </Card>
+        </Card>
+        {wizard}
+      </>
     );
   }
 
@@ -123,41 +135,44 @@ export function WhatsAppConnectionCard() {
   const businessName = health?.phone?.verifiedName ?? null;
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center gap-2">
-          <MessageCircle className="h-4 w-4 text-primary-600" aria-hidden />
-          <CardTitle>WhatsApp</CardTitle>
+    <>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <MessageCircle className="h-4 w-4 text-primary-600" aria-hidden />
+            <CardTitle>WhatsApp</CardTitle>
+          </div>
+          <Badge variant="success" dot>Connected</Badge>
+        </CardHeader>
+        <div className="mt-3 space-y-1.5 text-xs">
+          <SummaryRow label="Number" value={cfg?.phoneNumber ?? '—'} />
+          <SummaryRow label="Business name" value={businessName ?? '—'} />
+          <SummaryRow
+            label="Connected"
+            value={cfg?.connectedAt
+              ? new Date(cfg.connectedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+              : '—'}
+          />
+          <div className="flex items-center justify-between gap-4 py-1">
+            <span className="text-neutral-500">Meta Health</span>
+            {overall ? (
+              <Badge variant={HEALTH_BADGE_VARIANT[overall.status]}>{overall.label}</Badge>
+            ) : (
+              <span className="text-neutral-400">Checking…</span>
+            )}
+          </div>
         </div>
-        <Badge variant="success" dot>Connected</Badge>
-      </CardHeader>
-      <div className="mt-3 space-y-1.5 text-xs">
-        <SummaryRow label="Number" value={cfg?.phoneNumber ?? '—'} />
-        <SummaryRow label="Business name" value={businessName ?? '—'} />
-        <SummaryRow
-          label="Connected"
-          value={cfg?.connectedAt
-            ? new Date(cfg.connectedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
-            : '—'}
-        />
-        <div className="flex items-center justify-between gap-4 py-1">
-          <span className="text-neutral-500">Meta Health</span>
-          {overall ? (
-            <Badge variant={HEALTH_BADGE_VARIANT[overall.status]}>{overall.label}</Badge>
-          ) : (
-            <span className="text-neutral-400">Checking…</span>
-          )}
+        <div className="mt-4 flex items-center gap-2">
+          <Button size="sm" onClick={() => router.push('/inbox')}>
+            Open Inbox
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => router.push('/settings?tab=whatsapp')}>
+            WhatsApp Settings
+          </Button>
         </div>
-      </div>
-      <div className="mt-4 flex items-center gap-2">
-        <Button size="sm" onClick={() => router.push('/inbox')}>
-          Open Inbox
-        </Button>
-        <Button size="sm" variant="secondary" onClick={() => router.push('/settings?tab=whatsapp')}>
-          WhatsApp Settings
-        </Button>
-      </div>
-    </Card>
+      </Card>
+      {wizard}
+    </>
   );
 }
 
