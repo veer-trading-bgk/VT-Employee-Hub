@@ -18,17 +18,30 @@ export interface EmbeddedSignupMessage {
   data?: EmbeddedSignupMessageData;
 }
 
-// Meta posts this message from its own hosted signup surface.
-// VERIFY DURING IMPLEMENTATION / BEFORE LIVE TESTING: confirm the exact
-// origin(s) against Meta's current Embedded Signup docs — this only gates
-// which messages get *parsed*, it never gates a privileged action on its
-// own (the actual exchange call is a separate, explicit, backend-verified
-// step), so a slightly-wrong origin list fails safe (messages get ignored),
-// but should still be confirmed before relying on it.
-const TRUSTED_ORIGINS = new Set(['https://www.facebook.com', 'https://web.facebook.com']);
+// Meta posts this message from its own hosted signup surface. Live
+// verification (2026-07-30) found the previous exact-match allowlist
+// (only 'https://www.facebook.com' / 'https://web.facebook.com') silently
+// dropped the real FINISH message — Meta posts from other facebook.com
+// subdomains too, matching their own reference implementation's check
+// (`event.origin.endsWith('facebook.com')`). Dropping the message left
+// `signupData` unset forever, so the wizard never advanced past "Waiting
+// for Facebook…" even though Meta's popup completed successfully. Matching
+// any facebook.com subdomain (not a raw string-suffix match, which would
+// also wrongly accept a host like "evilfacebook.com") fixes this while
+// keeping the fail-safe property: this only gates which messages get
+// *parsed*, never a privileged action on its own — the actual exchange
+// call is a separate, explicit, backend-verified step.
+function isTrustedFacebookOrigin(origin: string): boolean {
+  try {
+    const { protocol, hostname } = new URL(origin);
+    return protocol === 'https:' && (hostname === 'facebook.com' || hostname.endsWith('.facebook.com'));
+  } catch {
+    return false;
+  }
+}
 
 export function isEmbeddedSignupMessage(event: MessageEvent): event is MessageEvent<EmbeddedSignupMessage> {
-  if (!TRUSTED_ORIGINS.has(event.origin)) return false;
+  if (!isTrustedFacebookOrigin(event.origin)) return false;
   const data: unknown = event.data;
   return !!data && typeof data === 'object' && (data as { type?: unknown }).type === 'WA_EMBEDDED_SIGNUP';
 }
