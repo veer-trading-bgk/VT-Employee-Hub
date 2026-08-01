@@ -131,7 +131,7 @@ test.describe('Public journey route scaffold (Phase 3 Task 1)', () => {
 });
 
 test.describe('Public journey field form (Phase 3 Task 2)', () => {
-  test('multi-screen nav, required blocking, and collected payload shape', async ({ page }) => {
+  test('multi-screen nav, required blocking, and human-readable review summary', async ({ page }) => {
     await page.route('**/api/journeys/**', async (route) => {
       if (route.request().method() === 'OPTIONS') {
         await route.fulfill({ status: 204, headers: { ...CORS, 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' } });
@@ -169,20 +169,22 @@ test.describe('Public journey field form (Phase 3 Task 2)', () => {
 
     await fillThroughReview(page);
 
-    const json = await page.getByTestId('journey-collected-json').innerText();
-    const parsed = JSON.parse(json) as {
-      journeyRecord: Record<string, string>;
-      submittedData: Record<string, string>;
-    };
-    expect(parsed).toHaveProperty('journeyRecord');
-    expect(parsed).toHaveProperty('submittedData');
-    expect(parsed.journeyRecord).toEqual({
-      full_name: 'Ada Lovelace',
-      visit_type: 'Follow-up',
-      mobile: '9876543210',
-      email: 'ada@example.com',
-    });
-    expect(parsed.submittedData).toEqual(parsed.journeyRecord);
+    const summary = page.getByTestId('journey-review-summary');
+    await expect(summary).toBeVisible();
+    await expect(summary.getByRole('heading', { name: 'Patient' })).toBeVisible();
+    await expect(summary.getByRole('heading', { name: 'Contact' })).toBeVisible();
+    await expect(summary.getByText('Full name:')).toBeVisible();
+    await expect(summary.getByText('Ada Lovelace')).toBeVisible();
+    await expect(summary.getByText('Visit type:')).toBeVisible();
+    await expect(summary.getByText('Follow-up')).toBeVisible();
+    await expect(summary.getByText('Mobile:')).toBeVisible();
+    await expect(summary.getByText('9876543210')).toBeVisible();
+    await expect(summary.getByText('Email:')).toBeVisible();
+    await expect(summary.getByText('ada@example.com')).toBeVisible();
+    // Internal payload keys must not leak into the review UI.
+    await expect(summary.getByText('journeyRecord')).toHaveCount(0);
+    await expect(summary.getByText('submittedData')).toHaveCount(0);
+    await expect(summary.getByText('full_name')).toHaveCount(0);
   });
 });
 
@@ -230,14 +232,26 @@ test.describe('Public journey webhook submit (Phase 3 Task 3)', () => {
 
     await page.goto(`/journey/${CID}/${IID}/${TOKEN}`);
     await fillThroughReview(page);
-
-    const json = await page.getByTestId('journey-collected-json').innerText();
-    const expected = JSON.parse(json);
+    await expect(page.getByTestId('journey-review-summary')).toBeVisible();
 
     await page.getByTestId('journey-submit').click();
     await expect(page.getByTestId('journey-submitted')).toBeVisible();
     await expect(page.getByText('Thank you')).toBeVisible();
-    expect(webhookBody).toEqual(expected);
+    // POST body still uses the internal { journeyRecord, submittedData } shape.
+    expect(webhookBody).toEqual({
+      journeyRecord: {
+        full_name: 'Ada Lovelace',
+        visit_type: 'Follow-up',
+        mobile: '9876543210',
+        email: 'ada@example.com',
+      },
+      submittedData: {
+        full_name: 'Ada Lovelace',
+        visit_type: 'Follow-up',
+        mobile: '9876543210',
+        email: 'ada@example.com',
+      },
+    });
   });
 
   test('404 webhook → Task 1 invalid view', async ({ page }) => {

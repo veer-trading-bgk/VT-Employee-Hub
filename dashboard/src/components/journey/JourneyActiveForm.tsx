@@ -239,15 +239,36 @@ export function JourneyActiveForm({
         </header>
 
         <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">
-            Collected payload
-          </p>
-          <pre
-            className="overflow-x-auto rounded-xl bg-slate-50 p-3 text-left text-[11px] leading-relaxed text-slate-700"
-            data-testid="journey-collected-json"
-          >
-            {JSON.stringify(collectedPayload, null, 2)}
-          </pre>
+          <div className="space-y-5 text-left" data-testid="journey-review-summary">
+            {safeScreens.map((screen) => {
+              const fields = screen.fields ?? [];
+              if (fields.length === 0) return null;
+              const showScreenTitle = safeScreens.length > 1;
+              return (
+                <section key={screen.id}>
+                  {showScreenTitle && (
+                    <h2 className="mb-2 text-sm font-semibold text-slate-900">
+                      {screen.title || 'Details'}
+                    </h2>
+                  )}
+                  <dl className="space-y-2">
+                    {fields.map((field) => {
+                      const raw = values[field.id];
+                      const display = isFilled(raw) ? raw!.trim() : '—';
+                      return (
+                        <div key={field.id} className="flex gap-2 text-sm">
+                          <dt className="shrink-0 font-medium text-slate-500">
+                            {field.label || 'Field'}:
+                          </dt>
+                          <dd className="min-w-0 break-words text-slate-900">{display}</dd>
+                        </div>
+                      );
+                    })}
+                  </dl>
+                </section>
+              );
+            })}
+          </div>
           {submitError && (
             <div className="mt-4" data-testid="journey-submit-error">
               <ErrorState
