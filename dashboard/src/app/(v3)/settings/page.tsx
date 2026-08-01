@@ -30,6 +30,7 @@ import {
   Sparkles,
   FileText,
   KeyRound,
+  Route,
   Trash2,
   ChevronUp,
   ChevronDown,
@@ -60,6 +61,7 @@ import { isOnboardingComplete, type OnboardingStatus } from '@/types/embeddedSig
 import { WhatsAppFlowsPanel } from '@/components/settings/WhatsAppFlowsPanel';
 import { BranchesPanel } from '@/components/settings/BranchesPanel';
 import { SettingsTemplatesSection } from '@/components/settings/SettingsTemplatesSection';
+import { SettingsJourneyDefinitionsSection } from '@/components/settings/SettingsJourneyDefinitionsSection';
 
 // ── Section definitions ───────────────────────────────────────────────────────
 
@@ -81,6 +83,7 @@ type SettingsSection =
   | 'metric-config'
   | 'appearance'
   | 'templates'
+  | 'journey-definitions'
   | 'api-keys';
 
 interface SectionDef {
@@ -112,6 +115,7 @@ const SECTIONS: SectionDef[] = [
   // (InstagramSettingsPanel), not duplicated here. This was a deliberate
   // removal, not an omission — see docs/adr/ADR-022 and DECISION_LOG.
   { id: 'templates',     label: 'Templates',        description: 'Meta-approved WhatsApp message templates', icon: <FileText className="h-5 w-5" />, visibleToRoles: ['admin', 'manager'] },
+  { id: 'journey-definitions', label: 'Journey Definitions', description: 'Web journey forms linked to workflows', icon: <Route className="h-5 w-5" />, adminOnly: true },
   { id: 'ai',            label: 'AI',               description: 'Master switch and per-feature AI controls', icon: <Sparkles className="h-5 w-5" />, adminOnly: true },
   { id: 'pipeline',      label: 'Pipeline Stages',  description: 'Customise your sales stages',            icon: <LayoutGrid className="h-5 w-5" />, adminOnly: true },
   { id: 'tags',          label: 'Tags',             description: 'Manage contact tags',                    icon: <Tag className="h-5 w-5" />, visibleToRoles: ['admin', 'manager'] },
@@ -1965,6 +1969,7 @@ function SettingsPageInner() {
       case 'employees':     return <EmployeesSection />;
       case 'whatsapp':      return <WhatsAppSection />;
       case 'templates':     return <SettingsTemplatesSection />;
+      case 'journey-definitions': return <SettingsJourneyDefinitionsSection />;
       case 'ai':            return <AISection />;
       case 'notifications': return <StubSection title="Notifications" description="Manage your notification preferences" />;
       case 'security':      return <StubSection title="Security" description="Password, 2FA, and session management" />;
