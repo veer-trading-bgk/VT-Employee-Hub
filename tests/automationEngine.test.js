@@ -3067,13 +3067,66 @@ describe('AutomationEngine — open_web_journey (Journey Platform Phase 1 Task 5
     expect(WASendSvc.sendTemplate).toHaveBeenCalledWith(
       CID,
       { resolvedContact: { pk: LEAD_PK, phone: '9876543210', isLead: true } },
-      'tmpl_journey',
+      { templateName: 'tmpl_journey', language: 'en' },
       [expect.stringContaining(`/journey/${CID}/`)],
       { id: 'system', role: 'admin', name: 'Automation' },
       expect.objectContaining({ content: '[Automation: open_web_journey]' }),
     );
   });
 
+  test('sendTemplate uses {templateName, language} object-ref (same as send_template) — not string UUID lookup', async () => {
+    // Live bug (2026-08-01): config.templateId is the Meta templateName
+    // (e.g. journeybookinglinkv2). Passing it as a string to sendTemplate
+    // looked up TMPL#{name} and threw "Template not found". Object-ref skips
+    // the DDB id lookup entirely — identical to send_template's call shape.
+    await engine._runAction(
+      CID,
+      {
+        type: 'open_web_journey',
+        config: { templateId: 'journeybookinglinkv2', journeyDefId: DEF_ID, language: 'en' },
+      },
+      { phone: '9876543210', leadPK: LEAD_PK },
+    );
+
+    const templateRef = WASendSvc.sendTemplate.mock.calls[0][2];
+    expect(templateRef).toEqual({ templateName: 'journeybookinglinkv2', language: 'en' });
+    expect(typeof templateRef).toBe('object');
+    expect(templateRef).not.toEqual('journeybookinglinkv2');
+    // Must never be a Dynamo UUID-shaped string ref
+    expect(templateRef).not.toEqual(expect.stringMatching(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    ));
+    expect(WASendSvc.sendTemplate.mock.calls[0][3]).toEqual([
+      expect.stringContaining(`/journey/${CID}/`),
+    ]);
+  });
+
+  test('templateName that is not a DDB TMPL# UUID still sends successfully (Phase 4 demo regression)', async () => {
+    // Exact production failure shape: Meta name stored in config.templateId
+    // (journeybookinglinkv2). String-ref path looked up TMPL#{name} → miss →
+    // "Template not found". Object-ref path never hits that lookup.
+    await expect(engine._runAction(
+      CID,
+      { type: 'open_web_journey', config: { templateId: 'journeybookinglinkv2', journeyDefId: DEF_ID } },
+      { phone: '9876543210', leadPK: LEAD_PK },
+    )).resolves.toEqual(expect.objectContaining({
+      journeyInstanceId: expect.stringMatching(/^journey_/),
+      wamid: 'wamid.open.ok',
+    }));
+
+    expect(WASendSvc.sendTemplate).toHaveBeenCalledWith(
+      CID,
+      expect.any(Object),
+      { templateName: 'journeybookinglinkv2', language: 'en' },
+      expect.any(Array),
+      expect.any(Object),
+      expect.any(Object),
+    );
+    // Prove we did not pass the bare name string (old bug) or a UUID
+    const ref = WASendSvc.sendTemplate.mock.calls[0][2];
+    expect(ref).toEqual(expect.objectContaining({ templateName: 'journeybookinglinkv2' }));
+    expect(typeof ref).not.toBe('string');
+  });
   test('send failure throws (send_template hard-failure contract) and journey_opened is NOT fired', async () => {
     WASendSvc.sendTemplate.mockRejectedValue(new Error('Meta rejected template'));
 

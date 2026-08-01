@@ -1226,7 +1226,12 @@ class AutomationEngine {
       // persisted — only SHA-256 tokenHash. Sets ctx.journeyInstanceId for
       // downstream wait_for_webhook / create_journey_record / complete|cancel.
       case 'open_web_journey': {
-        const { templateId, journeyDefId, expiryMinutes } = step.config ?? {};
+        // config.templateId holds the Meta templateName (human-readable) — same
+        // string the OpenWebJourneyEditor stores. Must use the object-ref send
+        // path ({ templateName, language }) like send_template above — the
+        // string-ref path looks up CONFIG#TMPL#…/TMPL#{id} by Dynamo UUID and
+        // 404s "Template not found" for every real name (Phase 4 demo, 2026-08-01).
+        const { templateId, journeyDefId, expiryMinutes, language = 'en' } = step.config ?? {};
         if (!templateId || !phone) throw new Error('open_web_journey: templateId and phone required');
         if (!journeyDefId) throw new Error('open_web_journey: journeyDefId required');
 
@@ -1281,7 +1286,7 @@ class AutomationEngine {
           : { phone };
         const r = await WASendSvc.sendTemplate(
           companyId, target,
-          templateId,
+          { templateName: templateId, language },
           [journeyUrl],
           { id: 'system', role: 'admin', name: 'Automation' },
           { content: `[Automation: open_web_journey]` },
