@@ -50,6 +50,18 @@ function convCompanyGsiPK(companyId)                { return `CONV#${companyId}`
 // convContactPK scopes by companyId for multi-tenant safety.
 function convContactGsiPK(companyId, contactId)     { return `CONV_CONTACT#${companyId}#${contactId}`; }
 
+// Journey Definition (template) + Journey Instance (one per end-user run).
+// Base Def:  PK = JOURNEYDEF#${companyId}#${journeyDefId}  SK = META
+// Base Inst: PK = JOURNEY#${companyId}#${journeyInstanceId}  SK = META | RECORD
+// GSI (JourneysByCompany): journeysByCompanyGsiPK PK — reuses JOURNEY#${companyId}
+// prefix portion of journeyPK (same shape as contactCompanyGsiPK / convCompanyGsiPK).
+function journeyDefPK(companyId, journeyDefId)           { return `JOURNEYDEF#${companyId}#${journeyDefId}`; }
+function journeyDefSK()                                   { return 'META'; }
+function journeyPK(companyId, journeyInstanceId)         { return `JOURNEY#${companyId}#${journeyInstanceId}`; }
+function journeyMetaSK()                                  { return 'META'; }
+function journeyRecordSK()                                { return 'RECORD'; }
+function journeysByCompanyGsiPK(companyId)                { return `JOURNEY#${companyId}`; }
+
 // Lead entity — existing production pattern, centralised here as reference.
 // Existing routes continue to concatenate strings directly; they migrate in later commits.
 // PK = LEAD#${companyId}#${leadId}  SK = METADATA
@@ -178,6 +190,8 @@ const GSI = Object.freeze({
   // METRICS table — Conversation (Phase 1)
   CONV_BY_COMPANY: 'ConvByCompany',       // PK: convCompanyPK   | SK: lastActivityAt
   CONV_BY_CONTACT: 'ConvByContact',       // PK: convContactPK   | SK: lastActivityAt
+  // METRICS table — Journey (Phase 1)
+  JOURNEYS_BY_COMPANY: 'JourneysByCompany', // PK: journeysByCompanyGsiPK | SK: (Task 9)
   // METRICS table — Lead (existing, read-only reference)
   LEAD_BY_COMPANY: 'leadsByCompany',
   LEAD_BY_PHONE:   'company-phone-index',
@@ -205,6 +219,13 @@ module.exports = {
   conversationSK,
   convCompanyGsiPK,
   convContactGsiPK,
+  // Journey Definition + Instance
+  journeyDefPK,
+  journeyDefSK,
+  journeyPK,
+  journeyMetaSK,
+  journeyRecordSK,
+  journeysByCompanyGsiPK,
   // Lead (existing pattern, now centralised)
   leadPK,
   leadSK,

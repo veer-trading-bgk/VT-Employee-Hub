@@ -55,6 +55,8 @@ const PREFIX = Object.freeze({
   CAMPAIGN:     'campaign_',
   WORKFLOW:     'wf_',        // Phase 3
   EVENT:        'evt_',       // Timeline events
+  JOURNEY_DEF:  'journeydef_', // Journey Definition (template)
+  JOURNEY:      'journey_',    // Journey Instance (one per end-user run)
 });
 
 // Entity ID generators — each returns `${prefix}${ulid()}`.
@@ -67,6 +69,8 @@ const generateDocumentId     = () => PREFIX.DOCUMENT     + ulid();
 const generateCampaignId     = () => PREFIX.CAMPAIGN     + ulid();
 const generateWorkflowId     = () => PREFIX.WORKFLOW     + ulid();
 const generateEventId        = () => PREFIX.EVENT        + ulid();
+const generateJourneyDefId   = () => PREFIX.JOURNEY_DEF  + ulid();
+const generateJourneyId      = () => PREFIX.JOURNEY      + ulid();
 
 // Extract the prefix from a prefixed ID, e.g. 'contact_' from 'contact_01J...'.
 // Returns null for non-string input or IDs with no underscore.
@@ -106,6 +110,8 @@ module.exports = {
   generateCampaignId,
   generateWorkflowId,
   generateEventId,
+  generateJourneyDefId,
+  generateJourneyId,
   getPrefix,
   extractTimestamp,
 };
