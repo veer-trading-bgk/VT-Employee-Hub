@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * Public Journey page — Phase 3 Task 1 scaffold.
- * Fetches Task 7's public GET and renders three distinct states.
- * Field UI is Task 2 — active state shows a placeholder / raw screens JSON only.
+ * Public Journey page — Phase 3.
+ * Task 1: fetch + three response states (active / finished / invalid).
+ * Task 2: multi-screen field rendering on the active state.
  *
  * Pattern: same unauthenticated outside-(v3) approach as form/[id]/page.tsx
  * (plain fetch via NEXT_PUBLIC_API_URL, no apiFetch/auth, no sidebar).
@@ -11,6 +11,10 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
+import {
+  JourneyActiveForm,
+  type JourneyScreen,
+} from '@/components/journey/JourneyActiveForm';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '';
 
@@ -18,7 +22,7 @@ const FINISHED = new Set(['completed', 'cancelled', 'expired']);
 
 interface PublicJourneyDefinition {
   name: string | null;
-  screens: unknown[];
+  screens: JourneyScreen[];
   brandingConfig: { primaryColor?: string } | null;
 }
 
@@ -55,6 +59,28 @@ function finishedCopy(status: string): { title: string; body: string } {
   return { title: 'Journey closed', body: 'This journey is no longer accepting responses.' };
 }
 
+function normalizeScreens(raw: unknown): JourneyScreen[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((s, i) => {
+    const screen = (s && typeof s === 'object' ? s : {}) as Partial<JourneyScreen>;
+    const fields = Array.isArray(screen.fields) ? screen.fields : [];
+    return {
+      id: typeof screen.id === 'string' && screen.id ? screen.id : `screen_${i + 1}`,
+      title: typeof screen.title === 'string' ? screen.title : `Step ${i + 1}`,
+      fields: fields.map((f, j) => {
+        const field = (f && typeof f === 'object' ? f : {}) as Partial<JourneyScreen['fields'][number]>;
+        return {
+          id: typeof field.id === 'string' && field.id ? field.id : `field_${j + 1}`,
+          label: typeof field.label === 'string' ? field.label : 'Field',
+          type: typeof field.type === 'string' ? field.type : 'text',
+          ...(field.required ? { required: true } : {}),
+          ...(Array.isArray(field.options) ? { options: field.options.map(String) } : {}),
+        };
+      }),
+    };
+  });
+}
+
 export default function PublicJourneyPage() {
   const params = useParams<{
     companyId: string;
@@ -89,18 +115,22 @@ export default function PublicJourneyPage() {
           setState({ kind: 'invalid' });
           return;
         }
-        const accent = accentFrom(data.definition);
+        const def = data.definition
+          ? { ...data.definition, screens: normalizeScreens(data.definition.screens) }
+          : null;
+        const normalized = { ...data, definition: def };
+        const accent = accentFrom(def);
         const status = data.instance.status;
         if (FINISHED.has(status)) {
           setState({
             kind: 'finished',
             status,
-            name: data.definition?.name ?? null,
+            name: def?.name ?? null,
             accent,
           });
           return;
         }
-        setState({ kind: 'active', data, accent });
+        setState({ kind: 'active', data: normalized, accent });
       })
       .catch(() => {
         if (!cancelled) setState({ kind: 'invalid' });
@@ -173,7 +203,6 @@ export default function PublicJourneyPage() {
     );
   }
 
-  // Active (opened / in_progress) — Task 1 placeholder only; field UI is Task 2.
   const { data, accent } = state;
   const def = data.definition;
 
@@ -185,30 +214,11 @@ export default function PublicJourneyPage() {
       data-status={data.instance.status}
     >
       <div className="mx-auto w-full max-w-md">
-        <header className="mb-6 text-center">
-          {accent && (
-            <div
-              className="mx-auto mb-3 h-1.5 w-16 rounded-full"
-              style={{ backgroundColor: accent }}
-              aria-hidden
-            />
-          )}
-          <h1 className="text-xl font-semibold text-slate-900">
-            {def?.name?.trim() || 'Journey'}
-          </h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Form fields will appear here in the next step.
-          </p>
-        </header>
-
-        <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">
-            Screens (scaffold)
-          </p>
-          <pre className="overflow-x-auto rounded-xl bg-slate-50 p-3 text-left text-[11px] leading-relaxed text-slate-700">
-            {JSON.stringify(def?.screens ?? [], null, 2)}
-          </pre>
-        </div>
+        <JourneyActiveForm
+          name={def?.name ?? null}
+          screens={def?.screens ?? []}
+          accent={accent}
+        />
       </div>
     </div>
   );
