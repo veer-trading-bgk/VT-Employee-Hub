@@ -3,7 +3,12 @@
 import { X, Trash2, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin, Workflow, Radio, Camera, Reply, Timer, Link2, Webhook, ClipboardList, CheckCircle2, Ban } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ACTION_META, isConditionConfig, type ActionType, type NodeType } from '@/types/automations';
-import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig, SendMessageConfig, SendListConfig, SendLocationConfig, SendFlowConfig, MetaSignalConfig, SendInstagramMessageConfig, SendInstagramPrivateReplyConfig, WaitInstagramReplyConfig, StepConfig } from '@/types/automations';
+import type {
+  NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig, SendMessageConfig, SendListConfig,
+  SendLocationConfig, SendFlowConfig, MetaSignalConfig, SendInstagramMessageConfig, SendInstagramPrivateReplyConfig,
+  WaitInstagramReplyConfig, StepConfig,
+  OpenWebJourneyConfig, WaitForWebhookConfig, CreateJourneyRecordConfig, CompleteJourneyConfig, CancelJourneyConfig,
+} from '@/types/automations';
 import { ActionEditor } from '../ActionEditor';
 import { ConditionEditor } from '../ConditionEditor';
 import { SendButtonsEditor } from '../SendButtonsEditor';
@@ -16,6 +21,11 @@ import { MetaSignalEditor } from '../MetaSignalEditor';
 import { SendInstagramMessageEditor } from '../SendInstagramMessageEditor';
 import { SendInstagramPrivateReplyEditor } from '../SendInstagramPrivateReplyEditor';
 import { WaitInstagramReplyEditor } from '../WaitInstagramReplyEditor';
+import { OpenWebJourneyEditor } from '../OpenWebJourneyEditor';
+import { WaitForWebhookEditor } from '../WaitForWebhookEditor';
+import { CreateJourneyRecordEditor } from '../CreateJourneyRecordEditor';
+import { CompleteJourneyEditor } from '../CompleteJourneyEditor';
+import { CancelJourneyEditor } from '../CancelJourneyEditor';
 import { ACTION_ICONS } from '../WorkflowBuilder';
 
 interface NodeConfigPanelProps {
@@ -39,7 +49,6 @@ const EXTRA_TITLES: Partial<Record<NodeType, { label: string; icon: typeof GitBr
   send_instagram_message: { label: 'Instagram DM Reply', icon: Camera },
   send_instagram_private_reply: { label: 'Send Instagram Reply', icon: Reply },
   wait_instagram_reply:         { label: 'Wait for Instagram Reply', icon: Timer },
-  // Titles only for Task 1 — editors land in Task 2 (body falls through to empty ActionEditor).
   open_web_journey:      { label: 'Open Web Journey',      icon: Link2 },
   wait_for_webhook:      { label: 'Wait for Webhook',      icon: Webhook },
   create_journey_record: { label: 'Create Journey Record', icon: ClipboardList },
@@ -155,6 +164,31 @@ export function NodeConfigPanel({ nodeId, nodeType, config, onChange, onClose, o
         ) : nodeType === 'wait_instagram_reply' ? (
           <WaitInstagramReplyEditor
             config={config as WaitInstagramReplyConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'open_web_journey' ? (
+          <OpenWebJourneyEditor
+            config={config as OpenWebJourneyConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'wait_for_webhook' ? (
+          <WaitForWebhookEditor
+            config={config as WaitForWebhookConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'create_journey_record' ? (
+          <CreateJourneyRecordEditor
+            config={config as CreateJourneyRecordConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'complete_journey' ? (
+          <CompleteJourneyEditor
+            config={config as CompleteJourneyConfig}
+            onChange={(c) => onChange(c)}
+          />
+        ) : nodeType === 'cancel_journey' ? (
+          <CancelJourneyEditor
+            config={config as CancelJourneyConfig}
             onChange={(c) => onChange(c)}
           />
         ) : (
