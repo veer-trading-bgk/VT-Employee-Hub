@@ -29,6 +29,7 @@ jobs:
           filters: |
             backend:
               - 'src/**'
+              - 'tests/**'
               - 'package.json'
               - 'package-lock.json'
             dashboard:

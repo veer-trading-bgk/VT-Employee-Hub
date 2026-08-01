@@ -252,14 +252,15 @@ A feature is complete only when:
 
 # 18. Read Order
 
-1.  docs/bible/20_CURRENT_STATE.md
-2.  docs/APFORCE_BIBLE.md
-3.  docs/PRODUCT_OVERVIEW.md
-4.  docs/ROADMAP.md
-5.  docs/DEVELOPMENT_GUIDE.md
-6.  docs/UI_GUIDELINES.md
-7.  docs/adr/
-8.  Relevant docs/bible/
+1.  docs/bible/CTO.md
+2.  docs/bible/20_CURRENT_STATE.md
+3.  docs/APFORCE_BIBLE.md
+4.  docs/PRODUCT_OVERVIEW.md
+5.  docs/ROADMAP.md
+6.  docs/DEVELOPMENT_GUIDE.md
+7.  docs/UI_GUIDELINES.md
+8.  docs/adr/
+9.  Relevant docs/bible/
 
 ------------------------------------------------------------------------
 
