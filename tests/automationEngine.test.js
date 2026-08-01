@@ -3137,3 +3137,270 @@ describe('AutomationEngine — open_web_journey (Journey Platform Phase 1 Task 5
     expect(dynamodb.put.mock.calls[0][0].Item.executionId).toBe('exec-open-stamp');
   });
 });
+
+// ─── Journey Platform Phase 1 Task 10 — end-to-end integration ───────────────
+// One hand-authored workflow through the real dispatch/traversal path
+// (_runGraph / resumeOnWebhook / processAllDueWaits). Mock only DynamoDB +
+// WASendSvc + CIS + publishEvent. Proves journeyInstanceId + webhook-payload
+// continuity across open → wait → resume → RECORD → complete (and the timeout
+// twin that cancels instead).
+describe('AutomationEngine — journey platform Phase 1 e2e (Task 10)', () => {
+  const { assertNoRawReservedKeyword } = require('./helpers/dynamoReservedWords');
+  const resolved = (value) => ({ promise: () => Promise.resolve(value) });
+  const DEF_ID = 'journeydef_01E2EDEF0000000000000000';
+
+  function e2eWorkflow() {
+    return {
+      id: 'wf-journey-e2e',
+      name: 'Journey e2e',
+      status: 'active',
+      entryNodeId: 'n_open',
+      nodes: [
+        {
+          id: 'n_open', type: 'open_web_journey',
+          config: { templateId: 'tmpl_journey_e2e', journeyDefId: DEF_ID, expiryMinutes: 60 },
+        },
+        {
+          id: 'n_wait', type: 'wait_for_webhook',
+          config: { timeoutMinutes: 60, onTimeout: 'timeout_branch', webhookKey: 'booking' },
+        },
+        { id: 'n_record', type: 'create_journey_record', config: { linkToLead: false } },
+        { id: 'n_complete', type: 'complete_journey', config: {} },
+        { id: 'n_end_ok', type: 'end', config: {} },
+        { id: 'n_cancel', type: 'cancel_journey', config: { reasonSource: 'timeout' } },
+        { id: 'n_end_cancel', type: 'end', config: {} },
+      ],
+      edges: [
+        { id: 'e_open', source: 'n_open', target: 'n_wait' },
+        { id: 'e_wait_ok', source: 'n_wait', target: 'n_record' },
+        { id: 'e_wait_to', source: 'n_wait', target: 'n_cancel', sourceHandle: 'timeout_branch' },
+        { id: 'e_rec', source: 'n_record', target: 'n_complete' },
+        { id: 'e_done', source: 'n_complete', target: 'n_end_ok' },
+        { id: 'e_cancel', source: 'n_cancel', target: 'n_end_cancel' },
+      ],
+    };
+  }
+
+  function makeExecItem() {
+    return {
+      PK: `AUTO_EXEC#${CID}`,
+      SK: `EXEC#2026-01-01T00:00:00.000Z#exec-journey-e2e`,
+      executionId: 'exec-journey-e2e',
+      startedAt: new Date().toISOString(),
+      path: [],
+    };
+  }
+
+  /** In-memory Dynamo stand-in — captures META / WAIT / RECORD / EXEC so resume
+   *  paths read back what the open→wait phase actually wrote. */
+  function installStore(workflow, execSeed) {
+    const store = {
+      meta: null,
+      wait: null,
+      record: null,
+      exec: { ...execSeed, path: [...(execSeed.path ?? [])] },
+      lastMetaUpdate: null,
+    };
+
+    dynamodb.put.mockImplementation((params) => {
+      const item = params.Item;
+      if (item?.SK === journeyMetaSK() && String(item.PK).startsWith('JOURNEY#')) {
+        store.meta = { ...item };
+      } else if (String(item?.PK ?? '').startsWith('AUTO_WAIT#')) {
+        store.wait = item;
+      } else if (item?.SK === journeyRecordSK()) {
+        store.record = { ...item };
+      }
+      return resolved({});
+    });
+
+    dynamodb.update.mockImplementation((params) => {
+      try {
+        assertNoRawReservedKeyword(params);
+      } catch (err) {
+        return { promise: () => Promise.reject(err) };
+      }
+      const key = params.Key ?? {};
+      const vals = params.ExpressionAttributeValues ?? {};
+
+      if (String(key.PK ?? '').startsWith('AUTO_EXEC#')) {
+        if (vals[':st'] !== undefined) store.exec.status = vals[':st'];
+        if (vals[':path'] !== undefined) store.exec.path = vals[':path'];
+        if (vals[':ca'] !== undefined) store.exec.completedAt = vals[':ca'];
+        return resolved({});
+      }
+
+      if (key.SK === journeyMetaSK() && String(key.PK ?? '').startsWith('JOURNEY#')) {
+        const currentVersion = store.meta?.version ?? 0;
+        if (vals[':cv'] !== undefined && currentVersion !== vals[':cv']) {
+          const err = new Error('The conditional request failed');
+          err.code = 'ConditionalCheckFailedException';
+          return { promise: () => Promise.reject(err) };
+        }
+        store.lastMetaUpdate = vals;
+        store.meta = {
+          ...(store.meta ?? {}),
+          status: vals[':st'],
+          version: vals[':nv'],
+          updatedAt: vals[':ua'],
+          updatedBy: vals[':ub'],
+          ...(vals[':cr'] !== undefined ? { cancelReason: vals[':cr'] } : {}),
+        };
+        return resolved({});
+      }
+
+      return resolved({});
+    });
+
+    dynamodb.get.mockImplementation((params) => {
+      const { PK, SK } = params.Key ?? {};
+      if (String(PK).startsWith('CONFIG#AUTO#')) return resolved({ Item: workflow });
+      if (String(PK).startsWith('AUTO_EXEC#')) return resolved({ Item: { ...store.exec } });
+      if (String(PK).startsWith('JOURNEY#') && SK === journeyMetaSK()) {
+        return resolved({ Item: store.meta ? { ...store.meta } : undefined });
+      }
+      return resolved({});
+    });
+
+    dynamodb.query.mockImplementation(() =>
+      resolved({ Items: store.wait ? [store.wait] : [] }),
+    );
+    dynamodb.scan.mockImplementation(() =>
+      resolved({ Items: store.wait ? [store.wait] : [] }),
+    );
+    dynamodb.delete.mockImplementation(() => {
+      store.wait = null;
+      return resolved({});
+    });
+
+    return store;
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    process.env.FRONTEND_URL = 'https://app.apforce.in';
+    WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.e2e.ok' });
+  });
+
+  test('webhook-arrival path: open → wait → resumeOnWebhook → RECORD → complete (id + payload continuity)', async () => {
+    const workflow = e2eWorkflow();
+    const execItem = makeExecItem();
+    const context = { phone: '9876543210', contactId: 'ct_e2e' };
+    const store = installStore(workflow, execItem);
+    const webhookPayload = {
+      journeyRecord: { slot: '10:00', party: 2 },
+      submittedData: { slot: '10:00', party: 2 },
+    };
+
+    await engine._runGraph(CID, workflow, execItem, context, 'n_open');
+
+    // open_web_journey set the id that wait_for_webhook stamped on AUTO_WAIT#
+    const journeyInstanceId = context.journeyInstanceId;
+    expect(journeyInstanceId).toMatch(/^journey_/);
+    expect(store.meta).toEqual(expect.objectContaining({
+      PK: journeyPK(CID, journeyInstanceId),
+      SK: journeyMetaSK(),
+      status: 'opened',
+      version: 1,
+      journeyDefId: DEF_ID,
+    }));
+    expect(store.wait).toEqual(expect.objectContaining({
+      waitType: 'webhook',
+      journeyInstanceId,
+      fallbackKey: 'timeout_branch',
+      executionId: 'exec-journey-e2e',
+    }));
+    expect(store.wait.context.journeyInstanceId).toBe(journeyInstanceId);
+    expect(store.exec.status).toBe('paused');
+    expect(publishEvent.mock.calls.filter(([e]) => e === E.JOURNEY_OPENED)).toHaveLength(1);
+    expect(publishEvent.mock.calls.filter(([e]) => e === E.JOURNEY_COMPLETED)).toHaveLength(0);
+
+    const resume = await engine.resumeOnWebhook(CID, journeyInstanceId, webhookPayload);
+
+    expect(resume).toEqual({ status: 'resumed', executionId: 'exec-journey-e2e' });
+    // Same id through claim + RECORD write; webhook body is what create_journey_record persisted
+    expect(store.record).toEqual(expect.objectContaining({
+      PK: journeyPK(CID, journeyInstanceId),
+      SK: journeyRecordSK(),
+      journeyInstanceId,
+      data: webhookPayload.journeyRecord,
+    }));
+    expect(store.meta).toEqual(expect.objectContaining({
+      status: 'completed',
+      version: 2,
+      id: journeyInstanceId,
+    }));
+    expect(store.lastMetaUpdate).toEqual(expect.objectContaining({
+      ':st': 'completed',
+      ':cv': 1,
+      ':nv': 2,
+    }));
+
+    const openedCalls = publishEvent.mock.calls.filter(([e]) => e === E.JOURNEY_OPENED);
+    const completedCalls = publishEvent.mock.calls.filter(([e]) => e === E.JOURNEY_COMPLETED);
+    const cancelledCalls = publishEvent.mock.calls.filter(([e]) => e === E.JOURNEY_CANCELLED);
+    expect(openedCalls).toHaveLength(1);
+    expect(completedCalls).toHaveLength(1);
+    expect(cancelledCalls).toHaveLength(0);
+    expect(openedCalls[0][1].entityId).toBe(journeyInstanceId);
+    expect(completedCalls[0][1].entityId).toBe(journeyInstanceId);
+    // Never both from the same publishEvent invocation
+    for (const call of publishEvent.mock.calls) {
+      expect(call.filter((arg) => arg === E.JOURNEY_OPENED || arg === E.JOURNEY_COMPLETED)).toHaveLength(
+        call[0] === E.JOURNEY_OPENED || call[0] === E.JOURNEY_COMPLETED ? 1 : 0,
+      );
+    }
+    const openIdx = publishEvent.mock.calls.findIndex(([e]) => e === E.JOURNEY_OPENED);
+    const doneIdx = publishEvent.mock.calls.findIndex(([e]) => e === E.JOURNEY_COMPLETED);
+    expect(doneIdx).toBeGreaterThan(openIdx);
+  });
+
+  test('timeout-fallback path: open → wait → processAllDueWaits → cancel_journey (same entry node)', async () => {
+    const workflow = e2eWorkflow();
+    const execItem = makeExecItem();
+    const context = { phone: '9876543210', contactId: 'ct_e2e_to' };
+    const store = installStore(workflow, execItem);
+
+    await engine._runGraph(CID, workflow, execItem, context, 'n_open');
+
+    const journeyInstanceId = context.journeyInstanceId;
+    expect(journeyInstanceId).toMatch(/^journey_/);
+    expect(store.wait.journeyInstanceId).toBe(journeyInstanceId);
+    expect(store.meta.version).toBe(1);
+    expect(publishEvent.mock.calls.filter(([e]) => e === E.JOURNEY_OPENED)).toHaveLength(1);
+
+    // Make the wait due for the EventBridge sweep (scan mock does not apply FilterExpression).
+    store.wait.resumeAt = '2020-01-01T00:00:00.000Z';
+
+    const resumed = await engine.processAllDueWaits();
+
+    expect(resumed).toBe(1);
+    expect(store.record).toBeNull();
+    expect(store.meta).toEqual(expect.objectContaining({
+      status: 'cancelled',
+      version: 2,
+      cancelReason: 'timeout',
+      id: journeyInstanceId,
+    }));
+    expect(store.lastMetaUpdate).toEqual(expect.objectContaining({
+      ':st': 'cancelled',
+      ':cr': 'timeout',
+      ':cv': 1,
+      ':nv': 2,
+    }));
+    expect(store.exec.path.map((p) => p.nodeId)).toEqual(
+      expect.arrayContaining(['n_wait', 'n_cancel', 'n_end_cancel']),
+    );
+    expect(store.exec.path.find((p) => p.nodeId === 'n_wait')).toMatchObject({
+      status: 'timed_out',
+      branchKey: 'timeout_branch',
+    });
+
+    expect(publishEvent.mock.calls.filter(([e]) => e === E.JOURNEY_OPENED)).toHaveLength(1);
+    expect(publishEvent.mock.calls.filter(([e]) => e === E.JOURNEY_CANCELLED)).toHaveLength(1);
+    expect(publishEvent.mock.calls.filter(([e]) => e === E.JOURNEY_COMPLETED)).toHaveLength(0);
+    expect(publishEvent.mock.calls.find(([e]) => e === E.JOURNEY_CANCELLED)[1].entityId)
+      .toBe(journeyInstanceId);
+  });
+});
