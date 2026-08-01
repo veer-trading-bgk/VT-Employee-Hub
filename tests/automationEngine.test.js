@@ -2989,3 +2989,149 @@ describe('AutomationEngine — wait_for_webhook / resumeOnWebhook (Journey Platf
     expect(vals[':path'].map((p) => p.nodeId)).toEqual(expect.arrayContaining(['n1', 'n4', 'n5']));
   });
 });
+
+describe('AutomationEngine — open_web_journey (Journey Platform Phase 1 Task 5)', () => {
+  const crypto = require('crypto');
+  const DEF_ID = 'journeydef_01TESTDEF000000000000000';
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    process.env.FRONTEND_URL = 'https://app.apforce.in';
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.open.ok' });
+  });
+
+  test('happy path: JOURNEY# META written with tokenHash (not raw token), status opened, version via newMeta', async () => {
+    const ctx = { phone: '9876543210', leadPK: LEAD_PK, leadId: 'lead_001', executionId: 'exec-open-1' };
+    const result = await engine._runAction(
+      CID,
+      { type: 'open_web_journey', config: { templateId: 'tmpl_journey', journeyDefId: DEF_ID, expiryMinutes: 60 } },
+      ctx,
+    );
+
+    expect(result.journeyInstanceId).toMatch(/^journey_/);
+    expect(ctx.journeyInstanceId).toBe(result.journeyInstanceId);
+    expect(dynamodb.put).toHaveBeenCalledTimes(1);
+    const item = dynamodb.put.mock.calls[0][0].Item;
+    expect(item).toEqual(expect.objectContaining({
+      PK: journeyPK(CID, result.journeyInstanceId),
+      SK: journeyMetaSK(),
+      status: 'opened',
+      journeyDefId: DEF_ID,
+      companyId: CID,
+      executionId: 'exec-open-1',
+      version: 1,
+      tokenHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    }));
+    expect(item.rawToken).toBeUndefined();
+    expect(item.token).toBeUndefined();
+    expect(JSON.stringify(item)).not.toContain(WASendSvc.sendTemplate.mock.calls[0][3][0].split('/').pop());
+  });
+
+  test('URL is three segments companyId/journeyInstanceId/rawToken and sha256(token) === stored tokenHash', async () => {
+    const result = await engine._runAction(
+      CID,
+      { type: 'open_web_journey', config: { templateId: 'tmpl_journey', journeyDefId: DEF_ID, expiryMinutes: 60 } },
+      { phone: '9876543210' },
+    );
+
+    expect(WASendSvc.sendTemplate.mock.calls[0][1]).toEqual({ phone: '9876543210' });
+    const journeyUrl = WASendSvc.sendTemplate.mock.calls[0][3][0];
+    const parts = new URL(journeyUrl).pathname.split('/').filter(Boolean);
+    expect(parts).toEqual(['journey', CID, result.journeyInstanceId, expect.stringMatching(/^[a-f0-9]{48}$/)]);
+    expect(journeyUrl).toBe(`https://app.apforce.in/journey/${CID}/${result.journeyInstanceId}/${parts[3]}`);
+
+    const storedHash = dynamodb.put.mock.calls[0][0].Item.tokenHash;
+    const rawToken = parts[3];
+    expect(crypto.createHash('sha256').update(rawToken).digest('hex')).toBe(storedHash);
+  });
+
+  test('WhatsAppSendService.sendTemplate called with resolvedContact target + URL variable', async () => {
+    await engine._runAction(
+      CID,
+      { type: 'open_web_journey', config: { templateId: 'tmpl_journey', journeyDefId: DEF_ID } },
+      { phone: '9876543210', leadPK: LEAD_PK },
+    );
+
+    expect(WASendSvc.sendTemplate).toHaveBeenCalledWith(
+      CID,
+      { resolvedContact: { pk: LEAD_PK, phone: '9876543210', isLead: true } },
+      'tmpl_journey',
+      [expect.stringContaining(`/journey/${CID}/`)],
+      { id: 'system', role: 'admin', name: 'Automation' },
+      expect.objectContaining({ content: '[Automation: open_web_journey]' }),
+    );
+  });
+
+  test('send failure throws (send_template hard-failure contract) and journey_opened is NOT fired', async () => {
+    WASendSvc.sendTemplate.mockRejectedValue(new Error('Meta rejected template'));
+
+    await expect(engine._runAction(
+      CID,
+      { type: 'open_web_journey', config: { templateId: 'tmpl_journey', journeyDefId: DEF_ID } },
+      { phone: '9876543210', leadPK: LEAD_PK },
+    )).rejects.toThrow('Meta rejected template');
+
+    expect(dynamodb.put).toHaveBeenCalledTimes(1); // META still written before send
+    expect(publishEvent).not.toHaveBeenCalledWith(E.JOURNEY_OPENED, expect.anything());
+  });
+
+  test('send success fires journey_opened via publishEvent', async () => {
+    const result = await engine._runAction(
+      CID,
+      { type: 'open_web_journey', config: { templateId: 'tmpl_journey', journeyDefId: DEF_ID } },
+      { phone: '9876543210', leadPK: LEAD_PK, contactId: 'ct_1' },
+    );
+
+    expect(publishEvent).toHaveBeenCalledWith(E.JOURNEY_OPENED, expect.objectContaining({
+      companyId: CID,
+      entityType: ENTITY.JOURNEY,
+      entityId: result.journeyInstanceId,
+      contactId: 'ct_1',
+      channel: 'whatsapp',
+      metadata: expect.objectContaining({ journeyInstanceId: result.journeyInstanceId, journeyDefId: DEF_ID }),
+    }));
+  });
+
+  test('FRONTEND_URL comma-separated list uses only the first origin as base URL', async () => {
+    process.env.FRONTEND_URL = 'https://app.apforce.in, https://dashboard.viirtrading.com';
+
+    await engine._runAction(
+      CID,
+      { type: 'open_web_journey', config: { templateId: 'tmpl_journey', journeyDefId: DEF_ID } },
+      { phone: '9876543210' },
+    );
+
+    const journeyUrl = WASendSvc.sendTemplate.mock.calls[0][3][0];
+    expect(journeyUrl.startsWith('https://app.apforce.in/journey/')).toBe(true);
+    expect(journeyUrl).not.toContain('dashboard.viirtrading.com');
+    expect(journeyUrl).not.toContain(',');
+  });
+
+  test('_runGraph stamps execItem.executionId onto context before open_web_journey writes META', async () => {
+    const workflow = {
+      id: 'wf-open-exec', name: 'Open journey exec stamp',
+      entryNodeId: 'n1',
+      nodes: [
+        { id: 'n1', type: 'open_web_journey', config: { templateId: 'tmpl_journey', journeyDefId: DEF_ID, expiryMinutes: 60 } },
+        { id: 'n2', type: 'end', config: {} },
+      ],
+      edges: [{ id: 'e1', source: 'n1', target: 'n2' }],
+    };
+    const execItem = {
+      PK: `AUTO_EXEC#${CID}`,
+      SK: `EXEC#2026-01-01T00:00:00.000Z#exec-open-stamp`,
+      executionId: 'exec-open-stamp',
+      startedAt: new Date().toISOString(),
+      path: [],
+    };
+    const context = { phone: '9876543210', leadPK: LEAD_PK };
+    dynamodb.update.mockImplementation(guardedUpdateMock());
+
+    await engine._runGraph(CID, workflow, execItem, context, 'n1');
+
+    expect(context.executionId).toBe('exec-open-stamp');
+    expect(dynamodb.put.mock.calls[0][0].Item.executionId).toBe('exec-open-stamp');
+  });
+});

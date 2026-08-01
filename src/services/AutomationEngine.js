@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const dynamodb  = require('../config/dynamodb');
 const logger    = require('../config/logger');
@@ -7,8 +8,9 @@ const WASendSvc = require('./WhatsAppSendService');
 const PipelineService = require('./PipelineService');
 const { resolveWelcomeVariables, resolveTemplateParams } = require('../utils/welcomeVariables');
 const { to10Digit } = require('../utils/phone');
+const { generateJourneyId } = require('../core/id');
 const { journeyPK, journeyMetaSK, journeyRecordSK, leadPK: buildLeadPK } = require('../core/entityKeys');
-const { updateMeta } = require('../core/systemMeta');
+const { newMeta, updateMeta } = require('../core/systemMeta');
 const { publishEvent } = require('../events/publisher');
 const { E, ENTITY } = require('../events/catalog');
 
@@ -167,6 +169,9 @@ class AutomationEngine {
 
   // ── Sequential step runner ───────────────────────────────────────────────
   async _runSteps(companyId, workflow, steps, execItem, context, startIdx) {
+    // Stamp so action nodes (open_web_journey META back-ref, etc.) see the
+    // driving AUTO_EXEC# id without widening _runAction's signature.
+    if (context && typeof context === 'object') context.executionId = execItem.executionId;
     const ts          = () => new Date().toISOString();
     const stepResults = [...execItem.steps];
 
@@ -230,6 +235,10 @@ class AutomationEngine {
   // the AUTO_WAIT#/_storeWait() distributed-claim resume infra, and _finalizeExecution()
   // with the linear runner — only the traversal and the execution-record field differ.
   async _runGraph(companyId, workflow, execItem, context, nodeId, resumeSignal = null) {
+    // Stamp so action nodes (open_web_journey META back-ref, etc.) see the
+    // driving AUTO_EXEC# id without widening _runAction's signature. Covers
+    // fresh starts and every resume path that re-enters here.
+    if (context && typeof context === 'object') context.executionId = execItem.executionId;
     const nodeMap = new Map((workflow.nodes ?? []).map((n) => [n.id, n]));
     const edges   = workflow.edges ?? [];
     const path    = [...(execItem.path ?? [])];
@@ -1211,6 +1220,76 @@ class AutomationEngine {
         return { mid: r.mid, igsid: r.igsid };
       }
 
+      // Mint capability URL + deliver via WhatsAppSendService (mandatory send —
+      // same hard-failure contract as send_template: await, let throw propagate).
+      // Continues to the next node after return (not a pause). Raw token is never
+      // persisted — only SHA-256 tokenHash. Sets ctx.journeyInstanceId for
+      // downstream wait_for_webhook / create_journey_record / complete|cancel.
+      case 'open_web_journey': {
+        const { templateId, journeyDefId, expiryMinutes } = step.config ?? {};
+        if (!templateId || !phone) throw new Error('open_web_journey: templateId and phone required');
+        if (!journeyDefId) throw new Error('open_web_journey: journeyDefId required');
+
+        const journeyInstanceId = generateJourneyId();
+        const rawToken = crypto.randomBytes(24).toString('hex');
+        const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+        const expiryMs = (expiryMinutes != null && Number(expiryMinutes) > 0)
+          ? Number(expiryMinutes) * 60_000
+          : UNBOUNDED_REPLY_WAIT_MS;
+        const tokenExpiresAt = new Date(Date.now() + expiryMs).toISOString();
+        const meta = newMeta('system');
+
+        await dynamodb.put({
+          TableName: TABLE,
+          Item: {
+            PK: journeyPK(companyId, journeyInstanceId),
+            SK: journeyMetaSK(),
+            id: journeyInstanceId,
+            companyId,
+            journeyDefId,
+            status: 'opened',
+            tokenHash,
+            tokenExpiresAt,
+            executionId: ctx.executionId ?? null,
+            leadPK: leadPK ?? null,
+            leadId: leadId ?? null,
+            contactId: ctx.contactId ?? null,
+            ...meta,
+          },
+        }).promise();
+
+        ctx.journeyInstanceId = journeyInstanceId;
+
+        // FRONTEND_URL is comma-separated in CORS (app.js) — take the first
+        // origin only so a multi-value env never produces a malformed link.
+        const baseUrl = (process.env.FRONTEND_URL || 'http://localhost:3001')
+          .split(',')[0].trim().replace(/\/$/, '');
+        const journeyUrl = `${baseUrl}/journey/${companyId}/${journeyInstanceId}/${rawToken}`;
+
+        const target = leadPK
+          ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
+          : { phone };
+        const r = await WASendSvc.sendTemplate(
+          companyId, target,
+          templateId,
+          [journeyUrl],
+          { id: 'system', role: 'admin', name: 'Automation' },
+          { content: `[Automation: open_web_journey]` },
+        );
+
+        publishEvent(E.JOURNEY_OPENED, {
+          companyId,
+          entityType: ENTITY.JOURNEY,
+          entityId:   journeyInstanceId,
+          contactId:  ctx.contactId ?? null,
+          channel:    'whatsapp',
+          summary:    'Journey opened',
+          metadata:   { journeyInstanceId, journeyDefId, leadId: leadId ?? null },
+        });
+
+        return { journeyInstanceId, wamid: r.wamid ?? r.waMessageId, tokenExpiresAt };
+      }
+
       // JOURNEY#…/RECORD write. linkToLead → CIS.resolveOrCreate (ADR-013), never
       // a hand-rolled LEAD# put. linkToContact is reserved/not-implemented in V1 —
       // CONTACT# creation lives in ContactService (separate PHONE# lock), not CIS;
@@ -1348,8 +1427,9 @@ class AutomationEngine {
     }
   }
 
-  // Best-effort optional template notify for journey terminal nodes (and Task 5's
-  // open_web_journey). Fire-and-forget like writeMediaIndex(); never fails the node.
+  // Best-effort optional template notify for journey terminal nodes only.
+  // open_web_journey does NOT use this — its send is mandatory and must match
+  // send_template's hard-failure contract. Fire-and-forget like writeMediaIndex().
   _sendOptionalJourneyNotify(companyId, ctx, templateId, logLabel) {
     if (!templateId) return;
     const { leadPK, phone } = ctx;
