@@ -126,6 +126,7 @@ app.post('/api/automations/_tick', automationsRoutes.processTick);
 app.post('/api/automations/webhook/:companyId/:workflowId/:token', automationsRoutes.inboundWebhook);
 app.use('/api/automations', authMiddleware, subscriptionMiddleware, automationsRoutes);
 app.use('/api/campaigns',  authMiddleware, subscriptionMiddleware, campaignsRoutes);
+app.use('/api/journeys', authMiddleware, subscriptionMiddleware, require('./routes/journeys'));
 app.use('/api/forms', formsRoutes);
 // Session-authenticated admin management of API keys (generate/list/revoke).
 app.use('/api/api-keys', authMiddleware, subscriptionMiddleware, apiKeysRoutes);

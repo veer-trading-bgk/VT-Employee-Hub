@@ -51,12 +51,14 @@ function convCompanyGsiPK(companyId)                { return `CONV#${companyId}`
 function convContactGsiPK(companyId, contactId)     { return `CONV_CONTACT#${companyId}#${contactId}`; }
 
 // Journey Definition (template) + Journey Instance (one per end-user run).
-// Base Def:  PK = JOURNEYDEF#${companyId}#${journeyDefId}  SK = META
+// Base Def:  PK = CONFIG#JOURNEYDEF#${companyId}  SK = DEF#${journeyDefId}
+//   (company-scoped partition — list-all is a single Query, same shape as forms).
 // Base Inst: PK = JOURNEY#${companyId}#${journeyInstanceId}  SK = META | RECORD
-// GSI (JourneysByCompany): journeysByCompanyGsiPK PK — reuses JOURNEY#${companyId}
-// prefix portion of journeyPK (same shape as contactCompanyGsiPK / convCompanyGsiPK).
-function journeyDefPK(companyId, journeyDefId)           { return `JOURNEYDEF#${companyId}#${journeyDefId}`; }
-function journeyDefSK()                                   { return 'META'; }
+// GSI (JourneysByCompany): attribute journeysByCompanyGsiPK | SK createdAt —
+// reuses JOURNEY#${companyId} prefix portion of journeyPK (same shape as
+// contactCompanyGsiPK / convCompanyGsiPK).
+function journeyDefPK(companyId)                          { return `CONFIG#JOURNEYDEF#${companyId}`; }
+function journeyDefSK(journeyDefId)                       { return `DEF#${journeyDefId}`; }
 function journeyPK(companyId, journeyInstanceId)         { return `JOURNEY#${companyId}#${journeyInstanceId}`; }
 function journeyMetaSK()                                  { return 'META'; }
 function journeyRecordSK()                                { return 'RECORD'; }
@@ -191,7 +193,7 @@ const GSI = Object.freeze({
   CONV_BY_COMPANY: 'ConvByCompany',       // PK: convCompanyPK   | SK: lastActivityAt
   CONV_BY_CONTACT: 'ConvByContact',       // PK: convContactPK   | SK: lastActivityAt
   // METRICS table — Journey (Phase 1)
-  JOURNEYS_BY_COMPANY: 'JourneysByCompany', // PK: journeysByCompanyGsiPK | SK: (Task 9)
+  JOURNEYS_BY_COMPANY: 'JourneysByCompany', // PK: journeysByCompanyGsiPK | SK: createdAt
   // METRICS table — Lead (existing, read-only reference)
   LEAD_BY_COMPANY: 'leadsByCompany',
   LEAD_BY_PHONE:   'company-phone-index',

@@ -55,13 +55,13 @@ describe('Journey Platform — entityKeys.js constructors', () => {
   const journeyDefId = 'journeydef_01SAMPLEDEF0000000000000';
   const journeyInstanceId = 'journey_01SAMPLEINST000000000000';
 
-  test('journeyDefPK returns JOURNEYDEF#${companyId}#${journeyDefId}', () => {
-    expect(journeyDefPK(companyId, journeyDefId))
-      .toBe(`JOURNEYDEF#${companyId}#${journeyDefId}`);
+  test('journeyDefPK returns CONFIG#JOURNEYDEF#${companyId}', () => {
+    expect(journeyDefPK(companyId))
+      .toBe(`CONFIG#JOURNEYDEF#${companyId}`);
   });
 
-  test('journeyDefSK returns META', () => {
-    expect(journeyDefSK()).toBe('META');
+  test('journeyDefSK returns DEF#${journeyDefId}', () => {
+    expect(journeyDefSK(journeyDefId)).toBe(`DEF#${journeyDefId}`);
   });
 
   test('journeyPK returns JOURNEY#${companyId}#${journeyInstanceId}', () => {
