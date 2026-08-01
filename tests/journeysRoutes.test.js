@@ -15,8 +15,14 @@ jest.mock('../src/config/dynamodb', () => ({
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
 }));
+jest.mock('../src/services/AutomationEngine', () => ({
+  resumeOnWebhook: jest.fn(),
+  fireTrigger: jest.fn(),
+  runWorkflowDirect: jest.fn(),
+}));
 
 const dynamodb = require('../src/config/dynamodb');
+const AutomationEngine = require('../src/services/AutomationEngine');
 const {
   journeyDefPK,
   journeyDefSK,
@@ -349,5 +355,253 @@ describe('Journey routes — role gates (forms.js precedent)', () => {
     const res = mockRes();
     await roleGate({ user: MANAGER }, res, jest.fn());
     expect(res.status).toHaveBeenCalledWith(403);
+  });
+});
+
+// ── Task 7 — public capability-URL GET / submit ─────────────────────────────
+const crypto = require('crypto');
+const RAW_TOKEN = 'a'.repeat(48); // crypto.randomBytes(24).toString('hex') length
+const TOKEN_HASH = crypto.createHash('sha256').update(RAW_TOKEN).digest('hex');
+const handlePublicGet = journeysRouter.publicGet[1];
+const handlePublicSubmit = journeysRouter.publicSubmit[1];
+
+function futureExpiry(ms = 3_600_000) {
+  return new Date(Date.now() + ms).toISOString();
+}
+function pastExpiry() {
+  return new Date(Date.now() - 60_000).toISOString();
+}
+function openInstance(overrides = {}) {
+  return {
+    PK: journeyPK(CID, JOURNEY_ID),
+    SK: journeyMetaSK(),
+    id: JOURNEY_ID,
+    companyId: CID,
+    journeyDefId: DEF_ID,
+    status: 'opened',
+    tokenHash: TOKEN_HASH,
+    tokenExpiresAt: futureExpiry(),
+    leadPK: `LEAD#${CID}#lead_secret`,
+    leadId: 'lead_secret',
+    contactId: 'ct_secret',
+    executionId: 'exec_secret',
+    version: 1,
+    ...overrides,
+  };
+}
+function publicParams(overrides = {}) {
+  return {
+    companyId: CID,
+    journeyInstanceId: JOURNEY_ID,
+    token: RAW_TOKEN,
+    ...overrides,
+  };
+}
+
+describe('validateJourneyToken (Task 7 helper)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  test('valid token + unexpired instance → ok with instance', async () => {
+    const item = openInstance();
+    dynamodb.get.mockReturnValue(resolved({ Item: item }));
+    const result = await journeysRouter.validateJourneyToken(CID, JOURNEY_ID, RAW_TOKEN);
+    expect(result).toEqual({ ok: true, instance: item });
+  });
+
+  test('wrong token → ok:false', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance() }));
+    const result = await journeysRouter.validateJourneyToken(CID, JOURNEY_ID, 'b'.repeat(48));
+    expect(result).toEqual({ ok: false });
+  });
+
+  test('expired tokenExpiresAt → ok:false', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance({ tokenExpiresAt: pastExpiry() }) }));
+    const result = await journeysRouter.validateJourneyToken(CID, JOURNEY_ID, RAW_TOKEN);
+    expect(result).toEqual({ ok: false });
+  });
+
+  test('mismatched journeyInstanceId (META missing) → ok:false', async () => {
+    dynamodb.get.mockReturnValue(resolved({}));
+    const result = await journeysRouter.validateJourneyToken(CID, 'journey_missing', RAW_TOKEN);
+    expect(result).toEqual({ ok: false });
+  });
+
+  test('length-mismatch stored hash does not throw (guards timingSafeEqual)', async () => {
+    dynamodb.get.mockReturnValue(resolved({
+      Item: openInstance({ tokenHash: 'short' }), // unequal length vs sha256 hex
+    }));
+    await expect(
+      journeysRouter.validateJourneyToken(CID, JOURNEY_ID, RAW_TOKEN),
+    ).resolves.toEqual({ ok: false });
+  });
+});
+
+describe('GET /api/journeys/:companyId/:journeyInstanceId/:token (public)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  test('valid token → sanitized whitelist shape; excludes internal fields', async () => {
+    const instance = openInstance();
+    const def = {
+      id: DEF_ID, name: 'Hospital Booking',
+      screens: [{ id: 's1', title: 'Patient', fields: [] }],
+      brandingConfig: { primaryColor: '#123' },
+      tokenHash: 'should-not-leak',
+    };
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.SK === journeyMetaSK()) return resolved({ Item: instance });
+      if (params.Key.SK === journeyDefSK(DEF_ID)) return resolved({ Item: def });
+      return resolved({});
+    });
+
+    const res = mockRes();
+    await handlePublicGet({ params: publicParams() }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    const body = res.json.mock.calls[0][0];
+    expect(body).toEqual({
+      success: true,
+      instance: { journeyInstanceId: JOURNEY_ID, status: 'opened' },
+      definition: {
+        name: 'Hospital Booking',
+        screens: def.screens,
+        brandingConfig: { primaryColor: '#123' },
+      },
+    });
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain('tokenHash');
+    expect(serialized).not.toContain('leadPK');
+    expect(serialized).not.toContain('lead_secret');
+    expect(serialized).not.toContain('leadId');
+    expect(serialized).not.toContain('contactId');
+    expect(serialized).not.toContain('ct_secret');
+    expect(serialized).not.toContain('executionId');
+    expect(serialized).not.toContain('exec_secret');
+  });
+
+  test('invalid token → 404 Not found', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance() }));
+    const res = mockRes();
+    await handlePublicGet({ params: publicParams({ token: 'wrong' }) }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Not found' });
+  });
+
+  test('finished instance with valid token → 200 + status (not 404)', async () => {
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.SK === journeyMetaSK()) {
+        return resolved({ Item: openInstance({ status: 'completed' }) });
+      }
+      return resolved({ Item: { name: 'Done', screens: [], brandingConfig: null } });
+    });
+    const res = mockRes();
+    await handlePublicGet({ params: publicParams() }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json.mock.calls[0][0].instance.status).toBe('completed');
+  });
+});
+
+describe('POST /api/journeys/.../submit (public)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.update.mockReturnValue(resolved({}));
+  });
+
+  test('valid submit writes RECORD and transitions opened → in_progress', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance() }));
+    const res = mockRes();
+    await handlePublicSubmit({
+      params: publicParams(),
+      headers: { 'content-length': '50' },
+      body: { slot: '10:00', name: 'Pat' },
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({
+        PK: journeyPK(CID, JOURNEY_ID),
+        SK: journeyRecordSK(),
+        data: { slot: '10:00', name: 'Pat' },
+      }),
+    }));
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: journeyPK(CID, JOURNEY_ID), SK: journeyMetaSK() },
+      ExpressionAttributeValues: expect.objectContaining({ ':st': 'in_progress' }),
+    }));
+    expect(AutomationEngine.resumeOnWebhook).not.toHaveBeenCalled();
+    expect(AutomationEngine.fireTrigger).not.toHaveBeenCalled();
+    expect(AutomationEngine.runWorkflowDirect).not.toHaveBeenCalled();
+  });
+
+  test('invalid token → 404', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance() }));
+    const res = mockRes();
+    await handlePublicSubmit({
+      params: publicParams({ token: 'nope' }),
+      headers: {},
+      body: { a: 1 },
+    }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('oversized body → 413 before lookup', async () => {
+    const res = mockRes();
+    await handlePublicSubmit({
+      params: publicParams(),
+      headers: { 'content-length': '999999' },
+      body: {},
+    }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(413);
+    expect(dynamodb.get).not.toHaveBeenCalled();
+  });
+
+  test('finished instance → 409', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance({ status: 'cancelled' }) }));
+    const res = mockRes();
+    await handlePublicSubmit({
+      params: publicParams(),
+      headers: { 'content-length': '10' },
+      body: { x: 1 },
+    }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('never calls AutomationEngine / resumeOnWebhook', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance({ status: 'in_progress' }) }));
+    await handlePublicSubmit({
+      params: publicParams(),
+      headers: {},
+      body: { ok: true },
+    }, mockRes(), jest.fn());
+    expect(AutomationEngine.resumeOnWebhook).not.toHaveBeenCalled();
+    expect(Object.keys(AutomationEngine).every((k) =>
+      AutomationEngine[k].mock.calls.length === 0)).toBe(true);
+  });
+});
+
+describe('Public journey routes — rate-limit composition (automations.js sibling)', () => {
+  test('publicGet / publicSubmit are [rateLimit(30, 60s), handler] arrays like inboundWebhook', () => {
+    const automationsRouter = require('../src/routes/automations');
+    expect(Array.isArray(journeysRouter.publicGet)).toBe(true);
+    expect(Array.isArray(journeysRouter.publicSubmit)).toBe(true);
+    expect(journeysRouter.publicGet).toHaveLength(2);
+    expect(journeysRouter.publicSubmit).toHaveLength(2);
+    expect(typeof journeysRouter.publicGet[0]).toBe('function');
+    expect(typeof journeysRouter.publicGet[1]).toBe('function');
+    expect(typeof journeysRouter.publicSubmit[0]).toBe('function');
+    expect(typeof journeysRouter.publicSubmit[1]).toBe('function');
+    // Same composition shape as automations inboundWebhook export.
+    expect(automationsRouter.inboundWebhook).toHaveLength(2);
+    expect(typeof automationsRouter.inboundWebhook[0]).toBe('function');
+    expect(typeof automationsRouter.inboundWebhook[1]).toBe('function');
   });
 });

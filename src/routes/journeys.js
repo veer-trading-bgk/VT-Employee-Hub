@@ -1,19 +1,23 @@
 'use strict';
 
 /**
- * Journey Platform — admin CRUD for Journey Definitions + read-only Instances.
+ * Journey Platform — admin CRUD for Journey Definitions + read-only Instances,
+ * plus public capability-URL GET/submit (Task 7).
  *
  * Mounted in app.js behind authMiddleware + subscriptionMiddleware (same shape
  * as automations/campaigns/api-keys). Role-gating matches forms.js:
  *   writes  → checkRole(['admin'])
  *   reads   → checkRole(['admin', 'manager'])
  *
- * Public / capability-URL routes are Task 7/8 — not registered here.
+ * Public GET/submit are exported as [rateLimit, handler] arrays and registered
+ * in app.js BEFORE the auth-guarded router — sibling to automations.inboundWebhook.
  */
 
+const crypto = require('crypto');
 const express = require('express');
 const { z } = require('zod');
 const { checkRole } = require('../middleware/auth');
+const { rateLimit } = require('../middleware/rateLimiter');
 const dynamodb = require('../config/dynamodb');
 const { generateJourneyDefId } = require('../core/id');
 const {
@@ -29,6 +33,9 @@ const { newMeta, updateMeta } = require('../core/systemMeta');
 
 const router = express.Router();
 const TABLE = () => process.env.DYNAMODB_TABLE_METRICS;
+
+// Same payload guard as automations.js inboundWebhook.
+const MAX_JOURNEY_PAYLOAD_BYTES = 100_000;
 
 // ── Zod schemas (strict — unknown fields rejected) ───────────────────────────
 
@@ -276,4 +283,127 @@ router.get('/instances/:id', checkRole(['admin', 'manager']), async (req, res, n
   } catch (err) { next(err); }
 });
 
+// ── Public capability-URL helpers / handlers (Task 7) ────────────────────────
+// Token is hashed at rest (Task 5). Compare SHA-256(incoming) to tokenHash with
+// the same length-guard + timingSafeEqual pattern automations.js uses for its
+// raw webhookToken — never throw on unequal Buffer lengths.
+
+async function validateJourneyToken(companyId, journeyInstanceId, token) {
+  const { Item } = await dynamodb.get({
+    TableName: TABLE(),
+    Key: { PK: journeyPK(companyId, journeyInstanceId), SK: journeyMetaSK() },
+  }).promise();
+  if (!Item) return { ok: false };
+
+  const expected = Buffer.from(Item.tokenHash ?? '');
+  const actual = Buffer.from(
+    crypto.createHash('sha256').update(String(token ?? '')).digest('hex'),
+  );
+  // Mirror automations.js: length check BEFORE timingSafeEqual (which throws on
+  // unequal lengths). expected.length > 0 rejects a missing/empty stored hash.
+  const tokenMatches = expected.length > 0
+    && expected.length === actual.length
+    && crypto.timingSafeEqual(expected, actual);
+  if (!tokenMatches) return { ok: false };
+
+  if (!Item.tokenExpiresAt || Date.parse(Item.tokenExpiresAt) <= Date.now()) {
+    return { ok: false };
+  }
+
+  return { ok: true, instance: Item };
+}
+
+const FINISHED_STATUSES = new Set(['completed', 'cancelled', 'expired']);
+
+async function handlePublicGet(req, res, next) {
+  try {
+    const { companyId, journeyInstanceId, token } = req.params;
+    const validated = await validateJourneyToken(companyId, journeyInstanceId, token);
+    if (!validated.ok) return res.status(404).json({ error: 'Not found' });
+
+    const instance = validated.instance;
+    let definition = null;
+    if (instance.journeyDefId) {
+      const { Item: def } = await dynamodb.get({
+        TableName: TABLE(),
+        Key: { PK: journeyDefPK(companyId), SK: journeyDefSK(instance.journeyDefId) },
+      }).promise();
+      if (def) {
+        definition = {
+          name: def.name ?? null,
+          screens: def.screens ?? [],
+          brandingConfig: def.brandingConfig ?? null,
+        };
+      }
+    }
+
+    // Whitelisted public shape only — never leak tokenHash / lead / execution refs.
+    res.status(200).json({
+      success: true,
+      instance: {
+        journeyInstanceId: instance.id ?? journeyInstanceId,
+        status: instance.status,
+      },
+      definition,
+    });
+  } catch (err) { next(err); }
+}
+
+async function handlePublicSubmit(req, res, next) {
+  try {
+    const contentLength = Number(req.headers['content-length'] ?? 0);
+    if (contentLength > MAX_JOURNEY_PAYLOAD_BYTES) {
+      return res.status(413).json({ error: 'Payload too large' });
+    }
+
+    const { companyId, journeyInstanceId, token } = req.params;
+    const validated = await validateJourneyToken(companyId, journeyInstanceId, token);
+    if (!validated.ok) return res.status(404).json({ error: 'Not found' });
+
+    const instance = validated.instance;
+    if (FINISHED_STATUSES.has(instance.status)) {
+      return res.status(409).json({ error: 'Journey is no longer accepting submissions' });
+    }
+
+    const now = new Date().toISOString();
+    await dynamodb.put({
+      TableName: TABLE(),
+      Item: {
+        PK: journeyPK(companyId, journeyInstanceId),
+        SK: journeyRecordSK(),
+        companyId,
+        journeyInstanceId,
+        data: req.body ?? {},
+        submittedAt: now,
+      },
+    }).promise();
+
+    // First successful submit: opened → in_progress (only place this enum is used).
+    if (instance.status === 'opened') {
+      const meta = updateMeta(instance, 'system');
+      await dynamodb.update({
+        TableName: TABLE(),
+        Key: { PK: journeyPK(companyId, journeyInstanceId), SK: journeyMetaSK() },
+        UpdateExpression: 'SET #st = :st, updatedAt = :ua, updatedBy = :ub, #v = :nv',
+        ConditionExpression: 'attribute_exists(PK)',
+        ExpressionAttributeNames: { '#st': 'status', '#v': 'version' },
+        ExpressionAttributeValues: {
+          ':st': 'in_progress',
+          ':ua': meta.updatedAt,
+          ':ub': meta.updatedBy,
+          ':nv': meta.version,
+        },
+      }).promise();
+    }
+
+    // Write-only — does NOT call resumeOnWebhook / AutomationEngine (Task 8).
+    res.status(200).json({ success: true });
+  } catch (err) { next(err); }
+}
+
 module.exports = router;
+module.exports.validateJourneyToken = validateJourneyToken;
+// Composed as arrays (rate-limit + handler) so app.js can mount in one line
+// without importing rateLimiter — same public-route pattern as inboundWebhook.
+module.exports.publicGet = [rateLimit(30, 60_000), handlePublicGet];
+module.exports.publicSubmit = [rateLimit(30, 60_000), handlePublicSubmit];
