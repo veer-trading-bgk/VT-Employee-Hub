@@ -33,8 +33,29 @@ function brandingFromDefinition(d: JourneyDefinition): JourneyBrandingConfig | n
   const primaryColor = typeof (raw as { primaryColor?: unknown }).primaryColor === 'string'
     ? (raw as { primaryColor: string }).primaryColor.trim()
     : '';
-  if (!primaryColor) return null;
-  return { primaryColor };
+  const bannerImageUrl = typeof (raw as { bannerImageUrl?: unknown }).bannerImageUrl === 'string'
+    ? (raw as { bannerImageUrl: string }).bannerImageUrl.trim()
+    : '';
+  if (!primaryColor && !bannerImageUrl) return null;
+  return {
+    ...(primaryColor ? { primaryColor } : {}),
+    ...(bannerImageUrl ? { bannerImageUrl } : {}),
+  };
+}
+
+/** Merge a branding patch; returns null when both fields are empty. */
+function patchBranding(
+  current: JourneyBrandingConfig | null,
+  patch: Partial<JourneyBrandingConfig>,
+): JourneyBrandingConfig | null {
+  const merged = { ...(current ?? {}), ...patch };
+  const primaryColor = merged.primaryColor?.trim() || '';
+  const bannerImageUrl = merged.bannerImageUrl?.trim() || '';
+  if (!primaryColor && !bannerImageUrl) return null;
+  return {
+    ...(primaryColor ? { primaryColor } : {}),
+    ...(bannerImageUrl ? { bannerImageUrl } : {}),
+  };
 }
 
 /**
@@ -439,12 +460,15 @@ export function JourneyDefinitionDrawer({
 
         {/* Branding — no shared ColorPicker component exists (Tags use an inline
             palette; ManagePipelineDrawer uses native type=color). Reuse the
-            pipeline native picker for free hex primaryColor. */}
-        <div className="space-y-2">
+            pipeline native picker for free hex primaryColor.
+            bannerImageUrl is a plain HTTPS URL: existing S3 upload helpers
+            (uploadFileToS3 / avatar) return private keys that need auth'd
+            presigned GET — unusable on the public unauthenticated journey page. */}
+        <div className="space-y-3">
           <div>
             <p className="text-sm font-medium text-neutral-700 dark:text-neutral-200">Branding</p>
             <p className="text-xs text-neutral-400">
-              primaryColor only — matches the public journey payload whitelist.
+              Optional primary color and banner image URL for the public journey page.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -458,7 +482,7 @@ export function JourneyDefinitionDrawer({
                 value={form.brandingConfig?.primaryColor || DEFAULT_PRIMARY_COLOR}
                 onChange={(e) => setForm((f) => ({
                   ...f,
-                  brandingConfig: { primaryColor: e.target.value },
+                  brandingConfig: patchBranding(f.brandingConfig, { primaryColor: e.target.value }),
                 }))}
                 className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                 aria-label="Primary color"
@@ -470,7 +494,7 @@ export function JourneyDefinitionDrawer({
                 const v = e.target.value.trim();
                 setForm((f) => ({
                   ...f,
-                  brandingConfig: v ? { primaryColor: v } : null,
+                  brandingConfig: patchBranding(f.brandingConfig, { primaryColor: v || undefined }),
                 }));
               }}
               placeholder={DEFAULT_PRIMARY_COLOR}
@@ -478,16 +502,31 @@ export function JourneyDefinitionDrawer({
               className="w-32 rounded-lg border border-neutral-200 bg-white px-3 py-2 font-mono text-sm text-neutral-900 outline-none focus:border-primary-600 focus:ring-2 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
               aria-label="Primary color hex"
             />
-            {form.brandingConfig?.primaryColor && (
+            {form.brandingConfig && (
               <button
                 type="button"
                 onClick={() => setForm((f) => ({ ...f, brandingConfig: null }))}
                 className="text-xs text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
               >
-                Clear
+                Clear branding
               </button>
             )}
           </div>
+          <Input
+            label="Banner image URL"
+            hint="Optional. Absolute https URL shown above the title on the public journey page."
+            type="url"
+            value={form.brandingConfig?.bannerImageUrl ?? ''}
+            onChange={(e) => {
+              const v = e.target.value.trim();
+              setForm((f) => ({
+                ...f,
+                brandingConfig: patchBranding(f.brandingConfig, { bannerImageUrl: v || undefined }),
+              }));
+            }}
+            placeholder="https://…"
+            maxLength={2048}
+          />
         </div>
 
         {/* Screens — ManagePipelineDrawer interaction pattern (sales/page.tsx) */}

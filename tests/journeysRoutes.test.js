@@ -128,6 +128,55 @@ describe('POST /api/journeys/definitions', () => {
     expect(next.mock.calls[0][0].name).toBe('ZodError');
     expect(dynamodb.put).not.toHaveBeenCalled();
   });
+
+  test('brandingConfig accepts optional bannerImageUrl (absolute URL)', async () => {
+    const res = mockRes();
+    const next = jest.fn();
+    await handler({
+      user: ADMIN,
+      body: {
+        name: 'With banner',
+        brandingConfig: {
+          primaryColor: '#0ea5e9',
+          bannerImageUrl: 'https://cdn.example.com/banners/clinic.jpg',
+        },
+      },
+    }, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(201);
+    expect(dynamodb.put.mock.calls[0][0].Item.brandingConfig).toEqual({
+      primaryColor: '#0ea5e9',
+      bannerImageUrl: 'https://cdn.example.com/banners/clinic.jpg',
+    });
+  });
+
+  test('brandingConfig rejects non-URL bannerImageUrl', async () => {
+    const res = mockRes();
+    const next = jest.fn();
+    await handler({
+      user: ADMIN,
+      body: {
+        name: 'Bad banner',
+        brandingConfig: { bannerImageUrl: 'not-a-url' },
+      },
+    }, res, next);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(next.mock.calls[0][0].name).toBe('ZodError');
+  });
+
+  test('brandingConfig rejects unknown keys (strict)', async () => {
+    const res = mockRes();
+    const next = jest.fn();
+    await handler({
+      user: ADMIN,
+      body: {
+        name: 'Strict branding',
+        brandingConfig: { primaryColor: '#fff', logoSecret: 'x' },
+      },
+    }, res, next);
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(next.mock.calls[0][0].name).toBe('ZodError');
+  });
 });
 
 describe('GET /api/journeys/definitions', () => {
@@ -490,6 +539,33 @@ describe('GET /api/journeys/:companyId/:journeyInstanceId/:token (public)', () =
     expect(serialized).not.toContain('ct_secret');
     expect(serialized).not.toContain('executionId');
     expect(serialized).not.toContain('exec_secret');
+  });
+
+  test('public brandingConfig includes bannerImageUrl and strips unknown branding keys', async () => {
+    const instance = openInstance();
+    const def = {
+      id: DEF_ID,
+      name: 'Bannered',
+      screens: [],
+      brandingConfig: {
+        primaryColor: '#0ea5e9',
+        bannerImageUrl: 'https://cdn.example.com/hero.jpg',
+        internalNote: 'should-not-leak',
+      },
+    };
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.SK === journeyMetaSK()) return resolved({ Item: instance });
+      if (params.Key.SK === journeyDefSK(DEF_ID)) return resolved({ Item: def });
+      return resolved({});
+    });
+
+    const res = mockRes();
+    await handlePublicGet({ params: publicParams() }, res, jest.fn());
+    expect(res.json.mock.calls[0][0].definition.brandingConfig).toEqual({
+      primaryColor: '#0ea5e9',
+      bannerImageUrl: 'https://cdn.example.com/hero.jpg',
+    });
+    expect(JSON.stringify(res.json.mock.calls[0][0])).not.toContain('internalNote');
   });
 
   test('invalid token → 404 Not found', async () => {

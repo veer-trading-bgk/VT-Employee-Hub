@@ -13,6 +13,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
   JourneyActiveForm,
+  JourneyBanner,
   type JourneyScreen,
 } from '@/components/journey/JourneyActiveForm';
 
@@ -23,7 +24,7 @@ const FINISHED = new Set(['completed', 'cancelled', 'expired']);
 interface PublicJourneyDefinition {
   name: string | null;
   screens: JourneyScreen[];
-  brandingConfig: { primaryColor?: string } | null;
+  brandingConfig: { primaryColor?: string; bannerImageUrl?: string } | null;
 }
 
 interface PublicJourneyPayload {
@@ -38,12 +39,17 @@ interface PublicJourneyPayload {
 type PageState =
   | { kind: 'loading' }
   | { kind: 'invalid' }
-  | { kind: 'finished'; status: string; name: string | null; accent: string | null }
-  | { kind: 'active'; data: PublicJourneyPayload; accent: string | null };
+  | { kind: 'finished'; status: string; name: string | null; accent: string | null; bannerImageUrl: string | null }
+  | { kind: 'active'; data: PublicJourneyPayload; accent: string | null; bannerImageUrl: string | null };
 
 function accentFrom(def: PublicJourneyDefinition | null): string | null {
   const c = def?.brandingConfig?.primaryColor;
   return typeof c === 'string' && c.trim() ? c.trim() : null;
+}
+
+function bannerFrom(def: PublicJourneyDefinition | null): string | null {
+  const u = def?.brandingConfig?.bannerImageUrl;
+  return typeof u === 'string' && u.trim() ? u.trim() : null;
 }
 
 function finishedCopy(status: string): { title: string; body: string } {
@@ -120,6 +126,7 @@ export default function PublicJourneyPage() {
           : null;
         const normalized = { ...data, definition: def };
         const accent = accentFrom(def);
+        const bannerImageUrl = bannerFrom(def);
         const status = data.instance.status;
         if (FINISHED.has(status)) {
           setState({
@@ -127,10 +134,11 @@ export default function PublicJourneyPage() {
             status,
             name: def?.name ?? null,
             accent,
+            bannerImageUrl,
           });
           return;
         }
-        setState({ kind: 'active', data: normalized, accent });
+        setState({ kind: 'active', data: normalized, accent, bannerImageUrl });
       })
       .catch(() => {
         if (!cancelled) setState({ kind: 'invalid' });
@@ -186,6 +194,7 @@ export default function PublicJourneyPage() {
         data-status={state.status}
       >
         <div className="mx-auto w-full max-w-md rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+          <JourneyBanner url={state.bannerImageUrl} />
           {state.accent && (
             <div
               className="mb-4 h-1.5 w-16 rounded-full"
@@ -203,7 +212,7 @@ export default function PublicJourneyPage() {
     );
   }
 
-  const { data, accent } = state;
+  const { data, accent, bannerImageUrl } = state;
   const def = data.definition;
 
   return (
@@ -218,6 +227,7 @@ export default function PublicJourneyPage() {
           name={def?.name ?? null}
           screens={def?.screens ?? []}
           accent={accent}
+          bannerImageUrl={bannerImageUrl}
           companyId={companyId}
           journeyInstanceId={journeyInstanceId}
           token={token}

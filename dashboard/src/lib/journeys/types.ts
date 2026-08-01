@@ -19,7 +19,9 @@ export interface JourneyScreen {
 }
 
 export interface JourneyBrandingConfig {
-  primaryColor: string;
+  primaryColor?: string;
+  /** Absolute https URL shown as the public journey banner. Optional. */
+  bannerImageUrl?: string;
 }
 
 export interface JourneyDefinition {
@@ -45,7 +47,7 @@ export interface JourneyDefinitionFormValues {
   active: boolean;
   /** Ordered screens — Task 3b; create/update both persist this array. */
   screens: JourneyScreen[];
-  /** Minimal branding — architecture shape { primaryColor }. null = none. */
+  /** Branding — { primaryColor?, bannerImageUrl? }. null = none. */
   brandingConfig: JourneyBrandingConfig | null;
 }
 

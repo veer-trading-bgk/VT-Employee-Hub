@@ -13,7 +13,7 @@ export async function fetchJourneyDefinitions() {
   return res.definitions ?? [];
 }
 
-/** brandingConfig: { primaryColor } or null — only field anything downstream reads today. */
+/** brandingConfig: { primaryColor?, bannerImageUrl? } or null. */
 export async function createJourneyDefinition(form: JourneyDefinitionFormValues) {
   return apiFetch<CreateJourneyDefinitionResponse>(BASE, {
     method: 'POST',

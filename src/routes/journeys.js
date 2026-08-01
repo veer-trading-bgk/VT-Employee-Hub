@@ -77,11 +77,32 @@ const screenSchema = z.object({
   fields: z.array(screenFieldSchema).max(50).default([]),
 }).strict();
 
+// Public journey branding — only these keys are stored / returned on the
+// capability-URL GET whitelist. bannerImageUrl must be an absolute http(s)
+// URL (public page is unauthenticated; private S3 keys are not usable there).
+const brandingConfigSchema = z.object({
+  primaryColor:   z.string().trim().min(1).max(32).optional(),
+  bannerImageUrl: z.string().trim().url().max(2048).optional(),
+}).strict().nullable().optional();
+
+/** Strip unknown keys before returning branding on the public GET. */
+function publicBrandingConfig(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  if (typeof raw.primaryColor === 'string' && raw.primaryColor.trim()) {
+    out.primaryColor = raw.primaryColor.trim();
+  }
+  if (typeof raw.bannerImageUrl === 'string' && raw.bannerImageUrl.trim()) {
+    out.bannerImageUrl = raw.bannerImageUrl.trim();
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 const createDefSchema = z.object({
   name:             z.string().trim().min(1, 'name is required').max(200),
   industryPack:     z.string().trim().min(1).max(60).default('generic'),
   screens:          z.array(screenSchema).max(20).default([]),
-  brandingConfig:   z.record(z.string(), z.unknown()).nullable().optional(),
+  brandingConfig:   brandingConfigSchema,
   linkedWorkflowId: z.string().trim().min(1).max(80).nullable().optional(),
 }).strict();
 
@@ -89,7 +110,7 @@ const updateDefSchema = z.object({
   name:             z.string().trim().min(1).max(200).optional(),
   industryPack:     z.string().trim().min(1).max(60).optional(),
   screens:          z.array(screenSchema).max(20).optional(),
-  brandingConfig:   z.record(z.string(), z.unknown()).nullable().optional(),
+  brandingConfig:   brandingConfigSchema,
   linkedWorkflowId: z.string().trim().min(1).max(80).nullable().optional(),
   active:           z.boolean().optional(),
 }).strict().refine(
@@ -356,7 +377,7 @@ async function handlePublicGet(req, res, next) {
         definition = {
           name: def.name ?? null,
           screens: def.screens ?? [],
-          brandingConfig: def.brandingConfig ?? null,
+          brandingConfig: publicBrandingConfig(def.brandingConfig),
         };
       }
     }

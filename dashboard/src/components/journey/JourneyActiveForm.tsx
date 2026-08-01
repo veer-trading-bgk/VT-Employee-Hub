@@ -49,6 +49,27 @@ function isFilled(value: string | undefined): boolean {
   return Boolean(value && value.trim().length > 0);
 }
 
+/** Full-width ~3:1 banner; hides entirely on missing/broken URL. */
+export function JourneyBanner({ url }: { url: string | null | undefined }) {
+  const [failed, setFailed] = useState(false);
+  const src = typeof url === 'string' ? url.trim() : '';
+  if (!src || failed) return null;
+  return (
+    <div
+      className="mb-5 w-full overflow-hidden rounded-2xl bg-slate-100 aspect-[3/1]"
+      data-testid="journey-banner"
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element -- arbitrary customer URL; next/image needs a remotePatterns allowlist we don't have */}
+      <img
+        src={src}
+        alt=""
+        className="h-full w-full object-cover"
+        onError={() => setFailed(true)}
+      />
+    </div>
+  );
+}
+
 function ScreenStepBar({
   screens,
   step,
@@ -93,6 +114,7 @@ export function JourneyActiveForm({
   name,
   screens,
   accent,
+  bannerImageUrl,
   companyId,
   journeyInstanceId,
   token,
@@ -102,6 +124,8 @@ export function JourneyActiveForm({
   name: string | null;
   screens: JourneyScreen[];
   accent: string | null;
+  /** Optional public banner from brandingConfig.bannerImageUrl. */
+  bannerImageUrl?: string | null;
   companyId: string;
   journeyInstanceId: string;
   token: string;
@@ -206,6 +230,7 @@ export function JourneyActiveForm({
   if (done) {
     return (
       <div data-testid="journey-submitted" className="text-center">
+        <JourneyBanner url={bannerImageUrl} />
         {accent && (
           <div
             className="mx-auto mb-3 h-1.5 w-16 rounded-full"
@@ -224,6 +249,7 @@ export function JourneyActiveForm({
   if (review) {
     return (
       <div data-testid="journey-review">
+        <JourneyBanner url={bannerImageUrl} />
         <header className="mb-6 text-center">
           {accent && (
             <div
@@ -306,6 +332,7 @@ export function JourneyActiveForm({
 
   return (
     <div data-testid="journey-form">
+      <JourneyBanner url={bannerImageUrl} />
       <header className="mb-4 text-center">
         {accent && (
           <div
