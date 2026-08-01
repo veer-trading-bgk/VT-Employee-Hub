@@ -360,3 +360,93 @@ test.describe('Public journey webhook submit (Phase 3 Task 3)', () => {
     expect(posts).toBe(2);
   });
 });
+
+test.describe('Public journey light contrast (system/app dark)', () => {
+  test('Input/Select stay light when html.dark would otherwise apply; admin theme restored on leave', async ({ page }) => {
+    // Root layout + ThemeProvider default to .dark when vt-theme !== 'light'.
+    // Emulate an admin (or phone) that already prefers dark before landing.
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem('vt-theme', 'dark');
+      } catch { /* ignore */ }
+      document.documentElement.classList.add('dark');
+    });
+
+    await page.route('**/api/journeys/**', async (route) => {
+      if (route.request().method() === 'OPTIONS') {
+        await route.fulfill({ status: 204, headers: { ...CORS, 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' } });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: CORS,
+        body: JSON.stringify({
+          success: true,
+          instance: { journeyInstanceId: IID, status: 'opened' },
+          definition: MULTI_SCREEN_DEF,
+        }),
+      });
+    });
+
+    await page.route('**/api/auth/**', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        headers: CORS,
+        body: JSON.stringify({ error: 'unauthenticated' }),
+      });
+    });
+
+    await page.goto(`/journey/${CID}/${IID}/${TOKEN}`);
+    await expect(page.getByTestId('journey-light-shell')).toBeVisible();
+    await expect(page.getByTestId('journey-form')).toBeVisible();
+
+    // Shell must clear html.dark for this visit (wins over ThemeProvider).
+    await expect.poll(async () =>
+      page.evaluate(() => document.documentElement.classList.contains('dark')),
+    ).toBe(false);
+
+    const nameInput = page.getByLabel('Full name');
+    const visitSelect = page.getByLabel('Visit type');
+    await expect(nameInput).toBeVisible();
+
+    const [inputBg, selectBg, colorScheme] = await Promise.all([
+      nameInput.evaluate((el) => getComputedStyle(el).backgroundColor),
+      visitSelect.evaluate((el) => getComputedStyle(el).backgroundColor),
+      page.evaluate(() => getComputedStyle(document.documentElement).colorScheme),
+    ]);
+
+    // v3 Input/Select use bg-white → rgb(255, 255, 255). dark:bg-neutral-900
+    // would be a near-navy (~rgb(23, 23, 23) / similar) — reject dark surfaces.
+    expect(inputBg).toMatch(/^rgb\(\s*255,\s*255,\s*255\s*\)$/);
+    expect(selectBg).toMatch(/^rgb\(\s*255,\s*255,\s*255\s*\)$/);
+    expect(colorScheme).toBe('light');
+
+    // Leave the (journey) layout via same-document navigation so cleanup runs
+    // without a full reload (full reload would re-run the root bootstrap and
+    // mask a broken restore). Next App Router intercepts same-origin <a> clicks.
+    await page.evaluate(() => {
+      const a = document.createElement('a');
+      a.href = '/login';
+      a.setAttribute('data-testid', 'e2e-leave-journey');
+      a.textContent = 'leave';
+      a.style.cssText = 'position:fixed;left:0;top:0;z-index:9999';
+      document.body.appendChild(a);
+    });
+    await page.getByTestId('e2e-leave-journey').click();
+    await page.waitForURL(/\/login/);
+    await expect(page.getByTestId('journey-light-shell')).toHaveCount(0);
+
+    // Cleanup must restore the admin's vt-theme=dark preference on <html>.
+    await expect.poll(async () =>
+      page.evaluate(() => document.documentElement.style.colorScheme),
+    ).toBe('');
+    await expect.poll(async () =>
+      page.evaluate(() => document.documentElement.classList.contains('dark')),
+    ).toBe(true);
+    await expect.poll(async () =>
+      page.evaluate(() => localStorage.getItem('vt-theme')),
+    ).toBe('dark');
+  });
+});
