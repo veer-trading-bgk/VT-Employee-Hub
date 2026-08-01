@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 /**
- * Phase 3 Task 1+2 — public journey page shells + multi-screen field form.
+ * Phase 3 Task 1–3 — public journey shells, multi-screen form, webhook submit.
  */
 test.use({ storageState: { cookies: [], origins: [] }, serviceWorkers: 'block' });
 
@@ -42,6 +42,17 @@ const MULTI_SCREEN_DEF = {
     },
   ],
 };
+
+async function fillThroughReview(page: import('@playwright/test').Page) {
+  await page.getByLabel('Full name').fill('Ada Lovelace');
+  await page.getByLabel('Visit type').selectOption('Follow-up');
+  await page.getByTestId('journey-continue').click();
+  await expect(page.getByLabel('Mobile')).toBeVisible();
+  await page.getByLabel('Mobile').fill('9876543210');
+  await page.getByLabel('Email').fill('ada@example.com');
+  await page.getByTestId('journey-continue').click();
+  await expect(page.getByTestId('journey-review')).toBeVisible();
+}
 
 test.describe('Public journey route scaffold (Phase 3 Task 1)', () => {
   test('active / finished / invalid states render distinct shells', async ({ page }) => {
@@ -123,7 +134,7 @@ test.describe('Public journey field form (Phase 3 Task 2)', () => {
   test('multi-screen nav, required blocking, and collected payload shape', async ({ page }) => {
     await page.route('**/api/journeys/**', async (route) => {
       if (route.request().method() === 'OPTIONS') {
-        await route.fulfill({ status: 204, headers: { ...CORS, 'Access-Control-Allow-Methods': 'GET, OPTIONS' } });
+        await route.fulfill({ status: 204, headers: { ...CORS, 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' } });
         return;
       }
       await route.fulfill({
@@ -152,23 +163,12 @@ test.describe('Public journey field form (Phase 3 Task 2)', () => {
     await expect(page.getByTestId('journey-step-bar')).toBeVisible();
     await expect(page.getByText('Patient', { exact: true }).first()).toBeVisible();
 
-    // Required blocking — empty continue stays on screen 1
     await page.getByTestId('journey-continue').click();
     await expect(page.getByText('This field is required').first()).toBeVisible();
     await expect(page.getByLabel('Full name')).toBeVisible();
 
-    await page.getByLabel('Full name').fill('Ada Lovelace');
-    await page.getByLabel('Visit type').selectOption('Follow-up');
-    await page.getByTestId('journey-continue').click();
+    await fillThroughReview(page);
 
-    // Screen 2
-    await expect(page.getByLabel('Mobile')).toBeVisible();
-    await page.getByLabel('Mobile').fill('9876543210');
-    await page.getByLabel('Email').fill('ada@example.com');
-    await page.getByTestId('journey-continue').click();
-
-    // Review — payload shape matches create_journey_record keys
-    await expect(page.getByTestId('journey-review')).toBeVisible();
     const json = await page.getByTestId('journey-collected-json').innerText();
     const parsed = JSON.parse(json) as {
       journeyRecord: Record<string, string>;
@@ -183,10 +183,166 @@ test.describe('Public journey field form (Phase 3 Task 2)', () => {
       email: 'ada@example.com',
     });
     expect(parsed.submittedData).toEqual(parsed.journeyRecord);
+  });
+});
 
-    const win = await page.evaluate(() =>
-      (window as Window & { __journeyCollected?: unknown }).__journeyCollected,
-    );
-    expect(win).toEqual(parsed);
+test.describe('Public journey webhook submit (Phase 3 Task 3)', () => {
+  test('200 webhook → thank-you screen; body is collectedPayload', async ({ page }) => {
+    let webhookBody: unknown = null;
+
+    await page.route('**/api/journeys/**', async (route) => {
+      const req = route.request();
+      const url = req.url();
+      if (req.method() === 'OPTIONS') {
+        await route.fulfill({ status: 204, headers: { ...CORS, 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' } });
+        return;
+      }
+      if (req.method() === 'POST' && url.includes('/webhook/')) {
+        webhookBody = req.postDataJSON();
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: CORS,
+          body: JSON.stringify({ success: true, executionId: 'exec-1' }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: CORS,
+        body: JSON.stringify({
+          success: true,
+          instance: { journeyInstanceId: IID, status: 'opened' },
+          definition: MULTI_SCREEN_DEF,
+        }),
+      });
+    });
+
+    await page.route('**/api/auth/**', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        headers: CORS,
+        body: JSON.stringify({ error: 'unauthenticated' }),
+      });
+    });
+
+    await page.goto(`/journey/${CID}/${IID}/${TOKEN}`);
+    await fillThroughReview(page);
+
+    const json = await page.getByTestId('journey-collected-json').innerText();
+    const expected = JSON.parse(json);
+
+    await page.getByTestId('journey-submit').click();
+    await expect(page.getByTestId('journey-submitted')).toBeVisible();
+    await expect(page.getByText('Thank you')).toBeVisible();
+    expect(webhookBody).toEqual(expected);
+  });
+
+  test('404 webhook → Task 1 invalid view', async ({ page }) => {
+    await page.route('**/api/journeys/**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') {
+        await route.fulfill({ status: 204, headers: { ...CORS, 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' } });
+        return;
+      }
+      if (req.method() === 'POST' && req.url().includes('/webhook/')) {
+        await route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          headers: CORS,
+          body: JSON.stringify({ error: 'Not found' }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: CORS,
+        body: JSON.stringify({
+          success: true,
+          instance: { journeyInstanceId: IID, status: 'opened' },
+          definition: MULTI_SCREEN_DEF,
+        }),
+      });
+    });
+
+    await page.route('**/api/auth/**', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        headers: CORS,
+        body: JSON.stringify({ error: 'unauthenticated' }),
+      });
+    });
+
+    await page.goto(`/journey/${CID}/${IID}/${TOKEN}`);
+    await fillThroughReview(page);
+    await page.getByTestId('journey-submit').click();
+    await expect(page.getByTestId('journey-invalid')).toBeVisible();
+    await expect(page.getByText('Link not found or expired')).toBeVisible();
+  });
+
+  test('5xx webhook → retryable error, not invalid view', async ({ page }) => {
+    let posts = 0;
+    await page.route('**/api/journeys/**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') {
+        await route.fulfill({ status: 204, headers: { ...CORS, 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' } });
+        return;
+      }
+      if (req.method() === 'POST' && req.url().includes('/webhook/')) {
+        posts += 1;
+        if (posts === 1) {
+          await route.fulfill({
+            status: 502,
+            contentType: 'application/json',
+            headers: CORS,
+            body: JSON.stringify({ error: 'Bad gateway' }),
+          });
+          return;
+        }
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: CORS,
+          body: JSON.stringify({ success: true, executionId: 'exec-retry' }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: CORS,
+        body: JSON.stringify({
+          success: true,
+          instance: { journeyInstanceId: IID, status: 'opened' },
+          definition: MULTI_SCREEN_DEF,
+        }),
+      });
+    });
+
+    await page.route('**/api/auth/**', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        headers: CORS,
+        body: JSON.stringify({ error: 'unauthenticated' }),
+      });
+    });
+
+    await page.goto(`/journey/${CID}/${IID}/${TOKEN}`);
+    await fillThroughReview(page);
+    await page.getByTestId('journey-submit').click();
+
+    await expect(page.getByTestId('journey-submit-error')).toBeVisible();
+    await expect(page.getByText('Something went wrong')).toBeVisible();
+    await expect(page.getByTestId('journey-invalid')).toHaveCount(0);
+    await expect(page.getByTestId('journey-review')).toBeVisible();
+
+    await page.getByTestId('journey-submit-error').getByRole('button', { name: 'Try again' }).click();
+    await expect(page.getByTestId('journey-submitted')).toBeVisible();
+    expect(posts).toBe(2);
   });
 });

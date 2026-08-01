@@ -1,18 +1,20 @@
 'use client';
 
 /**
- * Active-journey multi-screen form (Phase 3 Task 2).
+ * Active-journey multi-screen form (Phase 3 Task 2 + Task 3).
  * Reuses v3 Input/Select/Button (auth-free — only import @/lib/cn).
  * Step navigation mirrors onboarding's step index + Back/Continue pattern.
  * Collected values are a flat Record<fieldId, string>; submit-ready payload
  * wraps as { journeyRecord, submittedData } — keys create_journey_record reads
  * (AutomationEngine.js: ctx.journeyRecord ?? ctx.submittedData).
+ * Final Submit POSTs Task 8's webhook-resume route (Option A) — not /submit.
  */
 
 import { useMemo, useState } from 'react';
 import { Input } from '@/components/v3/ui/Input';
 import { Select } from '@/components/v3/ui/Select';
 import { Button } from '@/components/v3/ui/Button';
+import { ErrorState } from '@/components/v3/ui/ErrorState';
 
 export interface JourneyScreenField {
   id: string;
@@ -91,10 +93,21 @@ export function JourneyActiveForm({
   name,
   screens,
   accent,
+  companyId,
+  journeyInstanceId,
+  token,
+  apiBase,
+  onInvalid,
 }: {
   name: string | null;
   screens: JourneyScreen[];
   accent: string | null;
+  companyId: string;
+  journeyInstanceId: string;
+  token: string;
+  apiBase: string;
+  /** Non-200 webhook → reuse Task 1 invalid shell (flat 404 from Task 8). */
+  onInvalid: () => void;
 }) {
   const safeScreens = useMemo(
     () => (Array.isArray(screens) && screens.length > 0
@@ -107,6 +120,10 @@ export function JourneyActiveForm({
   const [values, setValues] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [review, setReview] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+  /** Transient server/network failure — distinct from Task 8's flat 404 (invalid link). */
+  const [submitError, setSubmitError] = useState(false);
 
   const current = safeScreens[Math.min(step, safeScreens.length - 1)];
   const isLast = step >= safeScreens.length - 1;
@@ -141,14 +158,6 @@ export function JourneyActiveForm({
   function handleContinue() {
     if (!validateCurrentScreen()) return;
     if (isLast) {
-      const payload: JourneySubmitPayload = {
-        journeyRecord: values,
-        submittedData: values,
-      };
-      if (typeof window !== 'undefined') {
-        (window as Window & { __journeyCollected?: JourneySubmitPayload }).__journeyCollected =
-          payload;
-      }
       setReview(true);
       return;
     }
@@ -161,6 +170,55 @@ export function JourneyActiveForm({
       return;
     }
     setStep((s) => Math.max(0, s - 1));
+  }
+
+  async function handleSubmit() {
+    if (submitting) return;
+    setSubmitting(true);
+    setSubmitError(false);
+    try {
+      const res = await fetch(
+        `${apiBase}/api/journeys/webhook/${encodeURIComponent(companyId)}/${encodeURIComponent(journeyInstanceId)}/${encodeURIComponent(token)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(collectedPayload),
+        },
+      );
+      // Task 8 collapses invalid-token / already-resumed / timed-out into 404 only.
+      if (res.status === 404) {
+        onInvalid();
+        return;
+      }
+      if (!res.ok) {
+        setSubmitError(true);
+        return;
+      }
+      setDone(true);
+    } catch {
+      // Network / offline / abort — recoverable; do not claim the link is dead.
+      setSubmitError(true);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (done) {
+    return (
+      <div data-testid="journey-submitted" className="text-center">
+        {accent && (
+          <div
+            className="mx-auto mb-3 h-1.5 w-16 rounded-full"
+            style={{ backgroundColor: accent }}
+            aria-hidden
+          />
+        )}
+        <h1 className="text-xl font-semibold text-slate-900">Thank you</h1>
+        <p className="mt-2 text-sm text-slate-600">
+          Your responses have been submitted. You can close this page.
+        </p>
+      </div>
+    );
   }
 
   if (review) {
@@ -177,7 +235,7 @@ export function JourneyActiveForm({
           <h1 className="text-xl font-semibold text-slate-900">
             {name?.trim() || 'Journey'}
           </h1>
-          <p className="mt-1 text-sm text-slate-500">Review your answers (not submitted yet).</p>
+          <p className="mt-1 text-sm text-slate-500">Review your answers before submitting.</p>
         </header>
 
         <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
@@ -190,18 +248,34 @@ export function JourneyActiveForm({
           >
             {JSON.stringify(collectedPayload, null, 2)}
           </pre>
+          {submitError && (
+            <div className="mt-4" data-testid="journey-submit-error">
+              <ErrorState
+                title="Something went wrong"
+                message="We could not submit your answers. Check your connection and try again — your link is still valid."
+                onRetry={handleSubmit}
+              />
+            </div>
+          )}
           <div className="mt-4 flex gap-3">
-            <Button type="button" variant="secondary" className="flex-1" onClick={handleBack}>
+            <Button
+              type="button"
+              variant="secondary"
+              className="flex-1"
+              onClick={handleBack}
+              disabled={submitting}
+            >
               Back
             </Button>
             <Button
               type="button"
               className="flex-[2]"
               style={accent ? { backgroundColor: accent } : undefined}
-              disabled
-              title="Submit wires in Phase 3 Task 3"
+              onClick={handleSubmit}
+              disabled={submitting}
+              data-testid="journey-submit"
             >
-              Submit (next task)
+              {submitting ? 'Submitting…' : submitError ? 'Try again' : 'Submit'}
             </Button>
           </div>
         </div>

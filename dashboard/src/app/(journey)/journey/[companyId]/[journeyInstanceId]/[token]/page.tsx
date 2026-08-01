@@ -88,9 +88,9 @@ export default function PublicJourneyPage() {
     token: string;
   }>();
 
-  const companyId = params.companyId;
-  const journeyInstanceId = params.journeyInstanceId;
-  const token = params.token;
+  const companyId = String(params.companyId ?? '');
+  const journeyInstanceId = String(params.journeyInstanceId ?? '');
+  const token = String(params.token ?? '');
 
   const [state, setState] = useState<PageState>({ kind: 'loading' });
 
@@ -218,6 +218,11 @@ export default function PublicJourneyPage() {
           name={def?.name ?? null}
           screens={def?.screens ?? []}
           accent={accent}
+          companyId={companyId}
+          journeyInstanceId={journeyInstanceId}
+          token={token}
+          apiBase={API_BASE}
+          onInvalid={() => setState({ kind: 'invalid' })}
         />
       </div>
     </div>
