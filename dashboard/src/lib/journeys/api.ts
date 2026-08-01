@@ -13,14 +13,14 @@ export async function fetchJourneyDefinitions() {
   return res.definitions ?? [];
 }
 
-/** Task 3a create — screens always [], brandingConfig always null. */
+/** brandingConfig always null until a later branding task. */
 export async function createJourneyDefinition(form: JourneyDefinitionFormValues) {
   return apiFetch<CreateJourneyDefinitionResponse>(BASE, {
     method: 'POST',
     body: JSON.stringify({
       name: form.name.trim(),
       industryPack: form.industryPack.trim() || 'generic',
-      screens: [],
+      screens: form.screens,
       brandingConfig: null,
       linkedWorkflowId: form.linkedWorkflowId,
     }),
@@ -36,7 +36,8 @@ export async function updateJourneyDefinition(id: string, form: JourneyDefinitio
       industryPack: form.industryPack.trim() || 'generic',
       linkedWorkflowId: form.linkedWorkflowId,
       active: form.active,
-      // screens / brandingConfig intentionally omitted — Task 3b / later branding.
+      screens: form.screens,
+      // brandingConfig intentionally omitted — later branding task.
     }),
     retries: 0,
   });

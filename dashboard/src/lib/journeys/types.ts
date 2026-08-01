@@ -39,6 +39,8 @@ export interface JourneyDefinitionFormValues {
   industryPack: string;
   linkedWorkflowId: string | null;
   active: boolean;
+  /** Ordered screens — Task 3b; create/update both persist this array. */
+  screens: JourneyScreen[];
 }
 
 export interface ListJourneyDefinitionsResponse {
