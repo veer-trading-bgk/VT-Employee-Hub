@@ -9,7 +9,7 @@ const PipelineService = require('./PipelineService');
 const { resolveWelcomeVariables, resolveTemplateParams } = require('../utils/welcomeVariables');
 const { to10Digit } = require('../utils/phone');
 const { generateJourneyId } = require('../core/id');
-const { journeyPK, journeyMetaSK, journeyRecordSK, leadPK: buildLeadPK } = require('../core/entityKeys');
+const { journeyPK, journeyMetaSK, journeyRecordSK, journeysByCompanyGsiPK, leadPK: buildLeadPK } = require('../core/entityKeys');
 const { newMeta, updateMeta } = require('../core/systemMeta');
 const { publishEvent } = require('../events/publisher');
 const { E, ENTITY } = require('../events/catalog');
@@ -1254,6 +1254,9 @@ class AutomationEngine {
             leadPK: leadPK ?? null,
             leadId: leadId ?? null,
             contactId: ctx.contactId ?? null,
+            // JourneysByCompany GSI (Task 6 instances list / Task 9 migration).
+            // createdAt from newMeta() is the GSI range key — do not duplicate it.
+            journeysByCompanyGsiPK: journeysByCompanyGsiPK(companyId),
             ...meta,
           },
         }).promise();

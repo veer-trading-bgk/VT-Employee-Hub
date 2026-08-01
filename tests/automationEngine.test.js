@@ -53,7 +53,7 @@ const InstagramCommentService = require('../src/services/InstagramCommentService
 const CustomerIdentityService = require('../src/services/CustomerIdentityService');
 const { publishEvent } = require('../src/events/publisher');
 const { E, ENTITY } = require('../src/events/catalog');
-const { journeyPK, journeyMetaSK, journeyRecordSK } = require('../src/core/entityKeys');
+const { journeyPK, journeyMetaSK, journeyRecordSK, journeysByCompanyGsiPK } = require('../src/core/entityKeys');
 const logger = require('../src/config/logger');
 const engine = require('../src/services/AutomationEngine');
 const { guardedUpdateMock } = require('./helpers/dynamoReservedWords');
@@ -3023,6 +3023,8 @@ describe('AutomationEngine — open_web_journey (Journey Platform Phase 1 Task 5
       executionId: 'exec-open-1',
       version: 1,
       tokenHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      journeysByCompanyGsiPK: journeysByCompanyGsiPK(CID),
+      createdAt: expect.any(String),
     }));
     expect(item.rawToken).toBeUndefined();
     expect(item.token).toBeUndefined();
