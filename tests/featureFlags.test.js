@@ -47,7 +47,7 @@ describe('DEFAULTS', () => {
     const expected = [
       'contact_hub', 'workflow_builder',
       'multi_pipeline', 'broadcast_campaigns', 'conversation_v2_ui',
-      'lead_timeline',
+      'lead_timeline', 'journeys_platform',
     ];
     for (const name of expected) {
       expect(featureFlags.DEFAULTS).toHaveProperty(name);

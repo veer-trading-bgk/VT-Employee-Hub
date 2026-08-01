@@ -20,9 +20,16 @@ jest.mock('../src/services/AutomationEngine', () => ({
   fireTrigger: jest.fn(),
   runWorkflowDirect: jest.fn(),
 }));
+jest.mock('../src/utils/featureFlags', () => ({
+  isEnabled: jest.fn().mockResolvedValue(true),
+  getFlags: jest.fn(),
+  DEFAULTS: { journeys_platform: false },
+  _clearCache: jest.fn(),
+}));
 
 const dynamodb = require('../src/config/dynamodb');
 const AutomationEngine = require('../src/services/AutomationEngine');
+const { isEnabled } = require('../src/utils/featureFlags');
 const {
   journeyDefPK,
   journeyDefSK,
@@ -60,6 +67,7 @@ function mockRes() {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  isEnabled.mockResolvedValue(true);
   dynamodb.put.mockReturnValue(resolved({}));
   dynamodb.get.mockReturnValue(resolved({}));
   dynamodb.update.mockReturnValue(resolved({}));
@@ -362,8 +370,8 @@ describe('Journey routes — role gates (forms.js precedent)', () => {
 const crypto = require('crypto');
 const RAW_TOKEN = 'a'.repeat(48); // crypto.randomBytes(24).toString('hex') length
 const TOKEN_HASH = crypto.createHash('sha256').update(RAW_TOKEN).digest('hex');
-const handlePublicGet = journeysRouter.publicGet[1];
-const handlePublicSubmit = journeysRouter.publicSubmit[1];
+const handlePublicGet = journeysRouter.publicGet[journeysRouter.publicGet.length - 1];
+const handlePublicSubmit = journeysRouter.publicSubmit[journeysRouter.publicSubmit.length - 1];
 
 function futureExpiry(ms = 3_600_000) {
   return new Date(Date.now() + ms).toISOString();
@@ -589,17 +597,15 @@ describe('POST /api/journeys/.../submit (public)', () => {
 });
 
 describe('Public journey routes — rate-limit composition (automations.js sibling)', () => {
-  test('publicGet / publicSubmit are [rateLimit(30, 60s), handler] arrays like inboundWebhook', () => {
+  test('publicGet / publicSubmit are [rateLimit, flagGuard, handler] arrays (Task 11 adds flag guard)', () => {
     const automationsRouter = require('../src/routes/automations');
     expect(Array.isArray(journeysRouter.publicGet)).toBe(true);
     expect(Array.isArray(journeysRouter.publicSubmit)).toBe(true);
-    expect(journeysRouter.publicGet).toHaveLength(2);
-    expect(journeysRouter.publicSubmit).toHaveLength(2);
-    expect(typeof journeysRouter.publicGet[0]).toBe('function');
-    expect(typeof journeysRouter.publicGet[1]).toBe('function');
-    expect(typeof journeysRouter.publicSubmit[0]).toBe('function');
-    expect(typeof journeysRouter.publicSubmit[1]).toBe('function');
-    // Same composition shape as automations inboundWebhook export.
+    expect(journeysRouter.publicGet).toHaveLength(3);
+    expect(journeysRouter.publicSubmit).toHaveLength(3);
+    expect(journeysRouter.publicGet.every((fn) => typeof fn === 'function')).toBe(true);
+    expect(journeysRouter.publicSubmit.every((fn) => typeof fn === 'function')).toBe(true);
+    // Automations inboundWebhook stays [rateLimit, handler] — journeys adds a flag layer.
     expect(automationsRouter.inboundWebhook).toHaveLength(2);
     expect(typeof automationsRouter.inboundWebhook[0]).toBe('function');
     expect(typeof automationsRouter.inboundWebhook[1]).toBe('function');
@@ -607,10 +613,11 @@ describe('Public journey routes — rate-limit composition (automations.js sibli
 });
 
 describe('POST /api/journeys/webhook/:companyId/:journeyInstanceId/:token (Task 8)', () => {
-  const handlePublicWebhook = journeysRouter.publicWebhook[1];
+  const handlePublicWebhook = journeysRouter.publicWebhook[journeysRouter.publicWebhook.length - 1];
 
   beforeEach(() => {
     jest.clearAllMocks();
+    isEnabled.mockResolvedValue(true);
     process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
   });
 
@@ -695,10 +702,56 @@ describe('POST /api/journeys/webhook/:companyId/:journeyInstanceId/:token (Task 
     expect(res2.json).toHaveBeenCalledWith({ error: 'Not found' });
   });
 
-  test('publicWebhook rate-limit composition mirrors Task 7 / inboundWebhook', () => {
+  test('publicWebhook rate-limit composition is [rateLimit, flagGuard, handler]', () => {
     expect(Array.isArray(journeysRouter.publicWebhook)).toBe(true);
-    expect(journeysRouter.publicWebhook).toHaveLength(2);
-    expect(typeof journeysRouter.publicWebhook[0]).toBe('function');
-    expect(typeof journeysRouter.publicWebhook[1]).toBe('function');
+    expect(journeysRouter.publicWebhook).toHaveLength(3);
+    expect(journeysRouter.publicWebhook.every((fn) => typeof fn === 'function')).toBe(true);
+  });
+});
+
+describe('journeys_platform feature flag kill-switch (Task 11)', () => {
+  function adminFlagGuard() {
+    return journeysRouter.stack.find((l) => !l.route)?.handle;
+  }
+  const publicFlagGuard = () => journeysRouter.publicGet[1];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    isEnabled.mockResolvedValue(false);
+  });
+
+  test('admin router guard returns 403 when flag is off', async () => {
+    const guard = adminFlagGuard();
+    expect(typeof guard).toBe('function');
+    const res = mockRes();
+    const next = jest.fn();
+    await guard({ user: ADMIN }, res, next);
+    expect(isEnabled).toHaveBeenCalledWith(CID, 'journeys_platform');
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({
+      success: false,
+      error: 'Journey Platform is not enabled',
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  test('admin router guard calls next when flag is on', async () => {
+    isEnabled.mockResolvedValue(true);
+    const res = mockRes();
+    const next = jest.fn();
+    await adminFlagGuard()({ user: ADMIN }, res, next);
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  test('public flag guard returns flat 404 when flag is off (before token validation)', async () => {
+    const res = mockRes();
+    const next = jest.fn();
+    await publicFlagGuard()({ params: { companyId: CID } }, res, next);
+    expect(isEnabled).toHaveBeenCalledWith(CID, 'journeys_platform');
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Not found' });
+    expect(next).not.toHaveBeenCalled();
+    expect(dynamodb.get).not.toHaveBeenCalled();
   });
 });

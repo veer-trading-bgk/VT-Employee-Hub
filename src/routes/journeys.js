@@ -31,12 +31,35 @@ const {
 } = require('../core/entityKeys');
 const { newMeta, updateMeta } = require('../core/systemMeta');
 const AutomationEngine = require('../services/AutomationEngine');
+const { isEnabled } = require('../utils/featureFlags');
 
 const router = express.Router();
 const TABLE = () => process.env.DYNAMODB_TABLE_METRICS;
 
 // Same payload guard as automations.js inboundWebhook.
 const MAX_JOURNEY_PAYLOAD_BYTES = 100_000;
+
+// Journey Platform kill-switch (CONFIG#FLAGS journeys_platform, default false).
+// Admin: 403. Public: flat 404 (same shape as invalid token — do not advertise).
+async function requireJourneysPlatformAdmin(req, res, next) {
+  try {
+    if (!(await isEnabled(req.user.companyId, 'journeys_platform'))) {
+      return res.status(403).json({ success: false, error: 'Journey Platform is not enabled' });
+    }
+    next();
+  } catch (err) { next(err); }
+}
+
+async function requireJourneysPlatformPublic(req, res, next) {
+  try {
+    if (!(await isEnabled(req.params.companyId, 'journeys_platform'))) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    next();
+  } catch (err) { next(err); }
+}
+
+router.use(requireJourneysPlatformAdmin);
 
 // ── Zod schemas (strict — unknown fields rejected) ───────────────────────────
 
@@ -439,6 +462,6 @@ module.exports = router;
 module.exports.validateJourneyToken = validateJourneyToken;
 // Composed as arrays (rate-limit + handler) so app.js can mount in one line
 // without importing rateLimiter — same public-route pattern as inboundWebhook.
-module.exports.publicGet = [rateLimit(30, 60_000), handlePublicGet];
-module.exports.publicSubmit = [rateLimit(30, 60_000), handlePublicSubmit];
-module.exports.publicWebhook = [rateLimit(30, 60_000), handlePublicWebhook];
+module.exports.publicGet = [rateLimit(30, 60_000), requireJourneysPlatformPublic, handlePublicGet];
+module.exports.publicSubmit = [rateLimit(30, 60_000), requireJourneysPlatformPublic, handlePublicSubmit];
+module.exports.publicWebhook = [rateLimit(30, 60_000), requireJourneysPlatformPublic, handlePublicWebhook];

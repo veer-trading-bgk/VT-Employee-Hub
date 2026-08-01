@@ -39,6 +39,12 @@ jest.mock('../src/services/CustomerIdentityService', () => ({
 jest.mock('../src/events/publisher', () => ({
   publishEvent: jest.fn(),
 }));
+jest.mock('../src/utils/featureFlags', () => ({
+  isEnabled: jest.fn().mockResolvedValue(true),
+  getFlags: jest.fn(),
+  DEFAULTS: { journeys_platform: false },
+  _clearCache: jest.fn(),
+}));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
 }));
@@ -52,6 +58,7 @@ const InstagramSendService = require('../src/services/InstagramSendService');
 const InstagramCommentService = require('../src/services/InstagramCommentService');
 const CustomerIdentityService = require('../src/services/CustomerIdentityService');
 const { publishEvent } = require('../src/events/publisher');
+const { isEnabled } = require('../src/utils/featureFlags');
 const { E, ENTITY } = require('../src/events/catalog');
 const { journeyPK, journeyMetaSK, journeyRecordSK, journeysByCompanyGsiPK } = require('../src/core/entityKeys');
 const logger = require('../src/config/logger');
@@ -3000,6 +3007,7 @@ describe('AutomationEngine — open_web_journey (Journey Platform Phase 1 Task 5
     process.env.FRONTEND_URL = 'https://app.apforce.in';
     dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
     WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.open.ok' });
+    isEnabled.mockResolvedValue(true);
   });
 
   test('happy path: JOURNEY# META written with tokenHash (not raw token), status opened, version via newMeta', async () => {
@@ -3135,6 +3143,21 @@ describe('AutomationEngine — open_web_journey (Journey Platform Phase 1 Task 5
 
     expect(context.executionId).toBe('exec-open-stamp');
     expect(dynamodb.put.mock.calls[0][0].Item.executionId).toBe('exec-open-stamp');
+  });
+
+  test('journeys_platform flag off — hard-fails before META put / WA send / journey_opened', async () => {
+    isEnabled.mockResolvedValue(false);
+
+    await expect(engine._runAction(
+      CID,
+      { type: 'open_web_journey', config: { templateId: 'tmpl_journey', journeyDefId: DEF_ID } },
+      { phone: '9876543210', leadPK: LEAD_PK },
+    )).rejects.toThrow(/journeys_platform flag is disabled/);
+
+    expect(isEnabled).toHaveBeenCalledWith(CID, 'journeys_platform');
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(WASendSvc.sendTemplate).not.toHaveBeenCalled();
+    expect(publishEvent).not.toHaveBeenCalledWith(E.JOURNEY_OPENED, expect.anything());
   });
 });
 
@@ -3281,6 +3304,7 @@ describe('AutomationEngine — journey platform Phase 1 e2e (Task 10)', () => {
     process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
     process.env.FRONTEND_URL = 'https://app.apforce.in';
     WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.e2e.ok' });
+    isEnabled.mockResolvedValue(true);
   });
 
   test('webhook-arrival path: open → wait → resumeOnWebhook → RECORD → complete (id + payload continuity)', async () => {

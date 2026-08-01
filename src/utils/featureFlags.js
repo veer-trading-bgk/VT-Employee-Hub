@@ -30,6 +30,7 @@ const DEFAULTS = Object.freeze({
   broadcast_campaigns:  false,  // Phase 2 — WhatsApp broadcast campaign flows
   conversation_v2_ui:   false,  // Phase 2 — V2 conversation pane (CONV# entity)
   lead_timeline:        false,  // Phase 2 — Lead activity timeline sidebar
+  journeys_platform:    false,  // Journey Platform Phase 1 — kill-switch (admin + public + open_web_journey)
 });
 
 const _cache = new Map(); // companyId → { flags, expiresAt }

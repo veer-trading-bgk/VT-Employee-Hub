@@ -1230,6 +1230,13 @@ class AutomationEngine {
         if (!templateId || !phone) throw new Error('open_web_journey: templateId and phone required');
         if (!journeyDefId) throw new Error('open_web_journey: journeyDefId required');
 
+        // Kill-switch — same flag as routes/journeys.js. Hard-fail like send_template
+        // so a disabled flag never mints META / capability URLs / WA sends.
+        const { isEnabled } = require('../utils/featureFlags');
+        if (!(await isEnabled(companyId, 'journeys_platform'))) {
+          throw new Error('open_web_journey: journeys_platform flag is disabled');
+        }
+
         const journeyInstanceId = generateJourneyId();
         const rawToken = crypto.randomBytes(24).toString('hex');
         const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
