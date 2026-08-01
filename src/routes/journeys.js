@@ -30,6 +30,7 @@ const {
   GSI,
 } = require('../core/entityKeys');
 const { newMeta, updateMeta } = require('../core/systemMeta');
+const AutomationEngine = require('../services/AutomationEngine');
 
 const router = express.Router();
 const TABLE = () => process.env.DYNAMODB_TABLE_METRICS;
@@ -401,9 +402,43 @@ async function handlePublicSubmit(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// ── Public webhook-resume (Task 8) ───────────────────────────────────────────
+// Connects validateJourneyToken (Task 7) to AutomationEngine.resumeOnWebhook
+// (Task 4). No finished-status check here: once complete_journey/cancel_journey
+// (or a prior webhook claim / timeout) has run, the AUTO_WAIT# item is already
+// gone, so resumeOnWebhook returns { status: 'not_found' } on its own.
+async function handlePublicWebhook(req, res, next) {
+  try {
+    const contentLength = Number(req.headers['content-length'] ?? 0);
+    if (contentLength > MAX_JOURNEY_PAYLOAD_BYTES) {
+      return res.status(413).json({ error: 'Payload too large' });
+    }
+
+    const { companyId, journeyInstanceId, token } = req.params;
+    const validated = await validateJourneyToken(companyId, journeyInstanceId, token);
+    if (!validated.ok) return res.status(404).json({ error: 'Not found' });
+
+    // Payload passed through as-is — no schema validation (same accepted V1
+    // limitation as Task 7's submit body; see architecture doc risks).
+    const result = await AutomationEngine.resumeOnWebhook(
+      companyId,
+      journeyInstanceId,
+      req.body ?? {},
+    );
+
+    if (result?.status === 'resumed') {
+      return res.status(200).json({ success: true, executionId: result.executionId });
+    }
+    // Flat 404 — same body as invalid token. Task 4 collapses never-paused /
+    // already-resumed / timed-out into not_found; do not re-distinguish here.
+    return res.status(404).json({ error: 'Not found' });
+  } catch (err) { next(err); }
+}
+
 module.exports = router;
 module.exports.validateJourneyToken = validateJourneyToken;
 // Composed as arrays (rate-limit + handler) so app.js can mount in one line
 // without importing rateLimiter — same public-route pattern as inboundWebhook.
 module.exports.publicGet = [rateLimit(30, 60_000), handlePublicGet];
 module.exports.publicSubmit = [rateLimit(30, 60_000), handlePublicSubmit];
+module.exports.publicWebhook = [rateLimit(30, 60_000), handlePublicWebhook];

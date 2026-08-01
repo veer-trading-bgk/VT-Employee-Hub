@@ -126,7 +126,8 @@ app.post('/api/automations/_tick', automationsRoutes.processTick);
 app.post('/api/automations/webhook/:companyId/:workflowId/:token', automationsRoutes.inboundWebhook);
 app.use('/api/automations', authMiddleware, subscriptionMiddleware, automationsRoutes);
 app.use('/api/campaigns',  authMiddleware, subscriptionMiddleware, campaignsRoutes);
-// Journey public capability-URL — no auth; token is the credential (Task 7)
+// Journey public capability-URL — no auth; token is the credential (Task 7/8)
+app.post('/api/journeys/webhook/:companyId/:journeyInstanceId/:token', require('./routes/journeys').publicWebhook);
 app.get('/api/journeys/:companyId/:journeyInstanceId/:token', require('./routes/journeys').publicGet);
 app.post('/api/journeys/:companyId/:journeyInstanceId/:token/submit', require('./routes/journeys').publicSubmit);
 app.use('/api/journeys', authMiddleware, subscriptionMiddleware, require('./routes/journeys'));

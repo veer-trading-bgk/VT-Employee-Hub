@@ -605,3 +605,100 @@ describe('Public journey routes — rate-limit composition (automations.js sibli
     expect(typeof automationsRouter.inboundWebhook[1]).toBe('function');
   });
 });
+
+describe('POST /api/journeys/webhook/:companyId/:journeyInstanceId/:token (Task 8)', () => {
+  const handlePublicWebhook = journeysRouter.publicWebhook[1];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+  });
+
+  test('valid token + matching paused wait → resumeOnWebhook(req.body) → 200 with executionId', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance() }));
+    AutomationEngine.resumeOnWebhook.mockResolvedValue({ status: 'resumed', executionId: 'exec-wh-1' });
+    const body = { slot: '10:00', journeyRecord: { slot: '10:00' } };
+    const res = mockRes();
+
+    await handlePublicWebhook({
+      params: publicParams(),
+      headers: { 'content-length': '40' },
+      body,
+    }, res, jest.fn());
+
+    expect(AutomationEngine.resumeOnWebhook).toHaveBeenCalledWith(CID, JOURNEY_ID, body);
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({ success: true, executionId: 'exec-wh-1' });
+  });
+
+  test('valid token + no matching wait → 404 (same body as invalid token)', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance() }));
+    AutomationEngine.resumeOnWebhook.mockResolvedValue({ status: 'not_found' });
+    const res = mockRes();
+
+    await handlePublicWebhook({
+      params: publicParams(),
+      headers: {},
+      body: {},
+    }, res, jest.fn());
+
+    expect(AutomationEngine.resumeOnWebhook).toHaveBeenCalledTimes(1);
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Not found' });
+  });
+
+  test('invalid token → 404 and resumeOnWebhook is NOT called', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance() }));
+    const res = mockRes();
+
+    await handlePublicWebhook({
+      params: publicParams({ token: 'wrong-token' }),
+      headers: {},
+      body: { a: 1 },
+    }, res, jest.fn());
+
+    expect(AutomationEngine.resumeOnWebhook).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Not found' });
+  });
+
+  test('oversized body → 413 before any DB call', async () => {
+    const res = mockRes();
+    await handlePublicWebhook({
+      params: publicParams(),
+      headers: { 'content-length': '999999' },
+      body: {},
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(413);
+    expect(dynamodb.get).not.toHaveBeenCalled();
+    expect(AutomationEngine.resumeOnWebhook).not.toHaveBeenCalled();
+  });
+
+  test('double-delivery: first resumed → 200, second not_found → 404', async () => {
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance() }));
+    AutomationEngine.resumeOnWebhook
+      .mockResolvedValueOnce({ status: 'resumed', executionId: 'exec-once' })
+      .mockResolvedValueOnce({ status: 'not_found' });
+
+    const req = { params: publicParams(), headers: {}, body: { event: 'confirm' } };
+    const res1 = mockRes();
+    const res2 = mockRes();
+
+    await handlePublicWebhook(req, res1, jest.fn());
+    await handlePublicWebhook(req, res2, jest.fn());
+
+    expect(AutomationEngine.resumeOnWebhook).toHaveBeenCalledTimes(2);
+    expect(res1.status).toHaveBeenCalledWith(200);
+    expect(res1.json).toHaveBeenCalledWith({ success: true, executionId: 'exec-once' });
+    expect(res2.status).toHaveBeenCalledWith(404);
+    expect(res2.json).toHaveBeenCalledWith({ error: 'Not found' });
+  });
+
+  test('publicWebhook rate-limit composition mirrors Task 7 / inboundWebhook', () => {
+    expect(Array.isArray(journeysRouter.publicWebhook)).toBe(true);
+    expect(journeysRouter.publicWebhook).toHaveLength(2);
+    expect(typeof journeysRouter.publicWebhook[0]).toBe('function');
+    expect(typeof journeysRouter.publicWebhook[1]).toBe('function');
+  });
+});
