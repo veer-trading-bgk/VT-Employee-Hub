@@ -4,6 +4,7 @@ import type {
   GraphNode, GraphEdge, NodeType, NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig,
   SendMessageConfig, SendListConfig, SendLocationConfig, SendFlowConfig, MetaSignalConfig, SendInstagramMessageConfig,
   SendInstagramPrivateReplyConfig, WaitInstagramReplyConfig,
+  OpenWebJourneyConfig, WaitForWebhookConfig, CreateJourneyRecordConfig, CompleteJourneyConfig, CancelJourneyConfig,
   SendTemplateConfig, AssignEmployeeConfig, ChangeStageConfig, AddTagConfig, CreateTaskConfig,
   StartAiConversationConfig, TriggerType, WorkflowTrigger,
 } from '@/types/automations';
@@ -117,6 +118,11 @@ const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
   send_instagram_message: { width: 256, height: 84 },
   send_instagram_private_reply: { width: 256, height: 84 },
   wait_instagram_reply:          { width: 224, height: 92 },
+  open_web_journey:      { width: 256, height: 84 },
+  wait_for_webhook:      { width: 224, height: 92 },
+  create_journey_record: { width: 256, height: 84 },
+  complete_journey:      { width: 256, height: 84 },
+  cancel_journey:        { width: 256, height: 84 },
 };
 const DEFAULT_DIMENSIONS = { width: 240, height: 76 };
 
@@ -172,6 +178,20 @@ export function summarizeNodeConfig(nodeType: NodeType, config: NodeConfig): str
     case 'start_ai_conversation': return (config as StartAiConversationConfig).contextHint || 'Hand off to AI agent';
     case 'meta_signal':     return (config as MetaSignalConfig).metaEventName || 'No event selected';
     case 'send_instagram_message': return (config as SendInstagramMessageConfig).messageText || 'No message set';
+    case 'open_web_journey': {
+      const c = config as OpenWebJourneyConfig;
+      return c.journeyDefId || 'No journey definition';
+    }
+    case 'wait_for_webhook': {
+      const c = config as WaitForWebhookConfig;
+      return c.timeoutMinutes ? `${c.timeoutMinutes} min` : 'No timeout set';
+    }
+    case 'create_journey_record': {
+      const c = config as CreateJourneyRecordConfig;
+      return c.linkToLead ? 'Link to lead' : 'Record only';
+    }
+    case 'complete_journey': return (config as CompleteJourneyConfig).confirmationTemplateId || 'Mark completed';
+    case 'cancel_journey':   return (config as CancelJourneyConfig).reasonSource || 'Mark cancelled';
     default:                return '';
   }
 }
@@ -233,6 +253,27 @@ export function defaultSendInstagramPrivateReplyConfig(): SendInstagramPrivateRe
 
 export function defaultWaitInstagramReplyConfig(): WaitInstagramReplyConfig {
   return {}; // unset timeout -> AutomationEngine.js's UNBOUNDED_REPLY_WAIT_MS, same as an unset send_buttons reply timeout
+}
+
+export function defaultOpenWebJourneyConfig(): OpenWebJourneyConfig {
+  return { templateId: '', journeyDefId: '', expiryMinutes: 60, deliveryChannel: 'whatsapp' };
+}
+
+export function defaultWaitForWebhookConfig(): WaitForWebhookConfig {
+  // onTimeout must match the timeout Handle id on WaitForWebhookNode (TIMEOUT_HANDLE_ID).
+  return { timeoutMinutes: 60, onTimeout: '__timeout__' };
+}
+
+export function defaultCreateJourneyRecordConfig(): CreateJourneyRecordConfig {
+  return { linkToLead: false };
+}
+
+export function defaultCompleteJourneyConfig(): CompleteJourneyConfig {
+  return {};
+}
+
+export function defaultCancelJourneyConfig(): CancelJourneyConfig {
+  return { reasonSource: 'manual' };
 }
 
 // ── Save-time validation: unconnected branches ────────────────────────────────

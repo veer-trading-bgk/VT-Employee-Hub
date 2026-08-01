@@ -14,6 +14,11 @@ import { MetaSignalNode } from './MetaSignalNode';
 import { SendInstagramMessageNode } from './SendInstagramMessageNode';
 import { SendInstagramPrivateReplyNode } from './SendInstagramPrivateReplyNode';
 import { WaitInstagramReplyNode } from './WaitInstagramReplyNode';
+import { OpenWebJourneyNode } from './OpenWebJourneyNode';
+import { WaitForWebhookNode } from './WaitForWebhookNode';
+import { CreateJourneyRecordNode } from './CreateJourneyRecordNode';
+import { CompleteJourneyNode } from './CompleteJourneyNode';
+import { CancelJourneyNode } from './CancelJourneyNode';
 
 // Every ActionType except 'wait'/'end' shares the generic ActionNode shell.
 export const nodeTypes: NodeTypes = {
@@ -36,5 +41,10 @@ export const nodeTypes: NodeTypes = {
   send_instagram_message: SendInstagramMessageNode,
   send_instagram_private_reply: SendInstagramPrivateReplyNode,
   wait_instagram_reply:         WaitInstagramReplyNode,
+  open_web_journey:      OpenWebJourneyNode,
+  wait_for_webhook:      WaitForWebhookNode,
+  create_journey_record: CreateJourneyRecordNode,
+  complete_journey:      CompleteJourneyNode,
+  cancel_journey:        CancelJourneyNode,
   end:             EndNode,
 };

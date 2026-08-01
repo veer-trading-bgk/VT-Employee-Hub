@@ -1,6 +1,6 @@
 'use client';
 
-import { X, Trash2, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin, Workflow, Radio, Camera, Reply, Timer } from 'lucide-react';
+import { X, Trash2, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin, Workflow, Radio, Camera, Reply, Timer, Link2, Webhook, ClipboardList, CheckCircle2, Ban } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { ACTION_META, isConditionConfig, type ActionType, type NodeType } from '@/types/automations';
 import type { NodeConfig, ConditionNodeConfig, SendButtonsConfig, SendDocumentConfig, SendMessageConfig, SendListConfig, SendLocationConfig, SendFlowConfig, MetaSignalConfig, SendInstagramMessageConfig, SendInstagramPrivateReplyConfig, WaitInstagramReplyConfig, StepConfig } from '@/types/automations';
@@ -39,6 +39,12 @@ const EXTRA_TITLES: Partial<Record<NodeType, { label: string; icon: typeof GitBr
   send_instagram_message: { label: 'Instagram DM Reply', icon: Camera },
   send_instagram_private_reply: { label: 'Send Instagram Reply', icon: Reply },
   wait_instagram_reply:         { label: 'Wait for Instagram Reply', icon: Timer },
+  // Titles only for Task 1 — editors land in Task 2 (body falls through to empty ActionEditor).
+  open_web_journey:      { label: 'Open Web Journey',      icon: Link2 },
+  wait_for_webhook:      { label: 'Wait for Webhook',      icon: Webhook },
+  create_journey_record: { label: 'Create Journey Record', icon: ClipboardList },
+  complete_journey:      { label: 'Complete Journey',      icon: CheckCircle2 },
+  cancel_journey:        { label: 'Cancel Journey',        icon: Ban },
 };
 
 /**

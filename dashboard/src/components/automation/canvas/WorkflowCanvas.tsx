@@ -18,7 +18,10 @@ import {
   toReactFlow, fromReactFlow, applyDagreLayout, needsLayout,
   newNodeId, newEdgeId, defaultConditionConfig, defaultSendButtonsConfig, defaultSendDocumentConfig,
   defaultSendMessageConfig, defaultSendListConfig, defaultSendLocationConfig, defaultSendFlowConfig, defaultMetaSignalConfig, defaultSendInstagramMessageConfig,
-  defaultSendInstagramPrivateReplyConfig, defaultWaitInstagramReplyConfig, nextNodePosition,
+  defaultSendInstagramPrivateReplyConfig, defaultWaitInstagramReplyConfig,
+  defaultOpenWebJourneyConfig, defaultWaitForWebhookConfig, defaultCreateJourneyRecordConfig,
+  defaultCompleteJourneyConfig, defaultCancelJourneyConfig,
+  nextNodePosition,
   findIncompleteBranches, TRIGGER_NODE_ID, type CanvasNodeData,
 } from '@/lib/automationGraph';
 import { defaultConfig } from '../WorkflowBuilder';
@@ -126,6 +129,11 @@ export function WorkflowCanvas({ workflow, onSave }: WorkflowCanvasProps) {
       type === 'send_instagram_message' ? defaultSendInstagramMessageConfig() :
       type === 'send_instagram_private_reply' ? defaultSendInstagramPrivateReplyConfig() :
       type === 'wait_instagram_reply' ? defaultWaitInstagramReplyConfig() :
+      type === 'open_web_journey'      ? defaultOpenWebJourneyConfig() :
+      type === 'wait_for_webhook'      ? defaultWaitForWebhookConfig() :
+      type === 'create_journey_record' ? defaultCreateJourneyRecordConfig() :
+      type === 'complete_journey'      ? defaultCompleteJourneyConfig() :
+      type === 'cancel_journey'        ? defaultCancelJourneyConfig() :
                                   defaultConfig(type as ActionType);
     const newNode: Node<CanvasNodeData> = {
       id: newNodeId(),

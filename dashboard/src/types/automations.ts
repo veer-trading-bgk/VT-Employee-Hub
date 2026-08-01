@@ -158,7 +158,10 @@ export interface WorkflowStep {
 // ActionType, which the legacy linear model also uses and has no equivalent for.
 export type NodeType = ActionType | 'condition' | 'send_buttons' | 'send_document'
   | 'send_message' | 'send_list' | 'send_location' | 'send_flow' | 'meta_signal' | 'send_instagram_message'
-  | 'send_instagram_private_reply' | 'wait_instagram_reply';
+  | 'send_instagram_private_reply' | 'wait_instagram_reply'
+  // Journey Platform Phase 2 — graph-only (same posture as Instagram nodes).
+  | 'open_web_journey' | 'wait_for_webhook' | 'create_journey_record'
+  | 'complete_journey' | 'cancel_journey';
 
 // Optional image/video/document shown above the body text — Meta's Interactive
 // Message header field. WhatsAppSendService.sendInteractive() is a raw pass-through
@@ -314,6 +317,40 @@ export interface WaitInstagramReplyConfig {
   timeoutUnit?:   'minutes' | 'hours' | 'days';
 }
 
+// ── Journey Platform node configs (Phase 1 frozen contract → Phase 2 canvas) ──
+// Shapes match docs/Phase4 JOURNEY_PLATFORM_V1_PHASE1_IMPLEMENTATION_PLAN §6 /
+// AutomationEngine.js dispatch — canvas Task 1 registers types; Task 2 owns editors.
+
+export interface OpenWebJourneyConfig {
+  templateId:       string;
+  journeyDefId:     string;
+  expiryMinutes?:   number;
+  deliveryChannel:  'whatsapp';
+}
+
+export interface WaitForWebhookConfig {
+  webhookKey?:      string;
+  timeoutMinutes:   number;
+  /** Edge sourceHandle for the timeout branch — default `__timeout__` (TIMEOUT_HANDLE_ID). */
+  onTimeout:        string;
+}
+
+export interface CreateJourneyRecordConfig {
+  recordSchema?:    unknown;
+  linkToLead:       boolean;
+  // linkToContact reserved V1 — backend intentionally does not read it
+  // (would mislabel a Lead ID as a Contact ID). Do not re-add until wired.
+}
+
+export interface CompleteJourneyConfig {
+  confirmationTemplateId?: string;
+}
+
+export interface CancelJourneyConfig {
+  reasonSource:       'timeout' | 'user' | 'manual' | string;
+  notifyTemplateId?:  string;
+}
+
 export type ConditionMode = 'field_match' | 'boolean' | 'button_reply';
 
 export interface ConditionBranch {
@@ -336,7 +373,9 @@ export interface ConditionNodeConfig {
 
 export type NodeConfig = StepConfig | ConditionNodeConfig | SendButtonsConfig | SendDocumentConfig
   | SendMessageConfig | SendListConfig | SendLocationConfig | SendFlowConfig | MetaSignalConfig
-  | SendInstagramMessageConfig | SendInstagramPrivateReplyConfig | WaitInstagramReplyConfig;
+  | SendInstagramMessageConfig | SendInstagramPrivateReplyConfig | WaitInstagramReplyConfig
+  | OpenWebJourneyConfig | WaitForWebhookConfig | CreateJourneyRecordConfig
+  | CompleteJourneyConfig | CancelJourneyConfig;
 
 export interface NodePosition {
   x: number;

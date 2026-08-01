@@ -1,12 +1,16 @@
 'use client';
 
-import { Zap, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin, Workflow, Radio, Camera, Reply, Timer } from 'lucide-react';
+import {
+  Zap, GitBranch, MousePointerClick, FileText, MessageSquare, ListChecks, MapPin, Workflow, Radio, Camera, Reply, Timer,
+  Link2, Webhook, ClipboardList, CheckCircle2, Ban,
+} from 'lucide-react';
 import { ACTION_META, type ActionType, type NodeType } from '@/types/automations';
 import { ACTION_ICONS } from '../WorkflowBuilder';
 
 const PALETTE_GROUPS: Array<{ label: string; types: NodeType[] }> = [
   { label: 'Messaging', types: ['send_template', 'send_message', 'send_buttons', 'send_list', 'send_document', 'send_location', 'send_flow'] },
   { label: 'Instagram', types: ['send_instagram_message', 'send_instagram_private_reply', 'wait_instagram_reply'] },
+  { label: 'Journey', types: ['open_web_journey', 'wait_for_webhook', 'create_journey_record', 'complete_journey', 'cancel_journey'] },
   { label: 'CRM Actions', types: ['assign_employee', 'change_stage', 'add_tag', 'create_task', 'meta_signal'] },
   { label: 'AI', types: ['start_ai_conversation'] },
   { label: 'Logic', types: ['wait', 'condition', 'end'] },
@@ -26,6 +30,11 @@ const EXTRA_META: Partial<Record<NodeType, { label: string; icon: typeof GitBran
   send_instagram_message: { label: 'Instagram DM Reply', icon: Camera },
   send_instagram_private_reply: { label: 'Send Instagram Reply', icon: Reply },
   wait_instagram_reply:         { label: 'Wait for Instagram Reply', icon: Timer },
+  open_web_journey:      { label: 'Open Web Journey',      icon: Link2 },
+  wait_for_webhook:      { label: 'Wait for Webhook',      icon: Webhook },
+  create_journey_record: { label: 'Create Journey Record', icon: ClipboardList },
+  complete_journey:      { label: 'Complete Journey',      icon: CheckCircle2 },
+  cancel_journey:        { label: 'Cancel Journey',        icon: Ban },
 };
 
 interface NodePaletteProps {
