@@ -33,6 +33,12 @@ jest.mock('../src/services/InstagramSendService', () => ({
 jest.mock('../src/services/InstagramCommentService', () => ({
   recordComment: jest.fn(), markCommentReplied: jest.fn(),
 }));
+jest.mock('../src/services/CustomerIdentityService', () => ({
+  resolveOrCreate: jest.fn(),
+}));
+jest.mock('../src/events/publisher', () => ({
+  publishEvent: jest.fn(),
+}));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
 }));
@@ -44,6 +50,10 @@ const DelayedResponseService = require('../src/services/DelayedResponseService')
 const ConversationalAgentService = require('../src/services/ConversationalAgentService');
 const InstagramSendService = require('../src/services/InstagramSendService');
 const InstagramCommentService = require('../src/services/InstagramCommentService');
+const CustomerIdentityService = require('../src/services/CustomerIdentityService');
+const { publishEvent } = require('../src/events/publisher');
+const { E, ENTITY } = require('../src/events/catalog');
+const { journeyPK, journeyMetaSK, journeyRecordSK } = require('../src/core/entityKeys');
 const logger = require('../src/config/logger');
 const engine = require('../src/services/AutomationEngine');
 const { guardedUpdateMock } = require('./helpers/dynamoReservedWords');
@@ -2585,5 +2595,191 @@ describe('AutomationEngine — Instagram comment-to-DM + Follow Gate (ADR-021)',
     expect(InstagramSendService.sendText).not.toHaveBeenCalled(); // no DM #2 on timeout (no wired timeout edge → ends)
     const vals = finalPatch();
     expect(vals[':st']).toBe('completed');
+  });
+});
+
+describe('AutomationEngine — create_journey_record / complete_journey / cancel_journey (Journey Platform Phase 1)', () => {
+  const JOURNEY_ID = 'journey_01TESTINSTANCE00000000000';
+  const META_KEY = { PK: journeyPK(CID, JOURNEY_ID), SK: journeyMetaSK() };
+  const RECORD_KEY = { PK: journeyPK(CID, JOURNEY_ID), SK: journeyRecordSK() };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
+    dynamodb.get.mockReturnValue({ promise: () => Promise.resolve({ Item: { version: 1, status: 'in_progress' } }) });
+    dynamodb.update.mockImplementation(guardedUpdateMock());
+    CustomerIdentityService.resolveOrCreate.mockResolvedValue({ leadId: 'lead_linked', action: 'created', existed: false });
+  });
+
+  test('create_journey_record happy path writes JOURNEY#…/RECORD via journeyPK/journeyRecordSK', async () => {
+    const result = await engine._runAction(
+      CID,
+      { type: 'create_journey_record', config: { linkToLead: false } },
+      { journeyInstanceId: JOURNEY_ID, journeyRecord: { slot: '10:00' } },
+    );
+
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({
+        PK: RECORD_KEY.PK,
+        SK: RECORD_KEY.SK,
+        journeyInstanceId: JOURNEY_ID,
+        data: { slot: '10:00' },
+      }),
+    }));
+    expect(CustomerIdentityService.resolveOrCreate).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({ journeyInstanceId: JOURNEY_ID }));
+  });
+
+  test('create_journey_record with linkToLead:true calls CIS.resolveOrCreate — never a direct lead put', async () => {
+    await engine._runAction(
+      CID,
+      { type: 'create_journey_record', config: { linkToLead: true } },
+      { journeyInstanceId: JOURNEY_ID, phone: '9876543210', name: 'Pat' },
+    );
+
+    expect(CustomerIdentityService.resolveOrCreate).toHaveBeenCalledWith(
+      CID,
+      expect.objectContaining({ phone: '9876543210', name: 'Pat' }),
+      expect.objectContaining({ createdBy: 'automation_journey' }),
+    );
+    // Only the RECORD put — no LEAD# put from this handler.
+    expect(dynamodb.put).toHaveBeenCalledTimes(1);
+    expect(dynamodb.put.mock.calls[0][0].Item.SK).toBe('RECORD');
+    expect(dynamodb.put.mock.calls[0][0].Item.PK).toBe(RECORD_KEY.PK);
+    expect(dynamodb.put.mock.calls[0][0].Item.leadId).toBe('lead_linked');
+    expect(dynamodb.put.mock.calls[0][0].Item.contactId).toBeUndefined();
+  });
+
+  test('create_journey_record linkToContact is reserved V1 — no-op (does not call CIS, does not write contactId)', async () => {
+    await engine._runAction(
+      CID,
+      { type: 'create_journey_record', config: { linkToContact: true, linkToLead: false } },
+      { journeyInstanceId: JOURNEY_ID, phone: '9876543210', name: 'Pat' },
+    );
+
+    expect(CustomerIdentityService.resolveOrCreate).not.toHaveBeenCalled();
+    expect(dynamodb.put).toHaveBeenCalledTimes(1);
+    expect(dynamodb.put.mock.calls[0][0].Item.contactId).toBeUndefined();
+  });
+
+  test('create_journey_record with missing context.journeyInstanceId fails closed — does not throw', async () => {
+    const result = await engine._runAction(
+      CID,
+      { type: 'create_journey_record', config: { linkToLead: true } },
+      { phone: '9876543210' },
+    );
+
+    expect(result).toEqual({ status: 'failed', reason: 'missing_journey_instance_id' });
+    expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(CustomerIdentityService.resolveOrCreate).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  test('complete_journey sets status completed via conditional version write', async () => {
+    const result = await engine._runAction(
+      CID,
+      { type: 'complete_journey', config: {} },
+      { journeyInstanceId: JOURNEY_ID },
+    );
+
+    expect(dynamodb.get).toHaveBeenCalledWith(expect.objectContaining({ Key: META_KEY }));
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      Key: META_KEY,
+      ConditionExpression: 'attribute_exists(PK) AND #v = :cv',
+      ExpressionAttributeValues: expect.objectContaining({
+        ':st': 'completed',
+        ':cv': 1,
+        ':nv': 2,
+      }),
+    }));
+    expect(result).toEqual({ status: 'completed', journeyInstanceId: JOURNEY_ID });
+  });
+
+  test('complete_journey rejects a stale-version write — does not silently overwrite', async () => {
+    const err = new Error('The conditional request failed');
+    err.code = 'ConditionalCheckFailedException';
+    dynamodb.update.mockReturnValue({ promise: () => Promise.reject(err) });
+
+    await expect(
+      engine._runAction(CID, { type: 'complete_journey', config: {} }, { journeyInstanceId: JOURNEY_ID }),
+    ).rejects.toMatchObject({ code: 'ConditionalCheckFailedException' });
+  });
+
+  test('complete_journey calls publishEvent with journey_completed', async () => {
+    await engine._runAction(
+      CID,
+      { type: 'complete_journey', config: {} },
+      { journeyInstanceId: JOURNEY_ID },
+    );
+
+    expect(publishEvent).toHaveBeenCalledWith(E.JOURNEY_COMPLETED, expect.objectContaining({
+      companyId: CID,
+      entityType: ENTITY.JOURNEY,
+      entityId: JOURNEY_ID,
+    }));
+  });
+
+  test('complete_journey with confirmationTemplateId sends via WASendSvc.sendTemplate', async () => {
+    WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.ok' });
+
+    await engine._runAction(
+      CID,
+      { type: 'complete_journey', config: { confirmationTemplateId: 'tmpl_confirm' } },
+      { journeyInstanceId: JOURNEY_ID, phone: '9876543210', leadPK: LEAD_PK },
+    );
+
+    expect(WASendSvc.sendTemplate).toHaveBeenCalledWith(
+      CID,
+      { resolvedContact: { pk: LEAD_PK, phone: '9876543210', isLead: true } },
+      'tmpl_confirm',
+      [],
+      expect.objectContaining({ id: 'system' }),
+      expect.any(Object),
+    );
+  });
+
+  test('cancel_journey sets cancelled + cancelReason and publishes journey_cancelled', async () => {
+    const result = await engine._runAction(
+      CID,
+      { type: 'cancel_journey', config: { reasonSource: 'timeout' } },
+      { journeyInstanceId: JOURNEY_ID },
+    );
+
+    expect(dynamodb.update).toHaveBeenCalledWith(expect.objectContaining({
+      Key: META_KEY,
+      ConditionExpression: 'attribute_exists(PK) AND #v = :cv',
+      ExpressionAttributeValues: expect.objectContaining({
+        ':st': 'cancelled',
+        ':cr': 'timeout',
+        ':cv': 1,
+      }),
+    }));
+    expect(publishEvent).toHaveBeenCalledWith(E.JOURNEY_CANCELLED, expect.objectContaining({
+      companyId: CID,
+      entityType: ENTITY.JOURNEY,
+      entityId: JOURNEY_ID,
+      metadata: expect.objectContaining({ cancelReason: 'timeout' }),
+    }));
+    expect(result).toEqual({ status: 'cancelled', cancelReason: 'timeout', journeyInstanceId: JOURNEY_ID });
+  });
+
+  test('cancel_journey with notifyTemplateId sends via WASendSvc.sendTemplate', async () => {
+    WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.ok' });
+
+    await engine._runAction(
+      CID,
+      { type: 'cancel_journey', config: { reasonSource: 'user', notifyTemplateId: 'tmpl_cancel' } },
+      { journeyInstanceId: JOURNEY_ID, phone: '9876543210' },
+    );
+
+    expect(WASendSvc.sendTemplate).toHaveBeenCalledWith(
+      CID,
+      { phone: '9876543210' },
+      'tmpl_cancel',
+      [],
+      expect.objectContaining({ id: 'system' }),
+      expect.any(Object),
+    );
   });
 });

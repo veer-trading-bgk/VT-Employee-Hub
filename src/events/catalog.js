@@ -53,6 +53,11 @@ const E = {
   // Fired by CustomerIdentityService on every resolveOrCreate() call.
   // Recorded once per touch regardless of create vs. enrich.
   TOUCH_RECEIVED:               'touch_received',
+  // Journey Platform (Phase 1) — opened fires from open_web_journey (Task 5);
+  // completed/cancelled fire from AutomationEngine terminal nodes.
+  JOURNEY_OPENED:               'journey_opened',
+  JOURNEY_COMPLETED:            'journey_completed',
+  JOURNEY_CANCELLED:            'journey_cancelled',
 
   // ── Task (Phase 2) ────────────────────────────────────────────────────────
   TASK_CREATED:                 'task_created',
@@ -101,6 +106,7 @@ const ENTITY = {
   CAMPAIGN: 'CAMPAIGN',
   WORKFLOW: 'WORKFLOW',  // Phase 3
   COMPANY:  'COMPANY',
+  JOURNEY:  'JOURNEY',   // Journey Platform instance timeline partition
 };
 
 module.exports = { E, ENTITY };

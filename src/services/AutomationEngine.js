@@ -7,6 +7,10 @@ const WASendSvc = require('./WhatsAppSendService');
 const PipelineService = require('./PipelineService');
 const { resolveWelcomeVariables, resolveTemplateParams } = require('../utils/welcomeVariables');
 const { to10Digit } = require('../utils/phone');
+const { journeyPK, journeyMetaSK, journeyRecordSK, leadPK: buildLeadPK } = require('../core/entityKeys');
+const { updateMeta } = require('../core/systemMeta');
+const { publishEvent } = require('../events/publisher');
+const { E, ENTITY } = require('../events/catalog');
 
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
 
@@ -1119,9 +1123,160 @@ class AutomationEngine {
         return { mid: r.mid, igsid: r.igsid };
       }
 
+      // JOURNEY#…/RECORD write. linkToLead → CIS.resolveOrCreate (ADR-013), never
+      // a hand-rolled LEAD# put. linkToContact is reserved/not-implemented in V1 —
+      // CONTACT# creation lives in ContactService (separate PHONE# lock), not CIS;
+      // wiring it here would mislabel a Lead ID as a Contact ID. No timeline event.
+      case 'create_journey_record': {
+        const { recordSchema, linkToLead = false /* linkToContact: reserved V1 */ } = step.config ?? {};
+        const journeyInstanceId = ctx.journeyInstanceId;
+        if (!journeyInstanceId) {
+          logger.warn('AutomationEngine: create_journey_record missing context.journeyInstanceId — skipped');
+          return { status: 'failed', reason: 'missing_journey_instance_id' };
+        }
+
+        let linkedLeadId = ctx.leadId ?? null;
+        if (linkToLead && phone) {
+          const CIS = require('./CustomerIdentityService');
+          const r = await CIS.resolveOrCreate(companyId, {
+            phone,
+            name: name ?? undefined,
+            source: source ?? 'journey',
+          }, {
+            createdBy: 'automation_journey',
+            actorId:   'system',
+            actorName: 'Automation',
+          });
+          linkedLeadId = r.leadId;
+        } else if (linkToLead && !phone) {
+          logger.warn('AutomationEngine: create_journey_record linkToLead set but context.phone missing — writing RECORD without CIS link');
+        }
+
+        const payload = ctx.journeyRecord ?? ctx.submittedData ?? {};
+        await dynamodb.put({
+          TableName: TABLE,
+          Item: {
+            PK: journeyPK(companyId, journeyInstanceId),
+            SK: journeyRecordSK(),
+            companyId,
+            journeyInstanceId,
+            data: payload,
+            recordSchema: recordSchema ?? null,
+            leadId: linkedLeadId,
+            leadPK: linkedLeadId ? buildLeadPK(companyId, linkedLeadId) : (leadPK ?? null),
+            submittedAt: now,
+          },
+        }).promise();
+        return { journeyInstanceId, leadId: linkedLeadId };
+      }
+
+      // Terminal success — conditional META status write + journey_completed event.
+      case 'complete_journey': {
+        const { confirmationTemplateId } = step.config ?? {};
+        const journeyInstanceId = ctx.journeyInstanceId;
+        if (!journeyInstanceId) {
+          logger.warn('AutomationEngine: complete_journey missing context.journeyInstanceId — skipped');
+          return { status: 'failed', reason: 'missing_journey_instance_id' };
+        }
+
+        const metaKey = { PK: journeyPK(companyId, journeyInstanceId), SK: journeyMetaSK() };
+        const { Item: current } = await dynamodb.get({ TableName: TABLE, Key: metaKey }).promise();
+        if (!current) throw new Error('complete_journey: journey instance not found');
+        const meta = updateMeta(current, 'system');
+        await dynamodb.update({
+          TableName: TABLE,
+          Key: metaKey,
+          UpdateExpression: 'SET #st = :st, updatedAt = :ua, updatedBy = :ub, #v = :nv',
+          ConditionExpression: 'attribute_exists(PK) AND #v = :cv',
+          ExpressionAttributeNames:  { '#st': 'status', '#v': 'version' },
+          ExpressionAttributeValues: {
+            ':st': 'completed',
+            ':ua': meta.updatedAt,
+            ':ub': meta.updatedBy,
+            ':nv': meta.version,
+            ':cv': current.version ?? 0,
+          },
+        }).promise();
+
+        publishEvent(E.JOURNEY_COMPLETED, {
+          companyId,
+          entityType: ENTITY.JOURNEY,
+          entityId:   journeyInstanceId,
+          contactId:  ctx.contactId ?? null,
+          channel:    'system',
+          summary:    'Journey completed',
+          metadata:   { journeyInstanceId, leadId: leadId ?? null },
+        });
+
+        this._sendOptionalJourneyNotify(companyId, ctx, confirmationTemplateId, 'complete_journey');
+        return { status: 'completed', journeyInstanceId };
+      }
+
+      // Terminal cancel — same conditional-write + publishEvent shape as complete_journey.
+      case 'cancel_journey': {
+        const { reasonSource = 'manual', notifyTemplateId } = step.config ?? {};
+        const journeyInstanceId = ctx.journeyInstanceId;
+        if (!journeyInstanceId) {
+          logger.warn('AutomationEngine: cancel_journey missing context.journeyInstanceId — skipped');
+          return { status: 'failed', reason: 'missing_journey_instance_id' };
+        }
+
+        const metaKey = { PK: journeyPK(companyId, journeyInstanceId), SK: journeyMetaSK() };
+        const { Item: current } = await dynamodb.get({ TableName: TABLE, Key: metaKey }).promise();
+        if (!current) throw new Error('cancel_journey: journey instance not found');
+        const meta = updateMeta(current, 'system');
+        await dynamodb.update({
+          TableName: TABLE,
+          Key: metaKey,
+          UpdateExpression: 'SET #st = :st, cancelReason = :cr, updatedAt = :ua, updatedBy = :ub, #v = :nv',
+          ConditionExpression: 'attribute_exists(PK) AND #v = :cv',
+          ExpressionAttributeNames:  { '#st': 'status', '#v': 'version' },
+          ExpressionAttributeValues: {
+            ':st': 'cancelled',
+            ':cr': reasonSource,
+            ':ua': meta.updatedAt,
+            ':ub': meta.updatedBy,
+            ':nv': meta.version,
+            ':cv': current.version ?? 0,
+          },
+        }).promise();
+
+        publishEvent(E.JOURNEY_CANCELLED, {
+          companyId,
+          entityType: ENTITY.JOURNEY,
+          entityId:   journeyInstanceId,
+          contactId:  ctx.contactId ?? null,
+          channel:    'system',
+          summary:    `Journey cancelled (${reasonSource})`,
+          metadata:   { journeyInstanceId, cancelReason: reasonSource, leadId: leadId ?? null },
+        });
+
+        this._sendOptionalJourneyNotify(companyId, ctx, notifyTemplateId, 'cancel_journey');
+        return { status: 'cancelled', cancelReason: reasonSource, journeyInstanceId };
+      }
+
       default:
         throw new Error(`Unknown action type: ${step.type}`);
     }
+  }
+
+  // Best-effort optional template notify for journey terminal nodes (and Task 5's
+  // open_web_journey). Fire-and-forget like writeMediaIndex(); never fails the node.
+  _sendOptionalJourneyNotify(companyId, ctx, templateId, logLabel) {
+    if (!templateId) return;
+    const { leadPK, phone } = ctx;
+    if (!phone) {
+      logger.warn(`AutomationEngine: ${logLabel} template set but context.phone missing — notify skipped`);
+      return;
+    }
+    const target = leadPK
+      ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
+      : { phone };
+    WASendSvc.sendTemplate(
+      companyId, target, templateId, [],
+      { id: 'system', role: 'admin', name: 'Automation' },
+      { content: `[Journey notify: ${templateId}]` },
+    ).catch((e) => logger.warn(`AutomationEngine: ${logLabel} notify failed: ${e.message}`));
   }
 
   // ── Condition evaluator (trigger-time — always frozen context) ───────────
