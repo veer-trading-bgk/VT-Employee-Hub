@@ -389,6 +389,30 @@ class AutomationEngine {
         return;
       }
 
+      // wait_for_webhook — Journey Platform pause (Phase 1 Task 4). Mirrors
+      // button_reply's dual resume: event-driven via resumeOnWebhook() (route,
+      // Task 8) or timeout via processAllDueWaits() → fallbackKey. waitType:
+      // 'webhook' is additive (same pattern as delayed_response). journeyInstanceId
+      // is a TOP-LEVEL wait-record field so resumeOnWebhook can match without
+      // scanning nested context. Token auth is the route's job — not stored here.
+      if (node.type === 'wait_for_webhook') {
+        const { timeoutMinutes, onTimeout, webhookKey } = node.config ?? {};
+        const resumeAt = timeoutMinutes
+          ? new Date(Date.now() + this._parseWait({ amount: timeoutMinutes, unit: 'minutes' })).toISOString()
+          : new Date(Date.now() + UNBOUNDED_REPLY_WAIT_MS).toISOString();
+        await this._storeWait(companyId, {
+          executionId: execItem.executionId, workflowId: workflow.id, execSK: execItem.SK,
+          graph: true, nodeId, resumeAt, context,
+          waitType: 'webhook',
+          journeyInstanceId: context.journeyInstanceId ?? null,
+          fallbackKey: onTimeout ?? null,
+          ...(webhookKey != null && webhookKey !== '' ? { webhookKey } : {}),
+        });
+        path.push({ nodeId, type: 'wait_for_webhook', status: 'waiting_webhook', resumeAt });
+        await this._patchExecPath(companyId, execItem.SK, path, 'paused');
+        return;
+      }
+
       // Action node — send_template / assign_employee / change_stage / add_tag / create_task.
       try {
         const result = await this._runAction(companyId, node, context);
@@ -446,6 +470,7 @@ class AutomationEngine {
       const isConditionReplyWait = node?.type === 'condition' && node.config?.mode === 'button_reply';
       const isSendReplyWait = node?.type === 'send_buttons' || node?.type === 'send_list';
       const isIgReplyWait = node?.type === 'wait_instagram_reply';
+      const isWebhookWait = node?.type === 'wait_for_webhook';
       const resumeSignal = isConditionReplyWait
         ? { status: resolvedBranch ? 'evaluated' : 'timed_out', branchKey: resolvedBranch ?? node.config.fallbackKey ?? null }
         : isSendReplyWait
@@ -455,6 +480,12 @@ class AutomationEngine {
             // edge to DM #2, no branchKey. Timeout (resolvedBranch null, from the
             // time-sweep) → optional TIMEOUT_HANDLE_ID edge if wired, else end.
             ? (resolvedBranch ? { status: 'replied' } : { status: 'timed_out', branchKey: TIMEOUT_HANDLE_ID })
+            : isWebhookWait
+              // Webhook arrived (truthy resolvedBranch from resumeOnWebhook) →
+              // default edge (no branchKey). Timeout → onTimeout / fallbackKey.
+              ? (resolvedBranch
+                ? { status: 'resumed' }
+                : { status: 'timed_out', branchKey: waitRecord.fallbackKey ?? node.config?.onTimeout ?? null })
             : { status: 'completed' }; // plain 'wait' node — single outgoing edge, no branch
       return this._runGraph(companyId, wfRes.Item, execRes.Item, context, nodeId, resumeSignal);
     }
@@ -526,6 +557,10 @@ class AutomationEngine {
         // exactly as before — this dispatch is purely additive.
         if (item.waitType === 'delayed_response') {
           await require('./DelayedResponseService').resume(item.companyId, item);
+        } else if (item.waitType === 'webhook') {
+          // Journey wait_for_webhook timeout — resolvedBranch null →
+          // resumeExecution routes down fallbackKey / onTimeout.
+          await this.resumeExecution(item.companyId, item);
         } else {
           await this.resumeExecution(item.companyId, item);
         }
@@ -648,6 +683,59 @@ class AutomationEngine {
       logger.warn(`AutomationEngine.resumeOnInstagramReply: ${e.message}`);
     }
     return resumed;
+  }
+
+  // ── Event-driven resume for wait_for_webhook nodes (Journey Platform) ─────
+  // Sibling to resumeOnButtonReply — same whole-partition Query + conditional-
+  // delete claim so a webhook POST and a concurrent timeout sweep can never
+  // both resume the same wait. Does NOT validate tokens (route / Task 8 does
+  // that); this method only claim-and-resumes. Matches waitType:'webhook' +
+  // top-level journeyInstanceId. Never throws on not-found / already-claimed —
+  // returns { status: 'not_found' | 'resumed', ... } for the route to map to 404.
+  async resumeOnWebhook(companyId, journeyInstanceId, payload = {}) {
+    if (!journeyInstanceId) return { status: 'not_found' };
+    try {
+      const { Items = [] } = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk',
+        ExpressionAttributeValues: { ':pk': `AUTO_WAIT#${companyId}` },
+        Limit: 100,
+      }).promise();
+
+      const candidates = Items.filter((item) =>
+        item.waitType === 'webhook' && item.journeyInstanceId === journeyInstanceId,
+      );
+      if (candidates.length === 0) return { status: 'not_found' };
+
+      let claimed = null;
+      for (const item of candidates) {
+        try {
+          await dynamodb.delete({
+            TableName: TABLE,
+            Key:       { PK: item.PK, SK: item.SK },
+            ConditionExpression: 'attribute_exists(PK)',
+          }).promise();
+          claimed = item;
+          break;
+        } catch (e) {
+          if (e.code === 'ConditionalCheckFailedException') continue; // already claimed
+          logger.warn(`AutomationEngine: webhook-claim failed for ${item.executionId}: ${e.message}`);
+          continue;
+        }
+      }
+      if (!claimed) return { status: 'not_found' };
+
+      // Merge webhook body into resumed context so create_journey_record can
+      // read ctx.journeyRecord / ctx.submittedData (Task 2).
+      const context = { ...(claimed.context ?? {}), ...(payload && typeof payload === 'object' ? payload : {}) };
+      await this.resumeExecution(companyId, { ...claimed, context }, 'webhook').catch((e) =>
+        logger.warn(`AutomationEngine: resume-on-webhook failed for ${claimed.executionId}: ${e.message}`),
+      );
+      return { status: 'resumed', executionId: claimed.executionId };
+    } catch (e) {
+      logger.warn(`AutomationEngine.resumeOnWebhook: ${e.message}`);
+      return { status: 'not_found' };
+    }
   }
 
   // ── Read-only companion to resumeOnInstagramReply (Instagram page, PR2) ────

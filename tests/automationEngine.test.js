@@ -2783,3 +2783,209 @@ describe('AutomationEngine — create_journey_record / complete_journey / cancel
     );
   });
 });
+
+describe('AutomationEngine — wait_for_webhook / resumeOnWebhook (Journey Platform Phase 1 Task 4)', () => {
+  const resolved = (value) => ({ promise: () => Promise.resolve(value) });
+  const JOURNEY_ID = 'journey_01WEBHOOKTEST00000000000';
+
+  function makeExecItem(overrides = {}) {
+    return {
+      PK: `AUTO_EXEC#${CID}`,
+      SK: `EXEC#2026-01-01T00:00:00.000Z#exec-wh`,
+      executionId: 'exec-wh',
+      startedAt: new Date().toISOString(),
+      path: [],
+      ...overrides,
+    };
+  }
+
+  function finalPatch() {
+    const call = dynamodb.update.mock.calls.find((c) => c[0].Key?.SK?.startsWith('EXEC#'));
+    return call ? call[0].ExpressionAttributeValues : undefined;
+  }
+
+  function webhookWorkflow() {
+    return {
+      id: 'wf-wh', name: 'Webhook wait workflow', status: 'active', entryNodeId: 'n1',
+      nodes: [
+        {
+          id: 'n1', type: 'wait_for_webhook',
+          config: { timeoutMinutes: 60, onTimeout: 'timeout_branch', webhookKey: 'booking' },
+        },
+        { id: 'n2', type: 'create_journey_record', config: { linkToLead: false } },
+        { id: 'n3', type: 'end', config: {} },
+        { id: 'n4', type: 'cancel_journey', config: { reasonSource: 'timeout' } },
+        { id: 'n5', type: 'end', config: {} },
+      ],
+      edges: [
+        { id: 'e1', source: 'n1', target: 'n2' }, // default = webhook arrived
+        { id: 'e2', source: 'n1', target: 'n4', sourceHandle: 'timeout_branch' },
+        { id: 'e3', source: 'n2', target: 'n3' },
+        { id: 'e4', source: 'n4', target: 'n5' },
+      ],
+    };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+    dynamodb.update.mockImplementation(guardedUpdateMock());
+    dynamodb.put.mockReturnValue(resolved({}));
+    dynamodb.delete.mockReturnValue(resolved({}));
+  });
+
+  test('wait_for_webhook pauses execution and writes AUTO_WAIT# with waitType webhook + top-level journeyInstanceId + fallbackKey', async () => {
+    const workflow = webhookWorkflow();
+    const execItem = makeExecItem();
+    const context = { journeyInstanceId: JOURNEY_ID, phone: '9000000000' };
+
+    await engine._runGraph(CID, workflow, execItem, context, 'n1');
+
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({
+        waitType: 'webhook',
+        journeyInstanceId: JOURNEY_ID,
+        fallbackKey: 'timeout_branch',
+        webhookKey: 'booking',
+        graph: true,
+        nodeId: 'n1',
+        executionId: 'exec-wh',
+        workflowId: 'wf-wh',
+      }),
+    }));
+    const patchCall = dynamodb.update.mock.calls.find((c) => c[0].Key?.SK === execItem.SK);
+    expect(patchCall[0].ExpressionAttributeValues[':st']).toBe('paused');
+    expect(patchCall[0].ExpressionAttributeValues[':path'][0]).toMatchObject({
+      nodeId: 'n1', type: 'wait_for_webhook', status: 'waiting_webhook',
+    });
+  });
+
+  test('resumeOnWebhook happy path — claims, merges payload into context, resumes down default edge', async () => {
+    const workflow = webhookWorkflow();
+    const context = { journeyInstanceId: JOURNEY_ID, phone: '9000000000' };
+    const execItem = makeExecItem({
+      path: [{ nodeId: 'n1', type: 'wait_for_webhook', status: 'waiting_webhook' }],
+    });
+    const waitItem = {
+      PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#2026-02-01T00:00:00.000Z#exec-wh',
+      executionId: 'exec-wh', workflowId: workflow.id, execSK: execItem.SK,
+      graph: true, nodeId: 'n1', context,
+      waitType: 'webhook', journeyInstanceId: JOURNEY_ID, fallbackKey: 'timeout_branch',
+    };
+
+    dynamodb.query.mockReturnValue(resolved({ Items: [waitItem] }));
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK.startsWith('CONFIG#AUTO#')) return resolved({ Item: workflow });
+      if (params.Key.PK.startsWith('AUTO_EXEC#')) return resolved({ Item: execItem });
+      return resolved({});
+    });
+    // create_journey_record put on the success branch
+    dynamodb.put.mockReturnValue(resolved({}));
+
+    const result = await engine.resumeOnWebhook(CID, JOURNEY_ID, {
+      journeyRecord: { slot: '10:00' },
+      submittedData: { slot: '10:00' },
+    });
+
+    expect(result).toEqual({ status: 'resumed', executionId: 'exec-wh' });
+    expect(dynamodb.delete).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: waitItem.PK, SK: waitItem.SK },
+      ConditionExpression: 'attribute_exists(PK)',
+    }));
+    // RECORD write from create_journey_record on the default edge
+    expect(dynamodb.put).toHaveBeenCalledWith(expect.objectContaining({
+      Item: expect.objectContaining({
+        SK: 'RECORD',
+        data: { slot: '10:00' },
+        journeyInstanceId: JOURNEY_ID,
+      }),
+    }));
+    const vals = finalPatch();
+    expect(vals[':path'][0]).toMatchObject({ nodeId: 'n1', status: 'resumed' });
+    expect(vals[':path'].map((p) => p.nodeId)).toEqual(expect.arrayContaining(['n1', 'n2', 'n3']));
+  });
+
+  test('resumeOnWebhook race — two concurrent claims: exactly one resumes, other is not_found', async () => {
+    const workflow = webhookWorkflow();
+    const context = { journeyInstanceId: JOURNEY_ID };
+    const execItem = makeExecItem({
+      path: [{ nodeId: 'n1', type: 'wait_for_webhook', status: 'waiting_webhook' }],
+    });
+    const waitItem = {
+      PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#race#exec-wh',
+      executionId: 'exec-wh', workflowId: workflow.id, execSK: execItem.SK,
+      graph: true, nodeId: 'n1', context,
+      waitType: 'webhook', journeyInstanceId: JOURNEY_ID, fallbackKey: 'timeout_branch',
+    };
+
+    dynamodb.query.mockReturnValue(resolved({ Items: [waitItem] }));
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK.startsWith('CONFIG#AUTO#')) return resolved({ Item: workflow });
+      if (params.Key.PK.startsWith('AUTO_EXEC#')) return resolved({ Item: execItem });
+      return resolved({});
+    });
+
+    // First claim wins; second gets ConditionalCheckFailedException (same pattern as
+    // processDueWaits delayed_response race coverage).
+    let deleteCalls = 0;
+    dynamodb.delete.mockImplementation(() => {
+      deleteCalls += 1;
+      if (deleteCalls === 1) return resolved({});
+      const err = new Error('The conditional request failed');
+      err.code = 'ConditionalCheckFailedException';
+      return { promise: () => Promise.reject(err) };
+    });
+
+    const [a, b] = await Promise.all([
+      engine.resumeOnWebhook(CID, JOURNEY_ID, { journeyRecord: { a: 1 } }),
+      engine.resumeOnWebhook(CID, JOURNEY_ID, { journeyRecord: { b: 2 } }),
+    ]);
+
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual(['not_found', 'resumed']);
+    expect([a, b].filter((r) => r.status === 'resumed')).toHaveLength(1);
+  });
+
+  test('resumeOnWebhook with no matching wait record returns not_found and does not throw', async () => {
+    dynamodb.query.mockReturnValue(resolved({ Items: [] }));
+
+    await expect(engine.resumeOnWebhook(CID, JOURNEY_ID, {})).resolves.toEqual({ status: 'not_found' });
+    expect(dynamodb.delete).not.toHaveBeenCalled();
+  });
+
+  test('processAllDueWaits webhook timeout resumes down fallbackKey', async () => {
+    const workflow = webhookWorkflow();
+    const context = { journeyInstanceId: JOURNEY_ID };
+    const execItem = makeExecItem({
+      path: [{ nodeId: 'n1', type: 'wait_for_webhook', status: 'waiting_webhook' }],
+    });
+    const waitItem = {
+      PK: `AUTO_WAIT#${CID}`, SK: 'WAIT#past#exec-wh', companyId: CID,
+      executionId: 'exec-wh', workflowId: workflow.id, execSK: execItem.SK,
+      graph: true, nodeId: 'n1', context,
+      waitType: 'webhook', journeyInstanceId: JOURNEY_ID, fallbackKey: 'timeout_branch',
+      resumeAt: '2020-01-01T00:00:00.000Z',
+    };
+
+    dynamodb.scan.mockReturnValue(resolved({ Items: [waitItem] }));
+    dynamodb.get.mockImplementation((params) => {
+      if (params.Key.PK.startsWith('CONFIG#AUTO#')) return resolved({ Item: workflow });
+      if (params.Key.PK.startsWith('AUTO_EXEC#')) return resolved({ Item: execItem });
+      // cancel_journey META get
+      return resolved({ Item: { version: 1, status: 'in_progress' } });
+    });
+
+    const resumed = await engine.processAllDueWaits();
+
+    expect(resumed).toBe(1);
+    expect(dynamodb.delete).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: waitItem.PK, SK: waitItem.SK },
+      ConditionExpression: 'attribute_exists(PK)',
+    }));
+    const vals = finalPatch();
+    expect(vals[':path'][0]).toMatchObject({
+      nodeId: 'n1', status: 'timed_out', branchKey: 'timeout_branch',
+    });
+    expect(vals[':path'].map((p) => p.nodeId)).toEqual(expect.arrayContaining(['n1', 'n4', 'n5']));
+  });
+});
