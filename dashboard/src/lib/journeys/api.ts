@@ -13,7 +13,7 @@ export async function fetchJourneyDefinitions() {
   return res.definitions ?? [];
 }
 
-/** brandingConfig always null until a later branding task. */
+/** brandingConfig: { primaryColor } or null — only field anything downstream reads today. */
 export async function createJourneyDefinition(form: JourneyDefinitionFormValues) {
   return apiFetch<CreateJourneyDefinitionResponse>(BASE, {
     method: 'POST',
@@ -21,7 +21,7 @@ export async function createJourneyDefinition(form: JourneyDefinitionFormValues)
       name: form.name.trim(),
       industryPack: form.industryPack.trim() || 'generic',
       screens: form.screens,
-      brandingConfig: null,
+      brandingConfig: form.brandingConfig,
       linkedWorkflowId: form.linkedWorkflowId,
     }),
     retries: 0,
@@ -37,7 +37,7 @@ export async function updateJourneyDefinition(id: string, form: JourneyDefinitio
       linkedWorkflowId: form.linkedWorkflowId,
       active: form.active,
       screens: form.screens,
-      // brandingConfig intentionally omitted — later branding task.
+      brandingConfig: form.brandingConfig,
     }),
     retries: 0,
   });

@@ -16,6 +16,7 @@ import {
   updateJourneyDefinition,
 } from '@/lib/journeys/api';
 import type {
+  JourneyBrandingConfig,
   JourneyDefinition,
   JourneyDefinitionFormValues,
   JourneyScreen,
@@ -24,6 +25,17 @@ import type {
 import type { AutomationsResponse } from '@/types/automations';
 
 const INDUSTRY_SUGGESTIONS = ['generic', 'healthcare', 'bfsi'] as const;
+const DEFAULT_PRIMARY_COLOR = '#0ea5e9';
+
+function brandingFromDefinition(d: JourneyDefinition): JourneyBrandingConfig | null {
+  const raw = d.brandingConfig;
+  if (!raw || typeof raw !== 'object') return null;
+  const primaryColor = typeof (raw as { primaryColor?: unknown }).primaryColor === 'string'
+    ? (raw as { primaryColor: string }).primaryColor.trim()
+    : '';
+  if (!primaryColor) return null;
+  return { primaryColor };
+}
 
 /**
  * Starter field types — Task 6 zod only enforces string; locked here from:
@@ -60,6 +72,7 @@ function emptyForm(): JourneyDefinitionFormValues {
     linkedWorkflowId: null,
     active: true,
     screens: [],
+    brandingConfig: null,
   };
 }
 
@@ -80,6 +93,7 @@ function formFromDefinition(d: JourneyDefinition): JourneyDefinitionFormValues {
         ...(isChoiceType(f.type) && f.options ? { options: [...f.options] } : {}),
       })),
     })),
+    brandingConfig: brandingFromDefinition(d),
   };
 }
 
@@ -350,7 +364,7 @@ export function JourneyDefinitionDrawer({
       open={open}
       onClose={onClose}
       title={isEdit ? 'Edit journey definition' : 'New journey definition'}
-      description="Basics plus ordered screens and fields. Branding comes later."
+      description="Basics, branding, and ordered screens/fields."
       width={520}
       footer={(
         <DrawerFooter>
@@ -422,6 +436,59 @@ export function JourneyDefinitionDrawer({
             onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))}
           />
         )}
+
+        {/* Branding — no shared ColorPicker component exists (Tags use an inline
+            palette; ManagePipelineDrawer uses native type=color). Reuse the
+            pipeline native picker for free hex primaryColor. */}
+        <div className="space-y-2">
+          <div>
+            <p className="text-sm font-medium text-neutral-700 dark:text-neutral-200">Branding</p>
+            <p className="text-xs text-neutral-400">
+              primaryColor only — matches the public journey payload whitelist.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="relative flex-shrink-0 cursor-pointer" title="Primary color">
+              <span
+                className="block h-9 w-9 rounded-full border-2 border-white shadow ring-1 ring-neutral-200 dark:ring-neutral-700"
+                style={{ backgroundColor: form.brandingConfig?.primaryColor || DEFAULT_PRIMARY_COLOR }}
+              />
+              <input
+                type="color"
+                value={form.brandingConfig?.primaryColor || DEFAULT_PRIMARY_COLOR}
+                onChange={(e) => setForm((f) => ({
+                  ...f,
+                  brandingConfig: { primaryColor: e.target.value },
+                }))}
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                aria-label="Primary color"
+              />
+            </label>
+            <input
+              value={form.brandingConfig?.primaryColor ?? ''}
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                setForm((f) => ({
+                  ...f,
+                  brandingConfig: v ? { primaryColor: v } : null,
+                }));
+              }}
+              placeholder={DEFAULT_PRIMARY_COLOR}
+              maxLength={20}
+              className="w-32 rounded-lg border border-neutral-200 bg-white px-3 py-2 font-mono text-sm text-neutral-900 outline-none focus:border-primary-600 focus:ring-2 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              aria-label="Primary color hex"
+            />
+            {form.brandingConfig?.primaryColor && (
+              <button
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, brandingConfig: null }))}
+                className="text-xs text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
 
         {/* Screens — ManagePipelineDrawer interaction pattern (sales/page.tsx) */}
         <div className="space-y-2">

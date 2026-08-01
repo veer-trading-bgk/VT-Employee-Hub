@@ -18,13 +18,17 @@ export interface JourneyScreen {
   fields: JourneyScreenField[];
 }
 
+export interface JourneyBrandingConfig {
+  primaryColor: string;
+}
+
 export interface JourneyDefinition {
   id: string;
   companyId: string;
   name: string;
   industryPack: string;
   screens: JourneyScreen[];
-  brandingConfig: Record<string, unknown> | null;
+  brandingConfig: JourneyBrandingConfig | Record<string, unknown> | null;
   linkedWorkflowId: string | null;
   active: boolean;
   createdAt?: string;
@@ -41,6 +45,8 @@ export interface JourneyDefinitionFormValues {
   active: boolean;
   /** Ordered screens — Task 3b; create/update both persist this array. */
   screens: JourneyScreen[];
+  /** Minimal branding — architecture shape { primaryColor }. null = none. */
+  brandingConfig: JourneyBrandingConfig | null;
 }
 
 export interface ListJourneyDefinitionsResponse {
