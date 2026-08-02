@@ -119,6 +119,7 @@ function formFromDefinition(d: JourneyDefinition): JourneyDefinitionFormValues {
         type: f.type,
         ...(f.required !== undefined ? { required: f.required } : {}),
         ...(isChoiceType(f.type) && f.options ? { options: [...f.options] } : {}),
+        ...(f.type === 'number' && typeof f.unitPrice === 'number' ? { unitPrice: f.unitPrice } : {}),
       })),
     })),
     brandingConfig: brandingFromDefinition(d),
@@ -140,6 +141,9 @@ function sanitizeScreens(screens: JourneyScreen[]): JourneyScreen[] {
       if (isChoiceType(field.type)) {
         const opts = (f.options ?? []).map((o) => o.trim()).filter(Boolean);
         if (opts.length > 0) field.options = opts;
+      }
+      if (field.type === 'number' && typeof f.unitPrice === 'number' && f.unitPrice >= 0) {
+        field.unitPrice = f.unitPrice;
       }
       return field;
     }),
@@ -361,8 +365,14 @@ export function JourneyDefinitionDrawer({
             if (patch.type !== undefined && !isChoiceType(patch.type)) {
               delete next.options;
             }
+            if (patch.type !== undefined && patch.type !== 'number') {
+              delete next.unitPrice;
+            }
             if (patch.type === 'select' && !next.options) {
               next.options = [''];
+            }
+            if ('unitPrice' in patch && patch.unitPrice === undefined) {
+              delete next.unitPrice;
             }
             return next;
           }),
@@ -797,6 +807,38 @@ export function JourneyDefinitionDrawer({
                           <Plus className="h-3.5 w-3.5" />
                           Add option
                         </button>
+                      </div>
+                    )}
+
+                    {field.type === 'number' && (
+                      <div className="mt-2 pl-1">
+                        <label className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+                          <span className="shrink-0 text-[11px] font-medium text-neutral-500">
+                            Unit Price (₹)
+                          </span>
+                          <input
+                            type="number"
+                            min={0}
+                            step="any"
+                            value={typeof field.unitPrice === 'number' ? field.unitPrice : ''}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              if (raw === '') {
+                                patchField(si, fi, { unitPrice: undefined });
+                                return;
+                              }
+                              const n = Number(raw);
+                              if (!Number.isFinite(n) || n < 0) return;
+                              patchField(si, fi, { unitPrice: n });
+                            }}
+                            className={`${rowInputCls} sm:max-w-[10rem]`}
+                            placeholder="Optional — leave blank for none"
+                            aria-label={`Unit price for field ${fi + 1}`}
+                          />
+                        </label>
+                        <p className="mt-1 text-[10px] text-neutral-400">
+                          Optional. Blank = no price line. 0 = free item (still shown).
+                        </p>
                       </div>
                     )}
                   </div>

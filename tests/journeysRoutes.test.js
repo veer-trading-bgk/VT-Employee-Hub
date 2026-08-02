@@ -173,6 +173,47 @@ describe('POST /api/journeys/definitions', () => {
     expect(next.mock.calls[0][0].name).toBe('ZodError');
   });
 
+  test('number field accepts unitPrice including 0; text field rejects unitPrice', async () => {
+    const res = mockRes();
+    const next = jest.fn();
+    await handler({
+      user: ADMIN,
+      body: {
+        name: 'Event Booking',
+        screens: [{
+          id: 's1',
+          title: 'Tickets',
+          fields: [
+            { id: 'qty', label: 'Tickets', type: 'number', unitPrice: 500 },
+            { id: 'free', label: 'Comps', type: 'number', unitPrice: 0 },
+          ],
+        }],
+      },
+    }, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(201);
+    const fields = dynamodb.put.mock.calls[0][0].Item.screens[0].fields;
+    expect(fields[0].unitPrice).toBe(500);
+    expect(fields[1].unitPrice).toBe(0);
+
+    jest.clearAllMocks();
+    const res2 = mockRes();
+    const next2 = jest.fn();
+    await handler({
+      user: ADMIN,
+      body: {
+        name: 'Bad price',
+        screens: [{
+          id: 's1',
+          title: 'X',
+          fields: [{ id: 'name', label: 'Name', type: 'text', unitPrice: 10 }],
+        }],
+      },
+    }, res2, next2);
+    expect(next2.mock.calls[0][0].name).toBe('ZodError');
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
   test('brandingConfig rejects unknown keys (strict)', async () => {
     const res = mockRes();
     const next = jest.fn();

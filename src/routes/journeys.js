@@ -70,7 +70,19 @@ const screenFieldSchema = z.object({
   type:     z.string().trim().min(1).max(40),
   required: z.boolean().optional(),
   options:  z.array(z.string().trim().min(1).max(200)).max(50).optional(),
-}).strict();
+  // Optional display-only unit price for type:'number' (Event Booking etc.).
+  // 0 is valid (free item); omit = no price UI. createDefSchema / updateDefSchema
+  // both nest this via screenSchema — no separate Task 6 route schema change.
+  unitPrice: z.number().min(0).optional(),
+}).strict().superRefine((data, ctx) => {
+  if (data.unitPrice !== undefined && data.type !== 'number') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'unitPrice is only allowed when type is number',
+      path: ['unitPrice'],
+    });
+  }
+});
 
 const screenSchema = z.object({
   id:     z.string().trim().min(1).max(80),

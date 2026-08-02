@@ -81,6 +81,9 @@ function normalizeScreens(raw: unknown): JourneyScreen[] {
           type: typeof field.type === 'string' ? field.type : 'text',
           ...(field.required ? { required: true } : {}),
           ...(Array.isArray(field.options) ? { options: field.options.map(String) } : {}),
+          ...(typeof field.unitPrice === 'number' && field.unitPrice >= 0
+            ? { unitPrice: field.unitPrice }
+            : {}),
         };
       }),
     };

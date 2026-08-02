@@ -10,6 +10,8 @@ export interface JourneyScreenField {
   type: string;
   required?: boolean;
   options?: string[];
+  /** Optional ₹ unit price for type:'number'. 0 = free item; omit = no price UI. */
+  unitPrice?: number;
 }
 
 export interface JourneyScreen {

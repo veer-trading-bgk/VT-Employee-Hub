@@ -15,6 +15,12 @@ import { Input } from '@/components/v3/ui/Input';
 import { Select } from '@/components/v3/ui/Select';
 import { Button } from '@/components/v3/ui/Button';
 import { ErrorState } from '@/components/v3/ui/ErrorState';
+import {
+  formatInr,
+  formatLine,
+  grandTotal,
+  hasUnitPrice,
+} from '@/lib/journeys/pricing';
 
 export interface JourneyScreenField {
   id: string;
@@ -22,6 +28,8 @@ export interface JourneyScreenField {
   type: string;
   required?: boolean;
   options?: string[];
+  /** Optional ₹ unit price for type:'number'. 0 = free item; omit = no price UI. */
+  unitPrice?: number;
 }
 
 export interface JourneyScreen {
@@ -157,6 +165,12 @@ export function JourneyActiveForm({
     journeyRecord: values,
     submittedData: values,
   }), [values]);
+
+  // Display-only — never merged into collectedPayload / webhook body.
+  const pricingSummary = useMemo(
+    () => grandTotal(safeScreens, values),
+    [safeScreens, values],
+  );
 
   function setField(id: string, value: string) {
     setValues((v) => ({ ...v, [id]: value }));
@@ -296,6 +310,17 @@ export function JourneyActiveForm({
               );
             })}
           </div>
+          {pricingSummary.anyPriced && (
+            <div
+              className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-sm"
+              data-testid="journey-grand-total"
+            >
+              <span className="font-semibold text-slate-900">Total</span>
+              <span className="font-semibold text-slate-900">
+                {formatInr(pricingSummary.total)}
+              </span>
+            </div>
+          )}
           {submitError && (
             <div className="mt-4" data-testid="journey-submit-error">
               <ErrorState
@@ -378,18 +403,27 @@ export function JourneyActiveForm({
             }
 
             return (
-              <Input
-                key={field.id}
-                id={`jf-${field.id}`}
-                label={field.label}
-                required={field.required}
-                error={error}
-                type={inputTypeFor(type)}
-                phonePrefix={type === 'phone'}
-                value={value}
-                onChange={(e) => setField(field.id, e.target.value)}
-                autoComplete={type === 'email' ? 'email' : type === 'phone' ? 'tel' : 'on'}
-              />
+              <div key={field.id}>
+                <Input
+                  id={`jf-${field.id}`}
+                  label={field.label}
+                  required={field.required}
+                  error={error}
+                  type={inputTypeFor(type)}
+                  phonePrefix={type === 'phone'}
+                  value={value}
+                  onChange={(e) => setField(field.id, e.target.value)}
+                  autoComplete={type === 'email' ? 'email' : type === 'phone' ? 'tel' : 'on'}
+                />
+                {type === 'number' && hasUnitPrice(field) && (
+                  <p
+                    className="mt-1.5 text-xs font-medium text-slate-500"
+                    data-testid={`journey-line-total-${field.id}`}
+                  >
+                    {formatLine(value, field.unitPrice!)}
+                  </p>
+                )}
+              </div>
             );
           })
         )}
