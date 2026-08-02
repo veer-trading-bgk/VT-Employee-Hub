@@ -2739,11 +2739,104 @@ describe('AutomationEngine — create_journey_record / complete_journey / cancel
     expect(WASendSvc.sendTemplate).toHaveBeenCalledWith(
       CID,
       { resolvedContact: { pk: LEAD_PK, phone: '9876543210', isLead: true } },
-      'tmpl_confirm',
+      { templateName: 'tmpl_confirm', language: 'en' },
       [],
       expect.objectContaining({ id: 'system' }),
       expect.any(Object),
     );
+  });
+
+  test('complete_journey notify uses {templateName, language} object-ref — not bare-string UUID lookup', async () => {
+    // Same class of bug as open_web_journey (2026-08-01): editors store Meta
+    // templateName; a string third arg to sendTemplate looks up TMPL#{name}
+    // and throws "Template not found". Object-ref skips that path entirely.
+    WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.ok' });
+
+    await engine._runAction(
+      CID,
+      {
+        type: 'complete_journey',
+        config: {
+          confirmationTemplateId: 'appointment_confirmed_v1',
+          confirmationLanguage: 'en',
+        },
+      },
+      { journeyInstanceId: JOURNEY_ID, phone: '9876543210', leadPK: LEAD_PK },
+    );
+
+    const templateRef = WASendSvc.sendTemplate.mock.calls[0][2];
+    expect(typeof templateRef).not.toBe('string');
+    expect(typeof templateRef).toBe('object');
+    expect(templateRef).toEqual({ templateName: 'appointment_confirmed_v1', language: 'en' });
+    expect(templateRef).not.toEqual('appointment_confirmed_v1');
+    expect(templateRef).not.toEqual(expect.stringMatching(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    ));
+  });
+
+  test('complete_journey maps confirmationVariableFields from ctx.journeyRecord → body {{n}}', async () => {
+    WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.ok' });
+
+    await engine._runAction(
+      CID,
+      {
+        type: 'complete_journey',
+        config: {
+          confirmationTemplateId: 'tmpl_confirm',
+          confirmationVariableFields: ['full_name', 'department', 'slot'],
+        },
+      },
+      {
+        journeyInstanceId: JOURNEY_ID,
+        phone: '9876543210',
+        leadPK: LEAD_PK,
+        journeyRecord: { full_name: 'Ada Lovelace', department: 'Cardiology', slot: '10:00' },
+      },
+    );
+
+    expect(WASendSvc.sendTemplate.mock.calls[0][3]).toEqual([
+      'Ada Lovelace',
+      'Cardiology',
+      '10:00',
+    ]);
+  });
+
+  test('complete_journey missing mapped field id yields empty string slot (not omitted)', async () => {
+    WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.ok' });
+
+    await engine._runAction(
+      CID,
+      {
+        type: 'complete_journey',
+        config: {
+          confirmationTemplateId: 'tmpl_confirm',
+          confirmationVariableFields: ['full_name', 'typo_field'],
+        },
+      },
+      {
+        journeyInstanceId: JOURNEY_ID,
+        phone: '9876543210',
+        submittedData: { full_name: 'Ada' },
+      },
+    );
+
+    expect(WASendSvc.sendTemplate.mock.calls[0][3]).toEqual(['Ada', '']);
+  });
+
+  test('complete_journey with no confirmationVariableFields still sends empty variables array', async () => {
+    WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.ok' });
+
+    await engine._runAction(
+      CID,
+      { type: 'complete_journey', config: { confirmationTemplateId: 'tmpl_confirm' } },
+      {
+        journeyInstanceId: JOURNEY_ID,
+        phone: '9876543210',
+        journeyRecord: { full_name: 'Ada' },
+      },
+    );
+
+    expect(WASendSvc.sendTemplate.mock.calls[0][3]).toEqual([]);
   });
 
   test('cancel_journey sets cancelled + cancelReason and publishes journey_cancelled', async () => {
@@ -2783,11 +2876,39 @@ describe('AutomationEngine — create_journey_record / complete_journey / cancel
     expect(WASendSvc.sendTemplate).toHaveBeenCalledWith(
       CID,
       { phone: '9876543210' },
-      'tmpl_cancel',
+      { templateName: 'tmpl_cancel', language: 'en' },
       [],
       expect.objectContaining({ id: 'system' }),
       expect.any(Object),
     );
+  });
+
+  test('cancel_journey notify uses {templateName, language} object-ref — not bare-string UUID lookup', async () => {
+    WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.ok' });
+
+    await engine._runAction(
+      CID,
+      {
+        type: 'cancel_journey',
+        config: {
+          reasonSource: 'user',
+          notifyTemplateId: 'appointment_cancelled_v1',
+          notifyLanguage: 'hi',
+          notifyVariableFields: ['full_name'],
+        },
+      },
+      {
+        journeyInstanceId: JOURNEY_ID,
+        phone: '9876543210',
+        journeyRecord: { full_name: 'Ada' },
+      },
+    );
+
+    const templateRef = WASendSvc.sendTemplate.mock.calls[0][2];
+    expect(typeof templateRef).not.toBe('string');
+    expect(templateRef).toEqual({ templateName: 'appointment_cancelled_v1', language: 'hi' });
+    expect(templateRef).not.toEqual('appointment_cancelled_v1');
+    expect(WASendSvc.sendTemplate.mock.calls[0][3]).toEqual(['Ada']);
   });
 });
 

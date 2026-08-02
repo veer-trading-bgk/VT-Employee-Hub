@@ -16,7 +16,7 @@ struck-through and left in place.
 - Keep entries short — one or two sentences plus a pointer to where the full detail lives. This
   file is a checklist to scan, not a place to re-litigate the full context every time.
 
-**Last updated:** 2026-07-14.
+**Last updated:** 2026-08-02.
 
 ---
 
@@ -24,6 +24,20 @@ struck-through and left in place.
 
 *(none currently — see `docs/v3/12_DECISION_LOG.md` OQ-006 for the most recently resolved item:
 Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
+
+## Near-term loose ends (after Journey Instances UI → media incident)
+
+Do **not** pull these ahead of Instances UI or the inbound-media incident (`storeInboundMedia`).
+Both are small, confirmed, and easy to lose once the priority queue moves on:
+
+- **`storeInboundMedia` / inbound media incident** — already on this priority queue (second after
+  Instances UI). Keep here so the peer item below stays co-located.
+- **`documentExtraction.test.js` PDF fixture fails under Jest only** — confirmed pre-existing on
+  clean `main` (2026-08-02: stash this session's diff → re-run → same `result.ok === false` on
+  `'PDF: extracts heading and body text'`; works outside Jest against the same `sample.pdf`).
+  Production Lambda path is fine; suite gap only. Look once the media incident clears.
+  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "PDF Extraction Test Fails Inside Jest Only — Not a
+  Production Bug".
 
 ## Queued technical work
 

@@ -1354,7 +1354,11 @@ class AutomationEngine {
 
       // Terminal success — conditional META status write + journey_completed event.
       case 'complete_journey': {
-        const { confirmationTemplateId } = step.config ?? {};
+        const {
+          confirmationTemplateId,
+          confirmationLanguage = 'en',
+          confirmationVariableFields,
+        } = step.config ?? {};
         const journeyInstanceId = ctx.journeyInstanceId;
         if (!journeyInstanceId) {
           logger.warn('AutomationEngine: complete_journey missing context.journeyInstanceId — skipped');
@@ -1390,13 +1394,21 @@ class AutomationEngine {
           metadata:   { journeyInstanceId, leadId: leadId ?? null },
         });
 
-        this._sendOptionalJourneyNotify(companyId, ctx, confirmationTemplateId, 'complete_journey');
+        this._sendOptionalJourneyNotify(companyId, ctx, confirmationTemplateId, 'complete_journey', {
+          language: confirmationLanguage,
+          variableFields: confirmationVariableFields,
+        });
         return { status: 'completed', journeyInstanceId };
       }
 
       // Terminal cancel — same conditional-write + publishEvent shape as complete_journey.
       case 'cancel_journey': {
-        const { reasonSource = 'manual', notifyTemplateId } = step.config ?? {};
+        const {
+          reasonSource = 'manual',
+          notifyTemplateId,
+          notifyLanguage = 'en',
+          notifyVariableFields,
+        } = step.config ?? {};
         const journeyInstanceId = ctx.journeyInstanceId;
         if (!journeyInstanceId) {
           logger.warn('AutomationEngine: cancel_journey missing context.journeyInstanceId — skipped');
@@ -1433,7 +1445,10 @@ class AutomationEngine {
           metadata:   { journeyInstanceId, cancelReason: reasonSource, leadId: leadId ?? null },
         });
 
-        this._sendOptionalJourneyNotify(companyId, ctx, notifyTemplateId, 'cancel_journey');
+        this._sendOptionalJourneyNotify(companyId, ctx, notifyTemplateId, 'cancel_journey', {
+          language: notifyLanguage,
+          variableFields: notifyVariableFields,
+        });
         return { status: 'cancelled', cancelReason: reasonSource, journeyInstanceId };
       }
 
@@ -1445,18 +1460,26 @@ class AutomationEngine {
   // Best-effort optional template notify for journey terminal nodes only.
   // open_web_journey does NOT use this — its send is mandatory and must match
   // send_template's hard-failure contract. Fire-and-forget like writeMediaIndex().
-  _sendOptionalJourneyNotify(companyId, ctx, templateId, logLabel) {
+  // templateId is a Meta templateName (same as open_web_journey / editors) —
+  // always pass object-ref to sendTemplate; never a bare string (DDB UUID path).
+  _sendOptionalJourneyNotify(companyId, ctx, templateId, logLabel, opts = {}) {
     if (!templateId) return;
     const { leadPK, phone } = ctx;
     if (!phone) {
       logger.warn(`AutomationEngine: ${logLabel} template set but context.phone missing — notify skipped`);
       return;
     }
+    const language = opts.language ?? 'en';
+    const variableFields = Array.isArray(opts.variableFields) ? opts.variableFields : [];
+    const data = ctx.journeyRecord ?? ctx.submittedData ?? {};
+    const variableValues = variableFields.map((id) => String(data[id] ?? ''));
     const target = leadPK
       ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
       : { phone };
     WASendSvc.sendTemplate(
-      companyId, target, templateId, [],
+      companyId, target,
+      { templateName: templateId, language },
+      variableValues,
       { id: 'system', role: 'admin', name: 'Automation' },
       { content: `[Journey notify: ${templateId}]` },
     ).catch((e) => logger.warn(`AutomationEngine: ${logLabel} notify failed: ${e.message}`));

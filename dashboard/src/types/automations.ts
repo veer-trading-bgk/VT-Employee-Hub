@@ -344,11 +344,22 @@ export interface CreateJourneyRecordConfig {
 
 export interface CompleteJourneyConfig {
   confirmationTemplateId?: string;
+  /** Meta template language code; defaults to 'en' at send time. */
+  confirmationLanguage?: string;
+  /**
+   * Ordered Journey field IDs mapped to WhatsApp body {{1}}, {{2}}, …
+   * Values resolved from ctx.journeyRecord / ctx.submittedData at notify time.
+   * Free-text in V1 — a typo'd id yields an empty slot (near-term UX debt).
+   */
+  confirmationVariableFields?: string[];
 }
 
 export interface CancelJourneyConfig {
   reasonSource:       'timeout' | 'user' | 'manual' | string;
   notifyTemplateId?:  string;
+  notifyLanguage?:    string;
+  /** Same semantics as CompleteJourneyConfig.confirmationVariableFields. */
+  notifyVariableFields?: string[];
 }
 
 export type ConditionMode = 'field_match' | 'boolean' | 'button_reply';
