@@ -193,10 +193,10 @@ what they actually exercise:
   increment, `reset`, and fail-open behavior on DynamoDB errors for both `isBlocked` and `recordFail`.
 
 ### Media (`src/utils/`, S3/Meta integration logic)
-- **`storeInboundMedia.test.js`** — guards (empty `MEDIA_BUCKET`, missing access token, missing media ID,
-  no download URL from Meta), happy path (Meta download → S3 upload → correct `s3Key`), MIME-to-extension
-  mapping (video → `.mp4`), S3 `AccessDenied` → returns null AND sends a Telegram alert, Meta API failure →
-  returns null without touching S3.
+- **`storeInboundMedia.test.js`** — `InboundMediaArchiveService` guards (missing access token / media ID,
+  no download URL), happy path (hop logs + S3 key + MIME→ext), AccessDenied → alert and no retry,
+  401 → no retry / no alert, transient CDN hang-up → one retry, and asserts `whatsapp.js`
+  re-exports the same `storeInboundMedia` function reference as the shared service.
 
 ### Cross-cutting smoke
 - **`smoke.test.js`** — a lighter, redundant top-level sanity sweep across `id.js`, `entityKeys.js`,

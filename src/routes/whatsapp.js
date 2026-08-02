@@ -29,6 +29,7 @@ const { resolveWelcomeVariables, resolveTemplateParams } = require('../utils/wel
 const { logAudit } = require('../utils/audit');
 const { updateLeadLastMessage } = require('../utils/updateLeadLastMessage');
 const ConversationalAgentService = require('../services/ConversationalAgentService');
+const { storeInboundMedia } = require('../services/InboundMediaArchiveService');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -1149,52 +1150,8 @@ async function storeWamidLookup(wamid, leadPK, msgSK, companyId, extras = {}) {
   } catch { /* ignore duplicate */ }
 }
 
-// ── Download inbound Meta media → S3 ─────────────────────────────────────────
-// Meta media IDs expire in 30 days and proxying through Lambda hits the 6 MB
-// response limit. Storing to S3 at webhook time lets the browser stream directly
-// via presigned URL — no Lambda in the path, no size limit.
-const MIME_TO_EXT = {
-  'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif',
-  'video/mp4': '.mp4', 'video/3gpp': '.3gp',
-  'audio/ogg': '.ogg', 'audio/mpeg': '.mp3', 'audio/aac': '.aac',
-  'audio/ogg; codecs=opus': '.ogg',
-  'application/pdf': '.pdf',
-};
-
-async function storeInboundMedia(accessToken, mediaId, mimeType, companyId) {
-  if (!MEDIA_BUCKET || !mediaId || !accessToken) return null;
-  try {
-    const metaRes = await axios.get(`${GRAPH}/${mediaId}`, {
-      params: { access_token: accessToken },
-    });
-    const downloadUrl = metaRes.data?.url;
-    if (!downloadUrl) return null;
-
-    const mediaRes = await axios.get(downloadUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      responseType: 'arraybuffer',
-    });
-
-    const ext = MIME_TO_EXT[mimeType] ?? '';
-    const s3Key = `inbound/${companyId}/${mediaId}${ext}`;
-    await s3Client.upload({
-      Bucket: MEDIA_BUCKET,
-      Key: s3Key,
-      Body: Buffer.from(mediaRes.data),
-      ContentType: mimeType ?? 'application/octet-stream',
-    }).promise();
-
-    return s3Key;
-  } catch (err) {
-    const msg = err?.message ?? String(err);
-    logger.error('storeInboundMedia failed', msg);
-    // Surface S3 permission errors immediately — these cause silent media loss
-    if (msg.includes('Access Denied') || msg.includes('AccessDenied') || msg.includes('403')) {
-      logger.alert(`S3 inbound write denied for company <b>${companyId}</b> — check IAM policy on apforce-wa-media/inbound/*`);
-    }
-    return null;
-  }
-}
+// storeInboundMedia lives in services/InboundMediaArchiveService.js — shared
+// by this webhook (fire-and-forget) and scripts/backfill-media-s3.js.
 
 // Write a MEDIA# index item for per-contact gallery queries
 function writeMediaIndex(companyId, contactKey, item) {

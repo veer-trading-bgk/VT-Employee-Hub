@@ -217,8 +217,9 @@ the data-key and application-authorization layers:
    (finding #10) — it had kept citing specific line numbers of a file that no
    longer exists.
 7. Media (if any) is downloaded from Meta and archived to S3 **after** the WS push has
-   already fired — `storeInboundMedia(...).then(...)` patches `s3Key` onto the
-   already-visible `MSG#` item asynchronously (`whatsapp.js:1392-1404`), so a slow
+   already fired — `InboundMediaArchiveService.storeInboundMedia(...).then(...)`
+   (called from `whatsapp.js` lead + inbox paths) patches `s3Key` onto the
+   already-visible `MSG#` item asynchronously, so a slow
    media download never delays the real-time notification.
 
 ### 4b. Outbound message (agent sends from Inbox)

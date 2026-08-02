@@ -1,161 +1,248 @@
 /**
- * Backfill script: download inbound WhatsApp media from Meta and store in S3.
+ * Backfill script: archive inbound WhatsApp media (mediaId, no s3Key) to S3.
  *
- * Finds all MSG# items that have mediaId but no s3Key, downloads each file
- * from Meta using the company's stored WABA access token, uploads to S3, and
- * updates the DynamoDB item with the s3Key so the frontend can stream directly.
+ * Calls the SAME InboundMediaArchiveService.storeInboundMedia used by the
+ * WhatsApp webhook — no duplicated Graph/CDN/S3 logic.
  *
  * Usage (from project root):
- *   node scripts/backfill-media-s3.js [--dry-run]
+ *   node scripts/backfill-media-s3.js --dry-run
+ *   node scripts/backfill-media-s3.js --dry-run --company=viir_trading
+ *   node scripts/backfill-media-s3.js --company=viir_trading          # live — needs explicit go-ahead
  *
- * Requires local AWS credentials with access to DynamoDB + S3.
+ * Dry-run is read-only: scans DynamoDB, classifies candidates (attempt /
+ * skip-expired / skip-no-token), does NOT call Meta or S3.
+ *
+ * Live run is idempotent: re-reads each item before archive and skips if
+ * s3Key appeared; skips messages older than Meta's ~30-day media retention.
+ *
+ * Requires local AWS credentials + .env (DYNAMODB_TABLE_METRICS, WA_MEDIA_BUCKET).
  */
 
+'use strict';
+
 require('dotenv').config();
+const path = require('path');
 const AWS = require('aws-sdk');
-const axios = require('axios');
 
 const DRY_RUN = process.argv.includes('--dry-run');
+const companyArg = process.argv.find((a) => a.startsWith('--company='));
+const COMPANY_FILTER = companyArg ? companyArg.slice('--company='.length).trim() : null;
+
 const REGION = process.env.AWS_REGION || 'ap-south-1';
-const TABLE = process.env.DYNAMODB_TABLE_METRICS; // whatsapp uses METRICS table (TABLE var)
-const MEDIA_BUCKET = process.env.WA_MEDIA_BUCKET || 'apforce-wa-media';
-const GRAPH = 'https://graph.facebook.com/v19.0';
-const DELAY_MS = 300; // pause between Meta API calls to avoid rate limiting
+const TABLE = process.env.DYNAMODB_TABLE_METRICS;
+const DELAY_MS = 300;
+
+// Meta deletes media after ~30 days — don't waste Graph calls on expired IDs.
+const META_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 AWS.config.update({ region: REGION });
 const db = new AWS.DynamoDB.DocumentClient();
-const s3 = new AWS.S3({ region: REGION });
 
-const MIME_TO_EXT = {
-  'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif',
-  'video/mp4': '.mp4', 'video/3gpp': '.3gp',
-  'audio/ogg': '.ogg', 'audio/mpeg': '.mp3', 'audio/aac': '.aac',
-  'audio/ogg; codecs=opus': '.ogg',
-  'application/pdf': '.pdf',
-};
+// Load after env is set — config/s3.js fail-fasts without WA_MEDIA_BUCKET.
+const { storeInboundMedia } = require(path.join(process.cwd(), 'src/services/InboundMediaArchiveService'));
+const { getWabaConfig } = require(path.join(process.cwd(), 'src/services/graphApiHelpers'));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ── Scan all MSG# items with mediaId but no s3Key ────────────────────────────
+/** PK formats: LEAD#${companyId}#${id} or INBOX#${companyId}#${phone} */
+function companyIdFromPK(pk) {
+  return pk?.split('#')[1] ?? null;
+}
+
+/** Prefer item.timestamp; fall back to MSG#<iso>#… SK. */
+function messageTimestampMs(item) {
+  if (item.timestamp) {
+    const t = Date.parse(item.timestamp);
+    if (!Number.isNaN(t)) return t;
+  }
+  const sk = item.SK || '';
+  const m = sk.match(/^MSG#(\d{4}-\d{2}-\d{2}T[^#]+)/);
+  if (m) {
+    const t = Date.parse(m[1]);
+    if (!Number.isNaN(t)) return t;
+  }
+  return null;
+}
+
+function isPastMetaRetention(item, now = Date.now()) {
+  const ts = messageTimestampMs(item);
+  if (ts == null) return false; // unknown age — attempt rather than silent skip
+  return (now - ts) > META_RETENTION_MS;
+}
+
 async function scanMediaMessages() {
   const items = [];
   let lastKey;
   let page = 0;
   do {
     page++;
-    process.stdout.write(`\rScanning table... page ${page} (${items.length} found so far)`);
+    process.stdout.write(`\rScanning table... page ${page} (${items.length} candidates so far)`);
+    const filterParts = [
+      'begins_with(SK, :sk)',
+      'attribute_exists(mediaId)',
+      'attribute_not_exists(s3Key)',
+    ];
+    const values = { ':sk': 'MSG#' };
+    // Company scope via PK prefix — LEAD#cid# / INBOX#cid#
+    if (COMPANY_FILTER) {
+      filterParts.push('(begins_with(PK, :leadPfx) OR begins_with(PK, :inboxPfx))');
+      values[':leadPfx'] = `LEAD#${COMPANY_FILTER}#`;
+      values[':inboxPfx'] = `INBOX#${COMPANY_FILTER}#`;
+    }
     const res = await db.scan({
       TableName: TABLE,
-      FilterExpression: 'begins_with(SK, :sk) AND attribute_exists(mediaId) AND attribute_not_exists(s3Key)',
-      ExpressionAttributeValues: { ':sk': 'MSG#' },
-      ProjectionExpression: 'PK, SK, mediaId, mimeType',
+      FilterExpression: filterParts.join(' AND '),
+      ExpressionAttributeValues: values,
+      ProjectionExpression: 'PK, SK, mediaId, mimeType, #ts, s3Key',
+      ExpressionAttributeNames: { '#ts': 'timestamp' },
       ...(lastKey && { ExclusiveStartKey: lastKey }),
     }).promise();
     items.push(...(res.Items ?? []));
     lastKey = res.LastEvaluatedKey;
   } while (lastKey);
-  console.log(`\nFound ${items.length} messages needing backfill.`);
+  console.log(`\nScan complete: ${items.length} MSG# with mediaId and no s3Key.`);
   return items;
 }
 
-// ── Extract companyId from PK ─────────────────────────────────────────────────
-// PK formats: LEAD#${companyId}#${id}  or  INBOX#${companyId}#${phone}
-function companyIdFromPK(pk) {
-  const parts = pk.split('#');
-  return parts[1] ?? null;
-}
+async function classify(items) {
+  const now = Date.now();
+  const wabaCache = new Map();
+  const attempt = [];
+  const skippedExpired = [];
+  const skippedNoToken = [];
+  const skippedNoCompany = [];
 
-// ── Load WABA config (access token) per company ───────────────────────────────
-const wabaCache = {};
-async function getWabaConfig(companyId) {
-  if (wabaCache[companyId] !== undefined) return wabaCache[companyId];
-  const res = await db.get({
-    TableName: TABLE,
-    Key: { PK: `CONFIG#WABA#${companyId}`, SK: 'CURRENT' },
-  }).promise();
-  wabaCache[companyId] = res.Item ?? null;
-  return wabaCache[companyId];
-}
-
-// ── Download from Meta + upload to S3 ────────────────────────────────────────
-async function processMessage(item) {
-  const { PK, SK, mediaId, mimeType } = item;
-  const companyId = companyIdFromPK(PK);
-  if (!companyId) { console.warn(`  SKIP — can't parse companyId from PK: ${PK}`); return; }
-
-  const cfg = await getWabaConfig(companyId);
-  if (!cfg?.accessToken) { console.warn(`  SKIP — no WABA config for company ${companyId}`); return; }
-
-  try {
-    // Step 1: resolve Meta download URL
-    const metaRes = await axios.get(`${GRAPH}/${mediaId}`, {
-      params: { access_token: cfg.accessToken },
-      timeout: 10000,
-    });
-    const downloadUrl = metaRes.data?.url;
-    if (!downloadUrl) { console.warn(`  SKIP ${mediaId} — Meta returned no URL (expired?)`); return; }
-
-    // Step 2: download bytes
-    const mediaRes = await axios.get(downloadUrl, {
-      headers: { Authorization: `Bearer ${cfg.accessToken}` },
-      responseType: 'arraybuffer',
-      timeout: 30000,
-    });
-
-    const ext = MIME_TO_EXT[mimeType] ?? '';
-    const s3Key = `inbound/${companyId}/${mediaId}${ext}`;
-    const sizeKB = Math.round(mediaRes.data.byteLength / 1024);
-
-    if (DRY_RUN) {
-      console.log(`  DRY-RUN: would upload ${s3Key} (${sizeKB} KB)`);
-      return;
+  for (const item of items) {
+    if (item.s3Key) continue; // defensive — filter should already exclude
+    const companyId = companyIdFromPK(item.PK);
+    if (!companyId) {
+      skippedNoCompany.push(item);
+      continue;
     }
-
-    // Step 3: upload to S3
-    await s3.upload({
-      Bucket: MEDIA_BUCKET,
-      Key: s3Key,
-      Body: Buffer.from(mediaRes.data),
-      ContentType: mimeType ?? 'application/octet-stream',
-    }).promise();
-
-    // Step 4: update DynamoDB item with s3Key
-    await db.update({
-      TableName: TABLE,
-      Key: { PK, SK },
-      UpdateExpression: 'SET s3Key = :k',
-      ExpressionAttributeValues: { ':k': s3Key },
-    }).promise();
-
-    console.log(`  OK  ${mediaId} → ${s3Key} (${sizeKB} KB)`);
-  } catch (err) {
-    const status = err?.response?.status;
-    if (status === 404 || status === 410) {
-      console.warn(`  GONE ${mediaId} — expired on Meta (${status})`);
-    } else {
-      console.error(`  FAIL ${mediaId} — ${err.message}`);
+    if (isPastMetaRetention(item, now)) {
+      skippedExpired.push(item);
+      continue;
     }
+    if (!wabaCache.has(companyId)) {
+      const cfg = await getWabaConfig(companyId);
+      wabaCache.set(companyId, cfg);
+    }
+    const cfg = wabaCache.get(companyId);
+    if (!cfg?.accessToken) {
+      skippedNoToken.push(item);
+      continue;
+    }
+    attempt.push({ item, companyId, accessToken: cfg.accessToken });
   }
+  return { attempt, skippedExpired, skippedNoToken, skippedNoCompany, wabaCache };
 }
 
-// ── Main ──────────────────────────────────────────────────────────────────────
-(async () => {
-  console.log(`Backfill inbound WhatsApp media → S3`);
-  console.log(`Table: ${TABLE} | Bucket: ${MEDIA_BUCKET} | Dry-run: ${DRY_RUN}\n`);
+async function processLive(candidates) {
+  let ok = 0;
+  let skippedRace = 0;
+  let fail = 0;
 
-  if (!TABLE) { console.error('DYNAMODB_TABLE_METRICS not set — check .env'); process.exit(1); }
+  for (let i = 0; i < candidates.length; i++) {
+    const { item, companyId, accessToken } = candidates[i];
+    console.log(`[${i + 1}/${candidates.length}] ${item.PK} / ${item.SK} mediaId=${item.mediaId}`);
 
-  const messages = await scanMediaMessages();
-  if (messages.length === 0) { console.log('Nothing to backfill.'); return; }
+    // Idempotent: another run (or webhook) may have patched s3Key since scan.
+    const fresh = await db.get({
+      TableName: TABLE,
+      Key: { PK: item.PK, SK: item.SK },
+      ProjectionExpression: 's3Key, mediaId, mimeType',
+    }).promise();
+    if (fresh.Item?.s3Key) {
+      console.log('  SKIP — s3Key already present (race/idempotent)');
+      skippedRace++;
+      continue;
+    }
 
-  let ok = 0, skip = 0, fail = 0;
-  for (let i = 0; i < messages.length; i++) {
-    const item = messages[i];
-    console.log(`[${i + 1}/${messages.length}] ${item.PK} / ${item.SK}`);
-    await processMessage(item);
+    const s3Key = await storeInboundMedia(
+      accessToken,
+      fresh.Item?.mediaId ?? item.mediaId,
+      fresh.Item?.mimeType ?? item.mimeType,
+      companyId,
+    );
+    if (!s3Key) {
+      console.error('  FAIL — storeInboundMedia returned null');
+      fail++;
+      await sleep(DELAY_MS);
+      continue;
+    }
+
+    const updateResult = await db.update({
+      TableName: TABLE,
+      Key: { PK: item.PK, SK: item.SK },
+      UpdateExpression: 'SET s3Key = :k',
+      ConditionExpression: 'attribute_not_exists(s3Key)',
+      ExpressionAttributeValues: { ':k': s3Key },
+    }).promise().then(() => 'ok').catch((err) => {
+      if (err.code === 'ConditionalCheckFailedException') return 'race';
+      throw err;
+    });
+
+    if (updateResult === 'race') {
+      console.log('  SKIP — s3Key set concurrently');
+      skippedRace++;
+    } else {
+      console.log(`  OK → ${s3Key}`);
+      ok++;
+    }
     await sleep(DELAY_MS);
   }
 
-  console.log(`\nDone. ${messages.length} processed.`);
-  if (DRY_RUN) console.log('(dry-run — no changes made)');
-})();
+  return { ok, skippedRace, fail };
+}
+
+(async () => {
+  console.log('Backfill inbound WhatsApp media → S3');
+  console.log(`Table: ${TABLE}`);
+  console.log(`Dry-run: ${DRY_RUN}`);
+  console.log(`Company filter: ${COMPANY_FILTER || '(all)'}\n`);
+
+  if (!TABLE) {
+    console.error('DYNAMODB_TABLE_METRICS not set — check .env');
+    process.exit(1);
+  }
+  if (!process.env.WA_MEDIA_BUCKET) {
+    console.error('WA_MEDIA_BUCKET not set — check .env');
+    process.exit(1);
+  }
+
+  const scanned = await scanMediaMessages();
+  const { attempt, skippedExpired, skippedNoToken, skippedNoCompany } = await classify(scanned);
+
+  console.log('\n── Classification ──');
+  console.log(`  would attempt:     ${attempt.length}`);
+  console.log(`  skip (expired>30d): ${skippedExpired.length}`);
+  console.log(`  skip (no WABA tok): ${skippedNoToken.length}`);
+  console.log(`  skip (bad PK):      ${skippedNoCompany.length}`);
+
+  if (attempt.length) {
+    console.log('\n── Sample candidates (up to 15) ──');
+    for (const { item, companyId } of attempt.slice(0, 15)) {
+      const ageDays = (() => {
+        const ts = messageTimestampMs(item);
+        return ts == null ? '?' : ((Date.now() - ts) / 86400000).toFixed(1);
+      })();
+      console.log(`  ${companyId} | ${item.mimeType || 'mime?'} | age=${ageDays}d | ${item.mediaId} | ${item.SK}`);
+    }
+  }
+
+  if (skippedExpired.length) {
+    console.log(`\n── Skipped expired (count=${skippedExpired.length}, not attempted) ──`);
+  }
+
+  if (DRY_RUN) {
+    console.log('\n(dry-run — no Meta/S3/Dynamo writes)');
+    return;
+  }
+
+  console.log('\n── Live archive ──');
+  const result = await processLive(attempt);
+  console.log(`\nDone. ok=${result.ok} fail=${result.fail} skippedRace=${result.skippedRace}`);
+})().catch((e) => {
+  console.error('BACKFILL ERROR:', e);
+  process.exit(1);
+});

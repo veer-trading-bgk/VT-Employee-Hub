@@ -27,11 +27,19 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
 
 ## Near-term loose ends (after Journey Instances UI → media incident)
 
-Do **not** pull these ahead of Instances UI or the inbound-media incident (`storeInboundMedia`).
+Do **not** pull these ahead of Instances UI or the remaining inbound-media execution-model fix.
 Small, confirmed, and easy to lose once the priority queue moves on:
 
-- **`storeInboundMedia` / inbound media incident** — already on this priority queue (second after
-  Instances UI).
+- **`storeInboundMedia` freeze/thaw (deferred execution-model fix)** — Phase 1 shipped
+  2026-08-02 (`InboundMediaArchiveService`: hop logging, same-invocation timeouts/retry,
+  shared archive used by webhook + `scripts/backfill-media-s3.js`; live backfill recovered 7/15
+  missing archives). Still open: fire-and-forget before `res.sendStatus(200)` can freeze mid-
+  download; await-before-ACK / queue not in Phase 1. **New evidence from that backfill:** Meta
+  returned Graph `100`/`33` ("object does not exist") on media only ~5 days old (token/company
+  ruled out via cross-check + control that still resolved) — effective retention is sometimes
+  far shorter than the documented ~30-day window, so a missed archive is often unrecoverable
+  well before day 30. That strengthens the case for closing the freeze/thaw gap; do not treat
+  "retry within 30 days" as a safety net.
 
 *(2026-08-02 note — not an open item: the `documentExtraction` PDF / Jest alarm was a
 test-runner invocation gap — agents calling `jest` without `--experimental-vm-modules` — not a

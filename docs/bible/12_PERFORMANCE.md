@@ -326,20 +326,28 @@ of the Lambda request/response path entirely.
 
 ### Inbound: webhook → S3, fire-and-forget
 
-`src/routes/whatsapp.js:1042-1087` (`storeInboundMedia`) downloads media from Meta's
-Graph API and uploads it to S3 (`inbound/{companyId}/{mediaId}{ext}`). The comment at
-line 1043-1045 states the reason: *"Meta media IDs expire in 30 days and proxying
-through Lambda hits the 6 MB response limit. Storing to S3 at webhook time lets the
-browser stream directly via presigned URL — no Lambda in the path, no size limit."*
+`src/services/InboundMediaArchiveService.js` (`storeInboundMedia`) downloads media
+from Meta's Graph API and uploads it to S3 (`inbound/{companyId}/{mediaId}{ext}`).
+The WhatsApp webhook in `src/routes/whatsapp.js` calls that shared function
+fire-and-forget (lead + inbox paths); `scripts/backfill-media-s3.js` calls the
+same function for recovery — no duplicated download/upload logic. The service
+comment states the reason: *"Meta media IDs expire in 30 days and proxying
+through Lambda hits the 6 MB response limit. Storing to S3 at ingest time lets
+the browser stream via
+presigned URL — no Lambda in the path, no size limit."*
 
-Critically, this archival is **explicitly non-blocking**. Comments at lines 1388-1389
-and 1308: *"S3 media archive is fire-and-forget — does not block the response or the WS
-push. The MSG# item is already visible to the browser; s3Key is patched onto the
-message asynchronously"* (lines 1394-1400, 1457-1463 both `.then()`-patch `s3Key` via a
-DynamoDB `update` after the fact, not awaited before responding).
+Critically, this archival is **explicitly non-blocking** at the webhook. Comments
+on the lead/inbox call sites: *"S3 media archive is fire-and-forget — does not
+block the response or the WS push. The MSG# item is already visible to the
+browser; s3Key is patched onto the message asynchronously"* (both `.then()`-patch
+`s3Key` via a DynamoDB `update` after the fact, not awaited before responding).
+Hop-level logging (`graph_lookup_*` / `cdn_download_*` / `s3_upload_*`) and
+same-invocation retries for transient connection errors live in the service;
+they do **not** change the fire-and-forget execution model (Lambda freeze/thaw
+remains a deferred concern).
 
 There's a second, Lambda-execution-model-specific detail backing this: the webhook
-handler comment at lines 1104-1107 explains that `res.sendStatus(200)` is deliberately
+handler comment explains that `res.sendStatus(200)` is deliberately
 called at the **end** of the handler function, not the start — because *"resolving
 serverless-http's response earlier freezes the execution context and suspends all async
 work until the next warm request."* This is a real constraint of Lambda's execution
