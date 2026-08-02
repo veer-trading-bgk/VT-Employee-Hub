@@ -102,6 +102,91 @@ class WhatsAppSendService {
   }
 
   /**
+   * Indexes of URL buttons whose `url` still has a Meta {{n}} placeholder
+   * (Dynamic URL). Static URL / QR / phone buttons are omitted — they need
+   * no send-time button component.
+   */
+  _dynamicUrlButtonIndexes(components) {
+    const buttonsComp = (components ?? []).find((c) => c.type === 'BUTTONS');
+    if (!buttonsComp?.buttons?.length) return [];
+    const indexes = [];
+    buttonsComp.buttons.forEach((btn, i) => {
+      if (btn.type === 'URL' && /\{\{\d+\}\}/.test(btn.url ?? '')) {
+        indexes.push(String(i));
+      }
+    });
+    return indexes;
+  }
+
+  /**
+   * Build index → percent-encoded suffix for Meta Dynamic URL button
+   * components. `buttonVariables` wins over `buttonVariableValue` when both
+   * are set. Fail-fast when local BUTTONS metadata declares ≥1 Dynamic URL
+   * and the caller supplied no suffix (mirrors missing media-header ref).
+   * Empty local components (0-match name resolve) + a singular value → index "0".
+   */
+  _resolveButtonSuffixMap(tmpl, options = {}) {
+    const dynamicIndexes = this._dynamicUrlButtonIndexes(tmpl.components);
+    const label = tmpl.templateName ?? tmpl.name ?? 'template';
+    const hasMap = options.buttonVariables != null
+      && typeof options.buttonVariables === 'object'
+      && !Array.isArray(options.buttonVariables);
+    const hasSingular = options.buttonVariableValue != null;
+
+    /** @type {Record<string, unknown>} */
+    let raw = {};
+    if (hasMap) {
+      raw = { ...options.buttonVariables };
+    } else if (hasSingular) {
+      if (dynamicIndexes.length >= 2) {
+        throw this._err(
+          `Template "${label}" has ${dynamicIndexes.length} Dynamic URL buttons — pass options.buttonVariables with a suffix for each button index`,
+          400,
+        );
+      }
+      const index = dynamicIndexes.length === 1 ? dynamicIndexes[0] : '0';
+      raw = { [index]: options.buttonVariableValue };
+    } else if (dynamicIndexes.length >= 1) {
+      throw this._err(
+        `Template "${label}" has a Dynamic URL button but no buttonVariableValue was provided — pass the URL suffix via options.buttonVariableValue`,
+        400,
+      );
+    } else {
+      return {};
+    }
+
+    const entries = Object.entries(raw);
+    if (entries.length === 0) {
+      if (dynamicIndexes.length >= 1) {
+        // Empty buttonVariables: {} — tell the caller to fill the map they
+        // already chose, not to switch to the singular option.
+        throw this._err(
+          hasMap
+            ? `Template "${label}" has a Dynamic URL button but options.buttonVariables is empty — pass a suffix for each Dynamic URL button index`
+            : `Template "${label}" has a Dynamic URL button but no buttonVariableValue was provided — pass the URL suffix via options.buttonVariableValue`,
+          400,
+        );
+      }
+      return {};
+    }
+
+    /** @type {Record<string, string>} */
+    const out = {};
+    for (const [index, val] of entries) {
+      const s = String(val ?? '').trim();
+      if (!s) {
+        throw this._err(
+          `Template "${label}" Dynamic URL button index ${index} has an empty suffix — pass a non-empty URL suffix`,
+          400,
+        );
+      }
+      // Meta requires the dynamic suffix percent-encoded (special chars).
+      out[String(index)] = encodeURIComponent(s);
+    }
+    return out;
+  }
+
+  /**
    * Cancels any pending "Delayed Response Message" wait for this contact —
    * called from all 4 send methods after a successful outbound send. Only
    * fires for a real human agent (user.id !== 'system'); a system-initiated
@@ -353,6 +438,14 @@ class WhatsAppSendService {
    *
    * @param {object}  [options]
    * @param {string}  [options.headerVariableValue]  — TEXT header {{1}} value
+   * @param {string}  [options.buttonVariableValue]  — Dynamic URL button suffix
+   *                                                   (appended to template URL {{1}});
+   *                                                   omitted → no button component
+   *                                                   (static URLs / QR / phone OK)
+   * @param {Record<string,string>} [options.buttonVariables] — optional map of
+   *                                                   button index → suffix when >1
+   *                                                   Dynamic URL buttons (wins over
+   *                                                   singular if both set)
    * @param {boolean} [options.requireLocalTemplate] — when true, object-ref path
    *                                                   throws if no CONFIG#TMPL row
    *                                                   matches name+language (default false)
@@ -454,6 +547,20 @@ class WhatsAppSendService {
     }
     if (bodyParams.length) {
       components.push({ type: 'body', parameters: bodyParams.map((v) => ({ type: 'text', text: v })) });
+    }
+
+    // Dynamic URL button parameters (Meta type:button / sub_type:url). Additive —
+    // callers that omit buttonVariableValue / buttonVariables get identical
+    // payloads to pre-button support. Fail-fast when local BUTTONS metadata
+    // declares a Dynamic URL and no suffix was supplied (avoids Meta #131008).
+    const buttonSuffixes = this._resolveButtonSuffixMap(tmpl, options);
+    for (const [index, text] of Object.entries(buttonSuffixes)) {
+      components.push({
+        type: 'button',
+        sub_type: 'url',
+        index: String(index),
+        parameters: [{ type: 'text', text }],
+      });
     }
 
     const apiRes = await axios.post(
