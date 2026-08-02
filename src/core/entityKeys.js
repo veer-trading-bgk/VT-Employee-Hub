@@ -64,6 +64,23 @@ function journeyMetaSK()                                  { return 'META'; }
 function journeyRecordSK()                                { return 'RECORD'; }
 function journeysByCompanyGsiPK(companyId)                { return `JOURNEY#${companyId}`; }
 
+// Journey Payment (customer checkout — Phase 1). Separate from JOURNEY_RECORD#.
+// Base:   PK = PAYMENT#{companyId}#{paymentId}  SK = META
+// Lookup: PK = PAYMENT_ORDER#{gateway}#{gatewayOrderId}  SK = LOOKUP
+//   → { companyId, paymentId } for O(1) webhook resolution (PR 2) — never Scan.
+function paymentPK(companyId, paymentId) {
+  return `PAYMENT#${companyId}#${paymentId}`;
+}
+function paymentMetaSK() {
+  return 'META';
+}
+function paymentOrderLookupPK(gateway, gatewayOrderId) {
+  return `PAYMENT_ORDER#${gateway}#${gatewayOrderId}`;
+}
+function paymentOrderLookupSK() {
+  return 'LOOKUP';
+}
+
 // Lead entity — existing production pattern, centralised here as reference.
 // Existing routes continue to concatenate strings directly; they migrate in later commits.
 // PK = LEAD#${companyId}#${leadId}  SK = METADATA
@@ -228,6 +245,11 @@ module.exports = {
   journeyMetaSK,
   journeyRecordSK,
   journeysByCompanyGsiPK,
+  // Journey Payment
+  paymentPK,
+  paymentMetaSK,
+  paymentOrderLookupPK,
+  paymentOrderLookupSK,
   // Lead (existing pattern, now centralised)
   leadPK,
   leadSK,

@@ -1,8 +1,10 @@
 'use strict';
 
 /**
- * Display-only Journey line/grand totals + optional GST breakdown.
- * Not persisted / not added to webhook submit payload — UI only.
+ * Display-only Journey line/grand totals + optional GST breakdown on the
+ * public review UI. Authoritative charge math for payments lives in
+ * src/lib/journeyPricing.js — keep helper math in sync (see
+ * tests/journeyPricingParity.test.js).
  */
 
 function hasUnitPrice(field) {

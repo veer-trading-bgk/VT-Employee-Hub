@@ -130,6 +130,7 @@ app.use('/api/campaigns',  authMiddleware, subscriptionMiddleware, campaignsRout
 app.post('/api/journeys/webhook/:companyId/:journeyInstanceId/:token', require('./routes/journeys').publicWebhook);
 app.get('/api/journeys/:companyId/:journeyInstanceId/:token', require('./routes/journeys').publicGet);
 app.post('/api/journeys/:companyId/:journeyInstanceId/:token/submit', require('./routes/journeys').publicSubmit);
+app.post('/api/journeys/:companyId/:journeyInstanceId/:token/checkout', require('./routes/journeys').publicCheckout);
 app.use('/api/journeys', authMiddleware, subscriptionMiddleware, require('./routes/journeys'));
 app.use('/api/forms', formsRoutes);
 // Session-authenticated admin management of API keys (generate/list/revoke).

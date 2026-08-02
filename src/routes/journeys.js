@@ -32,10 +32,13 @@ const {
 } = require('../core/entityKeys');
 const { newMeta, updateMeta } = require('../core/systemMeta');
 const AutomationEngine = require('../services/AutomationEngine');
+const { createPaymentService, PaymentError } = require('../services/PaymentService');
 const { isEnabled } = require('../utils/featureFlags');
 
 const router = express.Router();
 const TABLE = () => process.env.DYNAMODB_TABLE_METRICS;
+/** Swappable for route tests — createCheckoutSession only. */
+let paymentService = createPaymentService();
 
 // Same payload guard as automations.js inboundWebhook.
 const MAX_JOURNEY_PAYLOAD_BYTES = 100_000;
@@ -567,6 +570,55 @@ async function handlePublicWebhook(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// ── Public checkout (Payment Phase 1 PR 1) ───────────────────────────────────
+// Creates PAYMENT# + Razorpay Order from server-computed amount. Does NOT
+// resume wait_for_webhook (PR 2) and does NOT accept client amounts.
+async function handlePublicCheckout(req, res, next) {
+  try {
+    const contentLength = Number(req.headers['content-length'] ?? 0);
+    if (contentLength > MAX_JOURNEY_PAYLOAD_BYTES) {
+      return res.status(413).json({ error: 'Payload too large' });
+    }
+
+    const { companyId, journeyInstanceId, token } = req.params;
+    const validated = await validateJourneyToken(companyId, journeyInstanceId, token);
+    if (!validated.ok) return res.status(404).json({ error: 'Not found' });
+
+    const instance = validated.instance;
+    if (FINISHED_STATUSES.has(instance.status)) {
+      return res.status(409).json({ error: 'Journey is no longer open for payment' });
+    }
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    // Field values only — amount / amountPaise / total / pricingSnapshot ignored.
+    // Each successful call creates a NEW PAYMENT# + Order (no pending reuse in PR 1).
+    const submittedData = body.submittedData ?? body.journeyRecord ?? body.values ?? {};
+
+    try {
+      const checkout = await paymentService.createCheckoutSession({
+        companyId,
+        instance,
+        submittedData,
+        clientBody: body,
+      });
+      return res.status(201).json({
+        success: true,
+        order_id: checkout.orderId,
+        key_id: checkout.keyId,
+        amount: checkout.amountPaise,
+        currency: checkout.currency,
+        paymentId: checkout.paymentId,
+      });
+    } catch (err) {
+      if (err instanceof PaymentError || err?.name === 'PaymentError') {
+        if (err.status === 404) return res.status(404).json({ error: 'Not found' });
+        return res.status(err.status || 400).json({ error: err.message, code: err.code });
+      }
+      throw err;
+    }
+  } catch (err) { next(err); }
+}
+
 module.exports = router;
 module.exports.validateJourneyToken = validateJourneyToken;
 // Composed as arrays (rate-limit + handler) so app.js can mount in one line
@@ -574,3 +626,8 @@ module.exports.validateJourneyToken = validateJourneyToken;
 module.exports.publicGet = [rateLimit(30, 60_000), requireJourneysPlatformPublic, handlePublicGet];
 module.exports.publicSubmit = [rateLimit(30, 60_000), requireJourneysPlatformPublic, handlePublicSubmit];
 module.exports.publicWebhook = [rateLimit(30, 60_000), requireJourneysPlatformPublic, handlePublicWebhook];
+module.exports.publicCheckout = [rateLimit(30, 60_000), requireJourneysPlatformPublic, handlePublicCheckout];
+module.exports._setPaymentServiceForTests = (svc) => {
+  paymentService = svc;
+};
+module.exports.handlePublicCheckout = handlePublicCheckout;

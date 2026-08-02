@@ -29,6 +29,7 @@
     "jsonwebtoken": "^9.0.3",
     "officeparser": "^7.2.3",
     "qrcode": "^1.5.4",
+    "razorpay": "^2.9.8",
     "serverless-http": "^4.0.0",
     "speakeasy": "^2.0.0",
     "telegraf": "^4.16.3",

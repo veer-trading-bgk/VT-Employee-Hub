@@ -1384,3 +1384,26 @@ A sweep of all 35 useQuery call sites in the dashboard found only these 2 — th
 **Priority:** Fixed.
 
 **Reference:** `dashboard/src/components/settings/JourneyDefinitionDrawer.tsx` (`FIELD_TYPE_OPTIONS`); `dashboard/src/components/journey/JourneyActiveForm.tsx` (`FIELD_TYPES` / `inputTypeFor`).
+
+## Journey Payment — orphaned `created` PAYMENT# / multi-checkout (found 2026-08-02, Phase 1 PR 1)
+
+**Issue (confirmed against live PR 1 code, not assumed):**
+
+1. **Orphan after `createOrder` failure.** `PaymentService.createCheckoutSession` puts `PAYMENT#` with `status: 'created'`, `gatewayOrderId: null`, **then** calls `gateway.createOrder(frozenAmountPaise, …)`. If that call throws (network, misconfigured keys, Razorpay 5xx), the put is **not** rolled back and there is **no** sync cleanup, mark-`failed`, or expiry sweeper in PR 1. The row sits indefinitely as `created` with no order id. Intentionally **not** deleted in a catch: a delete-after-throw races a partial gateway success (order created at Razorpay but response lost).
+
+2. **Multi-checkout.** Every `POST …/checkout` calls `generatePaymentId()` and creates a **new** PAYMENT + new Razorpay Order. There is **no** query/reuse of an existing `created`/`pending` payment for the same `journeyInstanceId`. Double-click / refresh / retry before paying → N Orders.
+
+**Double-charge reasoning (correct the optimistic claim):** This is **not** an amount-tamper path — each Order still uses server-frozen `amountPaise`. It is also **not** “orphaned Orders only, never double-charge.” PR 2’s planned **per-PAYMENT** conditional `pending → paid` alone does **not** prevent the customer from successfully paying **two** different Orders for the same journey; both PAYMENT rows could become `paid` (customer charged twice) while `AUTO_WAIT#` claim still resumes the journey at most once. Journey-level already-paid / single-active-pending guards belong with webhook + checkout dedup work, not assumed done by per-row status transitions.
+
+**Intended resolution:**
+
+| Gap | Timeline | Approach |
+|---|---|---|
+| Orphan `created` rows | **Phase 2** (resilience) | Expiry sweeper: age out `created`/`pending` with null or stale `gatewayOrderId` → `expired`; optional admin reconcile via `fetchPayment` / Orders API. Do **not** sync-delete on createOrder throw in PR 1. |
+| Multi-checkout / N Orders + double-pay detection | **HARD REQUIREMENT on Phase 1 PR 2** (webhook + resume gating) — not optional follow-up | **(1) Webhook journey-level guard (required):** before marking any PAYMENT# `paid`, check whether another PAYMENT# for the same `journeyInstanceId` is already `paid`. If yes → do **not** silently accept; set a distinct status/flag (e.g. `paid_duplicate`) and `logger.alert` / Telegram (same pattern as S3 AccessDenied-class alerts) so a human can refund. **(2) Checkout reuse (required, ideally same PR):** `createCheckoutSession` must look for an existing `created`/`pending` PAYMENT for that `journeyInstanceId` and reuse it (same Order / amount) instead of minting a second Order. Founder will hold PR 2 task drafting to this AC explicitly. |
+
+**Note (PR 1 merge):** Within PR 1 there is no webhook/`paid` transition, so double-charge cannot occur from this PR's functionality alone. The gap becomes live the moment PR 2 starts accepting gateway payments — hence the hard AC above.
+
+**Priority:** Orphan sweeper = Phase 2 resilience. Journey-level paid guard + checkout reuse = **blocking acceptance criteria for PR 2**, not deferred TECHNICAL_DEBT that can be dropped.
+
+**Reference:** `src/services/PaymentService.js` `createCheckoutSession` (comments at put + JSDoc); `src/routes/journeys.js` `handlePublicCheckout`; checklist: `docs/PENDING_WORK.md` Queued technical work.

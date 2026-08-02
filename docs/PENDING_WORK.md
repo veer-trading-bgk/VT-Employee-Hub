@@ -49,6 +49,21 @@ product or fixture bug. CI/`npm test` already correct; no production impact. Clo
 
 ## Queued technical work
 
+- **Journey Payment PR 1 — orphaned `created` PAYMENT# + multi-checkout (PR 2 hard AC).**
+  Orphan sweeper → Phase 2. **PR 2 must include** (1) journey-level already-paid guard
+  (`paid_duplicate` + alert, never silent second `paid`) and (2) checkout reuse of existing
+  pending/created PAYMENT before minting a new Order — Founder-locked acceptance criteria, not
+  optional follow-up. Detail: `docs/phase3/TECHNICAL_DEBT.md` — "Journey Payment — orphaned
+  created PAYMENT# / multi-checkout".
+
+- **Journey Platform — icon-per-field-type visual polish (deferred, no rush).** Extend the
+  review screen's icon+card design to input screens for full visual consistency across the
+  flow. Map icons to field type generically (`text` / `email` / `phone` / `date` / `select` /
+  `number` → distinct icon) — not per-label special-casing; same "generic primitives"
+  principle used elsewhere. Applies automatically to any Journey Definition (no admin config).
+  Scope: input screens + review screen; thank-you / invalid states out unless revisited later.
+  Deferred until a dedicated UI polish pass — not blocking GST, payment gateway, or current work.
+
 - **M2 touch-target/mobile-parity series (M1 mobile audit follow-up) — CLOSED.** M2-A, M2-B
   (Fixes 1-4), M2-D, M2-C, M2-E, M2-F (Settings mobile section picker, B3 finding #4), and M2-G
   (sweep-up: the M2-A icon-only touch-target heuristic list across 17 files, plus a dead-code/ARIA

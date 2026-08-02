@@ -34,6 +34,9 @@ async function loadSecrets() {
       'VOYAGE_API_KEY',
       'TELEGRAM_BOT_TOKEN',
       'TELEGRAM_ADMIN_CHAT_ID',
+      // Journey Payment (Razorpay test/live keys — never log; Checkout uses KEY_ID only)
+      'RAZORPAY_KEY_ID',
+      'RAZORPAY_KEY_SECRET',
     ];
     for (const key of MANAGED_KEYS) {
       if (secrets[key]) process.env[key] = secrets[key];
