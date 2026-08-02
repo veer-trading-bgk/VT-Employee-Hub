@@ -19,6 +19,7 @@ const { z } = require('zod');
 const { checkRole } = require('../middleware/auth');
 const { rateLimit } = require('../middleware/rateLimiter');
 const dynamodb = require('../config/dynamodb');
+const { s3Client, PUBLIC_ASSETS_BUCKET } = require('../config/s3');
 const { generateJourneyDefId } = require('../core/id');
 const {
   journeyDefPK,
@@ -266,6 +267,55 @@ router.delete('/definitions/:id', checkRole(['admin']), async (req, res, next) =
     }).promise();
 
     res.json({ success: true });
+  } catch (err) { next(err); }
+});
+
+// ── GET /api/journeys/banner-upload-url — presigned PUT for public banner ─────
+// Purpose-built sibling of GET /api/auth/me/avatar-upload-url: same query shape
+// (mimeType/filename/fileSize), MIME→ext map (never client filename), size cap.
+// Writes to the public-assets bucket under journey-banners/{companyId}/… so the
+// public unauthenticated journey page can load the image via HTTPS object URL
+// without an auth'd s3-url resolver. Bucket + IAM must be applied separately
+// (see Founder-reviewed policy JSON) before this route succeeds in production.
+const BANNER_MIME_EXT = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['image/webp', 'webp'],
+]);
+// 2MB — same ceiling as avatar. WebP/JPEG hero banners compress well under
+// that; raising to 3MB would only help rare uncompressed photography uploads
+// and weakens the shared client-side guard pattern for little gain.
+const BANNER_MAX_BYTES = 2 * 1024 * 1024;
+
+router.get('/banner-upload-url', checkRole(['admin']), async (req, res, next) => {
+  try {
+    const { mimeType, filename, fileSize } = req.query;
+    if (!mimeType || !filename) {
+      return res.status(400).json({ error: 'mimeType and filename required' });
+    }
+    if (!PUBLIC_ASSETS_BUCKET) {
+      return res.status(500).json({ error: 'PUBLIC_ASSETS_BUCKET env var not set' });
+    }
+    if (!BANNER_MIME_EXT.has(mimeType)) {
+      return res.status(400).json({ error: 'Only JPG, PNG, and WebP images are allowed' });
+    }
+    if (fileSize && Number(fileSize) > BANNER_MAX_BYTES) {
+      return res.status(400).json({ error: 'Banner must be under 2 MB' });
+    }
+
+    const ext = BANNER_MIME_EXT.get(mimeType);
+    const key = `journey-banners/${req.user.companyId}/${crypto.randomUUID()}.${ext}`;
+    const region = process.env.AWS_REGION || 'ap-south-1';
+    const publicUrl = `https://${PUBLIC_ASSETS_BUCKET}.s3.${region}.amazonaws.com/${key}`;
+
+    const uploadUrl = s3Client.getSignedUrl('putObject', {
+      Bucket: PUBLIC_ASSETS_BUCKET,
+      Key: key,
+      ContentType: mimeType,
+      Expires: 300,
+    });
+
+    res.json({ success: true, uploadUrl, key, publicUrl });
   } catch (err) { next(err); }
 });
 

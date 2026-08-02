@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -10,6 +10,7 @@ import { Input } from '@/components/v3/ui/Input';
 import { Select } from '@/components/v3/ui/Select';
 import { Toggle } from '@/components/v3/ui/Toggle';
 import { apiErrorMessage, apiFetch } from '@/lib/api';
+import { uploadFileToS3 } from '@/lib/mediaUpload';
 import {
   createJourneyDefinition,
   journeyKeys,
@@ -26,6 +27,8 @@ import type { AutomationsResponse } from '@/types/automations';
 
 const INDUSTRY_SUGGESTIONS = ['generic', 'healthcare', 'bfsi'] as const;
 const DEFAULT_PRIMARY_COLOR = '#0ea5e9';
+const BANNER_ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const BANNER_MAX_BYTES = 2 * 1024 * 1024;
 
 function brandingFromDefinition(d: JourneyDefinition): JourneyBrandingConfig | null {
   const raw = d.brandingConfig;
@@ -169,6 +172,8 @@ export function JourneyDefinitionDrawer({
   const qc = useQueryClient();
   const isEdit = definition !== null;
   const [form, setForm] = useState<JourneyDefinitionFormValues>(emptyForm());
+  const [uploadingBanner, setUploadingBanner] = useState(false);
+  const bannerFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -227,12 +232,43 @@ export function JourneyDefinitionDrawer({
   const canSubmit =
     form.name.trim().length > 0
     && screensValid(form.screens)
-    && !saveMut.isPending;
+    && !saveMut.isPending
+    && !uploadingBanner;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
     saveMut.mutate();
+  }
+
+  async function handleBannerSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!BANNER_ALLOWED_MIME.has(file.type)) {
+      toast.error('Only JPG, PNG, and WebP images are allowed');
+      return;
+    }
+    if (file.size > BANNER_MAX_BYTES) {
+      toast.error('Banner must be under 2MB');
+      return;
+    }
+    setUploadingBanner(true);
+    try {
+      const { publicUrl } = await uploadFileToS3(file, undefined, '/api/journeys/banner-upload-url');
+      if (!publicUrl) {
+        throw new Error('Upload succeeded but no public URL was returned');
+      }
+      setForm((f) => ({
+        ...f,
+        brandingConfig: patchBranding(f.brandingConfig, { bannerImageUrl: publicUrl }),
+      }));
+      toast.success('Banner uploaded');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Failed to upload banner'));
+    } finally {
+      setUploadingBanner(false);
+    }
   }
 
   // ── Screen-level helpers (ManagePipelineDrawer move/add/remove pattern) ──
@@ -475,15 +511,15 @@ export function JourneyDefinitionDrawer({
         {/* Branding — no shared ColorPicker component exists (Tags use an inline
             palette; ManagePipelineDrawer uses native type=color). Reuse the
             pipeline native picker for free hex primaryColor.
-            bannerImageUrl is a plain HTTPS URL: existing S3 upload helpers
-            (uploadFileToS3 / avatar) return private keys that need auth'd
-            presigned GET — unusable on the public unauthenticated journey page. */}
+            Banner upload mirrors ProfileSection avatar UX via uploadFileToS3 +
+            GET /api/journeys/banner-upload-url; stored value is the public HTTPS
+            object URL (brandingConfig.bannerImageUrl) — no schema change. */}
         <section className="space-y-3 rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 dark:border-neutral-800 dark:bg-neutral-950/40">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <p className="text-sm font-medium text-neutral-700 dark:text-neutral-200">Branding</p>
               <p className="text-xs text-neutral-400">
-                Optional primary color and banner image URL for the public journey page.
+                Optional primary color and banner image for the public journey page.
               </p>
             </div>
             {form.brandingConfig && (
@@ -532,21 +568,54 @@ export function JourneyDefinitionDrawer({
                 />
               </div>
             </div>
-            <Input
-              label="Banner image URL"
-              hint="Optional. Absolute https URL shown above the title on the public journey page."
-              type="url"
-              value={form.brandingConfig?.bannerImageUrl ?? ''}
-              onChange={(e) => {
-                const v = e.target.value.trim();
-                setForm((f) => ({
-                  ...f,
-                  brandingConfig: patchBranding(f.brandingConfig, { bannerImageUrl: v || undefined }),
-                }));
-              }}
-              placeholder="https://…"
-              maxLength={2048}
-            />
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-neutral-600 dark:text-neutral-400">Banner image</p>
+              <div className="flex flex-wrap items-center gap-3">
+                {form.brandingConfig?.bannerImageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element -- arbitrary tenant HTTPS URL from public assets bucket
+                  <img
+                    src={form.brandingConfig.bannerImageUrl}
+                    alt="Journey banner preview"
+                    className="h-14 max-w-[12rem] rounded-lg object-cover ring-1 ring-neutral-200 dark:ring-neutral-700"
+                  />
+                ) : (
+                  <div className="flex h-14 w-28 items-center justify-center rounded-lg border border-dashed border-neutral-300 text-xs text-neutral-400 dark:border-neutral-600">
+                    No banner
+                  </div>
+                )}
+                <div>
+                  <input
+                    ref={bannerFileInputRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    onChange={handleBannerSelect}
+                  />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    type="button"
+                    loading={uploadingBanner}
+                    onClick={() => bannerFileInputRef.current?.click()}
+                  >
+                    {form.brandingConfig?.bannerImageUrl ? 'Replace banner' : 'Upload banner'}
+                  </Button>
+                  {form.brandingConfig?.bannerImageUrl && (
+                    <button
+                      type="button"
+                      className="ml-2 text-xs text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200"
+                      onClick={() => setForm((f) => ({
+                        ...f,
+                        brandingConfig: patchBranding(f.brandingConfig, { bannerImageUrl: undefined }),
+                      }))}
+                    >
+                      Remove
+                    </button>
+                  )}
+                  <p className="mt-1 text-xs text-neutral-400">JPG, PNG, or WebP up to 2MB</p>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 

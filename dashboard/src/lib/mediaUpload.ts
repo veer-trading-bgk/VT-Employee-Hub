@@ -5,6 +5,8 @@ export interface UploadedFileRef {
   mimeType: string;
   filename: string;
   fileHash: string;
+  /** Present when the presign endpoint returns a public HTTPS object URL (e.g. journey banners). */
+  publicUrl?: string;
 }
 
 /**
@@ -23,9 +25,9 @@ export interface UploadedFileRef {
  *
  * presignEndpoint defaults to the WhatsApp media flow (its original, only
  * caller); pass a different presigned-URL-generating endpoint — e.g.
- * GET /api/auth/me/avatar-upload-url (B3 finding #11) — to reuse this same
- * hash+upload+progress logic for a different upload surface with its own
- * MIME/size policy, instead of adding another inline XHR copy.
+ * GET /api/auth/me/avatar-upload-url (B3 finding #11) or
+ * GET /api/journeys/banner-upload-url — to reuse this same hash+upload+progress
+ * logic for a different upload surface with its own MIME/size policy.
  */
 export async function uploadFileToS3(
   file: File,
@@ -34,7 +36,7 @@ export async function uploadFileToS3(
 ): Promise<UploadedFileRef> {
   const [fileHash, urlData] = await Promise.all([
     computeHash(file),
-    apiFetch<{ uploadUrl: string; key: string }>(
+    apiFetch<{ uploadUrl: string; key: string; publicUrl?: string }>(
       `${presignEndpoint}?mimeType=${encodeURIComponent(file.type)}&filename=${encodeURIComponent(file.name)}&fileSize=${file.size}`,
     ),
   ]);
@@ -51,7 +53,13 @@ export async function uploadFileToS3(
     xhr.send(file);
   });
 
-  return { s3Key: urlData.key, mimeType: file.type, filename: file.name, fileHash };
+  return {
+    s3Key: urlData.key,
+    mimeType: file.type,
+    filename: file.name,
+    fileHash,
+    ...(urlData.publicUrl ? { publicUrl: urlData.publicUrl } : {}),
+  };
 }
 
 async function computeHash(file: File): Promise<string> {

@@ -10,6 +10,13 @@ const MEDIA_BUCKET = process.env.WA_MEDIA_BUCKET;
 if (!MEDIA_BUCKET) {
   throw new Error('WA_MEDIA_BUCKET env var is required but not set — refusing to start');
 }
+
+// Separate public-assets bucket for unauthenticated Journey banners (etc.).
+// Optional at cold start so existing deploys keep booting before infra lands;
+// routes that need it return 500 if unset. Never conflate with WA_MEDIA_BUCKET
+// (that bucket stays fully private / Block-Public-Access locked).
+const PUBLIC_ASSETS_BUCKET = process.env.PUBLIC_ASSETS_BUCKET || null;
+
 const s3Client = new S3({ region: process.env.AWS_REGION ?? 'ap-south-1' });
 
-module.exports = { s3Client, MEDIA_BUCKET };
+module.exports = { s3Client, MEDIA_BUCKET, PUBLIC_ASSETS_BUCKET };

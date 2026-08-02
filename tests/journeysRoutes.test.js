@@ -8,12 +8,20 @@
  */
 
 process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
+process.env.WA_MEDIA_BUCKET = process.env.WA_MEDIA_BUCKET || 'test-wa-media';
+process.env.PUBLIC_ASSETS_BUCKET = process.env.PUBLIC_ASSETS_BUCKET || 'apforce-public-assets-test';
+process.env.AWS_REGION = process.env.AWS_REGION || 'ap-south-1';
 
 jest.mock('../src/config/dynamodb', () => ({
   get: jest.fn(), put: jest.fn(), update: jest.fn(), query: jest.fn(), scan: jest.fn(), delete: jest.fn(),
 }));
 jest.mock('../src/config/logger', () => ({
   info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), alert: jest.fn(),
+}));
+jest.mock('../src/config/s3', () => ({
+  s3Client: { getSignedUrl: jest.fn(() => 'https://s3.example.com/presigned-put') },
+  MEDIA_BUCKET: 'test-wa-media',
+  PUBLIC_ASSETS_BUCKET: 'apforce-public-assets-test',
 }));
 jest.mock('../src/services/AutomationEngine', () => ({
   resumeOnWebhook: jest.fn(),
@@ -28,6 +36,7 @@ jest.mock('../src/utils/featureFlags', () => ({
 }));
 
 const dynamodb = require('../src/config/dynamodb');
+const { s3Client } = require('../src/config/s3');
 const AutomationEngine = require('../src/services/AutomationEngine');
 const { isEnabled } = require('../src/utils/featureFlags');
 const {
@@ -829,5 +838,95 @@ describe('journeys_platform feature flag kill-switch (Task 11)', () => {
     expect(res.json).toHaveBeenCalledWith({ error: 'Not found' });
     expect(next).not.toHaveBeenCalled();
     expect(dynamodb.get).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/journeys/banner-upload-url', () => {
+  const handler = () => getRouteHandler(journeysRouter, '/banner-upload-url', 'get');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    s3Client.getSignedUrl.mockReturnValue('https://s3.example.com/presigned-put');
+  });
+
+  test('valid image/jpeg under the size limit succeeds — key is company-scoped under journey-banners/', async () => {
+    const req = {
+      query: { mimeType: 'image/jpeg', filename: 'banner.jpg', fileSize: String(500_000) },
+      user: ADMIN,
+    };
+    const res = mockRes();
+    await handler()(req, res, jest.fn());
+    expect(res.status).not.toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      uploadUrl: expect.any(String),
+      key: expect.stringMatching(new RegExp(`^journey-banners/${CID}/.+\\.jpg$`)),
+      publicUrl: expect.stringMatching(
+        new RegExp(`^https://apforce-public-assets-test\\.s3\\.ap-south-1\\.amazonaws\\.com/journey-banners/${CID}/.+\\.jpg$`),
+      ),
+    }));
+    expect(s3Client.getSignedUrl).toHaveBeenCalledWith('putObject', expect.objectContaining({
+      Bucket: 'apforce-public-assets-test',
+      ContentType: 'image/jpeg',
+      Expires: 300,
+    }));
+  });
+
+  test('image/png and image/webp are allowed', async () => {
+    for (const mimeType of ['image/png', 'image/webp']) {
+      const res = mockRes();
+      await handler()({
+        query: { mimeType, filename: 'banner.bin' },
+        user: ADMIN,
+      }, res, jest.fn());
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    }
+  });
+
+  test('disallowed mimeType (gif) is rejected', async () => {
+    const res = mockRes();
+    await handler()({
+      query: { mimeType: 'image/gif', filename: 'banner.gif' },
+      user: ADMIN,
+    }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(s3Client.getSignedUrl).not.toHaveBeenCalled();
+  });
+
+  test('oversized fileSize (>2MB) is rejected', async () => {
+    const res = mockRes();
+    await handler()({
+      query: { mimeType: 'image/jpeg', filename: 'huge.jpg', fileSize: String(3 * 1024 * 1024) },
+      user: ADMIN,
+    }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(s3Client.getSignedUrl).not.toHaveBeenCalled();
+  });
+
+  test('missing mimeType/filename → 400', async () => {
+    const res = mockRes();
+    await handler()({ query: {}, user: ADMIN }, res, jest.fn());
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  test('key extension is derived from mimeType, not the filename', async () => {
+    const res = mockRes();
+    await handler()({
+      query: { mimeType: 'image/webp', filename: 'photo.png' },
+      user: ADMIN,
+    }, res, jest.fn());
+    const payload = res.json.mock.calls[0][0];
+    expect(payload.key).toMatch(/\.webp$/);
+    expect(payload.publicUrl).toMatch(/\.webp$/);
+  });
+
+  test('manager is 403-blocked by checkRole — admin-only like definition writes', async () => {
+    const roleGate = getRouteStack(journeysRouter, '/banner-upload-url', 'get')[0];
+    const res = mockRes();
+    const next = jest.fn();
+    await roleGate({ user: MANAGER }, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
   });
 });
