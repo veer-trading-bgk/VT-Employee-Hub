@@ -117,6 +117,11 @@ const createDefSchema = z.object({
   screens:          z.array(screenSchema).max(20).default([]),
   brandingConfig:   brandingConfigSchema,
   linkedWorkflowId: z.string().trim().min(1).max(80).nullable().optional(),
+  // Definition-level GST (not per-field). Display-only on the public review
+  // screen until payment ships. Irrelevant when no field has unitPrice.
+  gstEnabled:       z.boolean().optional(),
+  gstPercent:       z.number().min(0).max(100).optional(),
+  gstMode:          z.enum(['exclusive', 'inclusive']).optional(),
 }).strict();
 
 const updateDefSchema = z.object({
@@ -126,6 +131,9 @@ const updateDefSchema = z.object({
   brandingConfig:   brandingConfigSchema,
   linkedWorkflowId: z.string().trim().min(1).max(80).nullable().optional(),
   active:           z.boolean().optional(),
+  gstEnabled:       z.boolean().optional(),
+  gstPercent:       z.number().min(0).max(100).optional(),
+  gstMode:          z.enum(['exclusive', 'inclusive']).optional(),
 }).strict().refine(
   (body) => Object.keys(body).length > 0,
   { message: 'At least one field is required' },
@@ -149,6 +157,9 @@ router.post('/definitions', checkRole(['admin']), async (req, res, next) => {
       screens: data.screens,
       brandingConfig: data.brandingConfig ?? null,
       linkedWorkflowId: data.linkedWorkflowId ?? null,
+      gstEnabled: data.gstEnabled === true,
+      gstPercent: typeof data.gstPercent === 'number' ? data.gstPercent : 0,
+      gstMode: data.gstMode === 'inclusive' ? 'inclusive' : 'exclusive',
       active: true,
       ...meta,
     };
@@ -237,6 +248,18 @@ router.put('/definitions/:id', checkRole(['admin']), async (req, res, next) => {
     if (data.active !== undefined) {
       values[':a'] = data.active;
       sets.push('active = :a');
+    }
+    if (data.gstEnabled !== undefined) {
+      values[':ge'] = data.gstEnabled === true;
+      sets.push('gstEnabled = :ge');
+    }
+    if (data.gstPercent !== undefined) {
+      values[':gp'] = data.gstPercent;
+      sets.push('gstPercent = :gp');
+    }
+    if (data.gstMode !== undefined) {
+      values[':gm'] = data.gstMode;
+      sets.push('gstMode = :gm');
     }
 
     await dynamodb.update({
@@ -440,6 +463,9 @@ async function handlePublicGet(req, res, next) {
           name: def.name ?? null,
           screens: def.screens ?? [],
           brandingConfig: publicBrandingConfig(def.brandingConfig),
+          gstEnabled: def.gstEnabled === true,
+          gstPercent: typeof def.gstPercent === 'number' ? def.gstPercent : 0,
+          gstMode: def.gstMode === 'inclusive' ? 'inclusive' : 'exclusive',
         };
       }
     }

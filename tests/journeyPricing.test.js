@@ -10,6 +10,7 @@ const {
   formatInr,
   grandTotal,
   lineSubtotal,
+  pricingBreakdown,
 } = require('../dashboard/src/lib/journeys/pricing');
 
 describe('journeyPricing — unitPrice display helpers', () => {
@@ -55,5 +56,70 @@ describe('journeyPricing — unitPrice display helpers', () => {
     );
     expect(none.anyPriced).toBe(false);
     expect(none.total).toBe(0);
+  });
+});
+
+describe('journeyPricing — GST breakdown', () => {
+  const pricedScreens = [
+    {
+      id: 's1',
+      fields: [{ id: 'tickets', type: 'number', unitPrice: 500 }],
+    },
+  ];
+  // qty 3 × ₹500 = Subtotal ₹1,500 (approved mockup)
+  const values = { tickets: '3' };
+
+  test('exclusive: Subtotal 1500, GST 18% → GST ₹270, Total ₹1,770', () => {
+    const b = pricingBreakdown(pricedScreens, values, {
+      gstEnabled: true,
+      gstPercent: 18,
+      gstMode: 'exclusive',
+    });
+    expect(b.anyPriced).toBe(true);
+    expect(b.showGst).toBe(true);
+    expect(b.subtotal).toBe(1500);
+    expect(b.gstAmount).toBe(270);
+    expect(b.total).toBe(1770);
+    expect(b.gstMode).toBe('exclusive');
+  });
+
+  test('inclusive: Subtotal 1500, GST 18% → backed-out GST ~₹228.81, Total stays ₹1,500', () => {
+    const b = pricingBreakdown(pricedScreens, values, {
+      gstEnabled: true,
+      gstPercent: 18,
+      gstMode: 'inclusive',
+    });
+    expect(b.anyPriced).toBe(true);
+    expect(b.showGst).toBe(true);
+    expect(b.subtotal).toBe(1500);
+    expect(b.total).toBe(1500);
+    // 1500 − 1500/1.18 ≈ 228.813559…
+    expect(b.gstAmount).toBeCloseTo(1500 - 1500 / 1.18, 5);
+    expect(b.gstAmount).toBeCloseTo(228.813559322, 5);
+    expect(b.gstMode).toBe('inclusive');
+  });
+
+  test('gstEnabled false → no GST section; total equals subtotal', () => {
+    const b = pricingBreakdown(pricedScreens, values, {
+      gstEnabled: false,
+      gstPercent: 18,
+      gstMode: 'exclusive',
+    });
+    expect(b.showGst).toBe(false);
+    expect(b.gstAmount).toBe(0);
+    expect(b.total).toBe(1500);
+    expect(b.subtotal).toBe(1500);
+  });
+
+  test('no priced fields → no pricing block even when gstEnabled', () => {
+    const free = [{ id: 's1', fields: [{ id: 'name', type: 'text' }] }];
+    const b = pricingBreakdown(free, { name: 'A' }, {
+      gstEnabled: true,
+      gstPercent: 18,
+      gstMode: 'exclusive',
+    });
+    expect(b.anyPriced).toBe(false);
+    expect(b.showGst).toBe(false);
+    expect(b.total).toBe(0);
   });
 });

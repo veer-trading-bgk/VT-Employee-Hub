@@ -23,6 +23,9 @@ export async function createJourneyDefinition(form: JourneyDefinitionFormValues)
       screens: form.screens,
       brandingConfig: form.brandingConfig,
       linkedWorkflowId: form.linkedWorkflowId,
+      gstEnabled: form.gstEnabled === true,
+      gstPercent: form.gstPercent,
+      gstMode: form.gstMode === 'inclusive' ? 'inclusive' : 'exclusive',
     }),
     retries: 0,
   });
@@ -38,6 +41,9 @@ export async function updateJourneyDefinition(id: string, form: JourneyDefinitio
       active: form.active,
       screens: form.screens,
       brandingConfig: form.brandingConfig,
+      gstEnabled: form.gstEnabled === true,
+      gstPercent: form.gstPercent,
+      gstMode: form.gstMode === 'inclusive' ? 'inclusive' : 'exclusive',
     }),
     retries: 0,
   });

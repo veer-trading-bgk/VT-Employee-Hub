@@ -101,6 +101,9 @@ function emptyForm(): JourneyDefinitionFormValues {
     active: true,
     screens: [],
     brandingConfig: null,
+    gstEnabled: false,
+    gstPercent: 18,
+    gstMode: 'exclusive',
   };
 }
 
@@ -123,7 +126,17 @@ function formFromDefinition(d: JourneyDefinition): JourneyDefinitionFormValues {
       })),
     })),
     brandingConfig: brandingFromDefinition(d),
+    gstEnabled: d.gstEnabled === true,
+    gstPercent: typeof d.gstPercent === 'number' ? d.gstPercent : 18,
+    gstMode: d.gstMode === 'inclusive' ? 'inclusive' : 'exclusive',
   };
+}
+
+/** Same gate as public grand total — GST UI only when ≥1 field has unitPrice. */
+function definitionHasPricedField(screens: JourneyScreen[]): boolean {
+  return screens.some((s) =>
+    (s.fields ?? []).some((f) => typeof f.unitPrice === 'number'),
+  );
 }
 
 /** Strip empty option strings; drop options on non-choice types before PUT/POST. */
@@ -242,6 +255,8 @@ export function JourneyDefinitionDrawer({
     && screensValid(form.screens)
     && !saveMut.isPending
     && !uploadingBanner;
+
+  const showGstSection = definitionHasPricedField(form.screens);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -865,6 +880,85 @@ export function JourneyDefinitionDrawer({
             Add screen
           </button>
         </section>
+
+        {/* GST — definition-level; same visibility gate as public grand total
+            (only when ≥1 field has unitPrice). Display-only until payment. */}
+        {showGstSection && (
+          <section className="space-y-3 rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 dark:border-neutral-800 dark:bg-neutral-950/40">
+            <div>
+              <p className="text-sm font-medium text-neutral-700 dark:text-neutral-200">GST</p>
+              <p className="text-xs text-neutral-400">
+                Optional tax on the review screen total. Not charged — display only for now.
+              </p>
+            </div>
+            <Toggle
+              label="Enable GST"
+              checked={form.gstEnabled}
+              onChange={(e) => setForm((f) => ({ ...f, gstEnabled: e.target.checked }))}
+            />
+            {form.gstEnabled && (
+              <div className="space-y-4 border-t border-neutral-200 pt-3 dark:border-neutral-800">
+                <Input
+                  label="GST percent"
+                  type="number"
+                  min={0}
+                  max={100}
+                  step="0.01"
+                  value={String(form.gstPercent)}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw.trim() === '') {
+                      setForm((f) => ({ ...f, gstPercent: 0 }));
+                      return;
+                    }
+                    const n = Number(raw);
+                    if (!Number.isFinite(n)) return;
+                    setForm((f) => ({
+                      ...f,
+                      gstPercent: Math.min(100, Math.max(0, n)),
+                    }));
+                  }}
+                  hint="0–100. Exclusive adds GST on top; inclusive backs tax out of the subtotal."
+                />
+                <fieldset className="space-y-2">
+                  <legend className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                    GST mode
+                  </legend>
+                  <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-200">
+                    <input
+                      type="radio"
+                      name="journey-gst-mode"
+                      className="mt-1"
+                      checked={form.gstMode === 'exclusive'}
+                      onChange={() => setForm((f) => ({ ...f, gstMode: 'exclusive' }))}
+                    />
+                    <span>
+                      <span className="font-medium">Exclusive</span>
+                      <span className="block text-xs text-neutral-500">
+                        Total = Subtotal + GST (added as its own line)
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex cursor-pointer items-start gap-2 text-sm text-neutral-800 dark:text-neutral-200">
+                    <input
+                      type="radio"
+                      name="journey-gst-mode"
+                      className="mt-1"
+                      checked={form.gstMode === 'inclusive'}
+                      onChange={() => setForm((f) => ({ ...f, gstMode: 'inclusive' }))}
+                    />
+                    <span>
+                      <span className="font-medium">Inclusive</span>
+                      <span className="block text-xs text-neutral-500">
+                        Total stays Subtotal; GST shown as informational breakdown
+                      </span>
+                    </span>
+                  </label>
+                </fieldset>
+              </div>
+            )}
+          </section>
+        )}
       </form>
     </Drawer>
   );

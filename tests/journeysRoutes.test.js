@@ -173,6 +173,62 @@ describe('POST /api/journeys/definitions', () => {
     expect(next.mock.calls[0][0].name).toBe('ZodError');
   });
 
+  test('definition-level GST: accepts exclusive/inclusive; rejects bad mode/percent', async () => {
+    const res = mockRes();
+    const next = jest.fn();
+    await handler({
+      user: ADMIN,
+      body: {
+        name: 'GST Event',
+        gstEnabled: true,
+        gstPercent: 18,
+        gstMode: 'exclusive',
+        screens: [{
+          id: 's1',
+          title: 'Tickets',
+          fields: [{ id: 'qty', label: 'Tickets', type: 'number', unitPrice: 500 }],
+        }],
+      },
+    }, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(201);
+    const item = dynamodb.put.mock.calls[0][0].Item;
+    expect(item.gstEnabled).toBe(true);
+    expect(item.gstPercent).toBe(18);
+    expect(item.gstMode).toBe('exclusive');
+
+    jest.clearAllMocks();
+    const badMode = mockRes();
+    const nextMode = jest.fn();
+    await handler({
+      user: ADMIN,
+      body: { name: 'Bad mode', gstMode: 'additive' },
+    }, badMode, nextMode);
+    expect(nextMode.mock.calls[0][0].name).toBe('ZodError');
+    expect(dynamodb.put).not.toHaveBeenCalled();
+
+    jest.clearAllMocks();
+    const badPct = mockRes();
+    const nextPct = jest.fn();
+    await handler({
+      user: ADMIN,
+      body: { name: 'Bad pct', gstPercent: 101 },
+    }, badPct, nextPct);
+    expect(nextPct.mock.calls[0][0].name).toBe('ZodError');
+    expect(dynamodb.put).not.toHaveBeenCalled();
+  });
+
+  test('create defaults gstEnabled false / gstMode exclusive when GST omitted', async () => {
+    const res = mockRes();
+    const next = jest.fn();
+    await handler({ user: ADMIN, body: { name: 'No GST' } }, res, next);
+    expect(next).not.toHaveBeenCalled();
+    const item = dynamodb.put.mock.calls[0][0].Item;
+    expect(item.gstEnabled).toBe(false);
+    expect(item.gstPercent).toBe(0);
+    expect(item.gstMode).toBe('exclusive');
+  });
+
   test('number field accepts unitPrice including 0; text field rejects unitPrice', async () => {
     const res = mockRes();
     const next = jest.fn();
@@ -578,6 +634,9 @@ describe('GET /api/journeys/:companyId/:journeyInstanceId/:token (public)', () =
         name: 'Hospital Booking',
         screens: def.screens,
         brandingConfig: { primaryColor: '#123' },
+        gstEnabled: false,
+        gstPercent: 0,
+        gstMode: 'exclusive',
       },
     });
     const serialized = JSON.stringify(body);

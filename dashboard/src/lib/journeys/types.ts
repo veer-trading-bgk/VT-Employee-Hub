@@ -26,6 +26,8 @@ export interface JourneyBrandingConfig {
   bannerImageUrl?: string;
 }
 
+export type JourneyGstMode = 'exclusive' | 'inclusive';
+
 export interface JourneyDefinition {
   id: string;
   companyId: string;
@@ -35,6 +37,10 @@ export interface JourneyDefinition {
   brandingConfig: JourneyBrandingConfig | Record<string, unknown> | null;
   linkedWorkflowId: string | null;
   active: boolean;
+  /** Definition-level GST (display-only on review until payment ships). */
+  gstEnabled?: boolean;
+  gstPercent?: number;
+  gstMode?: JourneyGstMode;
   createdAt?: string;
   updatedAt?: string;
   createdBy?: string;
@@ -51,6 +57,9 @@ export interface JourneyDefinitionFormValues {
   screens: JourneyScreen[];
   /** Branding — { primaryColor?, bannerImageUrl? }. null = none. */
   brandingConfig: JourneyBrandingConfig | null;
+  gstEnabled: boolean;
+  gstPercent: number;
+  gstMode: JourneyGstMode;
 }
 
 export interface ListJourneyDefinitionsResponse {

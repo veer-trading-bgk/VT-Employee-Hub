@@ -25,6 +25,9 @@ interface PublicJourneyDefinition {
   name: string | null;
   screens: JourneyScreen[];
   brandingConfig: { primaryColor?: string; bannerImageUrl?: string } | null;
+  gstEnabled?: boolean;
+  gstPercent?: number;
+  gstMode?: 'exclusive' | 'inclusive';
 }
 
 interface PublicJourneyPayload {
@@ -231,6 +234,11 @@ export default function PublicJourneyPage() {
           screens={def?.screens ?? []}
           accent={accent}
           bannerImageUrl={bannerImageUrl}
+          gst={def ? {
+            gstEnabled: def.gstEnabled === true,
+            gstPercent: typeof def.gstPercent === 'number' ? def.gstPercent : 0,
+            gstMode: def.gstMode === 'inclusive' ? 'inclusive' : 'exclusive',
+          } : null}
           companyId={companyId}
           journeyInstanceId={journeyInstanceId}
           token={token}

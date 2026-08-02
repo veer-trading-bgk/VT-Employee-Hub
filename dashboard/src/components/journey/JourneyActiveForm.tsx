@@ -7,10 +7,11 @@
  * Collected values are a flat Record<fieldId, string>; submit-ready payload
  * wraps as { journeyRecord, submittedData } — keys create_journey_record reads
  * (AutomationEngine.js: ctx.journeyRecord ?? ctx.submittedData).
- * Final Submit POSTs Task 8's webhook-resume route (Option A) — not /submit.
+ * Final Book Now POSTs Task 8's webhook-resume route (Option A) — not /submit.
  */
 
 import { useMemo, useState } from 'react';
+import { Calendar, Hash, List, Mail, Phone, Type, type LucideIcon } from 'lucide-react';
 import { Input } from '@/components/v3/ui/Input';
 import { Select } from '@/components/v3/ui/Select';
 import { Button } from '@/components/v3/ui/Button';
@@ -18,8 +19,8 @@ import { ErrorState } from '@/components/v3/ui/ErrorState';
 import {
   formatInr,
   formatLine,
-  grandTotal,
   hasUnitPrice,
+  pricingBreakdown,
 } from '@/lib/journeys/pricing';
 
 export interface JourneyScreenField {
@@ -44,6 +45,12 @@ export interface JourneySubmitPayload {
   submittedData: Record<string, string>;
 }
 
+export interface JourneyGstConfig {
+  gstEnabled?: boolean;
+  gstPercent?: number;
+  gstMode?: 'exclusive' | 'inclusive';
+}
+
 const FIELD_TYPES = new Set(['text', 'select', 'phone', 'date', 'email', 'number']);
 
 function inputTypeFor(type: string): string {
@@ -52,6 +59,23 @@ function inputTypeFor(type: string): string {
   if (type === 'phone') return 'tel';
   if (type === 'number') return 'number';
   return 'text';
+}
+
+function iconForFieldType(type: string): LucideIcon {
+  switch (type) {
+    case 'email':
+      return Mail;
+    case 'phone':
+      return Phone;
+    case 'date':
+      return Calendar;
+    case 'select':
+      return List;
+    case 'number':
+      return Hash;
+    default:
+      return Type;
+  }
 }
 
 function isFilled(value: string | undefined): boolean {
@@ -124,6 +148,7 @@ export function JourneyActiveForm({
   screens,
   accent,
   bannerImageUrl,
+  gst,
   companyId,
   journeyInstanceId,
   token,
@@ -135,6 +160,8 @@ export function JourneyActiveForm({
   accent: string | null;
   /** Optional public banner from brandingConfig.bannerImageUrl. */
   bannerImageUrl?: string | null;
+  /** Definition-level GST — ignored when no priced fields. */
+  gst?: JourneyGstConfig | null;
   companyId: string;
   journeyInstanceId: string;
   token: string;
@@ -168,8 +195,8 @@ export function JourneyActiveForm({
 
   // Display-only — never merged into collectedPayload / webhook body.
   const pricingSummary = useMemo(
-    () => grandTotal(safeScreens, values),
-    [safeScreens, values],
+    () => pricingBreakdown(safeScreens, values, gst ?? {}),
+    [safeScreens, values, gst],
   );
 
   function setField(id: string, value: string) {
@@ -276,7 +303,7 @@ export function JourneyActiveForm({
           <h1 className="text-xl font-semibold text-slate-900">
             {name?.trim() || 'Journey'}
           </h1>
-          <p className="mt-1 text-sm text-slate-500">Review your answers before submitting.</p>
+          <p className="mt-1 text-sm text-slate-500">Review your answers before booking.</p>
         </header>
 
         <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
@@ -288,39 +315,92 @@ export function JourneyActiveForm({
               return (
                 <section key={screen.id}>
                   {showScreenTitle && (
-                    <h2 className="mb-2 text-sm font-semibold text-slate-900">
+                    <h2 className="mb-3 text-sm font-semibold text-slate-900">
                       {screen.title || 'Details'}
                     </h2>
                   )}
-                  <dl className="space-y-2">
+                  <ul className="space-y-3">
                     {fields.map((field) => {
+                      const Icon = iconForFieldType(field.type);
                       const raw = values[field.id];
                       const display = isFilled(raw) ? raw!.trim() : '—';
                       return (
-                        <div key={field.id} className="flex gap-2 text-sm">
-                          <dt className="shrink-0 font-medium text-slate-500">
-                            {field.label || 'Field'}:
-                          </dt>
-                          <dd className="min-w-0 break-words text-slate-900">{display}</dd>
-                        </div>
+                        <li key={field.id} className="flex items-start gap-3">
+                          <span
+                            className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600"
+                            aria-hidden
+                          >
+                            <Icon className="h-4 w-4" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-medium text-slate-500">
+                              {field.label || 'Field'}
+                            </p>
+                            <p className="break-words text-sm text-slate-900">{display}</p>
+                            {hasUnitPrice(field) && (
+                              <p className="mt-0.5 text-xs text-slate-500">
+                                {formatLine(raw, field.unitPrice!)}
+                              </p>
+                            )}
+                          </div>
+                        </li>
                       );
                     })}
-                  </dl>
+                  </ul>
                 </section>
               );
             })}
           </div>
+
           {pricingSummary.anyPriced && (
-            <div
-              className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-sm"
-              data-testid="journey-grand-total"
-            >
-              <span className="font-semibold text-slate-900">Total</span>
-              <span className="font-semibold text-slate-900">
-                {formatInr(pricingSummary.total)}
-              </span>
-            </div>
+            pricingSummary.showGst ? (
+              <div
+                className="mt-4 space-y-2 border-t border-slate-200 pt-3"
+                data-testid="journey-pricing"
+              >
+                <div className="flex items-center justify-between text-sm text-slate-600">
+                  <span>Subtotal</span>
+                  <span className="text-slate-900">{formatInr(pricingSummary.subtotal)}</span>
+                </div>
+                <div
+                  className="flex items-center justify-between text-sm text-slate-600"
+                  data-testid="journey-gst-line"
+                >
+                  {pricingSummary.gstMode === 'exclusive' ? (
+                    <>
+                      <span>{`GST (${pricingSummary.gstPercent}%):`}</span>
+                      <span className="text-slate-900">{`+${formatInr(pricingSummary.gstAmount)}`}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>{`GST (${pricingSummary.gstPercent}%) included:`}</span>
+                      <span className="text-slate-900">{formatInr(pricingSummary.gstAmount)}</span>
+                    </>
+                  )}
+                </div>
+                <div
+                  className="flex items-center justify-between border-t-2 border-slate-800 pt-2 text-sm font-bold"
+                  data-testid="journey-grand-total"
+                >
+                  <span className="text-slate-900">Total</span>
+                  <span style={accent ? { color: accent } : undefined} className="text-slate-900">
+                    {formatInr(pricingSummary.total)}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div
+                className="mt-4 flex items-center justify-between border-t border-slate-100 pt-3 text-sm"
+                data-testid="journey-grand-total"
+              >
+                <span className="font-semibold text-slate-900">Total</span>
+                <span className="font-semibold text-slate-900">
+                  {formatInr(pricingSummary.total)}
+                </span>
+              </div>
+            )
           )}
+
           {submitError && (
             <div className="mt-4" data-testid="journey-submit-error">
               <ErrorState
@@ -348,7 +428,7 @@ export function JourneyActiveForm({
               disabled={submitting}
               data-testid="journey-submit"
             >
-              {submitting ? 'Submitting…' : submitError ? 'Try again' : 'Submit'}
+              {submitting ? 'Booking…' : submitError ? 'Try again' : 'Book Now'}
             </Button>
           </div>
         </div>
