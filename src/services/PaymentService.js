@@ -1,16 +1,16 @@
 'use strict';
 
 /**
- * PaymentService — Journey Platform customer checkout (Phase 1 PR 1).
+ * PaymentService — Journey Platform customer checkout + Razorpay confirm (PR 1–2).
  *
- * Creates PAYMENT# with a frozen pricingSnapshot + amountPaise computed from
- * the stored Journey Definition (never from client totals), then creates a
- * Razorpay Order using that frozen amountPaise.
+ * PR 1: PAYMENT# with frozen amountPaise → Order create.
+ * PR 2: webhook confirm → paid (or paid_duplicate) → resumeOnWebhook once.
  *
- * Webhook verification / resume gating → PR 2. No AutomationEngine coupling.
+ * Paid is FINAL — never reverted if resume fails (alert + deferred retry).
  */
 
 const dynamodb = require('../config/dynamodb');
+const logger = require('../config/logger');
 const { generatePaymentId } = require('../core/id');
 const {
   journeyDefPK,
@@ -19,6 +19,11 @@ const {
   paymentMetaSK,
   paymentOrderLookupPK,
   paymentOrderLookupSK,
+  paymentJourneyPK,
+  paymentJourneyActiveSK,
+  paymentJourneyPaymentSK,
+  paymentEventClaimPK,
+  paymentEventClaimSK,
 } = require('../core/entityKeys');
 const { newMeta, updateMeta } = require('../core/systemMeta');
 const { computeAuthoritativeCharge } = require('../lib/journeyPricing');
@@ -26,6 +31,7 @@ const { createPaymentGateway } = require('./payment/PaymentGateway');
 
 const TABLE = () => process.env.DYNAMODB_TABLE_METRICS;
 const GATEWAY = 'razorpay';
+const REUSABLE_STATUSES = new Set(['created', 'pending']);
 
 class PaymentError extends Error {
   constructor(message, { status = 400, code = 'payment_error' } = {}) {
@@ -38,39 +44,25 @@ class PaymentError extends Error {
 
 /**
  * @param {object} [deps]
- * @param {object} [deps.gateway] PaymentGateway mock
- * @param {object} [deps.db] dynamodb mock
+ * @param {object} [deps.gateway]
+ * @param {object} [deps.db]
+ * @param {object} [deps.AutomationEngine] inject for tests
  */
 function createPaymentService(deps = {}) {
   const db = deps.db || dynamodb;
   const gateway = createPaymentGateway(deps.gateway);
+  const getEngine = () => deps.AutomationEngine || require('./AutomationEngine');
 
   /**
-   * Create PAYMENT# then gateway Order. Caller must already have validated
-   * the journey capability token and loaded the instance.
-   *
-   * MULTI-CHECKOUT (PR 1): every call mints a new payment_ id + new Razorpay
-   * Order. There is no lookup/reuse of an existing created|pending PAYMENT for
-   * this journeyInstanceId. Double-click / retry = N Orders. That is not an
-   * amount-tamper risk (each Order still carries server-frozen amountPaise),
-   * but N successful captures would charge the customer N times — PR 2's
-   * per-PAYMENT pending→paid transition alone does NOT journey-dedup money.
-   * Dedup / reuse-pending AND a journey-level already-paid guard on webhook are
-   * HARD acceptance criteria for Phase 1 PR 2 (not optional follow-up) — see
-   * TECHNICAL_DEBT.md "Journey Payment — orphaned created PAYMENT# / multi-checkout".
-   * Within PR 1 there is no webhook/`paid` path, so double-charge cannot occur yet.
-   *
-   * @param {object} args
-   * @param {string} args.companyId
-   * @param {object} args.instance journey META item (must include id / journeyDefId)
-   * @param {Record<string, string>} args.submittedData field values only
-   * @param {object} [args.clientBody] raw req.body — intentionally unused for amounts
+   * Create or reuse PAYMENT# + Order.
+   * Dedup: if ACTIVE pointer → created|pending PAYMENT with same amountPaise,
+   * return that checkout (same order_id) without minting a second Order.
    */
   async function createCheckoutSession({
     companyId,
     instance,
     submittedData,
-    // eslint-disable-next-line no-unused-vars -- intentionally unused; documents ignore-client-amount contract
+    // eslint-disable-next-line no-unused-vars
     clientBody,
   }) {
     const journeyInstanceId = instance.id;
@@ -87,8 +79,6 @@ function createPaymentService(deps = {}) {
       throw new PaymentError('Journey definition not found', { status: 404, code: 'not_found' });
     }
 
-    // Authoritative charge — definition prices × submitted quantities. Never
-    // read amount / amountPaise / total / pricingSnapshot from clientBody.
     const values = normalizeSubmittedData(submittedData);
     const charge = computeAuthoritativeCharge(definition, values);
     if (!charge.anyPriced || charge.amountPaise <= 0) {
@@ -97,6 +87,14 @@ function createPaymentService(deps = {}) {
         code: 'not_payable',
       });
     }
+
+    // ── Checkout dedup (PR 2 hard AC) ──────────────────────────────────────
+    const reused = await tryReuseActiveCheckout({
+      companyId,
+      journeyInstanceId,
+      amountPaise: charge.amountPaise,
+    });
+    if (reused) return reused;
 
     const paymentId = generatePaymentId();
     const meta = newMeta('system');
@@ -122,18 +120,10 @@ function createPaymentService(deps = {}) {
       ...meta,
     };
 
-    // 1) Persist PAYMENT# BEFORE calling the gateway — Order must use this
-    //    frozen amountPaise, not a second recomputation.
-    //
-    // ORPHAN GAP (PR 1): if createOrder() below throws, this row stays
-    // status:'created' / gatewayOrderId:null with no cleanup in this PR.
-    // Recovery: Phase 2 expiry sweeper (mark expired + optional admin reconcile),
-    // not a sync delete here — see docs/phase3/TECHNICAL_DEBT.md
-    // "Journey Payment — orphaned created PAYMENT# / multi-checkout".
+    // ORPHAN GAP: if createOrder throws, row stays created/null order — Phase 2 sweeper.
     await db.put({ TableName: TABLE(), Item: paymentItem }).promise();
+    await putJourneyIndexSibling(companyId, journeyInstanceId, paymentId, 'created', charge.amountPaise);
 
-    // 2) Create Order from the frozen item field only.
-    // No try/catch→delete in PR 1 (would race a partial gateway success).
     const frozenAmountPaise = paymentItem.amountPaise;
     const { orderId } = await gateway.createOrder(
       frozenAmountPaise,
@@ -141,7 +131,6 @@ function createPaymentService(deps = {}) {
       paymentId,
     );
 
-    // 3) Attach gatewayOrderId + pending + O(1) reverse lookup for PR 2 webhook.
     const patch = updateMeta(paymentItem, 'system');
     await db.update({
       TableName: TABLE(),
@@ -174,21 +163,378 @@ function createPaymentService(deps = {}) {
       },
     }).promise();
 
-    const keyId = gateway.getPublicKeyId ? gateway.getPublicKeyId() : null;
+    await putJourneyIndexSibling(companyId, journeyInstanceId, paymentId, 'pending', frozenAmountPaise);
+    await putJourneyActivePointer(companyId, journeyInstanceId, {
+      paymentId,
+      amountPaise: frozenAmountPaise,
+      gatewayOrderId: orderId,
+      status: 'pending',
+    });
 
-    // Public checkout params only — never key_secret / full PAYMENT item.
+    const keyId = gateway.getPublicKeyId ? gateway.getPublicKeyId() : null;
     return {
       paymentId,
       orderId,
       keyId,
       amountPaise: frozenAmountPaise,
       currency: paymentItem.currency,
-      // Display convenience mirroring snapshot total (same as amountPaise/100).
       amountDisplay: paymentItem.pricingSnapshot.total,
+      reused: false,
     };
   }
 
-  return { createCheckoutSession, PaymentError };
+  async function tryReuseActiveCheckout({ companyId, journeyInstanceId, amountPaise }) {
+    const { Item: active } = await db.get({
+      TableName: TABLE(),
+      Key: {
+        PK: paymentJourneyPK(companyId, journeyInstanceId),
+        SK: paymentJourneyActiveSK(),
+      },
+    }).promise();
+    if (!active?.paymentId) return null;
+
+    const { Item: existing } = await db.get({
+      TableName: TABLE(),
+      Key: { PK: paymentPK(companyId, active.paymentId), SK: paymentMetaSK() },
+    }).promise();
+    if (!existing) return null;
+    if (!REUSABLE_STATUSES.has(existing.status)) return null;
+    if (existing.amountPaise !== amountPaise) return null;
+    if (!existing.gatewayOrderId) return null;
+
+    const keyId = gateway.getPublicKeyId ? gateway.getPublicKeyId() : null;
+    return {
+      paymentId: existing.id,
+      orderId: existing.gatewayOrderId,
+      keyId,
+      amountPaise: existing.amountPaise,
+      currency: existing.currency || 'INR',
+      amountDisplay: existing.pricingSnapshot?.total ?? existing.amountPaise / 100,
+      reused: true,
+    };
+  }
+
+  async function putJourneyActivePointer(companyId, journeyInstanceId, fields) {
+    await db.put({
+      TableName: TABLE(),
+      Item: {
+        PK: paymentJourneyPK(companyId, journeyInstanceId),
+        SK: paymentJourneyActiveSK(),
+        companyId,
+        journeyInstanceId,
+        ...fields,
+        updatedAt: new Date().toISOString(),
+      },
+    }).promise();
+  }
+
+  async function putJourneyIndexSibling(companyId, journeyInstanceId, paymentId, status, amountPaise) {
+    await db.put({
+      TableName: TABLE(),
+      Item: {
+        PK: paymentJourneyPK(companyId, journeyInstanceId),
+        SK: paymentJourneyPaymentSK(paymentId),
+        companyId,
+        journeyInstanceId,
+        paymentId,
+        status,
+        amountPaise,
+        updatedAt: new Date().toISOString(),
+      },
+    }).promise();
+  }
+
+  /**
+   * Process a verified Razorpay payment.captured (or equivalent) payload.
+   * Caller must already have verified the webhook signature.
+   *
+   * @returns {{ outcome: string, paymentId?: string, journeyInstanceId?: string }}
+   */
+  async function confirmGatewayPayment({
+    orderId,
+    amountPaise,
+    gatewayPaymentId,
+    eventKey,
+  }) {
+    if (!orderId || !eventKey) {
+      throw new PaymentError('Missing orderId or eventKey', { status: 400, code: 'bad_payload' });
+    }
+
+    // Event-id claim — replay → already_claimed → no-op 200 at route.
+    const claimed = await claimWebhookEvent(eventKey);
+    if (!claimed) {
+      return { outcome: 'event_replay' };
+    }
+
+    const { Item: lookup } = await db.get({
+      TableName: TABLE(),
+      Key: {
+        PK: paymentOrderLookupPK(GATEWAY, orderId),
+        SK: paymentOrderLookupSK(),
+      },
+    }).promise();
+    if (!lookup?.paymentId || !lookup.companyId) {
+      logger.alert(
+        `Razorpay webhook: unknown order_id <code>${orderId}</code> — no PAYMENT_ORDER lookup`,
+      );
+      return { outcome: 'unknown_order' };
+    }
+
+    const { companyId, paymentId } = lookup;
+    const { Item: payment } = await db.get({
+      TableName: TABLE(),
+      Key: { PK: paymentPK(companyId, paymentId), SK: paymentMetaSK() },
+    }).promise();
+    if (!payment) {
+      logger.alert(`Razorpay webhook: lookup found paymentId <code>${paymentId}</code> but META missing`);
+      return { outcome: 'missing_payment' };
+    }
+
+    // Idempotent: already paid for THIS payment → safe no-op (resume already ran or not).
+    if (payment.status === 'paid') {
+      return {
+        outcome: 'already_paid',
+        paymentId,
+        journeyInstanceId: payment.journeyInstanceId,
+      };
+    }
+    if (payment.status === 'paid_duplicate') {
+      return {
+        outcome: 'already_duplicate',
+        paymentId,
+        journeyInstanceId: payment.journeyInstanceId,
+      };
+    }
+
+    // Amount defense-in-depth.
+    if (Number(amountPaise) !== Number(payment.amountPaise)) {
+      logger.alert(
+        `Razorpay amount mismatch for payment <code>${paymentId}</code> `
+        + `journey <code>${payment.journeyInstanceId}</code>: `
+        + `gateway=${amountPaise} stored=${payment.amountPaise}`,
+        companyId,
+      );
+      return { outcome: 'amount_mismatch', paymentId };
+    }
+
+    // Journey-level guard — another PAYMENT already paid for this journey?
+    const priorPaid = await findOtherPaidPayment(
+      companyId,
+      payment.journeyInstanceId,
+      paymentId,
+    );
+    if (priorPaid) {
+      await markPaidDuplicate(payment, gatewayPaymentId, eventKey, priorPaid);
+      logger.alert(
+        `Duplicate Razorpay payment for journey <code>${payment.journeyInstanceId}</code>: `
+        + `already paid via <code>${priorPaid}</code>; new payment <code>${paymentId}</code> `
+        + `(gateway pay <code>${gatewayPaymentId}</code>) marked <b>paid_duplicate</b> — refund manually`,
+        companyId,
+      );
+      return {
+        outcome: 'paid_duplicate',
+        paymentId,
+        journeyInstanceId: payment.journeyInstanceId,
+        priorPaidPaymentId: priorPaid,
+      };
+    }
+
+    // Conditional created|pending → paid. Never undo this on resume failure.
+    const paidOk = await transitionToPaid(payment, gatewayPaymentId, eventKey);
+    if (!paidOk) {
+      // Lost race — re-read; likely already paid/duplicate.
+      const { Item: again } = await db.get({
+        TableName: TABLE(),
+        Key: { PK: paymentPK(companyId, paymentId), SK: paymentMetaSK() },
+      }).promise();
+      if (again?.status === 'paid') {
+        return { outcome: 'already_paid', paymentId, journeyInstanceId: payment.journeyInstanceId };
+      }
+      if (again?.status === 'paid_duplicate') {
+        return { outcome: 'already_duplicate', paymentId, journeyInstanceId: payment.journeyInstanceId };
+      }
+      logger.alert(
+        `Razorpay webhook: failed to transition payment <code>${paymentId}</code> to paid (race)`,
+        companyId,
+      );
+      return { outcome: 'transition_failed', paymentId };
+    }
+
+    await putJourneyIndexSibling(
+      companyId,
+      payment.journeyInstanceId,
+      paymentId,
+      'paid',
+      payment.amountPaise,
+    );
+
+    // Resume ONLY on first successful paid — not paid_duplicate.
+    // If resume throws/returns not_found after paid: leave paid, alert.
+    // Automatic resume retry is DEFERRED to Phase 2 reconcile / admin action —
+    // see TECHNICAL_DEBT.md "Journey Payment — paid but resume failed".
+    const submitted = payment.submittedData || {};
+    try {
+      const result = await getEngine().resumeOnWebhook(
+        companyId,
+        payment.journeyInstanceId,
+        {
+          journeyRecord: submitted,
+          submittedData: submitted,
+          paymentId,
+          gatewayPaymentId,
+        },
+      );
+      if (result?.status !== 'resumed') {
+        logger.alert(
+          `Payment <code>${paymentId}</code> is <b>paid</b> but resumeOnWebhook returned `
+          + `<code>${result?.status || 'unknown'}</code> for journey `
+          + `<code>${payment.journeyInstanceId}</code> — manual resume / Phase 2 reconcile`,
+          companyId,
+        );
+        return {
+          outcome: 'paid_resume_pending',
+          paymentId,
+          journeyInstanceId: payment.journeyInstanceId,
+        };
+      }
+    } catch (err) {
+      logger.alert(
+        `Payment <code>${paymentId}</code> is <b>paid</b> but resumeOnWebhook threw for journey `
+        + `<code>${payment.journeyInstanceId}</code>: ${err.message} — paid NOT reverted; `
+        + `manual resume / Phase 2 reconcile`,
+        companyId,
+      );
+      return {
+        outcome: 'paid_resume_failed',
+        paymentId,
+        journeyInstanceId: payment.journeyInstanceId,
+      };
+    }
+
+    return {
+      outcome: 'paid_resumed',
+      paymentId,
+      journeyInstanceId: payment.journeyInstanceId,
+    };
+  }
+
+  async function claimWebhookEvent(eventKey) {
+    try {
+      await db.put({
+        TableName: TABLE(),
+        Item: {
+          PK: paymentEventClaimPK(GATEWAY, eventKey),
+          SK: paymentEventClaimSK(),
+          gateway: GATEWAY,
+          eventKey,
+          claimedAt: new Date().toISOString(),
+          // TTL ~30d — DynamoDB eventual; claim is authoritative while present.
+          ttl: Math.floor(Date.now() / 1000) + 30 * 24 * 3600,
+        },
+        ConditionExpression: 'attribute_not_exists(PK)',
+      }).promise();
+      return true;
+    } catch (e) {
+      if (e.code === 'ConditionalCheckFailedException') return false;
+      throw e;
+    }
+  }
+
+  async function findOtherPaidPayment(companyId, journeyInstanceId, exceptPaymentId) {
+    const { Items = [] } = await db.query({
+      TableName: TABLE(),
+      KeyConditionExpression: 'PK = :pk AND begins_with(SK, :pfx)',
+      ExpressionAttributeValues: {
+        ':pk': paymentJourneyPK(companyId, journeyInstanceId),
+        ':pfx': 'PAY#',
+      },
+    }).promise();
+    for (const item of Items) {
+      if (item.paymentId === exceptPaymentId) continue;
+      if (item.status === 'paid') return item.paymentId;
+    }
+    return null;
+  }
+
+  async function transitionToPaid(payment, gatewayPaymentId, eventKey) {
+    const patch = updateMeta(payment, 'system');
+    const paidAt = patch.updatedAt;
+    try {
+      await db.update({
+        TableName: TABLE(),
+        Key: { PK: paymentPK(payment.companyId, payment.id), SK: paymentMetaSK() },
+        UpdateExpression:
+          'SET #st = :paid, gatewayPaymentId = :gpid, idempotencyKey = :ik, '
+          + 'paidAt = :pa, updatedAt = :ua, updatedBy = :ub, #v = :nv',
+        ConditionExpression:
+          'attribute_exists(PK) AND #v = :cv AND (#st = :created OR #st = :pending)',
+        ExpressionAttributeNames: { '#st': 'status', '#v': 'version' },
+        ExpressionAttributeValues: {
+          ':paid': 'paid',
+          ':created': 'created',
+          ':pending': 'pending',
+          ':gpid': gatewayPaymentId || null,
+          ':ik': eventKey,
+          ':pa': paidAt,
+          ':ua': patch.updatedAt,
+          ':ub': patch.updatedBy,
+          ':nv': patch.version,
+          ':cv': payment.version ?? 0,
+        },
+      }).promise();
+      return true;
+    } catch (e) {
+      if (e.code === 'ConditionalCheckFailedException') return false;
+      throw e;
+    }
+  }
+
+  async function markPaidDuplicate(payment, gatewayPaymentId, eventKey, priorPaidPaymentId) {
+    const patch = updateMeta(payment, 'system');
+    try {
+      await db.update({
+        TableName: TABLE(),
+        Key: { PK: paymentPK(payment.companyId, payment.id), SK: paymentMetaSK() },
+        UpdateExpression:
+          'SET #st = :dup, gatewayPaymentId = :gpid, idempotencyKey = :ik, '
+          + 'priorPaidPaymentId = :prior, failureReason = :fr, '
+          + 'paidAt = :pa, updatedAt = :ua, updatedBy = :ub, #v = :nv',
+        ConditionExpression:
+          'attribute_exists(PK) AND #v = :cv AND (#st = :created OR #st = :pending)',
+        ExpressionAttributeNames: { '#st': 'status', '#v': 'version' },
+        ExpressionAttributeValues: {
+          ':dup': 'paid_duplicate',
+          ':created': 'created',
+          ':pending': 'pending',
+          ':gpid': gatewayPaymentId || null,
+          ':ik': eventKey,
+          ':prior': priorPaidPaymentId,
+          ':fr': 'duplicate_journey_payment',
+          ':pa': patch.updatedAt,
+          ':ua': patch.updatedAt,
+          ':ub': patch.updatedBy,
+          ':nv': patch.version,
+          ':cv': payment.version ?? 0,
+        },
+      }).promise();
+    } catch (e) {
+      if (e.code !== 'ConditionalCheckFailedException') throw e;
+    }
+    await putJourneyIndexSibling(
+      payment.companyId,
+      payment.journeyInstanceId,
+      payment.id,
+      'paid_duplicate',
+      payment.amountPaise,
+    );
+  }
+
+  return {
+    createCheckoutSession,
+    confirmGatewayPayment,
+    PaymentError,
+    tryReuseActiveCheckout,
+  };
 }
 
 function normalizeSubmittedData(raw) {
@@ -201,12 +547,12 @@ function normalizeSubmittedData(raw) {
   return out;
 }
 
-/** Default singleton — tests should call createPaymentService({ gateway, db }). */
 const defaultService = createPaymentService();
 
 module.exports = {
   createPaymentService,
   createCheckoutSession: defaultService.createCheckoutSession,
+  confirmGatewayPayment: defaultService.confirmGatewayPayment,
   PaymentError,
   normalizeSubmittedData,
 };

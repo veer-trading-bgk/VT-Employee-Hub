@@ -49,12 +49,12 @@ product or fixture bug. CI/`npm test` already correct; no production impact. Clo
 
 ## Queued technical work
 
-- **Journey Payment PR 1 — orphaned `created` PAYMENT# + multi-checkout (PR 2 hard AC).**
-  Orphan sweeper → Phase 2. **PR 2 must include** (1) journey-level already-paid guard
-  (`paid_duplicate` + alert, never silent second `paid`) and (2) checkout reuse of existing
-  pending/created PAYMENT before minting a new Order — Founder-locked acceptance criteria, not
-  optional follow-up. Detail: `docs/phase3/TECHNICAL_DEBT.md` — "Journey Payment — orphaned
-  created PAYMENT# / multi-checkout".
+- **Journey Payment — orphan sweeper + paid-but-not-resumed retry (Phase 2).**
+  PR 2 shipped webhook confirm, `paid_duplicate` guard, checkout dedup, and alerts when
+  resume fails after `paid` (status never reverted). Still open: (1) expiry sweeper for
+  orphan `created` rows after `createOrder` throw; (2) automatic/admin resume retry for
+  `paid_resume_failed`. Detail: `docs/phase3/TECHNICAL_DEBT.md` — "Journey Payment — orphaned
+  created PAYMENT#" and "Journey Payment — paid but resume failed".
 
 - **Journey Platform — icon-per-field-type visual polish (deferred, no rush).** Extend the
   review screen's icon+card design to input screens for full visual consistency across the

@@ -173,13 +173,13 @@ test.describe('Public journey field form (Phase 3 Task 2)', () => {
     await expect(summary).toBeVisible();
     await expect(summary.getByRole('heading', { name: 'Patient' })).toBeVisible();
     await expect(summary.getByRole('heading', { name: 'Contact' })).toBeVisible();
-    await expect(summary.getByText('Full name:')).toBeVisible();
+    await expect(summary.getByText('Full name')).toBeVisible();
     await expect(summary.getByText('Ada Lovelace')).toBeVisible();
-    await expect(summary.getByText('Visit type:')).toBeVisible();
+    await expect(summary.getByText('Visit type')).toBeVisible();
     await expect(summary.getByText('Follow-up')).toBeVisible();
-    await expect(summary.getByText('Mobile:')).toBeVisible();
+    await expect(summary.getByText('Mobile')).toBeVisible();
     await expect(summary.getByText('9876543210')).toBeVisible();
-    await expect(summary.getByText('Email:')).toBeVisible();
+    await expect(summary.getByText('Email')).toBeVisible();
     await expect(summary.getByText('ada@example.com')).toBeVisible();
     // Internal payload keys must not leak into the review UI.
     await expect(summary.getByText('journeyRecord')).toHaveCount(0);

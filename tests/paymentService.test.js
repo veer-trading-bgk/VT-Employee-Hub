@@ -53,6 +53,7 @@ function mockDb({ definition = pricedDef } = {}) {
       updates.push(params);
       return { promise: () => Promise.resolve({}) };
     }),
+    query: jest.fn(() => ({ promise: () => Promise.resolve({ Items: [] }) })),
   };
 }
 

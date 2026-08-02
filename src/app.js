@@ -131,6 +131,8 @@ app.post('/api/journeys/webhook/:companyId/:journeyInstanceId/:token', require('
 app.get('/api/journeys/:companyId/:journeyInstanceId/:token', require('./routes/journeys').publicGet);
 app.post('/api/journeys/:companyId/:journeyInstanceId/:token/submit', require('./routes/journeys').publicSubmit);
 app.post('/api/journeys/:companyId/:journeyInstanceId/:token/checkout', require('./routes/journeys').publicCheckout);
+// Razorpay S2S webhook — public; HMAC via RAZORPAY_WEBHOOK_SECRET + rawBody
+app.use('/api/payments', require('./routes/payments'));
 app.use('/api/journeys', authMiddleware, subscriptionMiddleware, require('./routes/journeys'));
 app.use('/api/forms', formsRoutes);
 // Session-authenticated admin management of API keys (generate/list/revoke).

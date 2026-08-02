@@ -608,6 +608,7 @@ async function handlePublicCheckout(req, res, next) {
         amount: checkout.amountPaise,
         currency: checkout.currency,
         paymentId: checkout.paymentId,
+        reused: checkout.reused === true,
       });
     } catch (err) {
       if (err instanceof PaymentError || err?.name === 'PaymentError') {

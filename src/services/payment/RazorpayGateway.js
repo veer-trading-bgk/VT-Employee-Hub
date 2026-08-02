@@ -1,25 +1,23 @@
 'use strict';
 
 /**
- * Razorpay PaymentGateway adapter — Orders API + hosted Checkout params.
- * Phase 1 PR 1: createOrder only. verifyWebhook / fetchPayment stubs for PR 2.
- *
- * Credentials (test/sandbox for this PR):
- *   RAZORPAY_KEY_ID
- *   RAZORPAY_KEY_SECRET
- * Never expose key_secret outside this file.
+ * Razorpay PaymentGateway adapter — Orders API + webhook HMAC verify.
+ * Credentials:
+ *   RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET — Orders API
+ *   RAZORPAY_WEBHOOK_SECRET — X-Razorpay-Signature (dashboard webhook secret)
  */
 
+const crypto = require('crypto');
 const Razorpay = require('razorpay');
 
 class RazorpayGateway {
   /**
-   * @param {{ keyId?: string, keySecret?: string, client?: object }} [opts]
-   *   `client` — inject a mock Razorpay instance in unit tests (no network).
+   * @param {{ keyId?: string, keySecret?: string, webhookSecret?: string, client?: object }} [opts]
    */
   constructor(opts = {}) {
     this.keyId = opts.keyId ?? process.env.RAZORPAY_KEY_ID ?? null;
     this.keySecret = opts.keySecret ?? process.env.RAZORPAY_KEY_SECRET ?? null;
+    this.webhookSecret = opts.webhookSecret ?? process.env.RAZORPAY_WEBHOOK_SECRET ?? null;
     this._client = opts.client ?? null;
   }
 
@@ -55,21 +53,41 @@ class RazorpayGateway {
   }
 
   /**
-   * PR 2 — HMAC verification over raw body. Stubbed so the interface exists now.
+   * HMAC-SHA256 hex over raw body vs X-Razorpay-Signature.
+   * Prefer verifyRazorpayWebhookSignature(req) at the route — this method
+   * exists for the PaymentGateway interface and unit tests with buffers.
+   * FAIL CLOSED: missing webhookSecret → false (never treat as verified).
+   *
+   * @param {string|Buffer} rawBody
+   * @param {string} signature
    * @returns {boolean}
    */
-  verifyWebhook(_rawBody, _signature) {
-    throw new Error('RazorpayGateway.verifyWebhook: not wired until Phase 1 PR 2');
+  verifyWebhook(rawBody, signature) {
+    if (!this.webhookSecret) return false;
+    if (!signature || rawBody == null) return false;
+    const expected = crypto
+      .createHmac('sha256', this.webhookSecret)
+      .update(rawBody)
+      .digest('hex');
+    const expectedBuf = Buffer.from(expected);
+    const actualBuf = Buffer.from(String(signature));
+    if (expectedBuf.length !== actualBuf.length) return false;
+    return crypto.timingSafeEqual(expectedBuf, actualBuf);
   }
 
   /**
-   * PR 2+ — fetch payment entity from gateway.
+   * PR 2+ optional reconcile — fetch payment entity from gateway.
    */
-  async fetchPayment(_gatewayPaymentId) {
-    throw new Error('RazorpayGateway.fetchPayment: not wired until Phase 1 PR 2');
+  async fetchPayment(gatewayPaymentId) {
+    const payment = await this._getClient().payments.fetch(gatewayPaymentId);
+    return {
+      status: payment.status,
+      amountPaise: payment.amount,
+      orderId: payment.order_id,
+      id: payment.id,
+    };
   }
 
-  /** Public Checkout.js key only — never the secret. */
   getPublicKeyId() {
     return this.keyId;
   }

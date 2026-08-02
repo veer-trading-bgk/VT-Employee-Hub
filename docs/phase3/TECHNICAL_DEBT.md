@@ -1400,10 +1400,22 @@ A sweep of all 35 useQuery call sites in the dashboard found only these 2 — th
 | Gap | Timeline | Approach |
 |---|---|---|
 | Orphan `created` rows | **Phase 2** (resilience) | Expiry sweeper: age out `created`/`pending` with null or stale `gatewayOrderId` → `expired`; optional admin reconcile via `fetchPayment` / Orders API. Do **not** sync-delete on createOrder throw in PR 1. |
-| Multi-checkout / N Orders + double-pay detection | **HARD REQUIREMENT on Phase 1 PR 2** (webhook + resume gating) — not optional follow-up | **(1) Webhook journey-level guard (required):** before marking any PAYMENT# `paid`, check whether another PAYMENT# for the same `journeyInstanceId` is already `paid`. If yes → do **not** silently accept; set a distinct status/flag (e.g. `paid_duplicate`) and `logger.alert` / Telegram (same pattern as S3 AccessDenied-class alerts) so a human can refund. **(2) Checkout reuse (required, ideally same PR):** `createCheckoutSession` must look for an existing `created`/`pending` PAYMENT for that `journeyInstanceId` and reuse it (same Order / amount) instead of minting a second Order. Founder will hold PR 2 task drafting to this AC explicitly. |
+| Multi-checkout / N Orders + double-pay detection | **Phase 1 PR 2 (this work)** | Checkout reuses ACTIVE pending/created PAYMENT when amount matches. Webhook journey-level guard → `paid_duplicate` + `logger.alert`. |
 
-**Note (PR 1 merge):** Within PR 1 there is no webhook/`paid` transition, so double-charge cannot occur from this PR's functionality alone. The gap becomes live the moment PR 2 starts accepting gateway payments — hence the hard AC above.
+**Note:** Within PR 1 alone there was no webhook/`paid` path. PR 2 implements the hard AC.
 
-**Priority:** Orphan sweeper = Phase 2 resilience. Journey-level paid guard + checkout reuse = **blocking acceptance criteria for PR 2**, not deferred TECHNICAL_DEBT that can be dropped.
+**Priority:** Orphan sweeper remains Phase 2. Duplicate guard + checkout reuse = PR 2 (implemented).
 
-**Reference:** `src/services/PaymentService.js` `createCheckoutSession` (comments at put + JSDoc); `src/routes/journeys.js` `handlePublicCheckout`; checklist: `docs/PENDING_WORK.md` Queued technical work.
+**Reference:** `src/services/PaymentService.js`; `src/routes/payments.js`; checklist: `docs/PENDING_WORK.md`.
+
+## Journey Payment — paid but resume failed (found 2026-08-02, Phase 1 PR 2)
+
+**Issue:** After PAYMENT# conditional transition to `paid`, `resumeOnWebhook()` may throw or return `not_found` (Lambda timeout, DynamoDB blip, wait already claimed/timed out). PR 2 **must not** revert `paid` → `pending` (payment is source of truth; undoing would invite double-charge retries).
+
+**Current behavior (PR 2):** leave status `paid`, `logger.alert` with journey/payment ids, return outcome `paid_resume_failed` / `paid_resume_pending`. Razorpay still gets HTTP 200 after signature OK so it does not hammer retries for an ops incident.
+
+**Automatic resume retry:** **intentionally deferred** to Phase 2 reconcile job / admin manual resume — not in PR 2 scope. Documented so it is not an unstated gap.
+
+**Priority:** Operational visibility shipped (alert); automated retry = Phase 2.
+
+**Reference:** `PaymentService.confirmGatewayPayment` resume try/catch; `docs/PENDING_WORK.md`.

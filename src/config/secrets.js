@@ -37,6 +37,7 @@ async function loadSecrets() {
       // Journey Payment (Razorpay test/live keys — never log; Checkout uses KEY_ID only)
       'RAZORPAY_KEY_ID',
       'RAZORPAY_KEY_SECRET',
+      'RAZORPAY_WEBHOOK_SECRET',
     ];
     for (const key of MANAGED_KEYS) {
       if (secrets[key]) process.env[key] = secrets[key];
@@ -54,6 +55,16 @@ async function loadSecrets() {
       '[secrets] META_APP_SECRET is not set in production — Meta webhook signature '
       + 'verification is disabled and inbound WhatsApp/Lead Ads webhooks will accept '
       + 'unsigned payloads. Set META_APP_SECRET in Lambda env vars or Secrets Manager.',
+    );
+  }
+
+  // Razorpay webhook verifier fails CLOSED when this is missing (rejects all
+  // callbacks). Loud warn so a misconfigured deploy surfaces immediately.
+  if (!process.env.RAZORPAY_WEBHOOK_SECRET) {
+    console.warn(
+      '[secrets] RAZORPAY_WEBHOOK_SECRET is not set — Razorpay payment webhooks '
+      + 'will be rejected (401). Payment confirmations will not run until it is set '
+      + 'in Lambda env vars or Secrets Manager.',
     );
   }
 

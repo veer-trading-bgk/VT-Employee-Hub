@@ -81,6 +81,29 @@ function paymentOrderLookupSK() {
   return 'LOOKUP';
 }
 
+// Per-journey payment index — Query siblings for duplicate-paid guard + ACTIVE
+// pointer for checkout dedup (GetItem). Written alongside PAYMENT# META.
+//   PK = PAYMENT_JOURNEY#{companyId}#{journeyInstanceId}
+//   SK = ACTIVE | PAY#{paymentId}
+function paymentJourneyPK(companyId, journeyInstanceId) {
+  return `PAYMENT_JOURNEY#${companyId}#${journeyInstanceId}`;
+}
+function paymentJourneyActiveSK() {
+  return 'ACTIVE';
+}
+function paymentJourneyPaymentSK(paymentId) {
+  return `PAY#${paymentId}`;
+}
+
+// Gateway webhook event claim — idempotent processing (Razorpay retries).
+// PK = PAYMENT_EVENT#{gateway}#{eventKey}  SK = CLAIM
+function paymentEventClaimPK(gateway, eventKey) {
+  return `PAYMENT_EVENT#${gateway}#${eventKey}`;
+}
+function paymentEventClaimSK() {
+  return 'CLAIM';
+}
+
 // Lead entity — existing production pattern, centralised here as reference.
 // Existing routes continue to concatenate strings directly; they migrate in later commits.
 // PK = LEAD#${companyId}#${leadId}  SK = METADATA
@@ -250,6 +273,11 @@ module.exports = {
   paymentMetaSK,
   paymentOrderLookupPK,
   paymentOrderLookupSK,
+  paymentJourneyPK,
+  paymentJourneyActiveSK,
+  paymentJourneyPaymentSK,
+  paymentEventClaimPK,
+  paymentEventClaimSK,
   // Lead (existing pattern, now centralised)
   leadPK,
   leadSK,
