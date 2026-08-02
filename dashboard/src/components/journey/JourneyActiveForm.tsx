@@ -1,16 +1,19 @@
 'use client';
 
 /**
- * Active-journey multi-screen form (Phase 3 Task 2 + Task 3).
+ * Active-journey multi-screen form (Phase 3 Task 2 + Task 3 + Payment wire).
  * Reuses v3 Input/Select/Button (auth-free — only import @/lib/cn).
  * Step navigation mirrors onboarding's step index + Back/Continue pattern.
  * Collected values are a flat Record<fieldId, string>; submit-ready payload
  * wraps as { journeyRecord, submittedData } — keys create_journey_record reads
  * (AutomationEngine.js: ctx.journeyRecord ?? ctx.submittedData).
- * Final Book Now POSTs Task 8's webhook-resume route (Option A) — not /submit.
+ *
+ * Free journeys: Book Now → Task 8 webhook-resume (unchanged).
+ * Priced journeys (anyPriced): Pay & Register → checkout → Razorpay Checkout →
+ * poll payment status until 'paid' (Checkout success is UX-only, never completion).
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Calendar, Hash, List, Mail, Phone, Type, type LucideIcon } from 'lucide-react';
 import { Input } from '@/components/v3/ui/Input';
 import { Select } from '@/components/v3/ui/Select';
@@ -22,6 +25,8 @@ import {
   hasUnitPrice,
   pricingBreakdown,
 } from '@/lib/journeys/pricing';
+import { openRazorpayCheckout } from '@/lib/journeys/razorpayCheckout';
+import { pollPaymentStatus } from '@/lib/journeys/pollPaymentStatus';
 
 export interface JourneyScreenField {
   id: string;
@@ -50,6 +55,16 @@ export interface JourneyGstConfig {
   gstPercent?: number;
   gstMode?: 'exclusive' | 'inclusive';
 }
+
+/** Review CTA / payment UX phases (priced path only). */
+type PayUiPhase =
+  | 'idle'
+  | 'starting'
+  | 'awaiting_gateway'
+  | 'confirming'
+  | 'gateway_failed'
+  | 'confirm_slow'
+  | 'checkout_error';
 
 const FIELD_TYPES = new Set(['text', 'select', 'phone', 'date', 'email', 'number']);
 
@@ -184,6 +199,17 @@ export function JourneyActiveForm({
   const [done, setDone] = useState(false);
   /** Transient server/network failure — distinct from Task 8's flat 404 (invalid link). */
   const [submitError, setSubmitError] = useState(false);
+  const [payPhase, setPayPhase] = useState<PayUiPhase>('idle');
+  const [activePaymentId, setActivePaymentId] = useState<string | null>(null);
+  /** Abort in-flight status polls on unmount / new poll / leave review. */
+  const pollAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      pollAbortRef.current?.abort();
+      pollAbortRef.current = null;
+    };
+  }, []);
 
   const current = safeScreens[Math.min(step, safeScreens.length - 1)];
   const isLast = step >= safeScreens.length - 1;
@@ -193,11 +219,13 @@ export function JourneyActiveForm({
     submittedData: values,
   }), [values]);
 
-  // Display-only — never merged into collectedPayload / webhook body.
+  // Display-only — never merged into collectedPayload / webhook body / charged amount.
   const pricingSummary = useMemo(
     () => pricingBreakdown(safeScreens, values, gst ?? {}),
     [safeScreens, values, gst],
   );
+
+  const isPriced = pricingSummary.anyPriced;
 
   function setField(id: string, value: string) {
     setValues((v) => ({ ...v, [id]: value }));
@@ -232,14 +260,57 @@ export function JourneyActiveForm({
 
   function handleBack() {
     if (review) {
+      pollAbortRef.current?.abort();
+      pollAbortRef.current = null;
       setReview(false);
+      setPayPhase('idle');
+      setSubmitError(false);
       return;
     }
     setStep((s) => Math.max(0, s - 1));
   }
 
+  function paymentStatusUrl(paymentId: string): string {
+    return (
+      `${apiBase}/api/journeys/${encodeURIComponent(companyId)}/`
+      + `${encodeURIComponent(journeyInstanceId)}/${encodeURIComponent(token)}/`
+      + `payments/${encodeURIComponent(paymentId)}`
+    );
+  }
+
+  async function runPaymentPoll(paymentId: string) {
+    pollAbortRef.current?.abort();
+    const ac = new AbortController();
+    pollAbortRef.current = ac;
+
+    setPayPhase('confirming');
+    setActivePaymentId(paymentId);
+    const outcome = await pollPaymentStatus({
+      url: paymentStatusUrl(paymentId),
+      signal: ac.signal,
+    });
+    if (ac.signal.aborted || outcome.kind === 'aborted') {
+      return;
+    }
+    if (outcome.kind === 'paid') {
+      setDone(true);
+      setSubmitting(false);
+      return;
+    }
+    if (outcome.kind === 'timeout') {
+      setPayPhase('confirm_slow');
+      setSubmitting(false);
+      return;
+    }
+    // terminal (paid_duplicate / failed / refunded) or error
+    setPayPhase('checkout_error');
+    setSubmitError(true);
+    setSubmitting(false);
+  }
+
+  /** Free journeys only — Book Now → webhook resume (unchanged). */
   async function handleSubmit() {
-    if (submitting) return;
+    if (submitting || isPriced) return;
     setSubmitting(true);
     setSubmitError(false);
     try {
@@ -269,6 +340,100 @@ export function JourneyActiveForm({
     }
   }
 
+  /**
+   * Priced journeys — Pay & Register → server checkout → Razorpay → poll 'paid'.
+   * Client never sends amount; Checkout success never completes the UI alone.
+   */
+  async function handlePayAndRegister() {
+    if (submitting || !isPriced) return;
+    setSubmitting(true);
+    setSubmitError(false);
+    setPayPhase('starting');
+    try {
+      const res = await fetch(
+        `${apiBase}/api/journeys/${encodeURIComponent(companyId)}/${encodeURIComponent(journeyInstanceId)}/${encodeURIComponent(token)}/checkout`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // Field values only — never amount / amountPaise / total.
+          body: JSON.stringify({ submittedData: values }),
+        },
+      );
+      if (res.status === 404) {
+        onInvalid();
+        return;
+      }
+      if (!res.ok) {
+        setPayPhase('checkout_error');
+        setSubmitError(true);
+        setSubmitting(false);
+        return;
+      }
+
+      const data = await res.json() as {
+        order_id?: string;
+        key_id?: string;
+        amount?: number;
+        currency?: string;
+        paymentId?: string;
+      };
+
+      if (!data.order_id || !data.key_id || data.amount == null || !data.paymentId) {
+        setPayPhase('checkout_error');
+        setSubmitError(true);
+        setSubmitting(false);
+        return;
+      }
+
+      setActivePaymentId(data.paymentId);
+      setPayPhase('awaiting_gateway');
+
+      await openRazorpayCheckout({
+        keyId: data.key_id,
+        orderId: data.order_id,
+        amountPaise: Number(data.amount),
+        currency: data.currency || 'INR',
+        name: name?.trim() || 'Registration',
+        onSuccess: () => {
+          // UX only — do NOT setDone here; wait for webhook-confirmed 'paid'.
+          void runPaymentPoll(data.paymentId!);
+        },
+        onDismiss: () => {
+          // User closed Checkout — PAYMENT# stays pending; return to review.
+          setPayPhase('idle');
+          setSubmitting(false);
+        },
+        onFailure: () => {
+          setPayPhase('gateway_failed');
+          setSubmitting(false);
+        },
+      });
+    } catch {
+      setPayPhase('checkout_error');
+      setSubmitError(true);
+      setSubmitting(false);
+    }
+  }
+
+  function handlePrimaryAction() {
+    if (isPriced) void handlePayAndRegister();
+    else void handleSubmit();
+  }
+
+  function primaryLabel(): string {
+    if (isPriced) {
+      if (payPhase === 'starting' || payPhase === 'awaiting_gateway') return 'Opening payment…';
+      if (payPhase === 'confirming') return 'Confirming payment…';
+      if (payPhase === 'gateway_failed' || payPhase === 'checkout_error' || submitError) {
+        return 'Try payment again';
+      }
+      return 'Pay & Register';
+    }
+    if (submitting) return 'Booking…';
+    if (submitError) return 'Try again';
+    return 'Book Now';
+  }
+
   if (done) {
     return (
       <div data-testid="journey-submitted" className="text-center">
@@ -282,8 +447,50 @@ export function JourneyActiveForm({
         )}
         <h1 className="text-xl font-semibold text-slate-900">Thank you</h1>
         <p className="mt-2 text-sm text-slate-600">
-          Your responses have been submitted. You can close this page.
+          {isPriced
+            ? 'Your payment is confirmed and your booking is complete. You can close this page.'
+            : 'Your responses have been submitted. You can close this page.'}
         </p>
+      </div>
+    );
+  }
+
+  if (payPhase === 'confirming') {
+    return (
+      <div data-testid="journey-payment-confirming" className="text-center">
+        <JourneyBanner url={bannerImageUrl} />
+        <h1 className="text-xl font-semibold text-slate-900">Confirming your payment…</h1>
+        <p className="mt-2 text-sm text-slate-600">
+          Please wait while we confirm your payment with the bank. Do not close this page.
+        </p>
+      </div>
+    );
+  }
+
+  if (payPhase === 'confirm_slow') {
+    return (
+      <div data-testid="journey-payment-pending" className="text-center">
+        <JourneyBanner url={bannerImageUrl} />
+        <h1 className="text-xl font-semibold text-slate-900">We&apos;re confirming your payment</h1>
+        <p className="mt-2 text-sm text-slate-600">
+          Your payment may already have gone through. You&apos;ll receive a WhatsApp confirmation
+          shortly — this is not a failed booking.
+        </p>
+        <div className="mt-6">
+          <Button
+            type="button"
+            style={accent ? { backgroundColor: accent } : undefined}
+            data-testid="journey-payment-recheck"
+            onClick={() => {
+              if (!activePaymentId) return;
+              setSubmitting(true);
+              void runPaymentPoll(activePaymentId);
+            }}
+            disabled={submitting || !activePaymentId}
+          >
+            {submitting ? 'Checking…' : 'Check payment status'}
+          </Button>
+        </div>
       </div>
     );
   }
@@ -303,7 +510,11 @@ export function JourneyActiveForm({
           <h1 className="text-xl font-semibold text-slate-900">
             {name?.trim() || 'Journey'}
           </h1>
-          <p className="mt-1 text-sm text-slate-500">Review your answers before booking.</p>
+          <p className="mt-1 text-sm text-slate-500">
+            {isPriced
+              ? 'Review your answers, then pay to complete registration.'
+              : 'Review your answers before booking.'}
+          </p>
         </header>
 
         <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
@@ -401,12 +612,26 @@ export function JourneyActiveForm({
             )
           )}
 
-          {submitError && (
+          {payPhase === 'gateway_failed' && (
+            <div className="mt-4" data-testid="journey-payment-failed">
+              <ErrorState
+                title="Payment did not go through"
+                message="Your card or UPI was not charged successfully. You can try again — we will reuse the same pending payment when possible."
+                onRetry={handlePrimaryAction}
+              />
+            </div>
+          )}
+
+          {(submitError || payPhase === 'checkout_error') && payPhase !== 'gateway_failed' && (
             <div className="mt-4" data-testid="journey-submit-error">
               <ErrorState
                 title="Something went wrong"
-                message="We could not submit your answers. Check your connection and try again — your link is still valid."
-                onRetry={handleSubmit}
+                message={
+                  isPriced
+                    ? 'We could not start checkout. Check your connection and try again — your link is still valid.'
+                    : 'We could not submit your answers. Check your connection and try again — your link is still valid.'
+                }
+                onRetry={handlePrimaryAction}
               />
             </div>
           )}
@@ -424,11 +649,12 @@ export function JourneyActiveForm({
               type="button"
               className="flex-[2]"
               style={accent ? { backgroundColor: accent } : undefined}
-              onClick={handleSubmit}
+              onClick={handlePrimaryAction}
               disabled={submitting}
               data-testid="journey-submit"
+              data-pay-action={isPriced ? 'pay-register' : 'book-now'}
             >
-              {submitting ? 'Booking…' : submitError ? 'Try again' : 'Book Now'}
+              {primaryLabel()}
             </Button>
           </div>
         </div>

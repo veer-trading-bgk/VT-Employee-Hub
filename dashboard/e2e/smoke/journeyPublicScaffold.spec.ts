@@ -361,6 +361,154 @@ test.describe('Public journey webhook submit (Phase 3 Task 3)', () => {
   });
 });
 
+test.describe('Priced journey — Pay & Register (Checkout + poll)', () => {
+  const PRICED_DEF = {
+    name: 'Event Booking',
+    brandingConfig: { primaryColor: '#0ea5e9' },
+    gstEnabled: true,
+    gstPercent: 18,
+    gstMode: 'exclusive' as const,
+    screens: [
+      {
+        id: 'screen',
+        title: 'Tickets',
+        fields: [
+          { id: 'full_name', label: 'Full name', type: 'text', required: true },
+          { id: 'qty', label: 'Tickets', type: 'number', required: true, unitPrice: 500 },
+        ],
+      },
+    ],
+  };
+
+  test('Pay & Register → checkout (no client amount) → mock Razorpay → poll paid → thank you; free Book Now unchanged shape', async ({ page }) => {
+    let checkoutBody: unknown = null;
+    let checkoutHits = 0;
+    let statusHits = 0;
+    let webhookHits = 0;
+
+    // Mock Checkout.js before any navigation — auto-succeed with server amounts only.
+    await page.addInitScript(() => {
+      class MockRazorpay {
+        opts: Record<string, unknown>;
+        constructor(opts: Record<string, unknown>) {
+          this.opts = opts;
+        }
+        open() {
+          const handler = this.opts.handler as ((r: object) => void) | undefined;
+          handler?.({ razorpay_payment_id: 'pay_mock', razorpay_order_id: this.opts.order_id });
+        }
+        on() { /* payment.failed unused in success path */ }
+      }
+      (window as unknown as { Razorpay: typeof MockRazorpay }).Razorpay = MockRazorpay;
+    });
+
+    await page.route('**/checkout.razorpay.com/**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/javascript',
+        body: '/* mocked — window.Razorpay set via addInitScript */',
+      });
+    });
+
+    await page.route('**/api/journeys/**', async (route) => {
+      const req = route.request();
+      const url = req.url();
+      if (req.method() === 'OPTIONS') {
+        await route.fulfill({
+          status: 204,
+          headers: { ...CORS, 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS' },
+        });
+        return;
+      }
+      if (req.method() === 'POST' && url.includes('/checkout')) {
+        checkoutHits += 1;
+        checkoutBody = req.postDataJSON();
+        await route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          headers: CORS,
+          body: JSON.stringify({
+            success: true,
+            order_id: 'order_srv_1',
+            key_id: 'rzp_test_mock',
+            amount: 59000,
+            currency: 'INR',
+            paymentId: 'payment_mock_1',
+          }),
+        });
+        return;
+      }
+      if (req.method() === 'GET' && url.includes('/payments/')) {
+        statusHits += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: CORS,
+          body: JSON.stringify({
+            success: true,
+            paymentId: 'payment_mock_1',
+            status: statusHits >= 2 ? 'paid' : 'pending',
+            amountPaise: 59000,
+            currency: 'INR',
+          }),
+        });
+        return;
+      }
+      if (req.method() === 'POST' && url.includes('/webhook/')) {
+        webhookHits += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          headers: CORS,
+          body: JSON.stringify({ success: true }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: CORS,
+        body: JSON.stringify({
+          success: true,
+          instance: { journeyInstanceId: IID, status: 'opened' },
+          definition: PRICED_DEF,
+        }),
+      });
+    });
+
+    await page.route('**/api/auth/**', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        headers: CORS,
+        body: JSON.stringify({ error: 'unauthenticated' }),
+      });
+    });
+
+    await page.goto(`/journey/${CID}/${IID}/${TOKEN}`);
+    await page.getByLabel('Full name').fill('Ada Lovelace');
+    await page.getByLabel('Tickets').fill('1');
+    await page.getByTestId('journey-continue').click();
+    await expect(page.getByTestId('journey-review')).toBeVisible();
+    await expect(page.getByTestId('journey-grand-total')).toBeVisible();
+
+    const payBtn = page.getByTestId('journey-submit');
+    await expect(payBtn).toHaveAttribute('data-pay-action', 'pay-register');
+    await expect(payBtn).toHaveText('Pay & Register');
+
+    await payBtn.click();
+    await expect(page.getByTestId('journey-payment-confirming')).toBeVisible();
+    await expect(page.getByTestId('journey-submitted')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('Your payment is confirmed')).toBeVisible();
+
+    expect(checkoutHits).toBe(1);
+    expect(webhookHits).toBe(0); // must NOT hit free webhook path
+    expect(statusHits).toBeGreaterThanOrEqual(1);
+    expect(checkoutBody).toEqual({ submittedData: { full_name: 'Ada Lovelace', qty: '1' } });
+    expect(JSON.stringify(checkoutBody)).not.toMatch(/amount/i);
+  });
+});
+
 test.describe('Public journey light contrast (system/app dark)', () => {
   test('Input/Select stay light when html.dark would otherwise apply; admin theme restored on leave', async ({ page }) => {
     // Root layout + ThemeProvider default to .dark when vt-theme !== 'light'.

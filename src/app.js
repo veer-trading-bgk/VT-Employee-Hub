@@ -131,6 +131,7 @@ app.post('/api/journeys/webhook/:companyId/:journeyInstanceId/:token', require('
 app.get('/api/journeys/:companyId/:journeyInstanceId/:token', require('./routes/journeys').publicGet);
 app.post('/api/journeys/:companyId/:journeyInstanceId/:token/submit', require('./routes/journeys').publicSubmit);
 app.post('/api/journeys/:companyId/:journeyInstanceId/:token/checkout', require('./routes/journeys').publicCheckout);
+app.get('/api/journeys/:companyId/:journeyInstanceId/:token/payments/:paymentId', require('./routes/journeys').publicPaymentStatus);
 // Razorpay S2S webhook — public; HMAC via RAZORPAY_WEBHOOK_SECRET + rawBody
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/journeys', authMiddleware, subscriptionMiddleware, require('./routes/journeys'));

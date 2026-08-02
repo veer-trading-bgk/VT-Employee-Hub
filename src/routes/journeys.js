@@ -591,7 +591,7 @@ async function handlePublicCheckout(req, res, next) {
 
     const body = req.body && typeof req.body === 'object' ? req.body : {};
     // Field values only — amount / amountPaise / total / pricingSnapshot ignored.
-    // Each successful call creates a NEW PAYMENT# + Order (no pending reuse in PR 1).
+    // Checkout dedup (PR 2): reuses ACTIVE created/pending PAYMENT when amount matches.
     const submittedData = body.submittedData ?? body.journeyRecord ?? body.values ?? {};
 
     try {
@@ -620,6 +620,32 @@ async function handlePublicCheckout(req, res, next) {
   } catch (err) { next(err); }
 }
 
+// ── Public payment status (read-only poll for Checkout UX) ────────────────────
+// Client polls after Razorpay Checkout success callback — never treats Checkout
+// handler as confirmation. GET only; no writes.
+async function handlePublicPaymentStatus(req, res, next) {
+  try {
+    const { companyId, journeyInstanceId, token, paymentId } = req.params;
+    const validated = await validateJourneyToken(companyId, journeyInstanceId, token);
+    if (!validated.ok) return res.status(404).json({ error: 'Not found' });
+
+    const status = await paymentService.getPaymentStatus({
+      companyId,
+      journeyInstanceId,
+      paymentId,
+    });
+    if (!status) return res.status(404).json({ error: 'Not found' });
+
+    return res.status(200).json({
+      success: true,
+      paymentId: status.paymentId,
+      status: status.status,
+      amountPaise: status.amountPaise,
+      currency: status.currency,
+    });
+  } catch (err) { next(err); }
+}
+
 module.exports = router;
 module.exports.validateJourneyToken = validateJourneyToken;
 // Composed as arrays (rate-limit + handler) so app.js can mount in one line
@@ -628,7 +654,9 @@ module.exports.publicGet = [rateLimit(30, 60_000), requireJourneysPlatformPublic
 module.exports.publicSubmit = [rateLimit(30, 60_000), requireJourneysPlatformPublic, handlePublicSubmit];
 module.exports.publicWebhook = [rateLimit(30, 60_000), requireJourneysPlatformPublic, handlePublicWebhook];
 module.exports.publicCheckout = [rateLimit(30, 60_000), requireJourneysPlatformPublic, handlePublicCheckout];
+module.exports.publicPaymentStatus = [rateLimit(60, 60_000), requireJourneysPlatformPublic, handlePublicPaymentStatus];
 module.exports._setPaymentServiceForTests = (svc) => {
   paymentService = svc;
 };
 module.exports.handlePublicCheckout = handlePublicCheckout;
+module.exports.handlePublicPaymentStatus = handlePublicPaymentStatus;

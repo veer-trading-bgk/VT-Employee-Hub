@@ -211,3 +211,79 @@ describe('POST /api/journeys/.../checkout', () => {
     expect(dynamodb.put).not.toHaveBeenCalled();
   });
 });
+
+describe('GET /api/journeys/.../payments/:paymentId', () => {
+  const handler = journeysRouter.handlePublicPaymentStatus;
+
+  test('valid token + owned payment → status only (read-only)', async () => {
+    journeysRouter._setPaymentServiceForTests({
+      getPaymentStatus: jest.fn(async () => ({
+        paymentId: 'payment_1',
+        status: 'pending',
+        amountPaise: 177000,
+        currency: 'INR',
+      })),
+    });
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance() }));
+
+    const res = mockRes();
+    await handler({
+      params: {
+        companyId: CID,
+        journeyInstanceId: JOURNEY_ID,
+        token: RAW_TOKEN,
+        paymentId: 'payment_1',
+      },
+      headers: {},
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      paymentId: 'payment_1',
+      status: 'pending',
+      amountPaise: 177000,
+      currency: 'INR',
+    });
+  });
+
+  test('invalid token → 404', async () => {
+    const getPaymentStatus = jest.fn();
+    journeysRouter._setPaymentServiceForTests({ getPaymentStatus });
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance() }));
+
+    const res = mockRes();
+    await handler({
+      params: {
+        companyId: CID,
+        journeyInstanceId: JOURNEY_ID,
+        token: 'wrong',
+        paymentId: 'payment_1',
+      },
+      headers: {},
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(getPaymentStatus).not.toHaveBeenCalled();
+  });
+
+  test('payment missing / wrong journey → 404', async () => {
+    journeysRouter._setPaymentServiceForTests({
+      getPaymentStatus: jest.fn(async () => null),
+    });
+    dynamodb.get.mockReturnValue(resolved({ Item: openInstance() }));
+
+    const res = mockRes();
+    await handler({
+      params: {
+        companyId: CID,
+        journeyInstanceId: JOURNEY_ID,
+        token: RAW_TOKEN,
+        paymentId: 'payment_x',
+      },
+      headers: {},
+    }, res, jest.fn());
+
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+});

@@ -529,9 +529,34 @@ function createPaymentService(deps = {}) {
     );
   }
 
+  /**
+   * Read-only payment status for the public journey UI poll.
+   * Returns null when missing or not owned by this companyId + journeyInstanceId
+   * (GetItem on PAYMENT#{companyId}#{paymentId} + field match — never Scan).
+   */
+  async function getPaymentStatus({ companyId, journeyInstanceId, paymentId }) {
+    if (!companyId || !journeyInstanceId || !paymentId) return null;
+    const { Item: payment } = await db.get({
+      TableName: TABLE(),
+      Key: { PK: paymentPK(companyId, paymentId), SK: paymentMetaSK() },
+    }).promise();
+    if (!payment) return null;
+    // Defense-in-depth: PK already scopes company; still reject mismatched fields
+    // so a wrong journey (or corrupted row) never leaks another booking's status.
+    if (payment.companyId && payment.companyId !== companyId) return null;
+    if (payment.journeyInstanceId !== journeyInstanceId) return null;
+    return {
+      paymentId: payment.id,
+      status: payment.status,
+      amountPaise: payment.amountPaise,
+      currency: payment.currency || 'INR',
+    };
+  }
+
   return {
     createCheckoutSession,
     confirmGatewayPayment,
+    getPaymentStatus,
     PaymentError,
     tryReuseActiveCheckout,
   };
@@ -553,6 +578,7 @@ module.exports = {
   createPaymentService,
   createCheckoutSession: defaultService.createCheckoutSession,
   confirmGatewayPayment: defaultService.confirmGatewayPayment,
+  getPaymentStatus: defaultService.getPaymentStatus,
   PaymentError,
   normalizeSubmittedData,
 };

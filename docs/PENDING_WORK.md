@@ -49,6 +49,17 @@ product or fixture bug. CI/`npm test` already correct; no production impact. Clo
 
 ## Queued technical work
 
+- **Journey Payment UI wire — code complete, awaiting sandbox E2E validation (not production-proven).**
+  Merged/ready code: Review → Pay & Register (priced) / Book Now (free), Razorpay Checkout.js
+  (server amounts only), GET payment-status poll with ownership checks + AbortController cleanup,
+  webhook confirm path from PR 2. **Blocked on environment:** `RAZORPAY_KEY_ID` /
+  `RAZORPAY_KEY_SECRET` / `RAZORPAY_WEBHOOK_SECRET` not available in this agent shell; Secrets
+  Manager secret `vt-employee-bot/production` not found from local AWS. Live proof still required
+  before declaring production readiness — one test-mode payment with evidence for each step:
+  Review → Pay & Register → Checkout opens → test pay succeeds → webhook HTTP 200 →
+  `PAYMENT#`=`paid` → journey resumed → `JOURNEY_RECORD#` written → WhatsApp confirmation →
+  thank-you after poll sees `paid`. Do not treat mocked Playwright as that proof.
+
 - **Journey Payment — orphan sweeper + paid-but-not-resumed retry (Phase 2).**
   PR 2 shipped webhook confirm, `paid_duplicate` guard, checkout dedup, and alerts when
   resume fails after `paid` (status never reverted). Still open: (1) expiry sweeper for

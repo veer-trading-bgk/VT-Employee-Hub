@@ -178,6 +178,12 @@ describe('PaymentService.createCheckoutSession', () => {
 });
 
 describe('RazorpayGateway confinement', () => {
+  test('RazorpayGateway.verifyWebhook fails closed without secret', () => {
+    const RazorpayGateway = require('../src/services/payment/RazorpayGateway');
+    const gw = new RazorpayGateway({ keyId: 'k', keySecret: 's', webhookSecret: null });
+    expect(gw.verifyWebhook('{}', 'sig')).toBe(false);
+  });
+
   test('PaymentService require graph does not load razorpay when gateway is injected', () => {
     jest.isolateModules(() => {
       const Module = require('module');
@@ -227,5 +233,87 @@ describe('RazorpayGateway confinement', () => {
     const r = await gw.createOrder(177000, 'INR', 'payment_receipt');
     expect(r.orderId).toBe('order_mock');
     expect(gw.getPublicKeyId()).toBe('rzp_test_x');
+  });
+});
+
+describe('PaymentService.getPaymentStatus', () => {
+  test('returns status when payment belongs to journey; null otherwise', async () => {
+    const store = new Map();
+    const key = (PK, SK) => `${PK}||${SK}`;
+    const db = {
+      get: jest.fn(({ Key }) => ({
+        promise: async () => ({ Item: store.get(key(Key.PK, Key.SK)) }),
+      })),
+      put: jest.fn(),
+      update: jest.fn(),
+      query: jest.fn(),
+    };
+    store.set(`${paymentPK(CID, 'payment_abc')}||${paymentMetaSK()}`, {
+      id: 'payment_abc',
+      companyId: CID,
+      journeyInstanceId: JOURNEY_ID,
+      status: 'paid',
+      amountPaise: 100,
+      currency: 'INR',
+    });
+    const svc = createPaymentService({
+      db,
+      gateway: { createOrder: async () => ({ orderId: 'o' }), getPublicKeyId: () => 'k' },
+    });
+    const ok = await svc.getPaymentStatus({
+      companyId: CID,
+      journeyInstanceId: JOURNEY_ID,
+      paymentId: 'payment_abc',
+    });
+    expect(ok).toEqual({
+      paymentId: 'payment_abc',
+      status: 'paid',
+      amountPaise: 100,
+      currency: 'INR',
+    });
+    const wrongJourney = await svc.getPaymentStatus({
+      companyId: CID,
+      journeyInstanceId: 'journey_other',
+      paymentId: 'payment_abc',
+    });
+    expect(wrongJourney).toBeNull();
+
+    // Same paymentId under a different company PK → GetItem miss → null
+    const wrongCompany = await svc.getPaymentStatus({
+      companyId: 'comp_other',
+      journeyInstanceId: JOURNEY_ID,
+      paymentId: 'payment_abc',
+    });
+    expect(wrongCompany).toBeNull();
+    expect(db.get).toHaveBeenCalledWith(expect.objectContaining({
+      Key: { PK: paymentPK('comp_other', 'payment_abc'), SK: paymentMetaSK() },
+    }));
+  });
+
+  test('rejects when META.companyId mismatches path companyId (defense-in-depth)', async () => {
+    const store = new Map();
+    const key = (PK, SK) => `${PK}||${SK}`;
+    const db = {
+      get: jest.fn(({ Key }) => ({
+        promise: async () => ({ Item: store.get(key(Key.PK, Key.SK)) }),
+      })),
+    };
+    store.set(`${paymentPK(CID, 'payment_x')}||${paymentMetaSK()}`, {
+      id: 'payment_x',
+      companyId: 'comp_tampered',
+      journeyInstanceId: JOURNEY_ID,
+      status: 'paid',
+      amountPaise: 50,
+      currency: 'INR',
+    });
+    const svc = createPaymentService({
+      db,
+      gateway: { createOrder: async () => ({ orderId: 'o' }), getPublicKeyId: () => 'k' },
+    });
+    expect(await svc.getPaymentStatus({
+      companyId: CID,
+      journeyInstanceId: JOURNEY_ID,
+      paymentId: 'payment_x',
+    })).toBeNull();
   });
 });
