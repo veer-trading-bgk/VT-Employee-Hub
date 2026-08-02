@@ -1341,3 +1341,13 @@ A sweep of all 35 useQuery call sites in the dashboard found only these 2 — th
 **Priority:** Fixed — was silently breaking inbound-message delivery for any company whose WABA/token gets corrected post-connect via Settings, with no error surfaced to the admin or CTO. Closed same-day as discovery.
 
 **Reference:** `.github/workflows/deploy.yml`.
+
+## open_web_journey Inspects Template Shape Outside WhatsAppSendService (found 2026-08-02, PR C)
+
+**Issue:** After Dynamic URL button support (PR B) and Journey wiring (PR C), `AutomationEngine`'s `open_web_journey` action resolves the local `CONFIG#TMPL` record and branches on body placeholders vs Dynamic URL buttons to decide `variableValues` and `options.buttonVariableValue`. Detection itself correctly reuses `WhatsAppSendService.hasDynamicUrlButton()` (no duplicated BUTTONS/URL/`{{n}}` regex — ADR-012 boundary held for Meta-shape knowledge). The residual debt is architectural: a **caller** still decides Meta delivery shape (body link vs CTA button) before `sendTemplate`, whereas ADR-012 intends send-path template-shape knowledge to live inside `WhatsAppSendService`. Today this is a single narrow call site.
+
+**Fix (deferred):** when a **second** caller needs the same branching (e.g. `complete_journey` / `cancel_journey` notify with a Dynamic URL CTA), extract a shared `describeTemplateInputs(components)`-style helper (or teach `sendTemplate` a small journey-aware option bag) justified by real reuse — not speculative abstraction for one node.
+
+**Priority:** Low — correct behavior today; one call site; helper already prevents detection duplication.
+
+**Reference:** `src/services/AutomationEngine.js` `open_web_journey`; `src/services/WhatsAppSendService.js` `hasDynamicUrlButton` / `resolveLocalTemplate` / `dynamicUrlButtonIndexes`.

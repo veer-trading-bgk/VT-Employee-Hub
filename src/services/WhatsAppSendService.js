@@ -38,6 +38,38 @@ const s3Client = new S3({ region: process.env.AWS_REGION ?? 'ap-south-1' });
 // Roles whose send permission is limited to their own assigned leads
 const RESTRICTED_ROLES = new Set(['telecaller', 'agent', 'intern']);
 
+/**
+ * Meta Dynamic URL button indexes — single source of truth (ADR-012).
+ * Do not reimplement BUTTONS/URL/{{n}} detection in AutomationEngine or
+ * other callers; use hasDynamicUrlButton() / this helper via the service.
+ */
+function dynamicUrlButtonIndexes(components) {
+  const buttonsComp = (components ?? []).find((c) => c.type === 'BUTTONS');
+  if (!buttonsComp?.buttons?.length) return [];
+  const indexes = [];
+  buttonsComp.buttons.forEach((btn, i) => {
+    if (btn.type === 'URL' && /\{\{\d+\}\}/.test(btn.url ?? '')) {
+      indexes.push(String(i));
+    }
+  });
+  return indexes;
+}
+
+/** True when local template components declare ≥1 Dynamic URL button. */
+function hasDynamicUrlButton(components) {
+  return dynamicUrlButtonIndexes(components).length > 0;
+}
+
+/**
+ * Percent-encode a Dynamic URL button suffix for Meta.
+ * Encodes each /-separated segment independently so multi-segment path
+ * suffixes (e.g. Journey companyId/instanceId/token) keep real slashes;
+ * opaque single-segment suffixes match encodeURIComponent(whole) behavior.
+ */
+function encodeUrlButtonSuffix(text) {
+  return String(text).split('/').map((seg) => encodeURIComponent(seg)).join('/');
+}
+
 class WhatsAppSendService {
 
   // ── Internal helpers ──────────────────────────────────────────────────────
@@ -105,17 +137,26 @@ class WhatsAppSendService {
    * Indexes of URL buttons whose `url` still has a Meta {{n}} placeholder
    * (Dynamic URL). Static URL / QR / phone buttons are omitted — they need
    * no send-time button component.
+   * Single source of truth for Meta Dynamic-URL shape detection (ADR-012);
+   * callers that need a boolean should use hasDynamicUrlButton(), not copy
+   * this pattern into AutomationEngine / other services.
    */
   _dynamicUrlButtonIndexes(components) {
-    const buttonsComp = (components ?? []).find((c) => c.type === 'BUTTONS');
-    if (!buttonsComp?.buttons?.length) return [];
-    const indexes = [];
-    buttonsComp.buttons.forEach((btn, i) => {
-      if (btn.type === 'URL' && /\{\{\d+\}\}/.test(btn.url ?? '')) {
-        indexes.push(String(i));
-      }
-    });
-    return indexes;
+    return dynamicUrlButtonIndexes(components);
+  }
+
+  /** Public boolean wrapper — see module-level hasDynamicUrlButton. */
+  hasDynamicUrlButton(components) {
+    return hasDynamicUrlButton(components);
+  }
+
+  /**
+   * Name+language CONFIG#TMPL resolve (same rules as sendTemplate object-ref).
+   * Used by open_web_journey to inspect BODY / BUTTONS before building
+   * variableValues + button options without duplicating the Query.
+   */
+  async resolveLocalTemplate(companyId, templateName, language, opts = {}) {
+    return this._resolveTemplateByName(companyId, templateName, language, opts);
   }
 
   /**
@@ -180,8 +221,7 @@ class WhatsAppSendService {
           400,
         );
       }
-      // Meta requires the dynamic suffix percent-encoded (special chars).
-      out[String(index)] = encodeURIComponent(s);
+      out[String(index)] = encodeUrlButtonSuffix(s);
     }
     return out;
   }
@@ -1030,3 +1070,6 @@ class WhatsAppSendService {
 }
 
 module.exports = new WhatsAppSendService();
+module.exports.hasDynamicUrlButton = hasDynamicUrlButton;
+module.exports.encodeUrlButtonSuffix = encodeUrlButtonSuffix;
+module.exports.dynamicUrlButtonIndexes = dynamicUrlButtonIndexes;

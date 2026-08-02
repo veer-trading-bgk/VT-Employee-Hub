@@ -220,7 +220,7 @@ describe('sendTemplate() — Dynamic URL button components', () => {
     ]);
   });
 
-  test('special characters in suffix are percent-encoded', async () => {
+  test('special characters in suffix are percent-encoded path-safely (slashes survive)', async () => {
     mockConfigThenTemplate(ONE_DYNAMIC);
 
     await WASendSvc.sendTemplate(CID, TARGET, 'tmpl_6', ['n'], USER, {
@@ -229,7 +229,33 @@ describe('sendTemplate() — Dynamic URL button components', () => {
     });
 
     const btn = axiosTemplateComponents().find((c) => c.type === 'button');
-    expect(btn.parameters[0].text).toBe(encodeURIComponent('a/b c?x=1'));
+    // Segment-wise encode: "a" + "/" + encodeURIComponent("b c?x=1")
+    expect(btn.parameters[0].text).toBe(`a/${encodeURIComponent('b c?x=1')}`);
+  });
+
+  test('multi-segment path suffix: slash preserved, space encoded (Journey shape)', async () => {
+    mockConfigThenTemplate(ONE_DYNAMIC);
+
+    await WASendSvc.sendTemplate(CID, TARGET, 'tmpl_6b', ['n'], USER, {
+      headerVariableValue: 'H',
+      buttonVariableValue: 'a/b c',
+    });
+
+    const btn = axiosTemplateComponents().find((c) => c.type === 'button');
+    expect(btn.parameters[0].text).toBe('a/b%20c');
+  });
+
+  test('opaque single-segment suffix still matches encodeURIComponent (PR B regression)', async () => {
+    mockConfigThenTemplate(ONE_DYNAMIC);
+
+    await WASendSvc.sendTemplate(CID, TARGET, 'tmpl_6c', ['n'], USER, {
+      headerVariableValue: 'H',
+      buttonVariableValue: 'abc123',
+    });
+
+    const btn = axiosTemplateComponents().find((c) => c.type === 'button');
+    expect(btn.parameters[0].text).toBe(encodeURIComponent('abc123'));
+    expect(btn.parameters[0].text).toBe('abc123');
   });
 
   test('empty buttonVariableValue throws (does not send empty suffix)', async () => {

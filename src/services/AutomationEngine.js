@@ -1279,7 +1279,31 @@ class AutomationEngine {
         // origin only so a multi-value env never produces a malformed link.
         const baseUrl = (process.env.FRONTEND_URL || 'http://localhost:3001')
           .split(',')[0].trim().replace(/\/$/, '');
-        const journeyUrl = `${baseUrl}/journey/${companyId}/${journeyInstanceId}/${rawToken}`;
+        const pathSuffix = `${companyId}/${journeyInstanceId}/${rawToken}`;
+        const fullUrl = `${baseUrl}/journey/${pathSuffix}`;
+
+        // Resolve local CONFIG#TMPL once so body vs button inputs can be built
+        // independently from real components. Dynamic URL detection stays in
+        // WhatsAppSendService (hasDynamicUrlButton) — do not copy BUTTONS/URL/{{n}}
+        // matching here (ADR-012). requireLocalTemplate: picker-selected templates
+        // must exist locally (actionable 404), never silent Meta-native send.
+        const tmpl = await WASendSvc.resolveLocalTemplate(companyId, templateId, language, {
+          requireLocalTemplate: true,
+        });
+        const bodyComp = (tmpl.components ?? []).find((c) => c.type === 'BODY');
+        const bodyHasPlaceholders = /\{\{\d+\}\}/.test(bodyComp?.text ?? '');
+        // Body and button are independent: body vars follow BODY placeholders
+        // (today Journey only supplies the full capability URL); button suffix
+        // follows Dynamic URL metadata. A future name+CTA template populates
+        // both without an if (hasButton) { body = [] } rewrite.
+        const variableValues = bodyHasPlaceholders ? [fullUrl] : [];
+        const sendOpts = {
+          content: '[Automation: open_web_journey]',
+          requireLocalTemplate: true,
+        };
+        if (WASendSvc.hasDynamicUrlButton(tmpl.components)) {
+          sendOpts.buttonVariableValue = pathSuffix;
+        }
 
         const target = leadPK
           ? { resolvedContact: { pk: leadPK, phone, isLead: true } }
@@ -1287,9 +1311,9 @@ class AutomationEngine {
         const r = await WASendSvc.sendTemplate(
           companyId, target,
           { templateName: templateId, language },
-          [journeyUrl],
+          variableValues,
           { id: 'system', role: 'admin', name: 'Automation' },
-          { content: `[Automation: open_web_journey]` },
+          sendOpts,
         );
 
         publishEvent(E.JOURNEY_OPENED, {

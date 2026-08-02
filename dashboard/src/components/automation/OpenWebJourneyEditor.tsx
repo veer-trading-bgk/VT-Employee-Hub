@@ -59,7 +59,7 @@ export function OpenWebJourneyEditor({ config, onChange }: {
     <div className="space-y-3">
       <Field
         label="Template"
-        hint="WhatsApp template that receives the journey URL as its first variable (same approved list as Send Template)."
+        hint="Two supported shapes: (1) Body-link (legacy) — body {{1}} receives the full journey URL. (2) CTA button — template Dynamic URL must be …/journey/{{1}}; the path (companyId/instanceId/token) is filled automatically at send time — do not type a button suffix here."
       >
         <select
           value={config.templateId ?? ''}

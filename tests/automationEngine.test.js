@@ -14,10 +14,16 @@ jest.mock('../src/config/dynamodb', () => ({
   delete: jest.fn(),
 }));
 jest.mock('../src/services/PipelineService');
-jest.mock('../src/services/WhatsAppSendService', () => ({
-  sendText: jest.fn(), sendTemplate: jest.fn(), sendInteractive: jest.fn(), sendMedia: jest.fn(),
-  sendLocation: jest.fn(), resolveMediaId: jest.fn(),
-}));
+jest.mock('../src/services/WhatsAppSendService', () => {
+  const actual = jest.requireActual('../src/services/WhatsAppSendService');
+  return {
+    sendText: jest.fn(), sendTemplate: jest.fn(), sendInteractive: jest.fn(), sendMedia: jest.fn(),
+    sendLocation: jest.fn(), resolveMediaId: jest.fn(),
+    resolveLocalTemplate: jest.fn(),
+    // Real helper — ADR-012 single source of truth; do not reimplement in this mock.
+    hasDynamicUrlButton: actual.hasDynamicUrlButton,
+  };
+});
 jest.mock('../src/services/DelayedResponseService', () => ({
   resume: jest.fn(),
 }));
@@ -3128,6 +3134,13 @@ describe('AutomationEngine — open_web_journey (Journey Platform Phase 1 Task 5
     process.env.FRONTEND_URL = 'https://app.apforce.in';
     dynamodb.put.mockReturnValue({ promise: () => Promise.resolve({}) });
     WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.open.ok' });
+    // Default: legacy body-link template (BODY {{1}}, no Dynamic URL) so
+    // existing Task 5 assertions stay byte-identical to pre-PR-C behavior.
+    WASendSvc.resolveLocalTemplate.mockResolvedValue({
+      templateName: 'tmpl_journey',
+      language: 'en',
+      components: [{ type: 'BODY', text: 'Open your journey {{1}}' }],
+    });
     isEnabled.mockResolvedValue(true);
   });
 
@@ -3191,8 +3204,14 @@ describe('AutomationEngine — open_web_journey (Journey Platform Phase 1 Task 5
       { templateName: 'tmpl_journey', language: 'en' },
       [expect.stringContaining(`/journey/${CID}/`)],
       { id: 'system', role: 'admin', name: 'Automation' },
-      expect.objectContaining({ content: '[Automation: open_web_journey]' }),
+      expect.objectContaining({
+        content: '[Automation: open_web_journey]',
+        requireLocalTemplate: true,
+      }),
     );
+    // Body-link: no button option
+    const opts = WASendSvc.sendTemplate.mock.calls[0][5];
+    expect(opts.buttonVariableValue).toBeUndefined();
   });
 
   test('sendTemplate uses {templateName, language} object-ref (same as send_template) — not string UUID lookup', async () => {
@@ -3330,6 +3349,104 @@ describe('AutomationEngine — open_web_journey (Journey Platform Phase 1 Task 5
 
     expect(isEnabled).toHaveBeenCalledWith(CID, 'journeys_platform');
     expect(dynamodb.put).not.toHaveBeenCalled();
+    expect(WASendSvc.sendTemplate).not.toHaveBeenCalled();
+    expect(publishEvent).not.toHaveBeenCalledWith(E.JOURNEY_OPENED, expect.anything());
+  });
+
+  test('Dynamic URL template: buttonVariableValue = pathSuffix, requireLocalTemplate, body empty when BODY has no {{n}}', async () => {
+    WASendSvc.resolveLocalTemplate.mockResolvedValue({
+      templateName: 'journey_cta',
+      language: 'en',
+      components: [
+        { type: 'BODY', text: 'Tap the button to continue.' },
+        {
+          type: 'BUTTONS',
+          buttons: [
+            { type: 'URL', text: 'Open', url: 'https://app.apforce.in/journey/{{1}}', example: ['x'] },
+          ],
+        },
+      ],
+    });
+
+    const result = await engine._runAction(
+      CID,
+      { type: 'open_web_journey', config: { templateId: 'journey_cta', journeyDefId: DEF_ID } },
+      { phone: '9876543210', leadPK: LEAD_PK },
+    );
+
+    const opts = WASendSvc.sendTemplate.mock.calls[0][5];
+    const pathSuffix = opts.buttonVariableValue;
+    const parts = pathSuffix.split('/');
+    expect(parts).toEqual([CID, result.journeyInstanceId, expect.stringMatching(/^[a-f0-9]{48}$/)]);
+    expect(crypto.createHash('sha256').update(parts[2]).digest('hex'))
+      .toBe(dynamodb.put.mock.calls[0][0].Item.tokenHash);
+
+    expect(WASendSvc.sendTemplate).toHaveBeenCalledWith(
+      CID,
+      { resolvedContact: { pk: LEAD_PK, phone: '9876543210', isLead: true } },
+      { templateName: 'journey_cta', language: 'en' },
+      [], // BODY has no placeholders
+      { id: 'system', role: 'admin', name: 'Automation' },
+      expect.objectContaining({
+        content: '[Automation: open_web_journey]',
+        requireLocalTemplate: true,
+        buttonVariableValue: pathSuffix,
+      }),
+    );
+    expect(WASendSvc.resolveLocalTemplate).toHaveBeenCalledWith(
+      CID, 'journey_cta', 'en', { requireLocalTemplate: true },
+    );
+  });
+
+  test('body {{1}} + Dynamic URL are independent — both variableValues and buttonVariableValue set', async () => {
+    WASendSvc.resolveLocalTemplate.mockResolvedValue({
+      templateName: 'journey_both',
+      language: 'en',
+      components: [
+        { type: 'BODY', text: 'Hi — open {{1}} or tap below' },
+        {
+          type: 'BUTTONS',
+          buttons: [
+            { type: 'QUICK_REPLY', text: 'Help' },
+            { type: 'URL', text: 'Open', url: 'https://app.apforce.in/journey/{{1}}', example: ['x'] },
+          ],
+        },
+      ],
+    });
+
+    const result = await engine._runAction(
+      CID,
+      { type: 'open_web_journey', config: { templateId: 'journey_both', journeyDefId: DEF_ID } },
+      { phone: '9876543210' },
+    );
+
+    const variableValues = WASendSvc.sendTemplate.mock.calls[0][3];
+    const opts = WASendSvc.sendTemplate.mock.calls[0][5];
+    const fullUrl = variableValues[0];
+    const pathSuffix = opts.buttonVariableValue;
+
+    expect(variableValues).toHaveLength(1);
+    expect(fullUrl).toBe(`https://app.apforce.in/journey/${pathSuffix}`);
+    expect(pathSuffix).toBe(`${CID}/${result.journeyInstanceId}/${pathSuffix.split('/')[2]}`);
+    expect(opts.requireLocalTemplate).toBe(true);
+    // Not an if (hasButton) { body = [] } branch — body still populated.
+    expect(variableValues[0]).toContain('/journey/');
+  });
+
+  test('missing local template (requireLocalTemplate) → 404 before sendTemplate', async () => {
+    const err = Object.assign(
+      new Error('Configured template "missing_tmpl" (language en) not found for this company — re-select it in the workflow editor'),
+      { status: 404 },
+    );
+    WASendSvc.resolveLocalTemplate.mockRejectedValue(err);
+
+    await expect(engine._runAction(
+      CID,
+      { type: 'open_web_journey', config: { templateId: 'missing_tmpl', journeyDefId: DEF_ID } },
+      { phone: '9876543210', leadPK: LEAD_PK },
+    )).rejects.toMatchObject({ status: 404, message: expect.stringContaining('missing_tmpl') });
+
+    expect(dynamodb.put).toHaveBeenCalledTimes(1); // META minted before resolve/send
     expect(WASendSvc.sendTemplate).not.toHaveBeenCalled();
     expect(publishEvent).not.toHaveBeenCalledWith(E.JOURNEY_OPENED, expect.anything());
   });
@@ -3478,6 +3595,11 @@ describe('AutomationEngine — journey platform Phase 1 e2e (Task 10)', () => {
     process.env.DYNAMODB_TABLE_METRICS = 'vt-metrics-test';
     process.env.FRONTEND_URL = 'https://app.apforce.in';
     WASendSvc.sendTemplate.mockResolvedValue({ wamid: 'wamid.e2e.ok' });
+    WASendSvc.resolveLocalTemplate.mockResolvedValue({
+      templateName: 'tmpl_journey_e2e',
+      language: 'en',
+      components: [{ type: 'BODY', text: 'Open {{1}}' }],
+    });
     isEnabled.mockResolvedValue(true);
   });
 
