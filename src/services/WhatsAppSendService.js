@@ -24,6 +24,7 @@ const S3                  = require('aws-sdk/clients/s3');
 const dynamodb            = require('../config/dynamodb');
 const logger              = require('../config/logger');
 const { to10Digit }       = require('../utils/phone');
+const { normalizeTemplateName } = require('../utils/normalizeTemplateName');
 const ConversationService = require('./ConversationService');
 const { updateLeadLastMessage } = require('../utils/updateLeadLastMessage');
 // Shared Graph URL/config helpers — the WABA config cache (10-min TTL) and
@@ -280,16 +281,81 @@ class WhatsAppSendService {
 
   // ── sendTemplate ──────────────────────────────────────────────────────────
   /**
+   * Resolve CONFIG#TMPL by Meta templateName + language (object-ref path).
+   * Uses the same normalizeTemplateName() as POST/PUT /templates — never treat
+   * the name as the UUID SK (that was the old lookup bug).
+   *
+   * @param {string} companyId
+   * @param {string} templateName
+   * @param {string} [language]
+   * @param {{ requireLocalTemplate?: boolean }} [opts]
+   * @returns {Promise<object>} full DDB item, or synthetic { templateName, language, name, components: [] }
+   */
+  async _resolveTemplateByName(companyId, templateName, language, opts = {}) {
+    const normName = normalizeTemplateName(templateName);
+    const lang = language ?? 'en';
+    const requireLocal = opts.requireLocalTemplate === true;
+
+    const items = [];
+    let lastKey;
+    do {
+      const page = await dynamodb.query({
+        TableName: TABLE,
+        KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
+        FilterExpression: 'templateName = :tn AND #lang = :lang',
+        ExpressionAttributeNames: { '#lang': 'language' },
+        ExpressionAttributeValues: {
+          ':pk': `CONFIG#TMPL#${companyId}`,
+          ':sk': 'TMPL#',
+          ':tn': normName,
+          ':lang': lang,
+        },
+        ...(lastKey && { ExclusiveStartKey: lastKey }),
+      }).promise();
+      items.push(...(page.Items ?? []));
+      lastKey = page.LastEvaluatedKey;
+    } while (lastKey);
+
+    if (items.length > 1) {
+      throw this._err(
+        `Ambiguous template "${normName}" (language ${lang}) — ${items.length} local records match for this company; fix duplicates in Templates`,
+        409,
+      );
+    }
+    if (items.length === 1) return items[0];
+
+    // 0 matches
+    if (requireLocal) {
+      throw this._err(
+        `Configured template "${normName}" (language ${lang}) not found for this company — re-select it in the workflow editor`,
+        404,
+      );
+    }
+    logger.warn(
+      `sendTemplate: no local CONFIG#TMPL for templateName=${normName} language=${lang} companyId=${companyId} — sending with empty components`,
+    );
+    return {
+      templateName: normName,
+      language: lang,
+      name: normName,
+      components: [],
+    };
+  }
+
+  /**
    * Send an approved WhatsApp template message.
    *
    * @param {string|object} templateRef
    *   string → templateId (fetches template from DDB; used by Inbox, Customer360)
-   *   object → { templateName, language } (skips DDB lookup; used by Automation, welcome)
+   *   object → { templateName, language } (name+language DDB resolve; used by Automation, welcome)
    *
    * @param {string[]}  variableValues  — ordered body {{n}} substitutions
    *
    * @param {object}  [options]
    * @param {string}  [options.headerVariableValue]  — TEXT header {{1}} value
+   * @param {boolean} [options.requireLocalTemplate] — when true, object-ref path
+   *                                                   throws if no CONFIG#TMPL row
+   *                                                   matches name+language (default false)
    * @param {string}  [options.content]              — override content stored in DDB
    *                                                   (broadcast uses "[Broadcast: ...]")
    * @param {object}  [options.extraFields]          — merged into the DDB message item
@@ -304,7 +370,7 @@ class WhatsAppSendService {
     this._assertSendPermission(user, contact);
     const cfg = await this._requireConfig(companyId);
 
-    // Resolve template — fetch from DDB when given an ID, use name directly otherwise
+    // Resolve template — UUID get, or name+language Query (never SK = templateName)
     let tmpl;
     if (typeof templateRef === 'string') {
       const r = await dynamodb.get({
@@ -314,13 +380,12 @@ class WhatsAppSendService {
       tmpl = r.Item;
       if (!tmpl) throw this._err('Template not found', 404);
     } else {
-      // { templateName, language } — name-only path for Automation / welcome messages
-      tmpl = {
-        templateName: templateRef.templateName,
-        language:     templateRef.language ?? 'en',
-        name:         templateRef.templateName,
-        components:   [],
-      };
+      tmpl = await this._resolveTemplateByName(
+        companyId,
+        templateRef.templateName,
+        templateRef.language ?? 'en',
+        { requireLocalTemplate: options.requireLocalTemplate === true },
+      );
     }
 
     const bodyParams = (variableValues ?? []).map(String);

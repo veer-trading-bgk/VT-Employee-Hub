@@ -30,6 +30,7 @@ const { logAudit } = require('../utils/audit');
 const { updateLeadLastMessage } = require('../utils/updateLeadLastMessage');
 const ConversationalAgentService = require('../services/ConversationalAgentService');
 const { storeInboundMedia } = require('../services/InboundMediaArchiveService');
+const { normalizeTemplateName } = require('../utils/normalizeTemplateName');
 
 const router = express.Router();
 const TABLE = process.env.DYNAMODB_TABLE_METRICS;
@@ -3200,7 +3201,7 @@ router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60
     if (!name?.trim() || !templateName?.trim()) {
       return res.status(400).json({ error: 'name and templateName are required' });
     }
-    const normName = templateName.trim().toLowerCase().replace(/\s+/g, '_');
+    const normName = normalizeTemplateName(templateName);
     const dupCheck = await dynamodb.query({
       TableName: TABLE,
       KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk)',
@@ -3221,7 +3222,7 @@ router.post('/templates', authMiddleware, checkRole(['admin']), rateLimit(20, 60
       PK: `CONFIG#TMPL#${req.user.companyId}`, SK: `TMPL#${id}`,
       id, companyId: req.user.companyId,
       name: name.trim(),
-      templateName: templateName.trim().toLowerCase().replace(/\s+/g, '_'),
+      templateName: normalizeTemplateName(templateName),
       language: language ?? 'en',
       category: category ?? 'UTILITY',
       bodyPreview: bodyPreview?.trim() ?? '',
@@ -3257,7 +3258,7 @@ router.put('/templates/:id', authMiddleware, checkRole(['admin']), rateLimit(20,
     let updateExpr = 'SET #n = :n, templateName = :tn, #lang = :lang, category = :cat, bodyPreview = :bp, variables = :vars, updatedAt = :ua, allowCategoryChange = :acc';
     const exprNames = { '#n': 'name', '#lang': 'language' };
     const exprVals = {
-      ':n': name?.trim(), ':tn': templateName?.trim().toLowerCase().replace(/\s+/g, '_'),
+      ':n': name?.trim(), ':tn': normalizeTemplateName(templateName),
       ':lang': language ?? 'en', ':cat': category ?? 'UTILITY',
       ':bp': bodyPreview?.trim() ?? '', ':vars': variables ?? [],
       ':ua': now, ':acc': allowCategoryChange ?? true,

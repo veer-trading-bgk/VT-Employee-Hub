@@ -108,7 +108,8 @@ describe('sendTemplate() — persists resolvedBody (Fix 3), content unchanged (a
   });
 
   test('name-only path ({templateName, language} — Automation/welcome/broadcast) has no component definitions: resolvedBody is null, content still falls back to the placeholder', async () => {
-    dynamodb.get.mockReturnValueOnce(resolved({ Item: { accessToken: 'tok', phoneNumberId: 'pid_1' } })); // CONFIG#WABA only — no TMPL lookup on this path
+    dynamodb.get.mockReturnValueOnce(resolved({ Item: { accessToken: 'tok', phoneNumberId: 'pid_1' } })); // CONFIG#WABA
+    dynamodb.query.mockReturnValueOnce(resolved({ Items: [] })); // name+language resolve → 0 match
 
     await WASendSvc.sendTemplate(CID, TARGET, { templateName: 'welcomemessage', language: 'en' }, ['Priya'], USER, { content: '[Automation: welcomemessage]' });
 
@@ -116,6 +117,7 @@ describe('sendTemplate() — persists resolvedBody (Fix 3), content unchanged (a
     expect(Item.content).toBe('[Automation: welcomemessage]');
     expect(Item.resolvedBody).toBeNull();
     expect(Item.templateId).toBeUndefined(); // no DB id was ever resolved on this path
+    expect(dynamodb.query).toHaveBeenCalled();
   });
 
   test('a BODY component with no .text (malformed) also falls back to resolvedBody: null, no crash', async () => {
