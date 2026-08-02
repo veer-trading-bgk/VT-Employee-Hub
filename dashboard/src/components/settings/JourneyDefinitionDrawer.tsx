@@ -64,7 +64,10 @@ function patchBranding(
 /**
  * Starter field types — Task 6 zod only enforces string; locked here from:
  * architecture "generic field primitives" (text, select, date/time) + forms.js
- * contact fields (name/phone/email). Only `select` is choice-based → options[].
+ * contact fields (name/phone/email). `number` added 2026-08-02 (Event Booking
+ * ticket_quantity) — forms.js has no numeric convention to mirror; HTML
+ * input type="number" matches the phone/date/email pattern. Only `select`
+ * is choice-based → options[].
  */
 const FIELD_TYPE_OPTIONS = [
   { value: 'text', label: 'Text' },
@@ -72,6 +75,7 @@ const FIELD_TYPE_OPTIONS = [
   { value: 'phone', label: 'Phone' },
   { value: 'date', label: 'Date' },
   { value: 'email', label: 'Email' },
+  { value: 'number', label: 'Number' },
 ] as const;
 
 type JourneyFieldType = (typeof FIELD_TYPE_OPTIONS)[number]['value'];

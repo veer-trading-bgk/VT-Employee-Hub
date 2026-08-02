@@ -1374,3 +1374,13 @@ A sweep of all 35 useQuery call sites in the dashboard found only these 2 — th
 **Priority:** Low — correct behavior today; one call site; helper already prevents detection duplication.
 
 **Reference:** `src/services/AutomationEngine.js` `open_web_journey`; `src/services/WhatsAppSendService.js` `hasDynamicUrlButton` / `resolveLocalTemplate` / `dynamicUrlButtonIndexes`.
+
+## ~~Journey Definition Field Types Have No `number` Type~~ — FIXED 2026-08-02
+
+**Issue:** Journey Definition field types were limited to `text` / `select` / `phone` / `date` / `email` — no `number` type. Surfaced while building Event Booking's `ticket_quantity` field: quantity/count/amount fields had to be stored as free text, with no numeric input UI and no min/max validation on the public capability-link form.
+
+**Fix (2026-08-02):** Added `number` as a 6th type in `JourneyDefinitionDrawer` (`FIELD_TYPE_OPTIONS`) and `JourneyActiveForm` (`FIELD_TYPES` + `inputTypeFor` → native `input type="number"`). Backend `screenFieldSchema.type` was already unconstrained `z.string()` — no schema change. Min/max validation deferred (would need schema + drawer fields).
+
+**Priority:** Fixed.
+
+**Reference:** `dashboard/src/components/settings/JourneyDefinitionDrawer.tsx` (`FIELD_TYPE_OPTIONS`); `dashboard/src/components/journey/JourneyActiveForm.tsx` (`FIELD_TYPES` / `inputTypeFor`).

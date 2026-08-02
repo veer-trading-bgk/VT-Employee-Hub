@@ -36,12 +36,13 @@ export interface JourneySubmitPayload {
   submittedData: Record<string, string>;
 }
 
-const FIELD_TYPES = new Set(['text', 'select', 'phone', 'date', 'email']);
+const FIELD_TYPES = new Set(['text', 'select', 'phone', 'date', 'email', 'number']);
 
 function inputTypeFor(type: string): string {
   if (type === 'email') return 'email';
   if (type === 'date') return 'date';
   if (type === 'phone') return 'tel';
+  if (type === 'number') return 'number';
   return 'text';
 }
 
