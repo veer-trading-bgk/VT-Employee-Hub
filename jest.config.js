@@ -7,9 +7,13 @@
 // environment, not real Node (verified working standalone both with and
 // without this flag); the flag just brings Jest's runtime in line with how
 // the Lambda itself already runs.
+//
+// tests/jest.setup.js fails the whole run immediately if the flag is missing
+// (instead of a silent ok:false on the PDF fixture test).
 module.exports = {
   testEnvironment: 'node',
   testMatch: ['**/tests/**/*.test.js'],
+  setupFilesAfterEnv: ['<rootDir>/tests/jest.setup.js'],
   clearMocks: true,
   // Prevent Lambda/AWS SDK from trying to hit real endpoints during tests
   testTimeout: 10000,

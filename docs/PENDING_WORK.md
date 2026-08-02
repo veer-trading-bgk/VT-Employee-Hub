@@ -28,16 +28,16 @@ Contacts `team_lead` team-scoping, decided and implemented 2026-07-13.)*
 ## Near-term loose ends (after Journey Instances UI → media incident)
 
 Do **not** pull these ahead of Instances UI or the inbound-media incident (`storeInboundMedia`).
-Both are small, confirmed, and easy to lose once the priority queue moves on:
+Small, confirmed, and easy to lose once the priority queue moves on:
 
 - **`storeInboundMedia` / inbound media incident** — already on this priority queue (second after
-  Instances UI). Keep here so the peer item below stays co-located.
-- **`documentExtraction.test.js` PDF fixture fails under Jest only** — confirmed pre-existing on
-  clean `main` (2026-08-02: stash this session's diff → re-run → same `result.ok === false` on
-  `'PDF: extracts heading and body text'`; works outside Jest against the same `sample.pdf`).
-  Production Lambda path is fine; suite gap only. Look once the media incident clears.
-  *Detail:* `docs/phase3/TECHNICAL_DEBT.md` — "PDF Extraction Test Fails Inside Jest Only — Not a
-  Production Bug".
+  Instances UI).
+
+*(2026-08-02 note — not an open item: the `documentExtraction` PDF / Jest alarm was a
+test-runner invocation gap — agents calling `jest` without `--experimental-vm-modules` — not a
+product or fixture bug. CI/`npm test` already correct; no production impact. Closed via
+`tests/jest.setup.js` fail-fast + `CLAUDE.md` §12 / `AGENTS.md` §5b. Historical writeup:
+`docs/phase3/TECHNICAL_DEBT.md` — "PDF Extraction Test Fails Inside Jest Only".)*
 
 ## Queued technical work
 

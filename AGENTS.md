@@ -81,6 +81,15 @@ repo deploys via: `git push` → GitHub Actions → AWS Lambda (backend) and `gi
 Vercel (dashboard). Pushing to `main` is what triggers deployment — treat it with the
 same weight that implies.
 
+## 5b. Backend tests — always `npm test`
+
+Run the backend suite via `npm test` only (package.json already passes
+`--experimental-vm-modules`). Never invoke `node_modules/jest/bin/jest.js`
+directly without that flag. Without it, PDF extraction tests fail with a
+misleading `ok: false` from `officeParser`/`pdfjs-dist` dynamic import — a
+test-runner gap, not a product bug (2026-08-02). `tests/jest.setup.js` fails
+fast with an explicit message if the flag is missing. Matches `CLAUDE.md` §12.
+
 ## 6. Anti-patterns — never do these
 
 - Duplicate services, APIs, business logic, or React Query cache ownership
@@ -91,6 +100,8 @@ same weight that implies.
 - Skip hooks or bypass signing on git operations (`--no-verify`, `--no-gpg-sign`)
   unless explicitly asked
 - Commit or push without the approval the task's tier requires
+- Invoke the Jest binary directly without `--experimental-vm-modules` (use
+  `npm test`)
 
 ## 7. Definition of done
 

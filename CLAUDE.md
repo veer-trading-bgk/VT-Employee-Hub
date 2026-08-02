@@ -178,6 +178,14 @@ Before merge:
 -   Relevant tests pass
 -   Manual UAT complete
 
+**Backend test invocation (required):** always run via `npm test` (or
+`node --experimental-vm-modules node_modules/jest/bin/jest.js …`). Never invoke
+the `jest` binary / `node_modules/jest/bin/jest.js` directly without
+`--experimental-vm-modules`. Plain Jest rejects `officeParser`/`pdfjs-dist`
+dynamic `import()` and makes PDF extraction tests look like product failures
+(2026-08-02 false alarm). `tests/jest.setup.js` fails the suite fast if the
+flag is missing. CI already uses `npm test`.
+
 Encourage Playwright for UI and API/unit tests for backend.
 
 ------------------------------------------------------------------------
