@@ -386,7 +386,10 @@ export function JourneyDefinitionDrawer({
       onClose={onClose}
       title={isEdit ? 'Edit journey definition' : 'New journey definition'}
       description="Basics, branding, and ordered screens/fields."
-      width={520}
+      // Wide panel — same Drawer width= prop pattern as TemplateCreateDrawer
+      // (760px with preview). Nested screens/fields need more room than the
+      // default 420–520px Settings drawers; scoped here only.
+      width={1000}
       footer={(
         <DrawerFooter>
           <Button variant="secondary" size="md" type="button" onClick={onClose}>
@@ -405,58 +408,69 @@ export function JourneyDefinitionDrawer({
         </DrawerFooter>
       )}
     >
-      <form id="journey-def-form" className="space-y-5" onSubmit={handleSubmit}>
-        <Input
-          label="Name"
-          required
-          value={form.name}
-          onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-          placeholder="e.g. Clinic intake"
-          maxLength={200}
-        />
+      <form id="journey-def-form" className="space-y-6" onSubmit={handleSubmit}>
+        {/* Basics */}
+        <section className="space-y-4">
+          <div>
+            <p className="text-sm font-medium text-neutral-700 dark:text-neutral-200">Basics</p>
+            <p className="text-xs text-neutral-400">Name, industry pack, and optional linked workflow.</p>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Input
+              label="Name"
+              required
+              value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+              placeholder="e.g. Clinic intake"
+              maxLength={200}
+            />
+            <div className="flex flex-col gap-1.5">
+              <label
+                htmlFor="journey-industry-pack"
+                className="text-sm font-medium text-neutral-700 dark:text-neutral-200"
+              >
+                Industry pack
+              </label>
+              <input
+                id="journey-industry-pack"
+                list="journey-industry-suggestions"
+                value={form.industryPack}
+                onChange={(e) => setForm((f) => ({ ...f, industryPack: e.target.value }))}
+                placeholder="generic"
+                maxLength={60}
+                className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-primary-600 focus:ring-2 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+              />
+              <datalist id="journey-industry-suggestions">
+                {INDUSTRY_SUGGESTIONS.map((s) => (
+                  <option key={s} value={s} />
+                ))}
+              </datalist>
+              <p className="text-xs text-neutral-400">Suggestions: generic, healthcare, bfsi — or type your own.</p>
+            </div>
+          </div>
 
-        <div className="flex flex-col gap-1.5">
-          <label
-            htmlFor="journey-industry-pack"
-            className="text-sm font-medium text-neutral-700 dark:text-neutral-200"
-          >
-            Industry pack
-          </label>
-          <input
-            id="journey-industry-pack"
-            list="journey-industry-suggestions"
-            value={form.industryPack}
-            onChange={(e) => setForm((f) => ({ ...f, industryPack: e.target.value }))}
-            placeholder="generic"
-            maxLength={60}
-            className="w-full rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-900 outline-none focus:border-primary-600 focus:ring-2 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-          />
-          <datalist id="journey-industry-suggestions">
-            {INDUSTRY_SUGGESTIONS.map((s) => (
-              <option key={s} value={s} />
-            ))}
-          </datalist>
-          <p className="text-xs text-neutral-400">Suggestions: generic, healthcare, bfsi — or type your own.</p>
-        </div>
-
-        <Select
-          label="Linked workflow"
-          hint="Active automations only. Used when a journey instance should resume a workflow."
-          options={workflowOptions}
-          value={form.linkedWorkflowId ?? ''}
-          onChange={(e) => {
-            const v = e.target.value;
-            setForm((f) => ({ ...f, linkedWorkflowId: v === '' ? null : v }));
-          }}
-        />
-
-        {isEdit && (
-          <Toggle
-            label="Active"
-            checked={form.active}
-            onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))}
-          />
-        )}
+          <div className={isEdit ? 'grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end' : undefined}>
+            <Select
+              label="Linked workflow"
+              hint="Active automations only. Used when a journey instance should resume a workflow."
+              options={workflowOptions}
+              value={form.linkedWorkflowId ?? ''}
+              onChange={(e) => {
+                const v = e.target.value;
+                setForm((f) => ({ ...f, linkedWorkflowId: v === '' ? null : v }));
+              }}
+            />
+            {isEdit && (
+              <div className="pb-1">
+                <Toggle
+                  label="Active"
+                  checked={form.active}
+                  onChange={(e) => setForm((f) => ({ ...f, active: e.target.checked }))}
+                />
+              </div>
+            )}
+          </div>
+        </section>
 
         {/* Branding — no shared ColorPicker component exists (Tags use an inline
             palette; ManagePipelineDrawer uses native type=color). Reuse the
@@ -464,44 +478,14 @@ export function JourneyDefinitionDrawer({
             bannerImageUrl is a plain HTTPS URL: existing S3 upload helpers
             (uploadFileToS3 / avatar) return private keys that need auth'd
             presigned GET — unusable on the public unauthenticated journey page. */}
-        <div className="space-y-3">
-          <div>
-            <p className="text-sm font-medium text-neutral-700 dark:text-neutral-200">Branding</p>
-            <p className="text-xs text-neutral-400">
-              Optional primary color and banner image URL for the public journey page.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="relative flex-shrink-0 cursor-pointer" title="Primary color">
-              <span
-                className="block h-9 w-9 rounded-full border-2 border-white shadow ring-1 ring-neutral-200 dark:ring-neutral-700"
-                style={{ backgroundColor: form.brandingConfig?.primaryColor || DEFAULT_PRIMARY_COLOR }}
-              />
-              <input
-                type="color"
-                value={form.brandingConfig?.primaryColor || DEFAULT_PRIMARY_COLOR}
-                onChange={(e) => setForm((f) => ({
-                  ...f,
-                  brandingConfig: patchBranding(f.brandingConfig, { primaryColor: e.target.value }),
-                }))}
-                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                aria-label="Primary color"
-              />
-            </label>
-            <input
-              value={form.brandingConfig?.primaryColor ?? ''}
-              onChange={(e) => {
-                const v = e.target.value.trim();
-                setForm((f) => ({
-                  ...f,
-                  brandingConfig: patchBranding(f.brandingConfig, { primaryColor: v || undefined }),
-                }));
-              }}
-              placeholder={DEFAULT_PRIMARY_COLOR}
-              maxLength={20}
-              className="w-32 rounded-lg border border-neutral-200 bg-white px-3 py-2 font-mono text-sm text-neutral-900 outline-none focus:border-primary-600 focus:ring-2 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
-              aria-label="Primary color hex"
-            />
+        <section className="space-y-3 rounded-xl border border-neutral-200 bg-neutral-50/60 p-4 dark:border-neutral-800 dark:bg-neutral-950/40">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <p className="text-sm font-medium text-neutral-700 dark:text-neutral-200">Branding</p>
+              <p className="text-xs text-neutral-400">
+                Optional primary color and banner image URL for the public journey page.
+              </p>
+            </div>
             {form.brandingConfig && (
               <button
                 type="button"
@@ -512,25 +496,62 @@ export function JourneyDefinitionDrawer({
               </button>
             )}
           </div>
-          <Input
-            label="Banner image URL"
-            hint="Optional. Absolute https URL shown above the title on the public journey page."
-            type="url"
-            value={form.brandingConfig?.bannerImageUrl ?? ''}
-            onChange={(e) => {
-              const v = e.target.value.trim();
-              setForm((f) => ({
-                ...f,
-                brandingConfig: patchBranding(f.brandingConfig, { bannerImageUrl: v || undefined }),
-              }));
-            }}
-            placeholder="https://…"
-            maxLength={2048}
-          />
-        </div>
+          <div className="grid gap-4 sm:grid-cols-[minmax(12rem,auto)_1fr] sm:items-start">
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-neutral-600 dark:text-neutral-400">Primary color</p>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="relative flex-shrink-0 cursor-pointer" title="Primary color">
+                  <span
+                    className="block h-9 w-9 rounded-full border-2 border-white shadow ring-1 ring-neutral-200 dark:ring-neutral-700"
+                    style={{ backgroundColor: form.brandingConfig?.primaryColor || DEFAULT_PRIMARY_COLOR }}
+                  />
+                  <input
+                    type="color"
+                    value={form.brandingConfig?.primaryColor || DEFAULT_PRIMARY_COLOR}
+                    onChange={(e) => setForm((f) => ({
+                      ...f,
+                      brandingConfig: patchBranding(f.brandingConfig, { primaryColor: e.target.value }),
+                    }))}
+                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                    aria-label="Primary color"
+                  />
+                </label>
+                <input
+                  value={form.brandingConfig?.primaryColor ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value.trim();
+                    setForm((f) => ({
+                      ...f,
+                      brandingConfig: patchBranding(f.brandingConfig, { primaryColor: v || undefined }),
+                    }));
+                  }}
+                  placeholder={DEFAULT_PRIMARY_COLOR}
+                  maxLength={20}
+                  className="w-32 rounded-lg border border-neutral-200 bg-white px-3 py-2 font-mono text-sm text-neutral-900 outline-none focus:border-primary-600 focus:ring-2 focus:ring-primary-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-100"
+                  aria-label="Primary color hex"
+                />
+              </div>
+            </div>
+            <Input
+              label="Banner image URL"
+              hint="Optional. Absolute https URL shown above the title on the public journey page."
+              type="url"
+              value={form.brandingConfig?.bannerImageUrl ?? ''}
+              onChange={(e) => {
+                const v = e.target.value.trim();
+                setForm((f) => ({
+                  ...f,
+                  brandingConfig: patchBranding(f.brandingConfig, { bannerImageUrl: v || undefined }),
+                }));
+              }}
+              placeholder="https://…"
+              maxLength={2048}
+            />
+          </div>
+        </section>
 
         {/* Screens — ManagePipelineDrawer interaction pattern (sales/page.tsx) */}
-        <div className="space-y-2">
+        <section className="space-y-3">
           <div>
             <p className="text-sm font-medium text-neutral-700 dark:text-neutral-200">Screens</p>
             <p className="text-xs text-neutral-400">
@@ -541,13 +562,13 @@ export function JourneyDefinitionDrawer({
           {form.screens.map((screen, si) => (
             <div
               key={screen.id}
-              className="rounded-xl border border-neutral-200 bg-white p-2.5 dark:border-neutral-800 dark:bg-neutral-900"
+              className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900"
             >
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
                 <input
                   value={screen.title}
                   onChange={(e) => patchScreen(si, { title: e.target.value })}
-                  className={rowInputCls}
+                  className={`${rowInputCls} min-w-[12rem] flex-1`}
                   maxLength={200}
                   placeholder="Screen title"
                   aria-label={`Screen ${si + 1} title`}
@@ -555,51 +576,53 @@ export function JourneyDefinitionDrawer({
                 <input
                   value={screen.id}
                   onChange={(e) => patchScreen(si, { id: e.target.value })}
-                  className={`${rowInputCls} max-w-[7.5rem] font-mono text-xs`}
+                  className={`${rowInputCls} w-36 shrink-0 font-mono text-xs`}
                   maxLength={80}
                   placeholder="id"
                   aria-label={`Screen ${si + 1} id`}
                   title="Unique within this definition"
                 />
-                <button
-                  type="button"
-                  disabled={si === 0}
-                  onClick={() => moveScreen(si, -1)}
-                  aria-label="Move screen up"
-                  className={rowBtnCls}
-                  title="Move up"
-                >
-                  <ArrowUp className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  disabled={si === form.screens.length - 1}
-                  onClick={() => moveScreen(si, 1)}
-                  aria-label="Move screen down"
-                  className={rowBtnCls}
-                  title="Move down"
-                >
-                  <ArrowDown className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => removeScreen(si)}
-                  aria-label="Remove screen"
-                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-error-500 hover:bg-error-50 sm:h-7 sm:w-7 dark:hover:bg-error-900/20"
-                  title="Remove screen"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={si === 0}
+                    onClick={() => moveScreen(si, -1)}
+                    aria-label="Move screen up"
+                    className={rowBtnCls}
+                    title="Move up"
+                  >
+                    <ArrowUp className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={si === form.screens.length - 1}
+                    onClick={() => moveScreen(si, 1)}
+                    aria-label="Move screen down"
+                    className={rowBtnCls}
+                    title="Move down"
+                  >
+                    <ArrowDown className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeScreen(si)}
+                    aria-label="Remove screen"
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-error-500 hover:bg-error-50 sm:h-7 sm:w-7 dark:hover:bg-error-900/20"
+                    title="Remove screen"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               </div>
 
               {/* Fields nested one level down — same up/down/add/delete pattern */}
-              <div className="mt-2 space-y-1.5 border-t border-neutral-100 pt-2 dark:border-neutral-800">
+              <div className="mt-3 space-y-2 border-t border-neutral-100 pt-3 dark:border-neutral-800">
                 {screen.fields.map((field, fi) => (
                   <div
                     key={field.id}
-                    className="rounded-lg border border-neutral-100 bg-neutral-50/80 p-2 dark:border-neutral-800 dark:bg-neutral-950/40"
+                    className="rounded-lg border border-neutral-100 bg-neutral-50/80 p-3 dark:border-neutral-800 dark:bg-neutral-950/40"
                   >
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1.4fr)_minmax(7rem,0.7fr)_8rem_auto_auto]">
                       <input
                         value={field.label}
                         onChange={(e) => patchField(si, fi, { label: e.target.value })}
@@ -611,7 +634,7 @@ export function JourneyDefinitionDrawer({
                       <input
                         value={field.id}
                         onChange={(e) => patchField(si, fi, { id: e.target.value })}
-                        className={`${rowInputCls} max-w-[6.5rem] font-mono text-xs`}
+                        className={`${rowInputCls} font-mono text-xs`}
                         maxLength={80}
                         placeholder="id"
                         aria-label={`Field id ${fi + 1}`}
@@ -619,7 +642,7 @@ export function JourneyDefinitionDrawer({
                       <select
                         value={field.type}
                         onChange={(e) => patchField(si, fi, { type: e.target.value as JourneyFieldType })}
-                        className={`${selectCls} w-[7.5rem] shrink-0`}
+                        className={`${selectCls} w-full`}
                         aria-label={`Field type ${fi + 1}`}
                       >
                         {FIELD_TYPE_OPTIONS.map((o) => (
@@ -637,35 +660,37 @@ export function JourneyDefinitionDrawer({
                         />
                         Required
                       </label>
-                      <button
-                        type="button"
-                        disabled={fi === 0}
-                        onClick={() => moveField(si, fi, -1)}
-                        aria-label="Move field up"
-                        className={rowBtnCls}
-                        title="Move up"
-                      >
-                        <ArrowUp className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={fi === screen.fields.length - 1}
-                        onClick={() => moveField(si, fi, 1)}
-                        aria-label="Move field down"
-                        className={rowBtnCls}
-                        title="Move down"
-                      >
-                        <ArrowDown className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => removeField(si, fi)}
-                        aria-label="Remove field"
-                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-error-500 hover:bg-error-50 sm:h-7 sm:w-7 dark:hover:bg-error-900/20"
-                        title="Remove field"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      <div className="flex shrink-0 items-center gap-1 justify-self-end">
+                        <button
+                          type="button"
+                          disabled={fi === 0}
+                          onClick={() => moveField(si, fi, -1)}
+                          aria-label="Move field up"
+                          className={rowBtnCls}
+                          title="Move up"
+                        >
+                          <ArrowUp className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={fi === screen.fields.length - 1}
+                          onClick={() => moveField(si, fi, 1)}
+                          aria-label="Move field down"
+                          className={rowBtnCls}
+                          title="Move down"
+                        >
+                          <ArrowDown className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeField(si, fi)}
+                          aria-label="Remove field"
+                          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-error-500 hover:bg-error-50 sm:h-7 sm:w-7 dark:hover:bg-error-900/20"
+                          title="Remove field"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     </div>
 
                     {isChoiceType(field.type) && (
@@ -724,7 +749,7 @@ export function JourneyDefinitionDrawer({
             <Plus className="h-4 w-4" />
             Add screen
           </button>
-        </div>
+        </section>
       </form>
     </Drawer>
   );
