@@ -21,7 +21,7 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
-      testMatch: /journeyPublicScaffold\.spec\.ts/,
+      testMatch: /(journeyPublicScaffold|paymentSandboxE2E)\.spec\.ts/,
     },
   ],
   webServer: {

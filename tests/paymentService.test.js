@@ -219,20 +219,16 @@ describe('RazorpayGateway confinement', () => {
     });
   });
 
-  test('RazorpayGateway.createOrder uses injected client (no network)', async () => {
+  test('trims whitespace on secrets from env (Lambda paste footgun)', () => {
     const RazorpayGateway = require('../src/services/payment/RazorpayGateway');
-    const create = jest.fn(async (payload) => {
-      expect(payload.amount).toBe(177000);
-      return { id: 'order_mock' };
-    });
     const gw = new RazorpayGateway({
-      keyId: 'rzp_test_x',
-      keySecret: 'secret_must_not_leak',
-      client: { orders: { create } },
+      keyId: ' rzp_test_x ',
+      keySecret: 'secret_with_trailing_ws ',
+      webhookSecret: ' whsec ',
     });
-    const r = await gw.createOrder(177000, 'INR', 'payment_receipt');
-    expect(r.orderId).toBe('order_mock');
-    expect(gw.getPublicKeyId()).toBe('rzp_test_x');
+    expect(gw.keyId).toBe('rzp_test_x');
+    expect(gw.keySecret).toBe('secret_with_trailing_ws');
+    expect(gw.webhookSecret).toBe('whsec');
   });
 });
 

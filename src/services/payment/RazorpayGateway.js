@@ -10,14 +10,22 @@
 const crypto = require('crypto');
 const Razorpay = require('razorpay');
 
+function trimSecret(value) {
+  if (value == null) return null;
+  const s = String(value).trim();
+  return s.length ? s : null;
+}
+
 class RazorpayGateway {
   /**
    * @param {{ keyId?: string, keySecret?: string, webhookSecret?: string, client?: object }} [opts]
    */
   constructor(opts = {}) {
-    this.keyId = opts.keyId ?? process.env.RAZORPAY_KEY_ID ?? null;
-    this.keySecret = opts.keySecret ?? process.env.RAZORPAY_KEY_SECRET ?? null;
-    this.webhookSecret = opts.webhookSecret ?? process.env.RAZORPAY_WEBHOOK_SECRET ?? null;
+    // Trim env secrets — trailing whitespace/newlines in Lambda console paste
+    // cause Razorpay "Authentication failed" (sandbox E2E 2026-08-03).
+    this.keyId = trimSecret(opts.keyId ?? process.env.RAZORPAY_KEY_ID);
+    this.keySecret = trimSecret(opts.keySecret ?? process.env.RAZORPAY_KEY_SECRET);
+    this.webhookSecret = trimSecret(opts.webhookSecret ?? process.env.RAZORPAY_WEBHOOK_SECRET);
     this._client = opts.client ?? null;
   }
 

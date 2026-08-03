@@ -394,6 +394,11 @@ export function JourneyActiveForm({
         amountPaise: Number(data.amount),
         currency: data.currency || 'INR',
         name: name?.trim() || 'Registration',
+        prefill: {
+          name: values.full_name || values.name || undefined,
+          email: values.email || undefined,
+          contact: values.tel || values.phone || values.mobile || undefined,
+        },
         onSuccess: () => {
           // UX only — do NOT setDone here; wait for webhook-confirmed 'paid'.
           void runPaymentPoll(data.paymentId!);

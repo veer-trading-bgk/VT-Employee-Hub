@@ -89,6 +89,8 @@ export interface OpenRazorpayCheckoutParams {
   currency: string;
   name?: string;
   description?: string;
+  /** Optional Checkout prefill — never used as amount authority */
+  prefill?: { name?: string; email?: string; contact?: string };
   onSuccess: (response: RazorpayCheckoutSuccess) => void;
   onDismiss: () => void;
   onFailure: (response: RazorpayCheckoutFailure) => void;
@@ -113,6 +115,7 @@ export async function openRazorpayCheckout(params: OpenRazorpayCheckoutParams): 
     order_id: params.orderId,
     name: params.name || 'Registration',
     description: params.description || 'Complete payment to confirm your booking',
+    prefill: params.prefill || undefined,
     handler: (response: RazorpayCheckoutSuccess) => {
       params.onSuccess(response);
     },
