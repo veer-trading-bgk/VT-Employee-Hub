@@ -159,7 +159,7 @@ export default function SignupPage() {
     const errs: Record<string, string> = {};
     if (account.adminName.trim().length < 2) errs.adminName = 'Enter your full name';
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(account.adminEmail)) errs.adminEmail = 'Enter a valid email';
-    if (account.adminMobile && !/^\d{10}$/.test(account.adminMobile)) errs.adminMobile = 'Must be exactly 10 digits';
+    if (!/^\d{10}$/.test(account.adminMobile)) errs.adminMobile = 'Must be exactly 10 digits';
     if (account.password.length < 8) errs.password = 'At least 8 characters';
     else if (!/[A-Z]/.test(account.password)) errs.password = 'Must include an uppercase letter';
     else if (!/[0-9]/.test(account.password)) errs.password = 'Must include a number';
@@ -182,7 +182,7 @@ export default function SignupPage() {
           city: company.city.trim(),
           adminName: account.adminName.trim(),
           adminEmail: account.adminEmail.trim().toLowerCase(),
-          ...(account.adminMobile && { adminMobile: account.adminMobile }),
+          adminMobile: account.adminMobile.trim(),
           password: account.password,
         }),
         retries: 0,
@@ -356,7 +356,7 @@ export default function SignupPage() {
                   error={errors.adminEmail}
                 />
                 <Field
-                  label="Mobile Number (optional)"
+                  label="Mobile Number"
                   type="tel"
                   value={account.adminMobile}
                   onChange={setA('adminMobile')}

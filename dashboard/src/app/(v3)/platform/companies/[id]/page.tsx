@@ -242,7 +242,9 @@ export default function CompanyDetailPage() {
               <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Account Details</p>
             </div>
             <div className="divide-y divide-neutral-50 px-4 dark:divide-neutral-800/60">
+              <InfoRow label="Owner name" value={(company.ownerName as string | null | undefined) || '—'} />
               <InfoRow label="Owner email" value={company.adminEmail || '—'} />
+              <InfoRow label="Owner mobile" value={(company.ownerMobile as string | null | undefined) || '—'} />
               <InfoRow label="Broker" value={company.broker || '—'} />
               <InfoRow label="City" value={company.city || '—'} />
               <InfoRow label="Company ID" value={<span className="font-mono text-xs">{company.companyId}</span>} />
@@ -258,9 +260,10 @@ export default function CompanyDetailPage() {
                 />
               ) : null}
               <InfoRow label="Created" value={fmtDate(company.createdAt as string | undefined)} />
-              {company.updatedAt ? (
-                <InfoRow label="Updated" value={fmtDate(company.updatedAt as string)} />
-              ) : null}
+              <InfoRow
+                label="Updated"
+                value={company.updatedAt ? fmtDate(company.updatedAt as string) : '—'}
+              />
             </div>
           </Card>
 

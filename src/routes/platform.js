@@ -77,9 +77,38 @@ router.get('/companies/:companyId', async (req, res, next) => {
       ? Math.max(0, Math.ceil((new Date(profileResult.Item.trialEndsAt) - Date.now()) / 86_400_000))
       : null;
 
+    // CD-02A: owner name/mobile live on the signup admin user (not COMPANY_PROFILE).
+    let ownerName = null;
+    let ownerMobile = null;
+    const adminEmail = profileResult.Item.adminEmail;
+    if (adminEmail) {
+      try {
+        const ownerRes = await dynamodb.query({
+          TableName: EMP_TABLE,
+          IndexName: 'emailIndex',
+          KeyConditionExpression: 'email = :email',
+          ExpressionAttributeValues: { ':email': adminEmail },
+        }).promise();
+        const owner = (ownerRes.Items ?? []).find(
+          (u) => u.companyId === companyId && u.role === 'admin',
+        ) ?? ownerRes.Items?.[0] ?? null;
+        if (owner) {
+          ownerName = owner.name || null;
+          ownerMobile = owner.mobileNumber || null;
+        }
+      } catch (err) {
+        logger.warn(`Platform company detail owner lookup [${companyId}]: ${err.message}`);
+      }
+    }
+
     res.json({
       success: true,
-      company: { ...profileResult.Item, daysLeftInTrial },
+      company: {
+        ...profileResult.Item,
+        daysLeftInTrial,
+        ownerName,
+        ownerMobile,
+      },
       stats: {
         employeeCount: empResult.Count ?? 0,
         leadCount: leadResult.Count ?? 0,

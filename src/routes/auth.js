@@ -582,7 +582,7 @@ router.post('/company-signup', async (req, res, next) => {
         name: data.adminName,
         role: 'admin',
         companyId,
-        ...(data.adminMobile && { mobileNumber: data.adminMobile }),
+        mobileNumber: data.adminMobile,
         status: 'active',
         createdAt: new Date().toISOString(),
         createdBy: 'self',

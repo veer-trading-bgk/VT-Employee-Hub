@@ -280,7 +280,7 @@ const companySignupSchema = z.object({
   city: z.string().min(2, 'City must be at least 2 characters').max(100),
   adminName: z.string().min(2, 'Name must be at least 2 characters').max(100),
   adminEmail: z.string().email('Invalid email'),
-  adminMobile: z.string().regex(/^\d{10}$/, 'Mobile must be exactly 10 digits').optional(),
+  adminMobile: z.string().regex(/^\d{10}$/, 'Mobile must be exactly 10 digits'),
   password: z.string()
     .min(8, 'Password must be at least 8 characters')
     .regex(/[A-Z]/, 'Must contain uppercase letter')

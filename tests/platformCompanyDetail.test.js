@@ -11,6 +11,7 @@ jest.mock('../src/config/dynamodb', () => ({
   scan: jest.fn(),
   get: jest.fn(),
   update: jest.fn(),
+  query: jest.fn(),
 }));
 jest.mock('../src/config/telegram', () => ({ sendMessage: jest.fn().mockResolvedValue(undefined) }));
 jest.mock('../src/config/logger', () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() }));
@@ -38,7 +39,10 @@ function resolved(value) {
 }
 
 describe('GET /api/platform/companies/:companyId', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    dynamodb.query.mockReturnValue(resolved({ Items: [] }));
+  });
 
   test('includes daysLeftInTrial derived from trialEndsAt (CD-01)', async () => {
     const trialEndsAt = new Date(Date.now() + 11 * 86_400_000).toISOString();
@@ -95,5 +99,46 @@ describe('GET /api/platform/companies/:companyId', () => {
 
     const body = res.json.mock.calls[0][0];
     expect(body.company.daysLeftInTrial).toBeNull();
+    expect(body.company.ownerName).toBeNull();
+    expect(body.company.ownerMobile).toBeNull();
+  });
+
+  test('CD-02A: attaches ownerName and ownerMobile from linked admin user', async () => {
+    dynamodb.get.mockReturnValue(resolved({
+      Item: {
+        id: 'COMPANY#co_own',
+        companyId: 'co_own',
+        companyName: 'Owner Co',
+        adminEmail: 'owner@acme.example',
+        plan: 'paid',
+        planStatus: 'active',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    }));
+    dynamodb.scan
+      .mockReturnValueOnce(resolved({ Count: 1 }))
+      .mockReturnValueOnce(resolved({ Count: 0 }));
+    dynamodb.query.mockReturnValue(resolved({
+      Items: [{
+        id: 'u_admin',
+        email: 'owner@acme.example',
+        companyId: 'co_own',
+        role: 'admin',
+        name: 'Priya Sharma',
+        mobileNumber: '9876543210',
+      }],
+    }));
+
+    const handler = findRoute('/companies/:companyId', 'get');
+    const res = fakeRes();
+    await handler({ params: { companyId: 'co_own' } }, res, jest.fn());
+
+    const body = res.json.mock.calls[0][0];
+    expect(dynamodb.query).toHaveBeenCalledWith(expect.objectContaining({
+      IndexName: 'emailIndex',
+      KeyConditionExpression: 'email = :email',
+    }));
+    expect(body.company.ownerName).toBe('Priya Sharma');
+    expect(body.company.ownerMobile).toBe('9876543210');
   });
 });
