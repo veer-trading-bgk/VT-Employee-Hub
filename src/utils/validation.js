@@ -294,6 +294,15 @@ const COMPANY_INDUSTRIES = Object.freeze([
   'Other',
 ]);
 
+const sendSignupEmailOtpSchema = z.object({
+  email: z.string().email('Invalid email'),
+});
+
+const verifySignupEmailOtpSchema = z.object({
+  email: z.string().email('Invalid email'),
+  code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code'),
+});
+
 const companySignupSchema = z.object({
   companyName: z.string().min(2, 'Office name must be at least 2 characters').max(100),
   industry: z.string().refine(
@@ -305,6 +314,8 @@ const companySignupSchema = z.object({
   adminName: z.string().min(2, 'Name must be at least 2 characters').max(100),
   adminEmail: z.string().email('Invalid email'),
   adminMobile: z.string().regex(/^\d{10}$/, 'Mobile must be exactly 10 digits'),
+  /** One-time proof from POST /api/auth/signup/verify-email-otp — required for V1. */
+  emailProofToken: z.string().min(32, 'Verify your email first').max(128),
   password: z.string()
     .min(8, 'Password must be at least 8 characters')
     .regex(/[A-Z]/, 'Must contain uppercase letter')
@@ -482,6 +493,8 @@ module.exports = {
   updateEmployeeSchema,
   selfProfileUpdateSchema,
   COMPANY_INDUSTRIES,
+  sendSignupEmailOtpSchema,
+  verifySignupEmailOtpSchema,
   companySignupSchema,
   createLeadSchema,
   updateLeadSchema,

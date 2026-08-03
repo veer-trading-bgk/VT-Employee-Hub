@@ -201,6 +201,18 @@ function igPostCommentSK(timestamp, commentId) { return `CMT#${timestamp}#${comm
 function pwResetPK(token) { return `PWRESET#${token}`; }
 function pwResetSK()       { return 'TOKEN'; }
 
+// Signup OTP challenge (email V1; SMS later via same PK shape with channel=sms)
+// PK = SIGNUPOTP#${channel}#${purpose}#${destinationNorm}  SK = CHALLENGE
+function signupOtpPK(channel, purpose, destinationNorm) {
+  return `SIGNUPOTP#${channel}#${purpose}#${destinationNorm}`;
+}
+function signupOtpSK() { return 'CHALLENGE'; }
+
+// Short-lived proof that email was verified before company-signup
+// PK = SIGNUPEMAILPROOF#${token}  SK = PROOF
+function signupEmailProofPK(token) { return `SIGNUPEMAILPROOF#${token}`; }
+function signupEmailProofSK() { return 'PROOF'; }
+
 // ─── EMPLOYEES TABLE ──────────────────────────────────────────────────────────
 // NOTE (2026-07-25): the real, live key schema for this table is a SIMPLE
 // `{ id }` partition key — verified against every actual dynamodb.get/
@@ -307,6 +319,11 @@ module.exports = {
   // Password reset token
   pwResetPK,
   pwResetSK,
+  // Signup email OTP (V1) — SMS-ready PK shape
+  signupOtpPK,
+  signupOtpSK,
+  signupEmailProofPK,
+  signupEmailProofSK,
   // Employees
   empPK,
   empSK,

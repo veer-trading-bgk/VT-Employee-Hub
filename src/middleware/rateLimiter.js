@@ -147,4 +147,41 @@ const passwordResetRateLimiter = {
   },
 };
 
-module.exports = { rateLimit, apiKeyRateLimit, loginRateLimiter, passwordResetRateLimiter, atomicIncrement, getCount };
+// ── Per-email signup OTP send rate limiter ────────────────────────────────────
+// Caps SES sends for a given address during signup (separate from the 60s
+// resend cooldown inside SignupOtpService). SMS channel can reuse the same
+// primitive later with a destination-keyed window.
+const MAX_SIGNUP_OTP_SENDS = 5;
+const SIGNUP_OTP_WINDOW_MS = 15 * 60 * 1000;
+
+function signupOtpWindowKey(email) {
+  const windowStart = Math.floor(Date.now() / SIGNUP_OTP_WINDOW_MS) * SIGNUP_OTP_WINDOW_MS;
+  return { pk: `signup_otp_limit#${email.toLowerCase()}`, sk: `window#${windowStart}` };
+}
+
+const signupOtpRateLimiter = {
+  async isBlocked(email) {
+    const { pk, sk } = signupOtpWindowKey(email);
+    const count = await getCount(pk, sk);
+    return count >= MAX_SIGNUP_OTP_SENDS;
+  },
+
+  async recordAttempt(email) {
+    const { pk, sk } = signupOtpWindowKey(email);
+    const count = await atomicIncrement(pk, sk, SIGNUP_OTP_WINDOW_MS);
+    if (count >= MAX_SIGNUP_OTP_SENDS) {
+      logger.warn(`Signup OTP rate-limited by email: ${email} (${count} sends)`);
+    }
+    return count;
+  },
+};
+
+module.exports = {
+  rateLimit,
+  apiKeyRateLimit,
+  loginRateLimiter,
+  passwordResetRateLimiter,
+  signupOtpRateLimiter,
+  atomicIncrement,
+  getCount,
+};

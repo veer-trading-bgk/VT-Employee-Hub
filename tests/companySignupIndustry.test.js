@@ -9,6 +9,7 @@ const base = {
   adminEmail: 'owner@acme.example',
   adminMobile: '9876543210',
   password: 'Password1',
+  emailProofToken: 'c'.repeat(64),
 };
 
 describe('companySignupSchema industry (Broker → Industry)', () => {

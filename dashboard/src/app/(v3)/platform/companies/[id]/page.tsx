@@ -244,6 +244,18 @@ export default function CompanyDetailPage() {
             <div className="divide-y divide-neutral-50 px-4 dark:divide-neutral-800/60">
               <InfoRow label="Owner name" value={(company.ownerName as string | null | undefined) || '—'} />
               <InfoRow label="Owner email" value={company.adminEmail || '—'} />
+              <InfoRow
+                label="Email verified"
+                value={company.emailVerified === true ? 'Yes' : 'No'}
+              />
+              <InfoRow
+                label="Verified at"
+                value={
+                  company.emailVerifiedAt
+                    ? fmtDate(company.emailVerifiedAt as string)
+                    : '—'
+                }
+              />
               <InfoRow label="Owner mobile" value={(company.ownerMobile as string | null | undefined) || '—'} />
               <InfoRow
                 label="Industry"

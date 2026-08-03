@@ -224,6 +224,28 @@ export default function SignupPage() {
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
 
+  // Email OTP (V1) — mobile OTP deferred
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [emailProofToken, setEmailProofToken] = useState<string | null>(null);
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpBusy, setOtpBusy] = useState(false);
+  const [resendAfterSec, setResendAfterSec] = useState(0);
+
+  useEffect(() => {
+    if (resendAfterSec <= 0) return;
+    const t = setTimeout(() => setResendAfterSec((s) => Math.max(0, s - 1)), 1000);
+    return () => clearTimeout(t);
+  }, [resendAfterSec]);
+
+  function clearEmailVerification() {
+    setEmailVerified(false);
+    setEmailProofToken(null);
+    setOtpSent(false);
+    setOtpCode('');
+    setResendAfterSec(0);
+  }
+
   const setC = useCallback((field: keyof CompanyStep) => (v: string) => {
     setCompany((prev) => {
       const next = { ...prev, [field]: v };
@@ -241,6 +263,13 @@ export default function SignupPage() {
   const setA = useCallback((field: keyof AccountStep) => (v: string) => {
     setAccount((prev) => ({ ...prev, [field]: v }));
     setErrors((prev) => { const n = { ...prev }; delete n[field]; return n; });
+    if (field === 'adminEmail') {
+      setEmailVerified(false);
+      setEmailProofToken(null);
+      setOtpSent(false);
+      setOtpCode('');
+      setResendAfterSec(0);
+    }
   }, []);
 
   // ── Step 1 validation ────────────────────────────────────────────────────────
@@ -263,6 +292,7 @@ export default function SignupPage() {
     const errs: Record<string, string> = {};
     if (account.adminName.trim().length < 2) errs.adminName = 'Enter your full name';
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(account.adminEmail)) errs.adminEmail = 'Enter a valid email';
+    if (!emailVerified || !emailProofToken) errs.adminEmail = errs.adminEmail || 'Verify your email to continue';
     if (!/^\d{10}$/.test(account.adminMobile)) errs.adminMobile = 'Must be exactly 10 digits';
     if (account.password.length < 8) errs.password = 'At least 8 characters';
     else if (!/[A-Z]/.test(account.password)) errs.password = 'Must include an uppercase letter';
@@ -272,10 +302,73 @@ export default function SignupPage() {
     return Object.keys(errs).length === 0;
   }
 
+  async function handleSendOtp() {
+    const email = account.adminEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setErrors((prev) => ({ ...prev, adminEmail: 'Enter a valid email' }));
+      return;
+    }
+    setOtpBusy(true);
+    setErrors((prev) => { const n = { ...prev }; delete n.adminEmail; delete n.otp; return n; });
+    try {
+      const res = await apiFetch<{ success: boolean; resendAfterSec?: number }>(
+        '/api/auth/signup/send-email-otp',
+        {
+          method: 'POST',
+          body: JSON.stringify({ email }),
+          retries: 0,
+        },
+      );
+      setOtpSent(true);
+      setEmailVerified(false);
+      setEmailProofToken(null);
+      setOtpCode('');
+      setResendAfterSec(res.resendAfterSec ?? 60);
+      toast.success('Verification code sent');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Could not send code';
+      toast.error(msg);
+    } finally {
+      setOtpBusy(false);
+    }
+  }
+
+  async function handleVerifyOtp() {
+    const email = account.adminEmail.trim().toLowerCase();
+    if (!/^\d{6}$/.test(otpCode.trim())) {
+      setErrors((prev) => ({ ...prev, otp: 'Enter the 6-digit code' }));
+      return;
+    }
+    setOtpBusy(true);
+    setErrors((prev) => { const n = { ...prev }; delete n.otp; return n; });
+    try {
+      const res = await apiFetch<{ success: boolean; emailProofToken: string }>(
+        '/api/auth/signup/verify-email-otp',
+        {
+          method: 'POST',
+          body: JSON.stringify({ email, code: otpCode.trim() }),
+          retries: 0,
+        },
+      );
+      setEmailVerified(true);
+      setEmailProofToken(res.emailProofToken);
+      toast.success('Email verified');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Incorrect code';
+      toast.error(msg);
+    } finally {
+      setOtpBusy(false);
+    }
+  }
+
   // ── Submit ───────────────────────────────────────────────────────────────────
 
   async function handleSubmit() {
     if (!validateStep2()) return;
+    if (!emailProofToken) {
+      toast.error('Verify your email to continue');
+      return;
+    }
     setLoading(true);
     try {
       const res = await apiFetch<SignupResponse>('/api/auth/company-signup', {
@@ -290,6 +383,7 @@ export default function SignupPage() {
           adminName: account.adminName.trim(),
           adminEmail: account.adminEmail.trim().toLowerCase(),
           adminMobile: account.adminMobile.trim(),
+          emailProofToken,
           password: account.password,
         }),
         retries: 0,
@@ -299,6 +393,9 @@ export default function SignupPage() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Something went wrong. Please try again.';
       toast.error(msg);
+      if (typeof msg === 'string' && /email/i.test(msg)) {
+        clearEmailVerification();
+      }
     } finally {
       setLoading(false);
     }
@@ -448,15 +545,70 @@ export default function SignupPage() {
                   autoComplete="name"
                   error={errors.adminName}
                 />
-                <Field
-                  label="Work Email"
-                  type="email"
-                  value={account.adminEmail}
-                  onChange={setA('adminEmail')}
-                  placeholder="you@youroffice.com"
-                  autoComplete="email"
-                  error={errors.adminEmail}
-                />
+                <div>
+                  <Field
+                    label="Work Email"
+                    type="email"
+                    value={account.adminEmail}
+                    onChange={setA('adminEmail')}
+                    placeholder="you@youroffice.com"
+                    autoComplete="email"
+                    error={errors.adminEmail}
+                  />
+                  {!emailVerified && (
+                    <button
+                      type="button"
+                      onClick={handleSendOtp}
+                      disabled={otpBusy || resendAfterSec > 0}
+                      className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-800/80 py-2.5 text-sm font-semibold text-slate-200
+                        hover:border-indigo-500/50 hover:text-white active:scale-[0.99] transition-all
+                        disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {otpBusy && !otpSent
+                        ? 'Sending…'
+                        : resendAfterSec > 0
+                          ? `Resend OTP in ${resendAfterSec}s`
+                          : otpSent
+                            ? 'Resend OTP'
+                            : 'Send OTP'}
+                    </button>
+                  )}
+                  {otpSent && !emailVerified && (
+                    <div className="mt-3 space-y-2">
+                      <label className="block text-xs font-semibold text-slate-400">Enter OTP</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={6}
+                        value={otpCode}
+                        onChange={(e) => {
+                          setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6));
+                          setErrors((prev) => { const n = { ...prev }; delete n.otp; return n; });
+                        }}
+                        placeholder="6-digit code"
+                        className={`w-full rounded-xl border bg-slate-800/60 px-3.5 py-3 text-sm text-white tracking-[0.3em] placeholder-slate-500 outline-none
+                          ${errors.otp ? 'border-rose-500/60' : 'border-slate-700 focus:border-indigo-500'}`}
+                      />
+                      {errors.otp && <p className="text-xs text-rose-400">{errors.otp}</p>}
+                      <button
+                        type="button"
+                        onClick={handleVerifyOtp}
+                        disabled={otpBusy || otpCode.length !== 6}
+                        className="w-full rounded-xl bg-indigo-600/90 py-2.5 text-sm font-bold text-white
+                          hover:bg-indigo-500 active:scale-[0.99] transition-all
+                          disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {otpBusy ? 'Verifying…' : 'Verify'}
+                      </button>
+                    </div>
+                  )}
+                  {emailVerified && (
+                    <p className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-emerald-400">
+                      <span aria-hidden>✓</span> Email Verified
+                    </p>
+                  )}
+                </div>
                 <Field
                   label="Mobile Number"
                   type="tel"
@@ -511,13 +663,18 @@ export default function SignupPage() {
 
               <button
                 onClick={handleSubmit}
-                disabled={loading}
+                disabled={loading || !emailVerified}
                 className="mt-6 w-full rounded-xl bg-indigo-600 py-3.5 text-sm font-bold text-white
                   hover:bg-indigo-500 active:scale-[0.98] transition-all shadow-lg shadow-indigo-900/40
                   disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {loading ? 'Creating your account…' : 'Start Free Trial →'}
               </button>
+              {!emailVerified && (
+                <p className="mt-2 text-center text-[11px] text-slate-500">
+                  Verify your email to continue
+                </p>
+              )}
             </div>
           )}
 

@@ -3,11 +3,12 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const speakeasy = require('speakeasy');
 const { randomUUID } = require('crypto');
-const { loginSchema, forgotPasswordSchema, resetPasswordSchema, registerSchema, verifyTotpSchema, verifyBackupSchema, companySignupSchema, selfProfileUpdateSchema } = require('../utils/validation');
+const { loginSchema, forgotPasswordSchema, resetPasswordSchema, registerSchema, verifyTotpSchema, verifyBackupSchema, companySignupSchema, sendSignupEmailOtpSchema, verifySignupEmailOtpSchema, selfProfileUpdateSchema } = require('../utils/validation');
 const { logAudit } = require('../utils/audit');
 const { encrypt, decrypt } = require('../utils/encryption');
-const { loginRateLimiter, passwordResetRateLimiter, rateLimit } = require('../middleware/rateLimiter');
+const { loginRateLimiter, passwordResetRateLimiter, signupOtpRateLimiter, rateLimit } = require('../middleware/rateLimiter');
 const PasswordResetService = require('../services/PasswordResetService');
+const SignupOtpService = require('../services/SignupOtpService');
 const { authMiddleware, fetchCompanyPlan } = require('../middleware/auth');
 const { totpRateLimitCheck, recordTotpFailure, clearTotpAttempts } = require('../middleware/totpRateLimiter');
 const dynamodb = require('../config/dynamodb');
@@ -535,12 +536,90 @@ router.post('/logout', authMiddleware, async (req, res) => {
   res.json({ success: true, message: 'Logged out successfully' });
 });
 
+// ── POST /api/auth/signup/send-email-otp ──────────────────────────────────────
+// Public: send 6-digit email OTP via SES (V1). Mobile/SMS channel reserved in
+// SignupOtpService but not exposed here until an SMS provider is integrated.
+
+router.post('/signup/send-email-otp', rateLimit(20, 60_000), async (req, res, next) => {
+  try {
+    const { email } = sendSignupEmailOtpSchema.parse(req.body);
+
+    if (await signupOtpRateLimiter.isBlocked(email)) {
+      logger.warn(`Signup email OTP rate-limited for ${email} from ${req.ip}`);
+      return res.status(429).json({
+        error: 'Too many verification emails. Try again later.',
+        code: 'RATE_LIMITED',
+      });
+    }
+    await signupOtpRateLimiter.recordAttempt(email);
+
+    const result = await SignupOtpService.sendOtp({
+      channel: SignupOtpService.CHANNEL_EMAIL,
+      destination: email,
+      purpose: SignupOtpService.PURPOSE_SIGNUP,
+    });
+
+    if (!result.ok) {
+      const status = result.code === 'RESEND_COOLDOWN' ? 429 : 400;
+      return res.status(status).json({
+        error: result.error,
+        code: result.code,
+        ...(result.resendAfterSec != null ? { resendAfterSec: result.resendAfterSec } : {}),
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Verification code sent to your email.',
+      resendAfterSec: result.resendAfterSec,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── POST /api/auth/signup/verify-email-otp ────────────────────────────────────
+// Public: verify OTP → one-time emailProofToken for company-signup.
+
+router.post('/signup/verify-email-otp', rateLimit(30, 60_000), async (req, res, next) => {
+  try {
+    const { email, code } = verifySignupEmailOtpSchema.parse(req.body);
+
+    const result = await SignupOtpService.verifyOtp({
+      channel: SignupOtpService.CHANNEL_EMAIL,
+      destination: email,
+      purpose: SignupOtpService.PURPOSE_SIGNUP,
+      code,
+    });
+
+    if (!result.ok) {
+      return res.status(400).json({ error: result.error, code: result.code });
+    }
+
+    res.json({
+      success: true,
+      message: 'Email verified.',
+      emailProofToken: result.emailProofToken,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ── POST /api/auth/company-signup ─────────────────────────────────────────────
 // Public route: self-service signup for a new AP office (creates company + admin user)
 
-router.post('/company-signup', async (req, res, next) => {
+router.post('/company-signup', rateLimit(10, 60_000), async (req, res, next) => {
   try {
     const data = companySignupSchema.parse(req.body);
+
+    const proof = await SignupOtpService.claimEmailProof(data.emailProofToken, data.adminEmail);
+    if (!proof.valid) {
+      return res.status(400).json({
+        error: 'Verify your email before creating an account.',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
 
     // Check email not already registered
     const existing = await findUserByEmail(data.adminEmail);
@@ -552,6 +631,7 @@ router.post('/company-signup', async (req, res, next) => {
     const companyId = `company_${now}`;
     const adminId = `emp_${now}`;
     const trialEndsAt = new Date(now + 14 * 24 * 60 * 60 * 1000).toISOString();
+    const emailVerifiedAt = new Date().toISOString();
 
     // Create company profile record (stored alongside employees for simplicity)
     await dynamodb.put({
@@ -567,6 +647,8 @@ router.post('/company-signup', async (req, res, next) => {
           : {}),
         city: data.city,
         adminEmail: data.adminEmail,
+        emailVerified: true,
+        emailVerifiedAt,
         plan: 'trial',
         trialEndsAt,
         planStatus: 'active',
