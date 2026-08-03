@@ -72,9 +72,14 @@ router.get('/companies/:companyId', async (req, res, next) => {
       Select: 'COUNT',
     }).promise();
 
+    // Match list endpoint: detail UI must not treat missing daysLeftInTrial as 0 (false "Trial Expired").
+    const daysLeftInTrial = profileResult.Item.trialEndsAt
+      ? Math.max(0, Math.ceil((new Date(profileResult.Item.trialEndsAt) - Date.now()) / 86_400_000))
+      : null;
+
     res.json({
       success: true,
-      company: profileResult.Item,
+      company: { ...profileResult.Item, daysLeftInTrial },
       stats: {
         employeeCount: empResult.Count ?? 0,
         leadCount: leadResult.Count ?? 0,
