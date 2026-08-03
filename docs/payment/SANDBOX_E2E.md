@@ -50,7 +50,7 @@ Public route: no JWT; signature is the auth. Signature mismatch → **401** (not
 1. Trigger the automation so a journey instance opens with a valid capability URL.
 2. Open the public journey link (priced Event Booking).
 3. Fill screens → **Review**.
-4. Confirm CTA is **Pay & Register** (not Book Now). Free journeys must still say Book Now — optional control check.
+4. Confirm CTA: **Pay & Register** when final payable total > ₹0; **Book Now** when total is ₹0 (even if `unitPrice` fields exist).
 5. Tap **Pay & Register** → hosted Razorpay Checkout opens (amount from server response only).
 6. Complete a **test-mode** payment (Razorpay test card / UPI as documented by Razorpay).
 7. Stay on the page through **Confirming your payment…** until **Thank you** (or slow-confirm copy if webhook is delayed — then use “Check payment status”).
@@ -91,7 +91,7 @@ Capture (screenshot, DynamoDB item, Razorpay delivery log, or WhatsApp thread) f
 | `paid` but no resume / no RECORD | `resumeOnWebhook` failed after paid | Telegram/`logger.alert` “paid but resume”; Phase 2 retry — **do not revert paid**; manual resume / Founder-approved ops |
 | `paid_duplicate` | Second successful pay for same journey | Alert for refund; no second resume — expected guard |
 | Thank-you never shows; WhatsApp already sent | Poll timeout / slow webhook | Use “Check payment status”; confirm GET returns `paid` |
-| Free journey broken | Regression | Book Now → webhook only; no checkout call |
+| Free journey / ₹0 total broken | Regression | Book Now → webhook only; no checkout. CTA follows **final payable amount** (`total > 0`), not `anyPriced` — qty 0 or free lines still Book Now |
 
 ---
 

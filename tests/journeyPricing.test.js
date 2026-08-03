@@ -122,4 +122,24 @@ describe('journeyPricing — GST breakdown', () => {
     expect(b.showGst).toBe(false);
     expect(b.total).toBe(0);
   });
+
+  test('CTA path uses final total > 0, not anyPriced (qty 0 still free)', () => {
+    const zeroQty = pricingBreakdown(pricedScreens, { tickets: '0' }, {
+      gstEnabled: true,
+      gstPercent: 18,
+      gstMode: 'exclusive',
+    });
+    expect(zeroQty.anyPriced).toBe(true);
+    expect(zeroQty.total).toBe(0);
+    // JourneyActiveForm: isPayable = total > 0 → Book Now
+    expect(zeroQty.total > 0).toBe(false);
+
+    const paid = pricingBreakdown(pricedScreens, { tickets: '1' }, {
+      gstEnabled: true,
+      gstPercent: 18,
+      gstMode: 'exclusive',
+    });
+    expect(paid.total).toBe(590);
+    expect(paid.total > 0).toBe(true);
+  });
 });

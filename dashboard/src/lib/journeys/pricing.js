@@ -38,7 +38,9 @@ function formatLine(rawQty, unitPrice) {
 
 /**
  * @returns {{ anyPriced: boolean, total: number }}
- * anyPriced is true when ≥1 field has unitPrice set (including 0).
+ * anyPriced is true when ≥1 field has unitPrice set (including 0) — use for
+ * showing the Totals panel only. CTA / Razorpay vs Book Now must use
+ * `total > 0` (final payable), not anyPriced, so discounts/coupons stay correct.
  * `total` here is the pre-GST subtotal (sum of line subtotals).
  */
 function grandTotal(screens, values) {

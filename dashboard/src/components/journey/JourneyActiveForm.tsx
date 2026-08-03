@@ -8,9 +8,11 @@
  * wraps as { journeyRecord, submittedData } — keys create_journey_record reads
  * (AutomationEngine.js: ctx.journeyRecord ?? ctx.submittedData).
  *
- * Free journeys: Book Now → Task 8 webhook-resume (unchanged).
- * Priced journeys (anyPriced): Pay & Register → checkout → Razorpay Checkout →
- * poll payment status until 'paid' (Checkout success is UX-only, never completion).
+ * CTA / path follows final payable amount only (pricingSummary.total) — not anyPriced —
+ * so ₹0 (qty 0, free unitPrice, future discounts) skips Razorpay:
+ *   total <= 0 → Book Now → Task 8 webhook-resume
+ *   total > 0  → Pay & Register → checkout → Razorpay → poll until 'paid'
+ * (Checkout success is UX-only, never completion.)
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -225,7 +227,8 @@ export function JourneyActiveForm({
     [safeScreens, values, gst],
   );
 
-  const isPriced = pricingSummary.anyPriced;
+  // Path gate: final payable amount only (anyPriced is display / Totals panel only).
+  const isPayable = pricingSummary.total > 0;
 
   function setField(id: string, value: string) {
     setValues((v) => ({ ...v, [id]: value }));
@@ -310,7 +313,7 @@ export function JourneyActiveForm({
 
   /** Free journeys only — Book Now → webhook resume (unchanged). */
   async function handleSubmit() {
-    if (submitting || isPriced) return;
+    if (submitting || isPayable) return;
     setSubmitting(true);
     setSubmitError(false);
     try {
@@ -345,7 +348,7 @@ export function JourneyActiveForm({
    * Client never sends amount; Checkout success never completes the UI alone.
    */
   async function handlePayAndRegister() {
-    if (submitting || !isPriced) return;
+    if (submitting || !isPayable) return;
     setSubmitting(true);
     setSubmitError(false);
     setPayPhase('starting');
@@ -421,12 +424,12 @@ export function JourneyActiveForm({
   }
 
   function handlePrimaryAction() {
-    if (isPriced) void handlePayAndRegister();
+    if (isPayable) void handlePayAndRegister();
     else void handleSubmit();
   }
 
   function primaryLabel(): string {
-    if (isPriced) {
+    if (isPayable) {
       if (payPhase === 'starting' || payPhase === 'awaiting_gateway') return 'Opening payment…';
       if (payPhase === 'confirming') return 'Confirming payment…';
       if (payPhase === 'gateway_failed' || payPhase === 'checkout_error' || submitError) {
@@ -452,7 +455,7 @@ export function JourneyActiveForm({
         )}
         <h1 className="text-xl font-semibold text-slate-900">Thank you</h1>
         <p className="mt-2 text-sm text-slate-600">
-          {isPriced
+          {isPayable
             ? 'Your payment is confirmed and your booking is complete. You can close this page.'
             : 'Your responses have been submitted. You can close this page.'}
         </p>
@@ -516,7 +519,7 @@ export function JourneyActiveForm({
             {name?.trim() || 'Journey'}
           </h1>
           <p className="mt-1 text-sm text-slate-500">
-            {isPriced
+            {isPayable
               ? 'Review your answers, then pay to complete registration.'
               : 'Review your answers before booking.'}
           </p>
@@ -632,7 +635,7 @@ export function JourneyActiveForm({
               <ErrorState
                 title="Something went wrong"
                 message={
-                  isPriced
+                  isPayable
                     ? 'We could not start checkout. Check your connection and try again — your link is still valid.'
                     : 'We could not submit your answers. Check your connection and try again — your link is still valid.'
                 }
@@ -657,7 +660,7 @@ export function JourneyActiveForm({
               onClick={handlePrimaryAction}
               disabled={submitting}
               data-testid="journey-submit"
-              data-pay-action={isPriced ? 'pay-register' : 'book-now'}
+              data-pay-action={isPayable ? 'pay-register' : 'book-now'}
             >
               {primaryLabel()}
             </Button>

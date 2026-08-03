@@ -24,7 +24,8 @@ function lineSubtotal(rawQty, unitPrice) {
 
 /**
  * @returns {{ anyPriced: boolean, total: number }}
- * `total` is the pre-GST subtotal.
+ * `total` is the pre-GST subtotal. Public CTA uses final payable (`total` /
+ * amountPaise) > 0, not anyPriced — see dashboard JourneyActiveForm.
  */
 function grandTotal(screens, values) {
   let total = 0;
