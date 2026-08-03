@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { ShieldCheck, Building2, Activity, Search, ChevronRight, IndianRupee } from 'lucide-react';
 import Link from 'next/link';
 import { Card } from '@/components/v3/ui/Card';
@@ -10,13 +10,14 @@ import { Skeleton } from '@/components/v3/ui/Skeleton';
 import { cn } from '@/lib/cn';
 import { api, apiFetch } from '@/lib/api';
 import type { PlatformCompany } from '@/lib/api';
-import { toast } from 'sonner';
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute';
 import { AiCostsTab } from '@/components/platform/AiCostsTab';
+import { attentionReason, countNewCompaniesToday } from './dashboardStats';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 type StatusFilter = 'all' | 'internal' | 'paid' | 'trial' | 'expired' | 'suspended';
+type PlatformTab = 'overview' | 'companies' | 'ai-costs' | 'health';
 
 function getStatus(c: PlatformCompany): StatusFilter {
   if (c.plan === 'internal') return 'internal';
@@ -48,21 +49,38 @@ function timeAgo(dateStr?: string) {
   return `${Math.floor(days / 30)}mo ago`;
 }
 
-// ── Tab components ─────────────────────────────────────────────────────────────
+// ── Overview ──────────────────────────────────────────────────────────────────
 
-function OverviewTab() {
-  const { data: statsData, isLoading } = useQuery({
+function OverviewTab({
+  onOpenCompaniesFilter,
+}: {
+  onOpenCompaniesFilter: (filter: StatusFilter) => void;
+}) {
+  const { data: statsData, isLoading: statsLoading } = useQuery({
     queryKey: ['platform-stats'],
     queryFn: () => api.platformStats(),
     refetchInterval: 60_000,
   });
-  const { data: companiesData } = useQuery({
+  const { data: companiesData, isLoading: companiesLoading } = useQuery({
     queryKey: ['platform-companies'],
     queryFn: () => api.platformCompanies(),
+  });
+  const { data: healthData, isLoading: healthLoading } = useQuery({
+    queryKey: ['platform-health'],
+    queryFn: () => apiFetch<{ status: string; timestamp: string }>('/health'),
+    refetchInterval: 30_000,
   });
 
   const stats = statsData?.stats;
   const companies = companiesData?.companies ?? [];
+  const isLoading = statsLoading || companiesLoading;
+
+  // DH-00: Active = planStatus active (includes trial + paying; excludes suspended)
+  const activeCount = companies.filter((c) => c.planStatus === 'active').length;
+  const trialCount = stats?.onTrial ?? companies.filter((c) => getStatus(c) === 'trial').length;
+  const suspendedCount = stats?.suspended ?? companies.filter((c) => c.planStatus === 'suspended').length;
+  const newToday = countNewCompaniesToday(companies);
+
   const recentCompanies = [...companies]
     .sort((a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime())
     .slice(0, 8);
@@ -74,53 +92,90 @@ function OverviewTab() {
     )
   );
 
+  const summaryCards: {
+    label: string;
+    value: number;
+    color: string;
+    filter?: StatusFilter;
+  }[] = [
+    { label: 'Total', value: stats?.totalCompanies ?? companies.length, color: 'text-neutral-900 dark:text-neutral-100', filter: 'all' },
+    { label: 'Active', value: activeCount, color: 'text-success-600' },
+    { label: 'Trial', value: trialCount, color: 'text-primary-600', filter: 'trial' },
+    { label: 'Suspended', value: suspendedCount, color: 'text-error-600', filter: 'suspended' },
+    { label: 'New today', value: newToday, color: 'text-neutral-900 dark:text-neutral-100' },
+  ];
+
   return (
     <div className="space-y-5">
-      {/* KPI cards */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      {/* DH-00 Company Status Summary */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         {isLoading ? (
-          Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-20 w-full rounded-xl" />)
+          Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-20 w-full rounded-xl" />)
         ) : (
-          [
-            { label: 'Total', value: stats?.totalCompanies ?? 0, color: 'text-neutral-900 dark:text-neutral-100' },
-            { label: 'Internal', value: stats?.internal ?? 0, color: 'text-purple-600 dark:text-purple-400' },
-            { label: 'Paying', value: stats?.active ?? 0, color: 'text-success-600' },
-            { label: 'On Trial', value: stats?.onTrial ?? 0, color: 'text-primary-600' },
-            { label: 'Expired', value: stats?.trialExpired ?? 0, color: 'text-warning-600' },
-            { label: 'Suspended', value: stats?.suspended ?? 0, color: 'text-error-600' },
-          ].map(({ label, value, color }) => (
-            <Card key={label}>
-              <p className={cn('text-2xl font-bold tabular-nums', color)}>{value}</p>
+          summaryCards.map(({ label, value, color, filter }) => (
+            <Card
+              key={label}
+              className={cn(filter ? 'cursor-pointer transition hover:border-primary-300 dark:hover:border-primary-700' : undefined)}
+              onClick={filter ? () => onOpenCompaniesFilter(filter) : undefined}
+            >
+              <p className={cn('text-2xl font-bold tabular-nums', color)}>{value.toLocaleString()}</p>
               <p className="text-xs text-neutral-500 mt-0.5">{label}</p>
             </Card>
           ))
         )}
       </div>
 
-      {/* Needs attention */}
-      {needsAttention.length > 0 && (
-        <Card noPadding>
-          <div className="border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
-            <p className="text-sm font-semibold text-error-700 dark:text-error-400">Needs Attention ({needsAttention.length})</p>
-          </div>
+      {/* DH-05 Lambda chip */}
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <span className="text-xs font-medium text-neutral-500">API</span>
+        {healthLoading ? (
+          <Skeleton className="h-5 w-28" />
+        ) : (
+          <span className="inline-flex items-center gap-2">
+            <span className={cn('h-2.5 w-2.5 rounded-full', healthData?.status === 'ok' ? 'bg-success-500' : 'bg-error-500')} />
+            <span className={cn('font-medium', healthData?.status === 'ok' ? 'text-success-700 dark:text-success-400' : 'text-error-700 dark:text-error-400')}>
+              {healthData?.status === 'ok' ? 'Operational' : 'Degraded'}
+            </span>
+            <span className="text-xs text-neutral-400">
+              {healthData?.timestamp
+                ? new Date(healthData.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })
+                : ''}
+            </span>
+          </span>
+        )}
+      </div>
+
+      {/* DH-03 Needs Attention */}
+      <Card noPadding>
+        <div className="border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
+          <p className={cn(
+            'text-sm font-semibold',
+            needsAttention.length > 0 ? 'text-error-700 dark:text-error-400' : 'text-neutral-900 dark:text-neutral-100',
+          )}>
+            Needs Attention ({needsAttention.length})
+          </p>
+        </div>
+        {needsAttention.length === 0 ? (
+          <p className="px-4 py-8 text-center text-sm text-neutral-400">None — no suspended or expiring trials</p>
+        ) : (
           <ul className="divide-y divide-neutral-50 dark:divide-neutral-800/60">
             {needsAttention.map((c) => (
               <li key={c.companyId}>
                 <Link href={`/platform/companies/${c.companyId}`} className="flex items-center gap-3 px-4 py-3 hover:bg-neutral-50/60 dark:hover:bg-neutral-800/30">
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100 truncate">{c.companyName}</p>
-                    <p className="text-xs text-neutral-400">Last active: {timeAgo(c.createdAt)}</p>
+                    <p className="text-xs text-neutral-400">Joined {timeAgo(c.createdAt)} · {attentionReason(c)}</p>
                   </div>
-                  <Badge variant={statusVariant(getStatus(c))}>{statusLabel(c)}</Badge>
+                  <Badge variant={statusVariant(getStatus(c))}>{attentionReason(c)}</Badge>
                   <ChevronRight className="h-4 w-4 text-neutral-300" />
                 </Link>
               </li>
             ))}
           </ul>
-        </Card>
-      )}
+        )}
+      </Card>
 
-      {/* Recent companies */}
+      {/* Recent companies — DH-01 joined only */}
       <Card noPadding>
         <div className="flex items-center justify-between border-b border-neutral-100 px-4 py-3 dark:border-neutral-800">
           <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Recent Companies</p>
@@ -141,15 +196,23 @@ function OverviewTab() {
               </Link>
             </li>
           ))}
+          {recentCompanies.length === 0 && (
+            <li className="py-10 text-center text-sm text-neutral-400">No companies yet</li>
+          )}
         </ul>
       </Card>
     </div>
   );
 }
 
-function CompaniesTab() {
-  const [search, setSearch]   = useState('');
-  const [filter, setFilter]   = useState<StatusFilter>('all');
+function CompaniesTab({
+  filter,
+  onFilterChange,
+}: {
+  filter: StatusFilter;
+  onFilterChange: (f: StatusFilter) => void;
+}) {
+  const [search, setSearch] = useState('');
 
   const { data, isLoading } = useQuery({
     queryKey: ['platform-companies'],
@@ -180,7 +243,7 @@ function CompaniesTab() {
         </div>
         <div className="flex flex-wrap gap-1">
           {FILTERS.map(({ id, label }) => (
-            <button key={id} onClick={() => setFilter(id)}
+            <button key={id} type="button" onClick={() => onFilterChange(id)}
               className={cn('rounded-full px-3 py-1 text-xs font-medium transition', filter === id ? 'bg-primary-600 text-white' : 'border border-neutral-200 text-neutral-500 hover:border-neutral-400 dark:border-neutral-700')}>
               {label}
             </button>
@@ -189,7 +252,7 @@ function CompaniesTab() {
       </div>
 
       {isLoading ? (
-        <div className="space-y-2">{[0,1,2,3].map((i) => <Skeleton key={i} className="h-14 w-full" />)}</div>
+        <div className="space-y-2">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-14 w-full" />)}</div>
       ) : (
         <Card noPadding>
           <ul className="divide-y divide-neutral-50 dark:divide-neutral-800/60">
@@ -201,9 +264,7 @@ function CompaniesTab() {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-neutral-900 dark:text-neutral-100 truncate">{c.companyName}</p>
-                    <p className="text-xs text-neutral-400">
-                      Last active: {timeAgo(c.createdAt)} · Joined {timeAgo(c.createdAt)}
-                    </p>
+                    <p className="text-xs text-neutral-400">Joined {timeAgo(c.createdAt)}</p>
                   </div>
                   <Badge variant={statusVariant(getStatus(c))}>{statusLabel(c)}</Badge>
                   <ChevronRight className="h-4 w-4 text-neutral-300" />
@@ -233,7 +294,7 @@ function HealthTab() {
       <Card>
         <div className="flex items-center justify-between mb-4">
           <p className="text-sm font-semibold text-neutral-900 dark:text-neutral-100">Lambda API</p>
-          <button onClick={() => refetch()} disabled={isFetching}
+          <button type="button" onClick={() => refetch()} disabled={isFetching}
             className="text-xs text-primary-600 hover:text-primary-700 disabled:opacity-40">
             {isFetching ? 'Checking…' : 'Refresh'}
           </button>
@@ -260,19 +321,21 @@ function HealthTab() {
   );
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────────
-
-type PlatformTab = 'overview' | 'companies' | 'ai-costs' | 'health';
-
 function PlatformPageInner() {
   const [tab, setTab] = useState<PlatformTab>('overview');
+  const [companyFilter, setCompanyFilter] = useState<StatusFilter>('all');
 
   const TABS: { id: PlatformTab; label: string; icon: React.ReactNode }[] = [
-    { id: 'overview',  label: 'Overview',  icon: <ShieldCheck className="h-4 w-4" /> },
+    { id: 'overview', label: 'Overview', icon: <ShieldCheck className="h-4 w-4" /> },
     { id: 'companies', label: 'Companies', icon: <Building2 className="h-4 w-4" /> },
-    { id: 'ai-costs',  label: 'AI Costs',  icon: <IndianRupee className="h-4 w-4" /> },
-    { id: 'health',    label: 'Health',    icon: <Activity className="h-4 w-4" /> },
+    { id: 'ai-costs', label: 'AI Costs', icon: <IndianRupee className="h-4 w-4" /> },
+    { id: 'health', label: 'Health', icon: <Activity className="h-4 w-4" /> },
   ];
+
+  function openCompaniesFilter(filter: StatusFilter) {
+    setCompanyFilter(filter);
+    setTab('companies');
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -283,7 +346,7 @@ function PlatformPageInner() {
         </div>
         <div className="flex gap-1 px-6 pb-0">
           {TABS.map((t) => (
-            <button key={t.id} onClick={() => setTab(t.id)}
+            <button key={t.id} type="button" onClick={() => setTab(t.id)}
               className={cn(
                 'flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition',
                 tab === t.id
@@ -299,22 +362,18 @@ function PlatformPageInner() {
 
       <div className="scrollbar-thin flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-5xl">
-          {tab === 'overview'  && <OverviewTab />}
-          {tab === 'companies' && <CompaniesTab />}
-          {tab === 'ai-costs'  && <AiCostsTab />}
-          {tab === 'health'    && <HealthTab />}
+          {tab === 'overview' && <OverviewTab onOpenCompaniesFilter={openCompaniesFilter} />}
+          {tab === 'companies' && (
+            <CompaniesTab filter={companyFilter} onFilterChange={setCompanyFilter} />
+          )}
+          {tab === 'ai-costs' && <AiCostsTab />}
+          {tab === 'health' && <HealthTab />}
         </div>
       </div>
     </div>
   );
 }
 
-// Superadmin-only — nav already hides this from everyone else (V3Sidebar's
-// roles: ['owner']), but that was nav-hiding only, not real route
-// enforcement (found during the Phase 2A audit, 2026-07-06). allowedRoles=[]
-// is correct here, not ['superadmin']: ProtectedRoute already bypasses its
-// own check unconditionally for superadmin, so an empty list is exactly
-// "nobody else gets in."
 export default function PlatformPage() {
   return (
     <ProtectedRoute allowedRoles={[]}>
