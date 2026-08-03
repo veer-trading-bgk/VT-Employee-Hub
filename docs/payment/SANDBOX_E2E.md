@@ -1,7 +1,7 @@
 # Journey Payment — Sandbox E2E Runbook
 
-**Status:** Payment Phase 1 is **code complete** (`e979c9b` and prior PR 1/2).  
-**Not yet:** production-proven. Mark production-proven only after this runbook is executed successfully with captured evidence.
+**Status:** Payment Phase 1 is **code complete** and **sandbox-proven** (Test Mode E2E 2026-08-03 — see validation log).  
+**Still:** do not treat Live Mode as proven. Mark Live production-proven only after a live-key run with Founder approval.
 
 **Do not start Phase 2** (orphan sweeper, paid-but-not-resumed auto-retry, payment canvas node, live keys) without Founder approval.
 
@@ -106,7 +106,8 @@ Capture (screenshot, DynamoDB item, Razorpay delivery log, or WhatsApp thread) f
 
 | Date | Operator | Result | Evidence / notes |
 |------|----------|--------|------------------|
-| — | — | **Pending** — environment (test secrets + webhook) not yet validated in agent shell | Blocked as of Pay & Register merge |
+| 2026-08-03 | Agent (sandbox) | **Pass** — full Test Mode chain | Journey `journey_01KZ2VZAGQ7S6WBY6SHWTBW1HX`; order `order_TL9g1c354u5vlM`; payment `payment_01KZ2W0AQ69S3SD7QBK7DE1DP2` → `paid`; Razorpay `pay_TL9g5qIGwiXyWg` captured; `RECORD` written; WhatsApp confirmation delivered (`read`); Thank you after poll. Fix required mid-run: `payment_capture: 1` on Orders (`d1503ae`). Deploy: https://github.com/veer-trading-bgk/VT-Employee-Hub/actions/runs/30782769700 |
+| — | — | **Pending** (superseded) — environment not yet validated | Blocked as of Pay & Register merge |
 
 ---
 
