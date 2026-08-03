@@ -24,7 +24,7 @@ router.get('/companies', async (req, res, next) => {
       FilterExpression: '#type = :t',
       ExpressionAttributeNames: { '#type': 'type' },
       ExpressionAttributeValues: { ':t': 'COMPANY_PROFILE' },
-      ProjectionExpression: 'id, companyId, companyName, broker, city, adminEmail, #plan, planStatus, trialEndsAt, createdAt',
+      ProjectionExpression: 'id, companyId, companyName, broker, industry, businessType, city, adminEmail, #plan, planStatus, trialEndsAt, createdAt',
       ExpressionAttributeNames: { '#type': 'type', '#plan': 'plan' },
     }).promise();
 

@@ -274,9 +274,33 @@ const selfProfileUpdateSchema = z.object({
   avatarKey: z.string().max(500).optional(),
 }).strict();
 
+/** Canonical industry options for company signup / profile (multi-industry SaaS). */
+const COMPANY_INDUSTRIES = Object.freeze([
+  'BFSI',
+  'Retail',
+  'Healthcare',
+  'Education',
+  'Real Estate',
+  'Manufacturing',
+  'Restaurant',
+  'Hotel',
+  'Travel',
+  'Automobile',
+  'NGO',
+  'Events',
+  'IT & Software',
+  'E-commerce',
+  'Logistics',
+  'Other',
+]);
+
 const companySignupSchema = z.object({
   companyName: z.string().min(2, 'Office name must be at least 2 characters').max(100),
-  broker: z.string().min(1, 'Select your broker').max(100),
+  industry: z.string().refine(
+    (v) => COMPANY_INDUSTRIES.includes(v),
+    { message: 'Select your industry' },
+  ),
+  businessType: z.string().min(2, 'Enter your business type').max(100).optional(),
   city: z.string().min(2, 'City must be at least 2 characters').max(100),
   adminName: z.string().min(2, 'Name must be at least 2 characters').max(100),
   adminEmail: z.string().email('Invalid email'),
@@ -285,6 +309,17 @@ const companySignupSchema = z.object({
     .min(8, 'Password must be at least 8 characters')
     .regex(/[A-Z]/, 'Must contain uppercase letter')
     .regex(/[0-9]/, 'Must contain a number'),
+}).superRefine((data, ctx) => {
+  if (data.industry === 'Other') {
+    const bt = (data.businessType ?? '').trim();
+    if (bt.length < 2) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['businessType'],
+        message: 'Enter your business type',
+      });
+    }
+  }
 });
 
 const VALID_SOURCES = ['manual', 'import', 'whatsapp', 'referral', 'website', 'facebook', 'instagram', 'whatsapp_ai', 'walk_in', 'social', 'webinar'];
@@ -446,6 +481,7 @@ module.exports = {
   verifyBackupSchema,
   updateEmployeeSchema,
   selfProfileUpdateSchema,
+  COMPANY_INDUSTRIES,
   companySignupSchema,
   createLeadSchema,
   updateLeadSchema,

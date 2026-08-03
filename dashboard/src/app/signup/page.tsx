@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { toast } from 'sonner';
@@ -11,7 +11,8 @@ import { setMemoryToken } from '@/lib/api';
 
 interface CompanyStep {
   companyName: string;
-  broker: string;
+  industry: string;
+  businessType: string;
   city: string;
 }
 
@@ -30,16 +31,26 @@ interface SignupResponse {
   company: { companyId: string; companyName: string; plan: string; trialEndsAt: string };
 }
 
-// ── Broker options ────────────────────────────────────────────────────────────
+// ── Industry options (must match COMPANY_INDUSTRIES in validation.js) ─────────
 
-const BROKERS = [
-  { id: 'Angel One', label: 'Angel One' },
-  { id: 'Zerodha',   label: 'Zerodha'   },
-  { id: 'Motilal',   label: 'Motilal'   },
-  { id: 'IIFL',      label: 'IIFL'      },
-  { id: 'Kotak',     label: 'Kotak'     },
-  { id: 'Other',     label: 'Other'     },
-];
+const INDUSTRIES = [
+  'BFSI',
+  'Retail',
+  'Healthcare',
+  'Education',
+  'Real Estate',
+  'Manufacturing',
+  'Restaurant',
+  'Hotel',
+  'Travel',
+  'Automobile',
+  'NGO',
+  'Events',
+  'IT & Software',
+  'E-commerce',
+  'Logistics',
+  'Other',
+] as const;
 
 // ── Progress dots ─────────────────────────────────────────────────────────────
 
@@ -107,6 +118,85 @@ function Field({
   );
 }
 
+function IndustrySelect({
+  value,
+  onChange,
+  error,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  error?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return [...INDUSTRIES];
+    return INDUSTRIES.filter((i) => i.toLowerCase().includes(q));
+  }, [query]);
+
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  return (
+    <div ref={rootRef}>
+      <label className="block text-xs font-semibold text-slate-400 mb-1.5">Industry</label>
+      <div className={`relative rounded-xl border bg-slate-800/60 transition-colors
+        ${error ? 'border-rose-500/60' : 'border-slate-700 focus-within:border-indigo-500'}`}>
+        <input
+          type="text"
+          value={open ? query : value}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => { setQuery(''); setOpen(true); }}
+          placeholder="Search or select industry"
+          className="w-full bg-transparent px-3.5 py-3 text-sm text-white placeholder-slate-500 outline-none rounded-xl"
+          autoComplete="off"
+          role="combobox"
+          aria-expanded={open}
+          aria-controls="industry-listbox"
+        />
+        {open && (
+          <ul
+            id="industry-listbox"
+            role="listbox"
+            className="absolute z-20 left-0 right-0 top-full mt-1 max-h-48 overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 shadow-xl"
+          >
+            {filtered.length === 0 ? (
+              <li className="px-3.5 py-2.5 text-sm text-slate-500">No matches</li>
+            ) : (
+              filtered.map((opt) => (
+                <li key={opt} role="option" aria-selected={value === opt}>
+                  <button
+                    type="button"
+                    className={`w-full text-left px-3.5 py-2.5 text-sm transition ${
+                      value === opt ? 'bg-indigo-600/30 text-white' : 'text-slate-200 hover:bg-slate-800'
+                    }`}
+                    onClick={() => {
+                      onChange(opt);
+                      setQuery('');
+                      setOpen(false);
+                    }}
+                  >
+                    {opt}
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        )}
+      </div>
+      {error && <p className="mt-1 text-xs text-rose-400">{error}</p>}
+    </div>
+  );
+}
+
 // ── Background blobs ──────────────────────────────────────────────────────────
 
 function Background() {
@@ -126,15 +216,26 @@ export default function SignupPage() {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
 
-  const [company, setCompany] = useState<CompanyStep>({ companyName: '', broker: '', city: '' });
+  const [company, setCompany] = useState<CompanyStep>({
+    companyName: '', industry: '', businessType: '', city: '',
+  });
   const [account, setAccount] = useState<AccountStep>({
     adminName: '', adminEmail: '', adminMobile: '', password: '', confirmPassword: '',
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const setC = useCallback((field: keyof CompanyStep) => (v: string) => {
-    setCompany((prev) => ({ ...prev, [field]: v }));
-    setErrors((prev) => { const n = { ...prev }; delete n[field]; return n; });
+    setCompany((prev) => {
+      const next = { ...prev, [field]: v };
+      if (field === 'industry' && v !== 'Other') next.businessType = '';
+      return next;
+    });
+    setErrors((prev) => {
+      const n = { ...prev };
+      delete n[field];
+      if (field === 'industry') delete n.businessType;
+      return n;
+    });
   }, []);
 
   const setA = useCallback((field: keyof AccountStep) => (v: string) => {
@@ -146,8 +247,11 @@ export default function SignupPage() {
 
   function validateStep1() {
     const errs: Record<string, string> = {};
-    if (company.companyName.trim().length < 2) errs.companyName = 'Enter your office / brand name';
-    if (!company.broker) errs.broker = 'Select your broker / franchisor';
+    if (company.companyName.trim().length < 2) errs.companyName = 'Enter your company / brand name';
+    if (!company.industry) errs.industry = 'Select your industry';
+    else if (company.industry === 'Other' && company.businessType.trim().length < 2) {
+      errs.businessType = 'Enter your business type';
+    }
     if (company.city.trim().length < 2) errs.city = 'Enter your city';
     setErrors(errs);
     return Object.keys(errs).length === 0;
@@ -178,7 +282,10 @@ export default function SignupPage() {
         method: 'POST',
         body: JSON.stringify({
           companyName: company.companyName.trim(),
-          broker: company.broker,
+          industry: company.industry,
+          ...(company.industry === 'Other'
+            ? { businessType: company.businessType.trim() }
+            : {}),
           city: company.city.trim(),
           adminName: account.adminName.trim(),
           adminEmail: account.adminEmail.trim().toLowerCase(),
@@ -271,39 +378,34 @@ export default function SignupPage() {
           {/* ── Step 1: Company / Office info ── */}
           {step === 1 && (
             <div>
-              <h2 className="text-lg font-black text-white mb-1">Your AP Office</h2>
-              <p className="text-xs text-slate-400 mb-6">Tell us about your sub-brokership / AP office</p>
+              <h2 className="text-lg font-black text-white mb-1">Your Company</h2>
+              <p className="text-xs text-slate-400 mb-6">Tell us about your business</p>
 
               <div className="space-y-4">
                 <Field
-                  label="Office / Brand Name"
+                  label="Company / Brand Name"
                   value={company.companyName}
                   onChange={setC('companyName')}
-                  placeholder="e.g. Viir Trading"
+                  placeholder="e.g. Acme Events"
                   autoComplete="organization"
                   error={errors.companyName}
                 />
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 mb-2">Broker / Franchisor</label>
-                  <div className="flex flex-wrap gap-2">
-                    {BROKERS.map((b) => (
-                      <button
-                        key={b.id}
-                        type="button"
-                        onClick={() => { setC('broker')(b.id); setErrors((p) => { const n = { ...p }; delete n.broker; return n; }); }}
-                        className={`rounded-lg px-3.5 py-2 text-sm font-semibold border transition-all ${
-                          company.broker === b.id
-                            ? 'bg-indigo-600 border-indigo-500 text-white shadow-md'
-                            : 'border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-200 bg-slate-800/50'
-                        }`}
-                      >
-                        {b.label}
-                      </button>
-                    ))}
-                  </div>
-                  {errors.broker && <p className="mt-1.5 text-xs text-rose-400">{errors.broker}</p>}
-                </div>
+                <IndustrySelect
+                  value={company.industry}
+                  onChange={setC('industry')}
+                  error={errors.industry}
+                />
+
+                {company.industry === 'Other' && (
+                  <Field
+                    label="Business Type"
+                    value={company.businessType}
+                    onChange={setC('businessType')}
+                    placeholder="Describe your business type"
+                    error={errors.businessType}
+                  />
+                )}
 
                 <Field
                   label="City"

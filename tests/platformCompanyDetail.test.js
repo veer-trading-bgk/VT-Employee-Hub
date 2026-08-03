@@ -52,7 +52,7 @@ describe('GET /api/platform/companies/:companyId', () => {
         companyId: 'co_test',
         companyName: 'Test Co',
         adminEmail: 'owner@example.com',
-        broker: 'Veer',
+        industry: 'Events',
         city: 'Bengaluru',
         plan: 'trial',
         planStatus: 'active',

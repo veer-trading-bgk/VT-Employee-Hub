@@ -17,7 +17,7 @@ const EMP_TABLE    = 'employees';
       type: 'COMPANY_PROFILE',
       companyId: COMPANY_ID,
       companyName: 'APForce',
-      broker: 'APForce Platform',
+      industry: 'IT & Software',
       city: 'India',
       adminEmail: ADMIN_EMAIL,
       plan: 'enterprise',

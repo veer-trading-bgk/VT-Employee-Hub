@@ -450,6 +450,8 @@ export interface PlatformCompany {
   companyId: string;
   companyName: string;
   broker?: string;
+  industry?: string;
+  businessType?: string;
   city?: string;
   adminEmail?: string;
   plan: string;
@@ -457,6 +459,8 @@ export interface PlatformCompany {
   trialEndsAt?: string | null;
   createdAt?: string;
   daysLeftInTrial?: number | null;
+  ownerName?: string | null;
+  ownerMobile?: string | null;
 }
 
 export interface PlatformStats {

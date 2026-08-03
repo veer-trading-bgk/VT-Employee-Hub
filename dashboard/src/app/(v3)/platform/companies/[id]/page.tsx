@@ -245,7 +245,17 @@ export default function CompanyDetailPage() {
               <InfoRow label="Owner name" value={(company.ownerName as string | null | undefined) || '—'} />
               <InfoRow label="Owner email" value={company.adminEmail || '—'} />
               <InfoRow label="Owner mobile" value={(company.ownerMobile as string | null | undefined) || '—'} />
-              <InfoRow label="Broker" value={company.broker || '—'} />
+              <InfoRow
+                label="Industry"
+                value={
+                  (company.industry as string | undefined)
+                  || (company.broker as string | undefined)
+                  || '—'
+                }
+              />
+              {(company.industry === 'Other' || company.businessType) ? (
+                <InfoRow label="Business type" value={(company.businessType as string | undefined) || '—'} />
+              ) : null}
               <InfoRow label="City" value={company.city || '—'} />
               <InfoRow label="Company ID" value={<span className="font-mono text-xs">{company.companyId}</span>} />
               <InfoRow label="Plan" value={fmtPlanEnum(company.plan)} />

@@ -51,7 +51,7 @@ router.put('/profile', adminMiddleware, async (req, res, next) => {
     const { companyId } = req.user;
     if (!companyId) return res.status(404).json({ error: 'No company linked to this account' });
 
-    const allowed = ['companyName', 'broker', 'city'];
+    const allowed = ['companyName', 'broker', 'city', 'industry', 'businessType'];
     const updates = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );

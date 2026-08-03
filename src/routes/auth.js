@@ -561,7 +561,10 @@ router.post('/company-signup', async (req, res, next) => {
         type: 'COMPANY_PROFILE',
         companyId,
         companyName: data.companyName,
-        broker: data.broker,
+        industry: data.industry,
+        ...(data.industry === 'Other' && data.businessType
+          ? { businessType: data.businessType.trim() }
+          : {}),
         city: data.city,
         adminEmail: data.adminEmail,
         plan: 'trial',
@@ -606,7 +609,7 @@ router.post('/company-signup', async (req, res, next) => {
 
     bot.sendMessage(
       process.env.TELEGRAM_ADMIN_CHAT_ID,
-      `🎉 New APForce Signup!\n\nCompany: ${data.companyName}\nBroker: ${data.broker}\nCity: ${data.city}\nAdmin: ${data.adminEmail}\nTrial ends: ${trialEndsAt.slice(0, 10)}`
+      `🎉 New APForce Signup!\n\nCompany: ${data.companyName}\nIndustry: ${data.industry}${data.industry === 'Other' && data.businessType ? ` (${data.businessType.trim()})` : ''}\nCity: ${data.city}\nAdmin: ${data.adminEmail}\nTrial ends: ${trialEndsAt.slice(0, 10)}`
     ).catch(() => {});
 
     res.status(201).json({
