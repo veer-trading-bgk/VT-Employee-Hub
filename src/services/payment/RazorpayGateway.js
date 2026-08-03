@@ -51,10 +51,15 @@ class RazorpayGateway {
     if (!Number.isInteger(amountPaise) || amountPaise <= 0) {
       throw new Error('RazorpayGateway.createOrder: amountPaise must be a positive integer');
     }
+    // payment_capture: 1 — auto-capture on authorize. Without this, Razorpay
+    // leaves payments as "authorized" and never emits payment.captured, so our
+    // webhook (which only acts on payment.captured) never marks PAYMENT# paid.
+    // Sandbox E2E 2026-08-03: Success on demo bank → authorized, UI stuck confirming.
     const order = await this._getClient().orders.create({
       amount: amountPaise,
       currency: currency || 'INR',
       receipt: String(receipt).slice(0, 40),
+      payment_capture: 1,
     });
     if (!order?.id) throw new Error('RazorpayGateway.createOrder: missing order id');
     return { orderId: order.id };

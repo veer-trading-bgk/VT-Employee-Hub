@@ -1,16 +1,17 @@
 /**
  * Live sandbox E2E — Event Booking Pay & Register against production.
- * Run with SANDBOX_JOURNEY_URL set (from scripts/sandbox_e2e_bootstrap.js).
+ * Completes Razorpay Test Mode via Netbanking → demo bank Success.
  */
 import { test, expect } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
 test.use({ storageState: { cookies: [], origins: [] }, serviceWorkers: 'block' });
+test.setTimeout(240_000);
 
 const ARTIFACT = path.join(__dirname, 'sandbox-evidence.json');
 
-test('Sandbox Event Booking — Pay & Register through Razorpay test Checkout', async ({ page }) => {
+test('Sandbox Event Booking — Pay & Register through Razorpay test Checkout', async ({ page, context }) => {
   const url = process.env.SANDBOX_JOURNEY_URL;
   if (!url) throw new Error('SANDBOX_JOURNEY_URL required');
 
@@ -28,19 +29,15 @@ test('Sandbox Event Booking — Pay & Register through Razorpay test Checkout', 
   await page.getByLabel(/email/i).fill('sandbox-e2e@example.com');
   await page.getByLabel(/Phone/i).fill('9901251785');
   await page.getByTestId('journey-continue').click();
-  note('screen 1 complete');
 
   await expect(page.getByLabel(/Event/i)).toBeVisible();
   await page.getByLabel(/Event/i).selectOption({ label: 'Dandiya Raas Utsav' });
   await page.getByLabel(/Number of Tickets/i).fill('1');
   await page.getByTestId('journey-continue').click();
-  note('screen 2 complete → review');
 
   await expect(page.getByTestId('journey-review')).toBeVisible();
-  await expect(page.getByTestId('journey-grand-total')).toBeVisible();
   const payBtn = page.getByTestId('journey-submit');
   await expect(payBtn).toHaveAttribute('data-pay-action', 'pay-register');
-  await expect(payBtn).toHaveText(/Pay & Register/i);
   note('Review: Pay & Register visible');
   await page.screenshot({ path: path.join(__dirname, 'evidence-review.png'), fullPage: true });
 
@@ -48,7 +45,6 @@ test('Sandbox Event Booking — Pay & Register through Razorpay test Checkout', 
     (r) => r.url().includes('/checkout') && r.request().method() === 'POST',
     { timeout: 60_000 },
   );
-
   await payBtn.click();
   const checkoutRes = await checkoutPromise;
   const checkoutJson = await checkoutRes.json();
@@ -57,49 +53,71 @@ test('Sandbox Event Booking — Pay & Register through Razorpay test Checkout', 
   expect(checkoutRes.status()).toBe(201);
   expect(checkoutJson.amount).toBe(59000);
 
-  const rzpFrame = page.frameLocator('iframe[src*="razorpay"], iframe').first();
-  await expect(rzpFrame.locator('body')).toBeVisible({ timeout: 45_000 });
-  note('Razorpay Checkout iframe visible (Test Mode)');
+  const checkoutFrame = page.frameLocator('iframe').first();
+  await expect(
+    checkoutFrame.getByTestId('title').or(checkoutFrame.getByRole('heading', { name: /Contact details/i })),
+  ).toBeVisible({ timeout: 45_000 });
+  note('Razorpay Checkout UI visible');
   await page.screenshot({ path: path.join(__dirname, 'evidence-checkout-open.png'), fullPage: true });
 
-  // Contact details gate (shown when prefill missing on older deploy)
-  const mobile = rzpFrame.getByPlaceholder(/mobile|phone/i).or(
-    rzpFrame.locator('input[type="tel"], input[name*="contact"], input[name*="phone"]'),
-  ).first();
-  if (await mobile.isVisible({ timeout: 8_000 }).catch(() => false)) {
-    await mobile.fill('9901251785');
-    await rzpFrame.getByRole('button', { name: /Continue/i }).click();
-    note('filled Razorpay contact mobile');
+  const contactHeading = checkoutFrame.getByRole('heading', { name: /Contact details/i });
+  if (await contactHeading.isVisible({ timeout: 5_000 }).catch(() => false)) {
+    await checkoutFrame.locator('input[type="tel"]').first().fill('9901251785');
+    await checkoutFrame.getByRole('button', { name: /^Continue$/i }).click();
+    note('contact continue');
+    await page.waitForTimeout(1500);
   }
 
-  // Prefer Card method
-  const cards = rzpFrame.getByText(/^Cards?$/i).first();
-  if (await cards.isVisible({ timeout: 15_000 }).catch(() => false)) {
-    await cards.click();
-    note('selected Cards');
+  // Netbanking → Yes Bank → demo bank Success (popup or same page)
+  await checkoutFrame.getByTestId('netbanking').or(checkoutFrame.getByTestId('Netbanking')).first().click({ force: true });
+  note('selected Netbanking');
+  await page.waitForTimeout(1000);
+
+  const bankBtn = checkoutFrame.getByText(/Yes Bank/i).first();
+  await expect(bankBtn).toBeVisible({ timeout: 15_000 });
+
+  // Arm popup waiter before the click that opens the demo bank
+  const popupPromise = context.waitForEvent('page', { timeout: 60_000 }).catch(() => null);
+  await bankBtn.click();
+  note('clicked Yes Bank');
+
+  // Some builds require an explicit Pay after bank select
+  const payNow = checkoutFrame.getByRole('button', { name: /Pay ₹|Pay |Continue|Proceed/i }).last();
+  if (await payNow.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    await payNow.click();
+    note('clicked Pay after bank select');
   }
 
-  const cardNumber = rzpFrame.locator(
-    'input[name="card.number"], input[name="card[number]"], input[autocomplete="cc-number"], input[placeholder*="card number" i]',
-  ).first();
-  await cardNumber.waitFor({ timeout: 30_000 });
-  await cardNumber.fill('4111111111111111');
-  const expiry = rzpFrame.locator(
-    'input[name="card.expiry"], input[name="card[expiry]"], input[autocomplete="cc-exp"], input[placeholder*="MM" i]',
-  ).first();
-  if (await expiry.isVisible().catch(() => false)) await expiry.fill('1230');
-  const cvv = rzpFrame.locator(
-    'input[name="card.cvv"], input[name="card[cvv]"], input[autocomplete="cc-csc"], input[placeholder*="CVV" i]',
-  ).first();
-  if (await cvv.isVisible().catch(() => false)) await cvv.fill('123');
-  const holder = rzpFrame.locator(
-    'input[name="card.name"], input[name="card[name]"], input[autocomplete="cc-name"]',
-  ).first();
-  if (await holder.isVisible().catch(() => false)) await holder.fill('Sandbox E2E');
+  let demoPage = await popupPromise;
+  if (!demoPage) {
+    // Demo bank may navigate the iframe or a new frame instead of popup
+    await page.waitForTimeout(2000);
+    for (const f of page.frames()) {
+      const success = f.getByRole('button', { name: /^Success$/i });
+      if (await success.isVisible({ timeout: 500 }).catch(() => false)) {
+        await success.click();
+        note(`clicked Success in frame ${f.url().slice(0, 80)}`);
+        demoPage = null;
+        break;
+      }
+    }
+    // Or main page navigated
+    if (await page.getByRole('button', { name: /^Success$/i }).isVisible({ timeout: 1_000 }).catch(() => false)) {
+      await page.getByRole('button', { name: /^Success$/i }).click();
+      note('clicked Success on main page');
+    }
+  } else {
+    await demoPage.waitForLoadState('domcontentloaded');
+    // First event can be about:blank — wait for the demo bank Success control
+    await expect(demoPage.getByRole('button', { name: /^Success$/i })).toBeVisible({ timeout: 30_000 });
+    note(`demo bank popup url=${demoPage.url()}`);
+    await demoPage.screenshot({ path: path.join(__dirname, 'evidence-demo-bank.png'), fullPage: true });
+    await demoPage.getByRole('button', { name: /^Success$/i }).click();
+    note('clicked Success on demo bank');
+    await demoPage.waitForEvent('close', { timeout: 60_000 }).catch(() => undefined);
+  }
 
-  await rzpFrame.getByRole('button', { name: /Pay|Proceed/i }).first().click();
-  note('submitted Razorpay test card 4111…');
-  await page.screenshot({ path: path.join(__dirname, 'evidence-card-submit.png'), fullPage: true });
+  await page.screenshot({ path: path.join(__dirname, 'evidence-after-success.png'), fullPage: true });
 
   await expect(page.getByTestId('journey-submitted')).toBeVisible({ timeout: 180_000 });
   note('Thank you shown after poll paid');

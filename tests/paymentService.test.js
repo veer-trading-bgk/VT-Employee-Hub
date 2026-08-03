@@ -230,6 +230,25 @@ describe('RazorpayGateway confinement', () => {
     expect(gw.keySecret).toBe('secret_with_trailing_ws');
     expect(gw.webhookSecret).toBe('whsec');
   });
+
+  test('createOrder requests payment_capture:1 so payment.captured fires', async () => {
+    const RazorpayGateway = require('../src/services/payment/RazorpayGateway');
+    const create = jest.fn(async () => ({ id: 'order_auto_cap' }));
+    const gw = new RazorpayGateway({
+      keyId: 'k',
+      keySecret: 's',
+      webhookSecret: 'w',
+      client: { orders: { create } },
+    });
+    const out = await gw.createOrder(59000, 'INR', 'payment_abc');
+    expect(out).toEqual({ orderId: 'order_auto_cap' });
+    expect(create).toHaveBeenCalledWith({
+      amount: 59000,
+      currency: 'INR',
+      receipt: 'payment_abc',
+      payment_capture: 1,
+    });
+  });
 });
 
 describe('PaymentService.getPaymentStatus', () => {

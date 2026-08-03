@@ -85,7 +85,7 @@ Capture (screenshot, DynamoDB item, Razorpay delivery log, or WhatsApp thread) f
 | Checkout never opens / 400 `not_payable` | Free definition or zero charge | Definition has `unitPrice`; qty yields amountPaise > 0 |
 | Checkout 404 | Bad/expired token or flag off | Capability URL; `journeys_platform`; instance not finished |
 | Checkout 5xx / order create fails | Missing `RAZORPAY_KEY_ID` / `KEY_SECRET` | Lambda env / Secrets Manager; CloudWatch |
-| Razorpay pays but UI stuck confirming | Webhook not reaching API or signature fail | Webhook URL host; `RAZORPAY_WEBHOOK_SECRET`; delivery log status (401 vs 200) |
+| Razorpay pays but UI stuck confirming | Webhook not reaching API or signature fail; **or payment stuck `authorized` (not captured)** | Webhook URL host; `RAZORPAY_WEBHOOK_SECRET`; delivery log status (401 vs 200); Razorpay payment `captured: true` — Orders must use `payment_capture: 1` (handler only acts on `payment.captured`) |
 | Webhook 401 | Bad/missing webhook secret | Secret matches Razorpay dashboard; fail-closed is intentional |
 | `PAYMENT#` stays `pending` | Event not `payment.captured` or amount mismatch | Event type; `amount` vs stored `amountPaise` (mismatch alerts, does not mark paid) |
 | `paid` but no resume / no RECORD | `resumeOnWebhook` failed after paid | Telegram/`logger.alert` “paid but resume”; Phase 2 retry — **do not revert paid**; manual resume / Founder-approved ops |
